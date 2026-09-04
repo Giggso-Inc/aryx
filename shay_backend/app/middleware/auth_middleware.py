@@ -3,7 +3,7 @@ Authentication middleware for JWT token validation
 """
 
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,7 @@ class AuthMiddleware:
     def __init__(self, app):
         self.app = app
     
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -163,9 +163,9 @@ async def get_current_user_optional(request: Request, db: Optional[AsyncSession]
     return await get_current_user(request, db)
 
 
-def require_auth(func):
+def require_auth(func) -> Callable:
     """Decorator to require authentication"""
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs) -> Any:
         request = kwargs.get("request")
         if not request:
             for arg in args:
@@ -186,9 +186,9 @@ def require_auth(func):
     return wrapper
 
 
-def optional_auth(func):
+def optional_auth(func) -> Callable:
     """Decorator for optional authentication"""
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs) -> Any:
         request = kwargs.get("request")
         if not request:
             for arg in args:

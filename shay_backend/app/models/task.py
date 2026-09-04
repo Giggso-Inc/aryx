@@ -77,7 +77,7 @@ class Task(Base):
         Index('idx_task_priority_status', 'priority', 'status'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Task(id={self.id}, title={self.title}, status={self.status})>"
     
     @property
@@ -98,18 +98,18 @@ class Task(Base):
         """Check if task is urgent priority (Critical or Blocker)"""
         return self.priority in ["Critical", "Blocker"]
     
-    def mark_completed(self):
+    def mark_completed(self) -> None:
         """Mark task as completed (Close status)"""
         self.status = "Close"
         self.completed_at = datetime.now(timezone.utc)
         self.updated_at = datetime.now(timezone.utc)
     
-    def assign_to(self, user_id: str):
+    def assign_to(self, user_id: str) -> None:
         """Assign task to user"""
         self.assigned_to = user_id
         self.updated_at = datetime.now(timezone.utc)
     
-    def update_status(self, status: str):
+    def update_status(self, status: str) -> None:
         """Update task status with completion tracking"""
         self.status = status
         if status == "Close":
@@ -118,7 +118,7 @@ class Task(Base):
             self.completed_at = None
         self.updated_at = datetime.now(timezone.utc)
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert model to dictionary"""
         return {
             "id": str(self.id),

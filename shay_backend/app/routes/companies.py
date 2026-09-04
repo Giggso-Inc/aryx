@@ -55,7 +55,7 @@ router = APIRouter()
 
 
 @router.get("/test", response_model=dict)
-async def test_models():
+async def test_models() -> dict:
     """Test endpoint to check if models are working"""
     try:
         from app.models.workspace import Workspace
@@ -73,7 +73,7 @@ async def list_companies(
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
     search: Optional[str] = None
-):
+) -> CompanyList:
     """List companies (admin only)"""
     user = await get_current_user_required(request)
     
@@ -117,7 +117,7 @@ async def list_companies(
 async def get_my_company(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyResponse:
     """Get current user's company"""
     user = await get_current_user_required(request)
     
@@ -145,7 +145,7 @@ async def get_company(
     company_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyResponse:
     """Get company by ID"""
     user = await get_current_user_required(request)
     
@@ -175,7 +175,7 @@ async def update_company(
     company_update: CompanyUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyResponse:
     """Update company (admin only)"""
     user = await get_current_user_required(request)
     
@@ -212,7 +212,7 @@ async def get_company_stats(
     company_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyStats:
     """Get company statistics"""
     user = await get_current_user_required(request)
     
@@ -284,7 +284,7 @@ async def invite_user(
     invitation: UserInvitation,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserInvitationResponse:
     """Invite a user to the company"""
     user = await get_current_user_required(request)
     
@@ -388,7 +388,7 @@ async def list_invitations(
     role: Optional[str] = Query(None, description="Filter by role (e.g., admin, user, manager)"),
     sort_by: str = Query("email", description="Sort by field: email, created_at"),
     sort_order: str = Query("asc", description="Sort order: asc or desc")
-):
+) -> InvitationListResponse:
     """
     List company invitations with pagination, search, role filtering, and sorting.
     
@@ -594,7 +594,7 @@ async def accept_invitation(
     accept_data: InvitationAccept,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Accept an invitation"""
     # Get invitation
     stmt = select(Invitation).where(Invitation.id == invitation_id)

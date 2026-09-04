@@ -37,13 +37,13 @@ class SetPasswordConfirmRequest(BaseModel):
     encrypted: bool = False
 
     @validator("new_password")
-    def password_strength(cls, v):
+    def password_strength(cls, v) -> str:
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
         return v
 
     @validator("confirm_password")
-    def passwords_match(cls, v, values):
+    def passwords_match(cls, v, values) -> str:
         if "new_password" in values and v != values["new_password"]:
             raise ValueError("Passwords do not match")
         return v

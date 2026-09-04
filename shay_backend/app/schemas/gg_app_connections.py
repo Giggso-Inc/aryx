@@ -36,7 +36,7 @@ class GGAppConnectionCreate(BaseModel):
 
     @field_validator("connection_settings", mode="before")
     @classmethod
-    def parse_connection_settings(cls, v):
+    def parse_connection_settings(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return None
         if isinstance(v, dict):
@@ -50,7 +50,7 @@ class GGAppConnectionCreate(BaseModel):
 
     @field_validator("connection_status", mode="before")
     @classmethod
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         valid = {"active", "inactive", "error", "connected", "disconnected", "pending"}
         if v not in valid:
             raise ValueError(f"connection_status must be one of: {sorted(valid)}")
@@ -100,7 +100,7 @@ class GGAppConnectionUpdate(BaseModel):
 
     @field_validator("connection_status", mode="before")
     @classmethod
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> Optional[str]:
         if v is not None:
             valid = {"active", "inactive", "error", "connected", "disconnected"}
             if v not in valid:
@@ -109,7 +109,7 @@ class GGAppConnectionUpdate(BaseModel):
 
     @field_validator("connection_settings", mode="before")
     @classmethod
-    def parse_connection_settings(cls, v):
+    def parse_connection_settings(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return None
         if isinstance(v, dict):

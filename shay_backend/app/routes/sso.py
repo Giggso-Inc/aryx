@@ -85,7 +85,7 @@ async def sso_initiate(
         None,
         description="Invitation UUID for first-time sign-up; omit for returning SSO sign-in.",
     ),
-):
+) -> SSOInitiateResponse:
     redirect_uri = redirect_uri.strip()  # normalize frontend redirect input before validation/signing.
     invite_for_state = (invite_id or "").strip()  # empty embeds in state when signing in without an invite.
 
@@ -139,7 +139,7 @@ async def sso_callback(
     code: str = Query(default=None),
     state: str = Query(default=None),
     error: str = Query(default=None),
-):
+) -> UserTokenResponse:
     # OAuth providers append code/state/error as query params on this backend URL.
     code = request.query_params.get("code") or code
     state = request.query_params.get("state") or state

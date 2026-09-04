@@ -6,6 +6,7 @@ import asyncio
 from typing import AsyncGenerator
 from urllib.parse import parse_qs, quote_plus, unquote, urlencode, urlparse, urlunparse
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.pool import StaticPool
@@ -148,7 +149,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def _oracle_repair_partial_unique_indexes(conn):
+async def _oracle_repair_partial_unique_indexes(conn) -> None:
     """
     Drop global unique indexes that were incorrectly created on exclusive-arc tables.
 
@@ -191,7 +192,7 @@ async def _oracle_repair_partial_unique_indexes(conn):
                 print(f"  warning: could not repair {idx_name}: {e}")
 
 
-async def init_db():
+async def init_db() -> None:
     """Initialize database tables"""
     async with engine.begin() as conn:
         import app.models  # noqa: F401 — importing the package registers all ORM classes with Base.metadata
@@ -210,7 +211,7 @@ async def init_db():
         print("✅ Database tables created successfully")
 
 
-async def create_postgresql_optimizations(conn):
+async def create_postgresql_optimizations(conn) -> None:
     """Create PostgreSQL-specific optimizations"""
     try:
         # Create hash indexes for UUID primary keys
@@ -289,12 +290,12 @@ async def create_postgresql_optimizations(conn):
         print(f"⚠️ Warning: Could not apply PostgreSQL optimizations: {e}")
 
 
-async def close_db():
+async def close_db() -> None:
     """Close database connections"""
     await engine.dispose()
 
 
-def get_sync_engine():
+def get_sync_engine() -> Engine:
     """Get synchronous engine for migrations"""
     url = settings.DATABASE_URL or ""
     if url.startswith("sqlite"):

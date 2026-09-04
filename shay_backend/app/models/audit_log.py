@@ -32,5 +32,5 @@ class AuditLog(Base):
         Index("idx_audit_log_created", "created_at"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<AuditLog(id={self.id}, action={self.action}, resource_type={self.resource_type})>"

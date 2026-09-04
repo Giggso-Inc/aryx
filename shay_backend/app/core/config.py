@@ -403,7 +403,7 @@ class Settings(BaseSettings):
     
     @field_validator('SUPPORTED_LOG_TYPES')
     @classmethod
-    def validate_supported_log_types(cls, v):
+    def validate_supported_log_types(cls, v) -> List[str]:
         """Validate that supported log types are not empty"""
         if not v or not any(v):
             raise ValueError("SUPPORTED_LOG_TYPES cannot be empty")

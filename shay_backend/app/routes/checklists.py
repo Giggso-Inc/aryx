@@ -52,7 +52,7 @@ async def create_task_checklists(
     checklist_data: ChecklistBulkCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistList:
     """Create multiple checklist items for a task"""
     user = await get_current_user_required(request)
     
@@ -113,7 +113,7 @@ async def get_task_checklists(
     task_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistList:
     """Get all checklist items for a task"""
     user = await get_current_user_required(request)
     
@@ -163,7 +163,7 @@ async def get_checklist(
     checklist_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistResponse:
     """Get a specific checklist item"""
     user = await get_current_user_required(request)
     
@@ -203,7 +203,7 @@ async def update_checklist(
     checklist_data: ChecklistUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistResponse:
     """Update a checklist item"""
     user = await get_current_user_required(request)
     
@@ -253,7 +253,7 @@ async def delete_checklist(
     checklist_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete a checklist item"""
     user = await get_current_user_required(request)
     
@@ -297,7 +297,7 @@ async def toggle_checklist_completion(
     completion_data: ChecklistCompletionRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistResponse:
     """Mark checklist as complete or incomplete"""
     user = await get_current_user_required(request)
     
@@ -361,7 +361,7 @@ async def reorder_checklists(
     reorder_data: ChecklistReorderRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistList:
     """Reorder checklist items for a task"""
     user = await get_current_user_required(request)
     
@@ -415,7 +415,7 @@ async def get_checklist_stats(
     task_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistStats:
     """Get checklist statistics for a task"""
     user = await get_current_user_required(request)
     
@@ -480,7 +480,7 @@ async def add_single_checklist(
     checklist_data: ChecklistCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChecklistResponse:
     """Add a single checklist item to a task"""
     user = await get_current_user_required(request)
     

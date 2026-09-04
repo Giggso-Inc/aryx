@@ -42,5 +42,5 @@ class GiggsoVault(Base):
         Index('idx_vault_unique_id', 'vault_unique_id', unique=True),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<GiggsoVault(id={self.giggso_vault_id}, vault_unique_id={self.vault_unique_id}, vault_type={self.vault_type})>" 

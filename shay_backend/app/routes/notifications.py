@@ -36,7 +36,7 @@ async def get_realtime_notification_settings(
     channelId: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> RealtimeNotificationResponse:
     """
     Get realtime notification settings for a user in a channel.
     
@@ -168,7 +168,7 @@ async def save_realtime_notification_settings(
     request_data: RealtimeNotificationSaveRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> RealtimeNotificationResponse:
     """
     Save realtime notification settings for the current user in a channel.
     
@@ -300,7 +300,7 @@ async def update_realtime_notification_settings(
     request_data: RealtimeNotificationUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> RealtimeNotificationResponse:
     """
     Update realtime notification settings for the current user.
     
@@ -417,7 +417,7 @@ async def save_email_notify_settings(
     request_data: EmailNotifySettingsSaveRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> EmailNotifySettingsResponse:
     """
     Save email notification settings for a user.
     
@@ -541,7 +541,7 @@ async def update_email_notify_settings(
     request_data: EmailNotifySettingsUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> EmailNotifySettingsResponse:
     """
     Update email notification settings for a user.
     
@@ -636,7 +636,7 @@ async def get_email_notify_settings(
     userId: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> EmailNotifySettingsResponse:
     """
     Get email notification settings for a user by userId (resource_id).
     
@@ -725,7 +725,7 @@ async def get_email_notify_settings(
 async def trigger_daily_summary_scheduler_test(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """
     Manually trigger the daily summary email scheduler for testing.
     

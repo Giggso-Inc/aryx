@@ -62,7 +62,7 @@ class AIResponse(Base):
         Index('idx_ai_response_relevance', 'relevance_score'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<AIResponse(id={self.id}, message_id={self.message_id}, provider={self.ai_provider})>"
     
     @property

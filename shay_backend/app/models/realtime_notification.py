@@ -69,10 +69,10 @@ class RealtimeNotification(Base):
         Index('idx_realtime_notification_channel_id', 'channel_id'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<RealtimeNotification(id={self.id}, user_id={self.user_id}, workspace_id={self.workspace_id}, channel_id={self.channel_id}, notifications_enabled={self.is_notifications_enabled}, apps_enabled={self.apps_enabled}, post={self.is_post_enabled}, mention={self.is_mention_enabled}, task={self.is_task_enabled}, approval={self.is_approval_enabled}, new_email={self.is_new_email_enabled}, email_reply={self.is_email_reply_enabled})>"
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert model to dictionary"""
         return {
             "id": str(self.id),

@@ -7,7 +7,7 @@ import aiofiles
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -46,7 +46,7 @@ async def upload_file(
     is_public: bool = Query(False),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> AttachmentResponse:
     """Upload a file attachment"""
     user = await get_current_user_required(request)
     
@@ -163,7 +163,7 @@ async def list_attachments(
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None)
-):
+) -> AttachmentList:
     """List attachments in a channel"""
     user = await get_current_user_required(request)
     
@@ -221,7 +221,7 @@ async def get_attachment(
     attachment_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AttachmentResponse:
     """Get attachment by ID"""
     user = await get_current_user_required(request)
     
@@ -251,7 +251,7 @@ async def download_attachment(
     attachment_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> Response:
     """Download attachment file"""
     user = await get_current_user_required(request)
     
@@ -299,7 +299,7 @@ async def delete_attachment(
     attachment_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete attachment"""
     user = await get_current_user_required(request)
     
@@ -340,7 +340,7 @@ async def get_attachment_stats(
     channel_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AttachmentStats:
     """Get attachment statistics for a channel"""
     user = await get_current_user_required(request)
     
@@ -434,7 +434,7 @@ async def upload_task_attachment(
     is_public: bool = Query(False),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskAttachmentResponse:
     """Upload a file attachment to a specific task"""
     user = await get_current_user_required(request)
     
@@ -559,7 +559,7 @@ async def get_task_attachments(
     size: int = Query(20, ge=1, le=100),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskAttachmentList:
     """Get all attachments for a specific task"""
     user = await get_current_user_required(request)
     
@@ -644,7 +644,7 @@ async def get_task_attachment_stats(
     task_id: str,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskAttachmentStats:
     """Get attachment statistics for a specific task"""
     user = await get_current_user_required(request)
     
@@ -728,7 +728,7 @@ async def delete_task_attachment(
     attachment_id: str,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete a specific attachment from a task"""
     user = await get_current_user_required(request)
     
@@ -799,7 +799,7 @@ async def update_task_attachment(
     attachment_update: AttachmentUpdate,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskAttachmentResponse:
     """Update a specific attachment for a task"""
     user = await get_current_user_required(request)
     
@@ -905,7 +905,7 @@ async def bulk_upload_task_attachments(
     is_public: bool = Query(False),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> List[TaskAttachmentResponse]:
     """Upload multiple file attachments to a specific task"""
     user = await get_current_user_required(request)
     

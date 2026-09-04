@@ -36,7 +36,7 @@ class TaskBase(BaseModel):
     task_metadata: Optional[Dict[str, Any]] = Field(None, description="Additional task metadata")
 
     @validator('status')
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         """Validate task status values for base task"""
         valid_statuses = ['Open', 'In Progress', 'On Hold', 'Close']
         if v not in valid_statuses:
@@ -44,7 +44,7 @@ class TaskBase(BaseModel):
         return v
 
     @validator('source')
-    def validate_source(cls, v):
+    def validate_source(cls, v) -> Optional[str]:
         if v is not None:
             valid_sources = ['ai_generated', 'manual', 'system']
             if v not in valid_sources:
@@ -52,7 +52,7 @@ class TaskBase(BaseModel):
         return v
 
     @validator('priority')
-    def validate_priority(cls, v):
+    def validate_priority(cls, v) -> str:
         """Validate task priority values"""
         valid_priorities = ['Low', 'Medium', 'High', 'Critical', 'Blocker']
         if v not in valid_priorities:
@@ -60,7 +60,7 @@ class TaskBase(BaseModel):
         return v
 
     @validator('due_date', pre=True)
-    def parse_due_date(cls, v):
+    def parse_due_date(cls, v) -> Optional[datetime]:
         """Parse due_date from various formats including custom timezone format"""
         if v is None:
             return v
@@ -137,7 +137,7 @@ class TaskUpdate(BaseModel):
     # as they define the task's context and are immutable
 
     @validator('status')
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         """Validate task status values for updates"""
         if v is not None:
             valid_statuses = ['Open', 'In Progress', 'On Hold', 'Close']
@@ -146,7 +146,7 @@ class TaskUpdate(BaseModel):
         return v
 
     @validator('source')
-    def validate_source(cls, v):
+    def validate_source(cls, v) -> Optional[str]:
         if v is not None:
             valid_sources = ['ai_generated', 'manual', 'system']
             if v not in valid_sources:
@@ -154,7 +154,7 @@ class TaskUpdate(BaseModel):
         return v
 
     @validator('priority')
-    def validate_priority(cls, v):
+    def validate_priority(cls, v) -> str:
         """Validate task priority values for updates"""
         if v is not None:
             valid_priorities = ['Low', 'Medium', 'High', 'Critical', 'Blocker']
@@ -163,7 +163,7 @@ class TaskUpdate(BaseModel):
         return v
 
     @validator('due_date', pre=True)
-    def parse_due_date(cls, v):
+    def parse_due_date(cls, v) -> Optional[datetime]:
         """Parse due_date from various formats including custom timezone format"""
         if v is None:
             return v
@@ -307,7 +307,7 @@ class TaskStatusUpdateRequest(BaseModel):
     attachment_ids: Optional[List[str]] = Field(None, description="List of attachment IDs to associate with the message (optional)")
 
     @validator('status')
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         """Validate task status values for status updates"""
         valid_statuses = ['Open', 'In Progress', 'On Hold', 'Close']
         if v not in valid_statuses:

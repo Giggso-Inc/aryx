@@ -25,13 +25,13 @@ class AppCreate(AppBase):
     """Schema for creating a new app"""
     
     @validator('app_name')
-    def validate_app_name(cls, v):
+    def validate_app_name(cls, v) -> str:
         if not v.strip():
             raise ValueError('App name cannot be empty')
         return v.strip()
     
     @validator('app_key')
-    def validate_app_key(cls, v):
+    def validate_app_key(cls, v) -> str:
         if not v.strip():
             raise ValueError('App key cannot be empty')
         # Ensure app_key contains only alphanumeric characters and underscores

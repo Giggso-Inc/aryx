@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def emit_message_created_event(channel_id: str, thread_id: str, message_id: str):
+async def emit_message_created_event(channel_id: str, thread_id: str, message_id: str) -> None:
     """
     Emit message created socket event (type 11) - PURE EMISSION ONLY
     
@@ -97,7 +97,7 @@ async def emit_message_created_event(channel_id: str, thread_id: str, message_id
         print(f"Error emitting message created event: {e}")
 
 
-async def emit_thread_created_event(channel_id: str, thread_id: str):
+async def emit_thread_created_event(channel_id: str, thread_id: str) -> None:
     """
     Emit thread created socket event (type 8) - PURE EMISSION ONLY
     
@@ -441,7 +441,7 @@ async def create_thread(
     thread_data: ThreadCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ThreadResponse:
     """Create a new thread"""
     user = await get_current_user_required(request)
     
@@ -508,7 +508,7 @@ async def get_or_create_thread_by_phone(
     payload: PhoneThreadRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> PhoneThreadResponse:
     """Get or create a thread mapped to the provided phone number."""
     phone_number = payload.phone_number.strip()
     
@@ -595,7 +595,7 @@ async def list_threads(
     is_archived: Optional[bool] = Query(False, description="Filter by archived status. True for archived threads, False for active threads"),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, updated_at, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> ThreadList:
     """List threads in a channel
     
     Query Parameters:
@@ -726,7 +726,7 @@ async def get_thread_details(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ThreadResponse:
     """Get thread details by thread ID"""
     user = await get_current_user_required(request)
     
@@ -792,7 +792,7 @@ async def create_message(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> MessageResponse:
     """
     Create a new message and trigger AI processing.
     
@@ -1056,7 +1056,7 @@ async def get_thread_messages(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=100)
-):
+) -> MessageList:
     """Get messages in a thread"""
     user = await get_current_user_required(request)
     
@@ -1188,7 +1188,7 @@ async def hide_thread_messages(
     message_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> HideThreadMessagesResponse:
     """
     Hide a message (soft-hide: sets is_visible=false). Channel and thread are derived from the message.
     When all messages in a thread are hidden, the thread can be hidden by the caller/other service.
@@ -1254,7 +1254,7 @@ async def get_message_details(
     message_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> MessageResponse:
     """Get message details by message ID"""
     user = await get_current_user_required(request)
     
@@ -1370,7 +1370,7 @@ async def update_message(
     message_update: MessageUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> MessageResponse:
     """
     Update an existing message (internal comment).
     
@@ -1603,7 +1603,7 @@ async def delete_message(
     message_delete: MessageDelete,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """
     Delete an existing message (internal comment).
     
@@ -1817,7 +1817,7 @@ async def get_thread_summary(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ThreadSummary:
     """Get thread summary"""
     user = await get_current_user_required(request)
     
@@ -1866,7 +1866,7 @@ async def update_thread(
     thread_update: ThreadUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ThreadResponse:
     """Update a thread"""
     user = await get_current_user_required(request)
     
@@ -1927,7 +1927,7 @@ async def move_thread(
     payload: ThreadMoveRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ThreadMoveResponse:
     """
     Move a thread from one regular channel to another. Both channels must be
     message-type; validations include same workspace and active thread.
@@ -1957,7 +1957,7 @@ async def move_thread(
     if not source_channel or not dest_channel:
         raise HTTPException(status_code=404, detail="Channel not found")
     # Regular channel = "message" type (DB may store as string "message" or integer 1)
-    def _is_message_channel(ch):
+    def _is_message_channel(ch) -> bool:
         if ch.channel_type is None:
             return False
         s = str(ch.channel_type).lower()
@@ -2069,7 +2069,7 @@ async def delete_thread(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete a thread and all its messages"""
     user = await get_current_user_required(request)
     
@@ -2206,7 +2206,7 @@ async def store_ml_messages(
     ml_data: MLMessageRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> MLMessageResponse:
     """
     Store both user query and ML response in a single API call.
     
@@ -2446,7 +2446,7 @@ async def store_ml_messages(
         )
 
 
-async def trigger_ai_processing(message_id: str):
+async def trigger_ai_processing(message_id: str) -> None:
     """Trigger AI processing for a message"""
     # Create new session for background task
     async with AsyncSessionLocal() as db:

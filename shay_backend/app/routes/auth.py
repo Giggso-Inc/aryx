@@ -37,7 +37,7 @@ router = APIRouter()
 
 
 @router.post("/login", response_model=dict)
-async def login(login_data: OAuthLogin):
+async def login(login_data: OAuthLogin) -> dict:
     """Initiate OAuth2 login with Google"""
     # Generate OAuth2 authorization URL
     auth_url = (
@@ -56,7 +56,7 @@ async def login(login_data: OAuthLogin):
 
 
 @router.post("/callback", response_model=Token)
-async def oauth_callback(callback_data: OAuthCallback, db: AsyncSession = Depends(get_db)):
+async def oauth_callback(callback_data: OAuthCallback, db: AsyncSession = Depends(get_db)) -> Token:
     """Handle OAuth2 callback from Google"""
     try:
         # Exchange authorization code for tokens
@@ -169,7 +169,7 @@ async def oauth_callback(callback_data: OAuthCallback, db: AsyncSession = Depend
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(refresh_data: RefreshToken):
+async def refresh_token(refresh_data: RefreshToken) -> Token:
     """Refresh JWT access token"""
     try:
         from app.core.auth import verify_token
@@ -211,7 +211,7 @@ async def refresh_token(refresh_data: RefreshToken):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user_info(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_current_user_info(request: Request, db: AsyncSession = Depends(get_db)) -> UserResponse:
     """Get current user information"""
     from app.middleware.auth_middleware import get_current_user_required
     
@@ -220,7 +220,7 @@ async def get_current_user_info(request: Request, db: AsyncSession = Depends(get
 
 
 @router.post("/logout")
-async def logout(logout_data: LogoutRequest):
+async def logout(logout_data: LogoutRequest) -> dict:
     """Logout user (invalidate refresh token)"""
     # In a real implementation, you might want to blacklist the refresh token
     # For now, we'll just return success
@@ -232,7 +232,7 @@ async def update_current_user(
     user_update: UserUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserResponse:
     """Update current user information"""
     from app.middleware.auth_middleware import get_current_user_required
     
@@ -250,7 +250,7 @@ async def update_current_user(
 
 
 @router.post("/dev-token", response_model=Token)
-async def get_dev_token(db: AsyncSession = Depends(get_db)):
+async def get_dev_token(db: AsyncSession = Depends(get_db)) -> Token:
     """Get a development token for testing (DEV ONLY)"""
     # Create a test user if it doesn't exist
     stmt = select(User).where(User.email_id == "dev@test.com")

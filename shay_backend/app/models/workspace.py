@@ -55,7 +55,7 @@ class Workspace(Base):
         Index('idx_workspace_active_company', 'is_active', 'company_id'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Workspace(id={self.id}, name={self.name}, company_id={self.company_id})>"
     
     def get_max_messages(self) -> int:

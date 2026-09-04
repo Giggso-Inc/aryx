@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
+from sqlalchemy.sql import Select
 from pydantic import BaseModel
 
 from app.core.database import get_db
@@ -29,7 +30,7 @@ def _audit_query(
     resource_type: Optional[str],
     date_from: Optional[datetime],
     date_to: Optional[datetime],
-):
+) -> Select:
     """Apply optional filters to an audit log query (user_id, action, resource_type, date range)."""
     if user_id:
         try:
@@ -91,7 +92,7 @@ async def _get_related_user_ids_for_audit_rows(db: AsyncSession, rows: list) -> 
     return {"task": task_assignee_map, "approval": approval_approver_map}
 
 
-def _rows_to_items(rows, user_names: Optional[dict] = None, related_maps: Optional[dict] = None):
+def _rows_to_items(rows, user_names: Optional[dict] = None, related_maps: Optional[dict] = None) -> "List[AuditLogEntry]":
     """
     Map ORM rows to AuditLogEntry list.
     user_names: user_id (str) -> display name.
@@ -175,7 +176,7 @@ async def list_audit_log(
     date_to: Optional[datetime] = Query(None, description="Filter to this date (inclusive)"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size"),
-):
+) -> AuditLogListResponse:
     """
     List audit log entries for the current user's company.
     Results are restricted to channels belonging to the user's company.
@@ -266,7 +267,7 @@ async def list_channel_audit_log(
     date_to: Optional[datetime] = Query(None, description="Filter to this date (inclusive)"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size"),
-):
+) -> AuditLogListResponse:
     """
     List audit log entries for a specific channel (channel-level audit).
     Caller must have access to the channel (same company and channel access).
@@ -333,7 +334,7 @@ async def list_thread_audit_log(
     date_to: Optional[datetime] = Query(None, description="Filter to this date (inclusive)"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size"),
-):
+) -> AuditLogListResponse:
     """
     List audit log entries for a specific thread within a channel (thread-level audit).
     Caller must have access to the channel (same company and channel access).

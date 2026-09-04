@@ -105,7 +105,7 @@ async def update_token_details(
     request: Request,
     payload: SaveTokenDetailsRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> SuccessResponse[SaveTokenDetailsResponse]:
     """
     Update token/API details for a company (authenticated).
 
@@ -225,7 +225,7 @@ async def fetch_token_details(
     request: Request,
     payload: FetchTokenDetailsRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> SuccessResponse[FetchTokenDetailsResponse]:
     """
     Fetch token/API details for a company from vault (authenticated).
 
@@ -326,7 +326,7 @@ async def delete_token_details(
     request: Request,
     payload: DeleteTokenDetailsRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> SuccessResponse[DeleteTokenDetailsResponse]:
     """
     Delete token/API details for a company from vault and remove gg_vault entry (authenticated).
 
@@ -414,7 +414,7 @@ async def llm_validation(
     request: Request,
     request_data: LLMValidatorRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> SuccessResponse[dict]:
     """
     Validate LLM API tokens (OpenAI, Azure OpenAI, Gemini)
     

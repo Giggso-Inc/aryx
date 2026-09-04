@@ -154,7 +154,7 @@ async def create_workspace(
     workspace_data: WorkspaceCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> WorkspaceResponse:
     """Create a new workspace"""
     user = await get_current_user_required(request)
     
@@ -236,7 +236,7 @@ async def list_workspaces(
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
     search: Optional[str] = None
-):
+) -> WorkspaceList:
     """List workspaces for current user"""
     user = await get_current_user_required(request)
 
@@ -298,7 +298,7 @@ async def get_workspace(
     workspace_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> WorkspaceResponse:
     """Get workspace by ID"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
@@ -316,7 +316,7 @@ async def update_workspace(
     workspace_data: WorkspaceUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> WorkspaceResponse:
     """Update workspace"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
@@ -368,7 +368,7 @@ async def delete_workspace(
     workspace_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete workspace"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
@@ -435,7 +435,7 @@ async def purge_workspace(
     workspace_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Purge Aryx data for the mapped workspace while keeping the Shay workspace."""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
@@ -501,7 +501,7 @@ async def get_workspace_stats(
     workspace_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> WorkspaceStats:
     """Get workspace statistics"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)

@@ -68,7 +68,7 @@ class Attachment(Base):
         Index('idx_attachment_public_time', 'is_public', 'created_at'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Attachment(id={self.id}, filename={self.filename}, size={self.file_size})>"
     
     @property

@@ -668,47 +668,47 @@
     ],
     [
       "shay_backend/app/core/database.py",
-      194,
+      195,
       "init_db"
     ],
     [
       "shay_backend/app/core/database.py",
-      213,
+      214,
       "create_postgresql_optimizations"
     ],
     [
       "shay_backend/app/core/database.py",
-      215,
+      216,
       "<try>"
     ],
     [
       "shay_backend/app/core/database.py",
-      297,
+      298,
       "get_sync_engine"
     ],
     [
       "shay_backend/app/core/db_types.py",
-      37,
+      39,
       "process_bind_param"
     ],
     [
       "shay_backend/app/core/db_types.py",
-      79,
+      81,
       "process_bind_param"
     ],
     [
       "shay_backend/app/core/db_types.py",
-      93,
+      95,
       "process_result_value"
     ],
     [
       "shay_backend/app/core/db_types.py",
-      125,
+      127,
       "process_bind_param"
     ],
     [
       "shay_backend/app/core/db_types.py",
-      141,
+      143,
       "process_result_value"
     ],
     [
@@ -1563,62 +1563,62 @@
     ],
     [
       "shay_backend/app/routes/audit.py",
-      25,
+      26,
       "_audit_query"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      48,
+      49,
       "_audit_query"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      51,
+      52,
       "_get_user_names"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      58,
+      59,
       "_get_user_names"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      63,
+      64,
       "_get_related_user_ids_for_audit_rows"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      91,
+      92,
       "_get_related_user_ids_for_audit_rows"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      166,
+      167,
       "list_audit_log"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      254,
+      255,
       "list_audit_log"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      258,
+      259,
       "list_channel_audit_log"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      320,
+      321,
       "list_channel_audit_log"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      324,
+      325,
       "list_thread_audit_log"
     ],
     [
       "shay_backend/app/routes/audit.py",
-      388,
+      389,
       "list_thread_audit_log"
     ],
     [

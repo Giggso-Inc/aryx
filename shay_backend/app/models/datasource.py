@@ -85,7 +85,7 @@ class Datasource(Base):
         Index('idx_datasource_embedding_status', 'embedding_status'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Datasource(id={self.id}, name={self.name}, storage_type={self.storage_type})>"
     
     def is_accessible_by_user(self, user_company_id: str, user_role: str) -> bool:
@@ -124,12 +124,12 @@ class Datasource(Base):
         current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"{self.filename}_{user_id}_{current_date}.{self.file_type or 'txt'}"
     
-    def mark_processing_started(self):
+    def mark_processing_started(self) -> None:
         """Mark datasource as processing started"""
         self.processing_status = "processing"
         self.updated_at = datetime.utcnow()
     
-    def mark_processing_completed(self, record_count: int = 0, processing_time: int = 0):
+    def mark_processing_completed(self, record_count: int = 0, processing_time: int = 0) -> None:
         """Mark datasource as processing completed"""
         self.processing_status = "completed"
         self.is_processed = True
@@ -138,7 +138,7 @@ class Datasource(Base):
         self.last_processed_at = datetime.utcnow()
         self.updated_at = datetime.utcnow()
     
-    def mark_processing_failed(self, error_message: str):
+    def mark_processing_failed(self, error_message: str) -> None:
         """Mark datasource as processing failed"""
         self.processing_status = "failed"
         self.error_message = error_message

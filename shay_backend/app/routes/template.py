@@ -188,7 +188,7 @@ def is_valid_template_id_format(template_id: str) -> bool:
 @router.get("/files", response_model=TemplateFileListResponse)
 async def list_template_files(
     request: Request = None
-):
+) -> TemplateFileListResponse:
     """
     List all template files in the template directory.
     
@@ -262,7 +262,7 @@ async def list_template_files(
 async def get_template_file(
     filename: str,
     request: Request = None
-):
+) -> TemplateFileResponse:
     """
     Get a specific template file content.
     
@@ -337,7 +337,7 @@ async def get_template_content_by_id(
     template_id: str,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TemplateFileResponse:
     """
     Get template file content by template ID.
     
@@ -417,7 +417,7 @@ async def get_template_content_by_id(
 async def download_template_file(
     filename: str,
     request: Request = None
-):
+) -> FileResponse:
     """
     Download a template file.
     
@@ -478,7 +478,7 @@ async def upload_template_file(
     overwrite: bool = Form(False),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TemplateResponse:
     """
     Upload a template file and create database record.
     
@@ -595,7 +595,7 @@ async def update_template_file(
     additional_config: Optional[str] = Form(None),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TemplateResponse:
     """
     Update a template file and its database record by template_id or filename.
     
@@ -693,7 +693,7 @@ async def delete_template_file(
     identifier: str,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> JSONResponse:
     """
     Delete a template file and its database record by template_id or filename.
     
@@ -768,7 +768,7 @@ async def list_templates(
     search: Optional[str] = Query(None, description="Search in template name"),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TemplateListResponse:
     """
     List template database records with pagination and filtering.
     
@@ -838,7 +838,7 @@ async def get_template(
     identifier: str,
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> TemplateResponse:
     """
     Get a specific template database record by template_id or template_name.
     

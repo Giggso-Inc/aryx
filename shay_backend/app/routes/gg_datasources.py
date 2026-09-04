@@ -279,7 +279,7 @@ def _build_config_from_upload(upload_result: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/supported-log-types", response_model=List[str])
-async def get_supported_log_types():
+async def get_supported_log_types() -> List[str]:
     """Get list of supported log types configured in environment."""
     return settings.SUPPORTED_LOG_TYPES
 
@@ -289,7 +289,7 @@ async def get_supported_log_types():
 # ---------------------------------------------------------------------------
 
 @router.get("/environment", response_model=Dict[str, Any])
-async def get_environment_config():
+async def get_environment_config() -> Dict[str, Any]:
     """Get current environment configuration for debugging vault settings."""
     from app.services.vault_data_builder import get_environment_info
     return get_environment_info()
@@ -305,7 +305,7 @@ async def upload_file(
     isValidationRequired: bool = Form(True),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
-):
+) -> FileUploadResponse:
     """Upload a single file to storage (no GGDatasource row created)."""
     user = await get_current_user_required(request, db)
 
@@ -340,7 +340,7 @@ async def upload_files_bulk(
     isValidationRequired: bool = Form(True),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
-):
+) -> FileUploadBulkResponse:
     """Upload multiple files to storage (no GGDatasource rows created)."""
     user = await get_current_user_required(request, db)
 
@@ -390,7 +390,7 @@ async def create_datasource_from_upload(
     file: UploadFile               = File(...),
     request: Request               = None,
     db: AsyncSession               = Depends(get_db),
-):
+) -> GGDatasourceResponse:
     """Upload a file and create a GGDatasource row at the specified scope."""
     if level not in ("workspace", "channel", "thread", "message"):
         raise HTTPException(status_code=400, detail="level must be workspace | channel | thread | message")
@@ -514,7 +514,7 @@ async def create_datasources_from_upload_bulk(
     files: List[UploadFile]    = File(...),
     request: Request           = None,
     db: AsyncSession           = Depends(get_db),
-):
+) -> GGDatasourceBulkResponse:
     """Upload multiple files and create GGDatasource rows. datasources_json must be a JSON array
     with one entry per file, each having: level, scope_id, name (optional), log_type (optional)."""
     user = await get_current_user_required(request, db)
@@ -651,7 +651,7 @@ async def bulk_create_datasources(
     payload: GGDatasourceBulkCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceBulkResponse:
     """Bulk-create GGDatasource rows from JSON payloads."""
     user = await get_current_user_required(request, db)
 
@@ -705,7 +705,7 @@ async def create_datasource(
     payload: GGDatasourceCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceResponse:
     """
     Add a datasource at workspace, channel, thread, or message scope.
     Exactly one scope FK must match the declared level.
@@ -757,7 +757,7 @@ async def get_resolved_datasources(
     thread_id:    Optional[str] = Query(None),
     message_id:   Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-):
+) -> ResolvedDatasourcesResponse:
     """
     Return all active datasources visible at the given scope using
     top-down inheritance:  workspace → channel → thread → message.
@@ -766,7 +766,7 @@ async def get_resolved_datasources(
 
     result: ResolvedDatasourcesResponse = ResolvedDatasourcesResponse()
 
-    async def _fetch(level: str, fk_col, fk_val: Optional[str]):
+    async def _fetch(level: str, fk_col, fk_val: Optional[str]) -> List[GGDatasourceResponse]:
         if not fk_val:
             return []
         stmt = (
@@ -805,7 +805,7 @@ async def get_datasource_stats(
     channel_id:   Optional[str] = Query(None),
     thread_id:    Optional[str] = Query(None),
     message_id:   Optional[str] = Query(None),
-):
+) -> GGDatasourceStats:
     """Get datasource statistics, optionally scoped by level and scope ID."""
     await get_current_user_required(request, db)
 
@@ -858,7 +858,7 @@ async def get_datasource_type_count(
     channel_id:   Optional[str] = Query(None),
     thread_id:    Optional[str] = Query(None),
     message_id:   Optional[str] = Query(None),
-):
+) -> DatasourceTypeCountResponse:
     """Get count of connected datasources by storage type (local, cloud, app, database)."""
     await get_current_user_required(request, db)
 
@@ -907,7 +907,7 @@ async def list_datasources(
     page:              int = Query(1, ge=1),
     page_size:         int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceList:
     """List datasources with optional filters and pagination."""
     await get_current_user_required(request, db)
 
@@ -955,7 +955,7 @@ async def get_embedding_status(
     scope_id:    str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGEmbeddingStatusResponse:
     """Get embedding status for all datasources at a given scope level."""
     await get_current_user_required(request, db)
 
@@ -1021,7 +1021,7 @@ async def get_embedding_status(
 async def ml_embedding_webhook(
     webhook_data: MLWebhookRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> MLWebhookResponse:
     """Webhook endpoint for ML team to report embedding completion status."""
     try:
         vault_unique_ids = webhook_data.vaultUniqueIds
@@ -1067,7 +1067,7 @@ async def regenerate_embedding(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> RegenerateEmbeddingResponse:
     """Re-trigger embedding for a specific GGDatasource."""
     user = await get_current_user_required(request, db)
 
@@ -1148,7 +1148,7 @@ async def process_datasource(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> DatasourceProcessingResponse:
     """Trigger background processing for a datasource."""
     await get_current_user_required(request, db)
 
@@ -1165,7 +1165,7 @@ async def process_datasource(
     )
 
 
-async def _process_datasource_background(datasource_id: str):
+async def _process_datasource_background(datasource_id: str) -> None:
     async with AsyncSessionLocal() as db:
         try:
             ds = (await db.execute(select(GGDatasource).where(GGDatasource.id == UUID(datasource_id)))).scalar_one_or_none()
@@ -1204,7 +1204,7 @@ async def bulk_manage_connections(
     payload: DatasourceConnectionRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> DatasourceBulkConnectionResponse:
     """Bulk connect or disconnect multiple GGDatasources."""
     await get_current_user_required(request, db)
     action = payload.action.lower()
@@ -1264,7 +1264,7 @@ async def get_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceResponse:
     await get_current_user_required(request, db)
 
     ds = (await db.execute(select(GGDatasource).where(GGDatasource.id == UUID(datasource_id)))).scalar_one_or_none()
@@ -1283,7 +1283,7 @@ async def download_datasource(
     request: Request,
     db: AsyncSession = Depends(get_db),
     view: bool = Query(False, description="If true, inline disposition for browser display; else attachment"),
-):
+) -> Response:
     """Download or view a datasource file. Streams local/S3 files; redirects to external URLs."""
     await get_current_user_required(request, db)
 
@@ -1335,7 +1335,7 @@ async def update_datasource(
     payload: GGDatasourceUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceResponse:
     await get_current_user_required(request, db)
 
     ds = (await db.execute(select(GGDatasource).where(GGDatasource.id == UUID(datasource_id)))).scalar_one_or_none()
@@ -1362,7 +1362,7 @@ async def delete_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> None:
     await get_current_user_required(request, db)
 
     ds = (await db.execute(select(GGDatasource).where(GGDatasource.id == UUID(datasource_id)))).scalar_one_or_none()
@@ -1384,7 +1384,7 @@ async def update_processing_status(
     payload: ProcessingStatusUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGDatasourceResponse:
     """Called by ML agents to report processing / embedding progress."""
     await get_current_user_required(request, db)
 
@@ -1413,7 +1413,7 @@ async def connect_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> DatasourceConnectionResponse:
     """Connect a datasource."""
     await get_current_user_required(request, db)
 
@@ -1445,7 +1445,7 @@ async def disconnect_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> DatasourceConnectionResponse:
     """Disconnect a datasource."""
     await get_current_user_required(request, db)
 
@@ -1477,7 +1477,7 @@ async def get_connection_status(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> DatasourceConnectionResponse:
     """Get connection status of a datasource."""
     await get_current_user_required(request, db)
 

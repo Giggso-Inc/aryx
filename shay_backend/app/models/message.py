@@ -75,7 +75,7 @@ class Message(Base):
     # Relationships
     approvals = relationship("Approval", back_populates="message")
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Message(id={self.id}, thread_id={self.thread_id}, type={self.message_type})>"
     
     @property
@@ -138,7 +138,7 @@ class Thread(Base):
         Index('idx_thread_last_message', 'last_message_at'),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Thread(id={self.id}, title={self.title}, channel_id={self.channel_id})>"
     
     def get_title_or_default(self) -> str:

@@ -48,7 +48,7 @@ class SubscriptionBase(BaseModel):
 
     @field_validator('status')
     @classmethod
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         allowed_statuses = ['active', 'inactive', 'cancelled', 'suspended', 'trial', 'past_due']
         if v.lower() not in allowed_statuses:
             raise ValueError(f'Status must be one of: {allowed_statuses}')
@@ -56,7 +56,7 @@ class SubscriptionBase(BaseModel):
 
     @field_validator('subscription_status')
     @classmethod
-    def validate_subscription_status(cls, v):
+    def validate_subscription_status(cls, v) -> str:
         allowed_statuses = ['active', 'inactive', 'cancelled', 'suspended', 'trial', 'past_due', 'pending']
         if v.lower() not in allowed_statuses:
             raise ValueError(f'Subscription status must be one of: {allowed_statuses}')
@@ -64,7 +64,7 @@ class SubscriptionBase(BaseModel):
 
     @field_validator('currency_code')
     @classmethod
-    def validate_currency_code(cls, v):
+    def validate_currency_code(cls, v) -> str:
         if v.upper() not in ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD']:
             raise ValueError('Currency code must be a valid 3-letter code')
         return v.upper()
@@ -110,7 +110,7 @@ class SubscriptionUpdate(BaseModel):
 
     @field_validator('status')
     @classmethod
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> Optional[str]:
         if v is not None:
             allowed_statuses = ['active', 'inactive', 'cancelled', 'suspended', 'trial', 'past_due']
             if v.lower() not in allowed_statuses:
@@ -120,7 +120,7 @@ class SubscriptionUpdate(BaseModel):
 
     @field_validator('subscription_status')
     @classmethod
-    def validate_subscription_status(cls, v):
+    def validate_subscription_status(cls, v) -> Optional[str]:
         if v is not None:
             allowed_statuses = ['active', 'inactive', 'cancelled', 'suspended', 'trial', 'past_due', 'pending']
             if v.lower() not in allowed_statuses:
@@ -130,7 +130,7 @@ class SubscriptionUpdate(BaseModel):
 
     @field_validator('currency_code')
     @classmethod
-    def validate_currency_code(cls, v):
+    def validate_currency_code(cls, v) -> Optional[str]:
         if v is not None:
             if v.upper() not in ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD']:
                 raise ValueError('Currency code must be a valid 3-letter code')
@@ -185,7 +185,7 @@ class CompanyCurrentPlanResponse(BaseModel):
 
     @field_validator('features', mode='before')
     @classmethod
-    def validate_features(cls, v):
+    def validate_features(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return v
         if isinstance(v, list):

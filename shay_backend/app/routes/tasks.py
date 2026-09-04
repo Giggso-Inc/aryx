@@ -40,7 +40,7 @@ from app.services.email_service import email_service
 from app.services.link_shortener_service import link_shortener_service
 from app.models.realtime_notification import RealtimeNotification
 
-def format_due_date_for_response(due_date):
+def format_due_date_for_response(due_date) -> Optional[str]:
     """Helper function to format due_date for API responses"""
     if not due_date:
         return None
@@ -472,7 +472,7 @@ async def process_task_assignment_notifications(
             print(f"📋 Error traceback: {traceback.format_exc()}")
 
 
-def convert_checklists_to_dict(checklists):
+def convert_checklists_to_dict(checklists) -> List[dict]:
     """Convert checklist objects to dictionary format safely"""
     if not checklists:
         return []
@@ -959,7 +959,7 @@ async def create_task(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Create a new task with automatic context resolution from message_id"""
     user = await get_current_user_required(request, db)
     
@@ -1250,7 +1250,7 @@ async def list_tasks(
     source: Optional[str] = Query(None, description="Filter by source"),
     tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
     created_by: Optional[str] = Query(None, description="Filter by task creator")
-):
+) -> TaskListResponse:
     """List tasks with enhanced details, history, and first task per thread limit"""
     user = await get_current_user_required(request, db)
 
@@ -1517,7 +1517,7 @@ async def list_tasks(
 async def get_task_count(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskCountResponse:
     """Get total count of tasks for the current user - uses same logic as list endpoint"""
     user = await get_current_user_required(request, db)
     
@@ -1560,7 +1560,7 @@ async def get_task(
     task_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Get a specific task by ID"""
     user = await get_current_user_required(request, db)
     
@@ -1622,7 +1622,7 @@ async def update_task(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Update a task"""
     user = await get_current_user_required(request, db)
     
@@ -1859,7 +1859,7 @@ async def delete_task(
     task_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete a task"""
     user = await get_current_user_required(request, db)
     
@@ -1911,7 +1911,7 @@ async def assign_task(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Assign a task to a user"""
     user = await get_current_user_required(request, db)
     
@@ -2066,7 +2066,7 @@ async def update_task_status(
     status_data: TaskStatusUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Update task status"""
     user = await get_current_user_required(request, db)
     
@@ -2240,7 +2240,7 @@ async def get_task_stats(
     db: AsyncSession = Depends(get_db),
     workspace_id: Optional[str] = Query(None, description="Filter by workspace"),
     channel_id: Optional[str] = Query(None, description="Filter by channel")
-):
+) -> TaskStats:
     """Get task statistics"""
     user = await get_current_user_required(request, db)
     
@@ -2326,7 +2326,7 @@ async def get_thread_task(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Get task associated with a specific thread"""
     user = await get_current_user_required(request, db)
     
@@ -2386,7 +2386,7 @@ async def get_thread_task_status(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Check if a thread can accept new tasks (one active task per thread limit)"""
     user = await get_current_user_required(request, db)
     
@@ -2457,7 +2457,7 @@ async def create_thread_task(
     task_data: TaskCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> TaskResponse:
     """Create a task for a specific thread (usually from first message)"""
     user = await get_current_user_required(request, db)
     

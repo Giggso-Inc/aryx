@@ -39,7 +39,7 @@ class Invitation(Base):
         Index('idx_invitation_status', 'status'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Invitation(id={self.id}, email={self.email}, company_id={self.company_id})>"
 
     @classmethod
@@ -69,16 +69,16 @@ class Invitation(Base):
         """Check if invitation is still valid"""
         return self.status == "pending" and self._utc_now_for(self.expires_at) < self.expires_at
     
-    def mark_as_used(self):
+    def mark_as_used(self) -> None:
         """Mark invitation as used"""
         self.status = "used"
         self.updated_at = datetime.utcnow()
 
-    def accept(self):
+    def accept(self) -> None:
         """Backward-compatible alias for marking the invitation as used."""
         self.mark_as_used()
 
-    def mark_as_expired(self):
+    def mark_as_expired(self) -> None:
         """Mark invitation as expired"""
         self.status = "expired"
         self.updated_at = datetime.utcnow()

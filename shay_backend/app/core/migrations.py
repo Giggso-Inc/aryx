@@ -299,7 +299,7 @@ async def run_alembic_migrations() -> bool:
 if __name__ == "__main__":
     import asyncio
     
-    async def main():
+    async def main() -> None:
         # Run migrations
         success = await run_migrations()
         if not success:

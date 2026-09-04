@@ -141,7 +141,7 @@ async def list_workspace_members(
     size: int = Query(50, ge=1, le=200),
     role: Optional[str] = Query(None),
     is_active: Optional[bool] = Query(None),
-):
+) -> GGWorkspaceMemberList:
     """List all GGMembers at workspace scope (level='workspace')."""
     user = await get_current_user_required(request, db)
 
@@ -195,7 +195,7 @@ async def add_workspace_member(
     data: GGWorkspaceMemberCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGWorkspaceMemberResponse:
     """Add a user to a workspace via GGMember (level='workspace')."""
     user = await get_current_user_required(request, db)
 
@@ -274,7 +274,7 @@ async def update_workspace_member(
     data: GGWorkspaceMemberUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGWorkspaceMemberResponse:
     """Update a workspace GGMember's role, permissions, or active status."""
     user = await get_current_user_required(request, db)
 
@@ -320,7 +320,7 @@ async def remove_workspace_member(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a GGMember from a workspace."""
     user = await get_current_user_required(request, db)
 
@@ -364,7 +364,7 @@ async def get_effective_role_endpoint(
     db: AsyncSession = Depends(get_db),
     channel_id: Optional[str] = Query(None),
     thread_id:  Optional[str] = Query(None),
-):
+) -> dict:
     """
     Resolve the effective role for a user at the given scope.
     Resolution order: thread → channel → workspace (most specific wins).
@@ -410,7 +410,7 @@ async def list_workspace_app_connections(
     size: int = Query(20, ge=1, le=100),
     app_id:    Optional[str]  = None,
     is_active: Optional[bool] = None,
-):
+) -> GGWorkspaceAppConnectionList:
     current_user = await get_current_user_required(request, db)
     user_id = current_user.id
 
@@ -482,7 +482,7 @@ async def connect_workspace_app(
     data: GGWorkspaceAppConnectionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGWorkspaceAppConnectionResponse:
     user = await get_current_user_required(request, db)
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
@@ -562,7 +562,7 @@ async def update_workspace_app_connection(
     data: GGWorkspaceAppConnectionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGWorkspaceAppConnectionResponse:
     """Update a workspace-level GGAppConnection."""
     user = await get_current_user_required(request, db)
 
@@ -604,7 +604,7 @@ async def disconnect_workspace_app(
     connection_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a GGAppConnection from a workspace."""
     user = await get_current_user_required(request, db)
 

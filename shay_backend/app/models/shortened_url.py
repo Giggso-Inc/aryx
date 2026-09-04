@@ -35,6 +35,6 @@ class ShortenedUrl(Base):
 
     __table_args__ = (Index("idx_shortened_url_used_at", "used_at"),)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<ShortenedUrl(short_link={self.short_link!r}, used_at={self.used_at})>"
 

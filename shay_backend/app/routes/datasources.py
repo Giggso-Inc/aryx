@@ -106,7 +106,7 @@ async def _aryx_ingestion_status_for(datasource_metadata: Optional[Dict[str, Any
 
 
 @router.get("/supported-log-types", response_model=List[str])
-async def get_supported_log_types():
+async def get_supported_log_types() -> List[str]:
     """Get list of supported log types configured in environment"""
     return settings.SUPPORTED_LOG_TYPES
 
@@ -1141,7 +1141,7 @@ async def create_datasource(
     datasource_data: DatasourceCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceResponse:
     """Create a single datasource"""
     user = await get_current_user_required(request)
     
@@ -1475,7 +1475,7 @@ async def upload_file(
     isValidationRequired: bool = Form(True),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> FileUploadResponse:
     """Upload a single file to the system"""
     user = await get_current_user_required(request)
     
@@ -1558,7 +1558,7 @@ async def upload_files_bulk(
     workspace_id: Optional[str] = Form(None),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> FileUploadBulkResponse:
     """Upload multiple files to the system.
 
     Additive Aryx integration: pass kind="aryx" together with workspace_id
@@ -1709,7 +1709,7 @@ async def create_datasource_from_upload(
     isValidationRequired: bool = Form(True),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceResponse:
     """Create a datasource from uploaded file"""
     user = await get_current_user_required(request)
     
@@ -1980,7 +1980,7 @@ async def create_datasources_from_upload_bulk(
     isValidationRequired: bool = Form(True),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceBulkResponse:
     """Create multiple datasources from uploaded files"""
     user = await get_current_user_required(request)
     
@@ -2276,7 +2276,7 @@ async def create_datasources_bulk(
     request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceBulkResponse:
     """Create multiple datasources in bulk"""
     user = await get_current_user_required(request)
     
@@ -2868,7 +2868,7 @@ async def create_datasources_bulk_internal(
     request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceBulkResponse:
     """Create multiple datasources in bulk (internal API - thread-level, API key authentication)"""
     logger.info("=" * 80)
     logger.info("🚀 [INTERNAL-BULK] Starting internal bulk API call")
@@ -3523,7 +3523,7 @@ async def create_datasources_bulk_internal(
 
 
 @router.get("/environment", response_model=Dict[str, Any])
-async def get_environment_config():
+async def get_environment_config() -> Dict[str, Any]:
     """Get current environment configuration for debugging vault settings"""
     from app.services.vault_data_builder import get_environment_info
     return get_environment_info()
@@ -3543,7 +3543,7 @@ async def list_datasources(
     processing_status: Optional[str] = None,
     is_connected: Optional[bool] = Query(None, description="Filter by connection status. True for connected, False for disconnected"),
     search: Optional[str] = None
-):
+) -> DatasourceListWithRelations:
     """List datasources with filtering and pagination
     
     Supports filtering by data source type (storage_type or data_source_type):
@@ -3765,7 +3765,7 @@ async def list_datasources(
         all_datasources = result.scalars().all()
         # Sort: embedding_status==2 (completed) first, then by created_at desc, then id desc
         # So per filename we keep: completed row if any, else the latest row
-        def _thread_ds_sort_key(ds):
+        def _thread_ds_sort_key(ds) -> Tuple[int, float, str]:
             ts = ds.created_at.timestamp() if ds.created_at else 0
             return (0 if (ds.embedding_status == 2) else 1, -ts, str(ds.id or ""))
 
@@ -3910,7 +3910,7 @@ async def get_datasource_stats(
     request: Request,
     db: AsyncSession = Depends(get_db),
     channel_id: Optional[str] = None
-):
+) -> DatasourceStats:
     """Get datasource statistics"""
     user = await get_current_user_required(request)
     
@@ -4028,7 +4028,7 @@ async def get_datasource_type_count(
     request: Request,
     db: AsyncSession = Depends(get_db),
     channel_id: Optional[str] = None
-):
+) -> DatasourceTypeCountResponse:
     """Get count of connected data sources by type (local, cloud, db, app)"""
     user = await get_current_user_required(request)
     
@@ -4097,7 +4097,7 @@ async def get_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceResponse:
     """Get a specific datasource by ID"""
     user = await get_current_user_required(request)
     
@@ -4174,7 +4174,7 @@ async def download_datasource(
     s3: bool = Query(False, description="If true, download from S3 using credentials from vault (datasource must have giggso_vault_id)"),
     azure: bool = Query(False, description="If true, download from Azure Blob using credentials from vault (datasource must have giggso_vault_id)"),
     gcp: bool = Query(False, description="If true, download from GCP Cloud Storage using credentials from vault (datasource must have giggso_vault_id)")
-):
+) -> Response:
     """
     Download or view datasource file content. One API for all sources:
     - Tabular files (Excel, CSV, etc.): view or download. Files in our S3/local storage are
@@ -4346,7 +4346,7 @@ async def update_datasource(
     datasource_data: DatasourceUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceResponse:
     """Update a specific datasource"""
     user = await get_current_user_required(request)
     
@@ -4439,7 +4439,7 @@ async def delete_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete a specific datasource"""
     user = await get_current_user_required(request)
     
@@ -4531,7 +4531,7 @@ async def process_datasources(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceProcessingResponse:
     """Process datasources in background"""
     user = await get_current_user_required(request)
     
@@ -4566,7 +4566,7 @@ async def process_datasources(
     )
 
 
-async def process_datasource_background(datasource_id: str):
+async def process_datasource_background(datasource_id: str) -> None:
     """Background task to process datasource"""
     # Create new session for background task
     async with AsyncSessionLocal() as db:
@@ -4613,11 +4613,11 @@ async def process_datasource_background(datasource_id: str):
 
 
 async def process_embedding_background(
-    vault_unique_ids: List[str], 
-    user_id: str, 
-    company_id: str, 
+    vault_unique_ids: List[str],
+    user_id: str,
+    company_id: str,
     db
-):
+) -> None:
     """Background task to process embedding for datasources"""
     import logging
     from sqlalchemy import select
@@ -4858,7 +4858,7 @@ async def get_completed_embeddings_by_thread(thread_id: str, db: AsyncSession) -
         return []
 
 
-async def update_embedding_status_batch(vault_unique_ids: List[str], status: int, db: AsyncSession):
+async def update_embedding_status_batch(vault_unique_ids: List[str], status: int, db: AsyncSession) -> None:
     """Update embedding status for a batch of datasources by vault_unique_id"""
     import logging
     logger = logging.getLogger(__name__)
@@ -4908,7 +4908,7 @@ async def bulk_manage_datasource_connections(
     connection_request: DatasourceConnectionRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceBulkConnectionResponse:
     """
     Bulk connect or disconnect multiple datasources
     
@@ -5025,7 +5025,7 @@ async def connect_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceConnectionResponse:
     """Connect a datasource to the topic level (Legacy single operation endpoint)"""
     user = await get_current_user_required(request)
     
@@ -5074,7 +5074,7 @@ async def disconnect_datasource(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceConnectionResponse:
     """Disconnect a datasource from the topic level (Legacy single operation endpoint)"""
     user = await get_current_user_required(request)
     
@@ -5123,7 +5123,7 @@ async def get_datasource_connection_status(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> DatasourceConnectionResponse:
     """Get the connection status of a datasource"""
     user = await get_current_user_required(request)
     
@@ -5164,7 +5164,7 @@ async def get_embedding_status_by_channel(
         None,
         description="Filter by thread ID. When set, returns embedding status only for thread-level datasources (e.g. email attachments in that thread). When omitted, returns channel-level datasources only."
     )
-):
+) -> EmbeddingStatusResponse:
     """Get embedding status for datasources in a channel. Pass thread_id to get status for thread-level datasources (email attachments) only."""
     user = await get_current_user_required(request)
     
@@ -5278,7 +5278,7 @@ async def get_embedding_status_by_channel(
 async def ml_embedding_webhook(
     webhook_data: MLWebhookRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> MLWebhookResponse:
     """Webhook endpoint for ML team to report embedding completion status"""
     try:
         # TODO: Temporarily commented out status update logic
@@ -5344,7 +5344,7 @@ async def regenerate_embedding(
     datasource_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> RegenerateEmbeddingResponse:
     """Regenerate embedding for a specific datasource"""
     try:
         # Get current user from authentication

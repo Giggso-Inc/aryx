@@ -68,7 +68,7 @@ class EmailNotifySettings(Base):
         Index('idx_email_notify_resource_routine', 'resource_id', 'routine'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<EmailNotifySettings(id={self.id}, resource_id={self.resource_id}, routine={self.routine})>"
     
     def is_notification_type_enabled(self, notification_type: str) -> bool:

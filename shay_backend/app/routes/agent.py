@@ -30,7 +30,7 @@ router = APIRouter()
 async def ai_callback(
     callback_data: AICallback,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Receive AI processing callback"""
     try:
         # Get message
@@ -103,7 +103,7 @@ async def ai_callback(
 async def ai_status_update(
     status_data: AIStatus,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Receive AI processing status update"""
     try:
         # Get AI response
@@ -134,7 +134,7 @@ async def ai_status_update(
 
 
 @router.get("/health", response_model=AIHealth)
-async def ai_health_check():
+async def ai_health_check() -> AIHealth:
     """Check AI agent health"""
     try:
         # Simple health check - in a real implementation, you might check actual AI services
@@ -159,7 +159,7 @@ async def ai_health_check():
 
 
 @router.get("/stats", response_model=AIStats)
-async def ai_stats(db: AsyncSession = Depends(get_db)):
+async def ai_stats(db: AsyncSession = Depends(get_db)) -> AIStats:
     """Get AI processing statistics"""
     try:
         # Get total requests
@@ -236,7 +236,7 @@ async def trigger_ai_processing(
     trigger_data: AITrigger,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Manually trigger AI processing for a message"""
     try:
         # Get message
@@ -298,7 +298,7 @@ async def trigger_ai_processing(
         )
 
 
-async def process_ai_request(message_id: str):
+async def process_ai_request(message_id: str) -> None:
     """Process AI request (simulated)"""
     # Create new session for background task
     async with AsyncSessionLocal() as db:

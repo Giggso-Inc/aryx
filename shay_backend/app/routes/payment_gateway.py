@@ -258,7 +258,7 @@ def extract_price_from_brackets(addon: Dict[str, Any]) -> Optional[float]:
 async def create_zoho_hosted_page(
     request_data: ZohoHostedPageRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[ZohoHostedPageResponse]:
     """
     Creates a Zoho hosted payment page for subscription.
     
@@ -415,7 +415,7 @@ async def create_zoho_subscription(
     subscription_request: SubscriptionCreateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Create a subscription in Zoho and save to local database.
     
@@ -679,7 +679,7 @@ async def fetch_by_hosted_id(
     hostedPageId: str,
     request: Request,
     platform_name: Optional[str] = None
-):
+) -> SuccessResponse[dict]:
     """
     Retrieve hosted page data by hosted page ID.
     
@@ -732,7 +732,7 @@ async def update_company_plan(
     request_data: Dict[str, Any],
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Update company plan after successful payment.
     
@@ -892,7 +892,7 @@ async def update_company_plan(
 async def update_subscription_hosted_page(
     subscription_request: SubscriptionUpdateRequest,
     request: Request
-):
+) -> SuccessResponse[dict]:
     """
     Create a hosted page for updating a subscription.
     
@@ -969,7 +969,7 @@ async def cancel_subscription_new(
     subscription_request: SubscriptionCancelRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Cancel a subscription in Zoho and update local database.
 
@@ -1093,7 +1093,7 @@ async def reactivate_zoho_subscription(
     reactivate_request: SubscriptionReactivateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Reactivate a cancelled subscription in Zoho and update local database.
     Calls Zoho POST /subscriptions/{subscription_id}/reactivate and sets local subscription status to active.
@@ -1201,7 +1201,7 @@ async def validate_payment(
     subscription_request: ValidatePaymentRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Validate payment and activate company.
     
@@ -1539,7 +1539,7 @@ async def validate_payment(
 async def zoho_subscription_webhook(
     webhook_data: Dict[str, Any],
     request: Request
-):
+) -> SuccessResponse[dict]:
     """
     Webhook endpoint for Zoho subscription updates.
     
@@ -1729,7 +1729,7 @@ async def subscription_validation(
         request: Request,
         db: AsyncSession = Depends(get_db),
         validation_request: Optional[SubscriptionValidationRequest] = Body(None),
-):
+) -> SuccessResponse[dict]:
     """
     Validate channel/message (and optionally attachment) limits in a single request.
 
@@ -1916,7 +1916,7 @@ async def fetch_company_subscription_details(
     request_data: CompanySubscriptionDetailsRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[CompanySubscriptionDetailsResponse]:
     """
     Fetch company subscription details.
     
@@ -2308,7 +2308,7 @@ async def fetch_company_invoice_details(
     request_data: CompanySubscriptionDetailsRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[CompanyInvoiceDetailsResponse]:
     """
     Fetch invoice details for a company (same structure as fetchCompanySubscriptionDetails invoice section).
 
@@ -2362,7 +2362,7 @@ async def download_invoice(
     platform_name: Optional[str] = Query(None, description="Platform name (e.g., 'prism7')"),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> Response:
     """
     Download invoice PDF from Zoho.
     

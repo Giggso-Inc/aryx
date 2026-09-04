@@ -57,7 +57,7 @@ def _generate_ticket_reference() -> str:
 async def submit_support_request(
     payload: SupportRequestCreate,
     db: AsyncSession = Depends(get_db),
-):
+) -> SupportRequestResponse:
     """
     Submit a user-initiated support request (contact form).
 
@@ -157,7 +157,7 @@ async def list_support_requests_by_company(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size"),
-):
+) -> SupportRequestListResponse:
     """
     List support requests for a company. Requires authentication.
     User must belong to the company or be an admin.
@@ -200,7 +200,7 @@ async def get_support_request(
     request_id: UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> SupportRequestDetail:
     """
     Get a single support request by ID. Requires authentication.
     User must belong to the request's company or be an admin.
@@ -228,7 +228,7 @@ async def update_support_request(
     payload: SupportRequestUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> SupportRequestDetail:
     """
     Update a support request. Requires authentication.
     User must belong to the request's company or be an admin.
@@ -261,7 +261,7 @@ async def delete_support_request(
     request_id: UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> SupportRequestDeleteResponse:
     """
     Delete a support request once the raised concern is resolved. Requires authentication.
     User must belong to the request's company or be an admin.

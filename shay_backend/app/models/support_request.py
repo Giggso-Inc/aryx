@@ -51,5 +51,5 @@ class SupportRequest(Base):
         Index("idx_support_requests_user_id", "user_id"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SupportRequest(id={self.id}, ticket_reference={self.ticket_reference}, email={self.email})>"

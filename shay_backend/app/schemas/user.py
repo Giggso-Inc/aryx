@@ -32,7 +32,7 @@ class UserInviteRequest(BaseModel):
     platform_name: Optional[str] = Field(None, description="Platform display name supplied by the frontend")
 
     @validator('company_id')
-    def validate_company_id(cls, v):
+    def validate_company_id(cls, v) -> str:
         try:
             uuid.UUID(v)
             return v
@@ -40,7 +40,7 @@ class UserInviteRequest(BaseModel):
             raise ValueError("Invalid company_id format")
     
     @validator('user_id')
-    def validate_user_id(cls, v):
+    def validate_user_id(cls, v) -> Optional[str]:
         if v:
             try:
                 uuid.UUID(v)
@@ -50,13 +50,13 @@ class UserInviteRequest(BaseModel):
         return v
 
     @validator('template_id')
-    def validate_template_id(cls, v):
+    def validate_template_id(cls, v) -> Optional[str]:
         if v and len(v.strip()) == 0:
             raise ValueError("Template ID cannot be empty or whitespace")
         return v
 
     @validator('platform_name')
-    def validate_platform_name(cls, v):
+    def validate_platform_name(cls, v) -> Optional[str]:
         if v is not None and len(v.strip()) == 0:
             raise ValueError("Platform name cannot be empty or whitespace")
         return v
@@ -86,7 +86,7 @@ class BulkUserInviteItem(BaseModel):
     role: str = Field(default="user", description="User role (admin, user, guest)")
     
     @validator('company_id')
-    def validate_company_id(cls, v):
+    def validate_company_id(cls, v) -> str:
         try:
             uuid.UUID(v)
             return v
@@ -105,13 +105,13 @@ class BulkUserInviteRequest(BaseModel):
     platform_name: Optional[str] = Field(None, description="Platform display name supplied by the frontend")
 
     @validator('template_id')
-    def validate_template_id(cls, v):
+    def validate_template_id(cls, v) -> Optional[str]:
         if v and len(v.strip()) == 0:
             raise ValueError("Template ID cannot be empty or whitespace")
         return v
     
     @validator('user_id')
-    def validate_user_id(cls, v):
+    def validate_user_id(cls, v) -> Optional[str]:
         if v:
             try:
                 uuid.UUID(v)
@@ -121,7 +121,7 @@ class BulkUserInviteRequest(BaseModel):
         return v
 
     @validator('platform_name')
-    def validate_platform_name(cls, v):
+    def validate_platform_name(cls, v) -> Optional[str]:
         if v is not None and len(v.strip()) == 0:
             raise ValueError("Platform name cannot be empty or whitespace")
         return v
@@ -145,7 +145,7 @@ class UserRegisterRequest(BaseModel):
     role: Optional[str] = Field(default="user", description="User role (default: user)")
 
     @validator('invite_id')
-    def validate_invite_id(cls, v):
+    def validate_invite_id(cls, v) -> Optional[str]:
         if v:
             try:
                 uuid.UUID(v)
@@ -161,7 +161,7 @@ class UserRegisterEncryptedRequest(BaseModel):
     name: Optional[str] = Field(None, description="User's full name")
 
     @validator('encrypted_param')
-    def validate_encrypted_param(cls, v):
+    def validate_encrypted_param(cls, v) -> str:
         if not v or len(v) < 10:
             raise ValueError("Invalid encrypted parameter")
         return v
@@ -192,7 +192,7 @@ class UserRegisterEncryptedRequest(BaseModel):
     encrypted: bool = Field(default=False, description="Indicates if password is encrypted")
 
     @validator('invite_id')
-    def validate_invite_id(cls, v):
+    def validate_invite_id(cls, v) -> Optional[str]:
         if v:
             try:
                 uuid.UUID(v)
@@ -201,7 +201,7 @@ class UserRegisterEncryptedRequest(BaseModel):
         return v
 
     @validator('encrypted_param')
-    def validate_encrypted_param(cls, v):
+    def validate_encrypted_param(cls, v) -> Optional[str]:
         if v and len(v.strip()) < 10:
             raise ValueError("Invalid encrypted_param format")
         return v
@@ -449,7 +449,7 @@ class PasswordUpdateRequest(BaseModel):
     
     @field_validator('new_password')
     @classmethod
-    def validate_new_password_strength(cls, v):
+    def validate_new_password_strength(cls, v) -> str:
         """Validate new password strength"""
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters long')
@@ -465,7 +465,7 @@ class PasswordUpdateRequest(BaseModel):
     
     @field_validator('confirm_new_password')
     @classmethod
-    def validate_first_confirm_password(cls, v, info):
+    def validate_first_confirm_password(cls, v, info) -> str:
         """Validate that first confirm password matches new password"""
         if 'new_password' in info.data and v != info.data['new_password']:
             raise ValueError('First confirmation password must match new password')
@@ -473,7 +473,7 @@ class PasswordUpdateRequest(BaseModel):
     
     @field_validator('confirm_new_password_again')
     @classmethod
-    def validate_second_confirm_password(cls, v, info):
+    def validate_second_confirm_password(cls, v, info) -> str:
         """Validate that second confirm password matches new password"""
         if 'new_password' in info.data and v != info.data['new_password']:
             raise ValueError('Second confirmation password must match new password')
@@ -531,7 +531,7 @@ class SimplePasswordUpdateRequest(BaseModel):
     encrypted: bool = Field(default=False, description="Indicates if passwords are encrypted")
     
     @model_validator(mode='after')
-    def validate_passwords(self):
+    def validate_passwords(self) -> "SimplePasswordUpdateRequest":
         """When encrypted=False, validate new password strength; when encrypted=True skip strength checks (ciphertext). Always require new and confirm to match."""
         # Confirm new password must match new password (works for both plain and encrypted)
         if self.new_password != self.confirm_new_password:
@@ -571,13 +571,13 @@ class ForgetPasswordRequest(BaseModel):
     app_name: Optional[str] = Field(None, description="Application name to use as product name in email. If not provided, product name will be determined from base_url")
 
     @validator('template_id')
-    def validate_template_id(cls, v):
+    def validate_template_id(cls, v) -> Optional[str]:
         if v and not v.startswith('TMPLT_'):
             raise ValueError("Template ID must start with 'TMPLT_'")
         return v
 
     @validator('app_name')
-    def validate_app_name(cls, v):
+    def validate_app_name(cls, v) -> Optional[str]:
         if v is not None and v.strip() == "":
             return None  # Convert empty string to None
         return v
@@ -645,7 +645,7 @@ class ResetPasswordRequest(BaseModel):
     # to avoid issues with encrypted password comparison
     
     @model_validator(mode='after')
-    def validate_password_strength(self):
+    def validate_password_strength(self) -> "ResetPasswordRequest":
         """Validate password strength (skips validation for encrypted passwords)"""
         # Skip validation if password is encrypted
         if self.encrypted:
@@ -693,7 +693,7 @@ class BulkRemoveUsersRequest(BaseModel):
 
     @field_validator("user_ids")
     @classmethod
-    def validate_user_ids(cls, v):
+    def validate_user_ids(cls, v) -> List[UUID]:
         if not v:
             raise ValueError("user_ids cannot be empty")
         if len(v) > 100:

@@ -181,11 +181,11 @@ class GGDatasource(Base):
         {"extend_existing": True},
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         scope = self.workspace_id or self.channel_id or self.thread_id or self.message_id
         return f"<GGDatasource(id={self.id}, level={self.level}, scope={scope}, name={self.name!r})>"
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "id":                   str(self.id),
             "level":                self.level,

@@ -59,7 +59,7 @@ async def create_thread(
     thread_data: ThreadCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ThreadResponse:
     """Create a new thread in a channel."""
     user = await get_current_user_required(request, db)
 
@@ -112,7 +112,7 @@ async def list_threads(
     is_archived: Optional[bool] = Query(False, description="Filter by archived status"),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, updated_at, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
-):
+) -> ThreadList:
     """List threads in a channel."""
     user = await get_current_user_required(request, db)
 
@@ -173,7 +173,7 @@ async def get_thread(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ThreadResponse:
     """Get thread details by ID."""
     user = await get_current_user_required(request, db)
 
@@ -214,7 +214,7 @@ async def update_thread(
     thread_update: ThreadUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ThreadResponse:
     """Update a thread's title, description, status, or AI settings."""
     user = await get_current_user_required(request, db)
 
@@ -256,7 +256,7 @@ async def delete_thread(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Delete a thread and all its messages (admin only)."""
     user = await get_current_user_required(request, db)
 
@@ -297,7 +297,7 @@ async def list_thread_members(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
-):
+) -> MemberList:
     """List thread-level member overrides (level='thread' only)."""
     await get_current_user_required(request, db)
 
@@ -335,7 +335,7 @@ async def add_thread_member(
     member_data: MemberCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> MemberResponse:
     """Add (or override) a user's role at thread level."""
     await get_current_user_required(request, db)
 
@@ -380,7 +380,7 @@ async def update_thread_member(
     member_data: MemberUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> MemberResponse:
     """Update a thread-level member override."""
     await get_current_user_required(request, db)
 
@@ -414,7 +414,7 @@ async def remove_thread_member(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a thread-level membership override."""
     await get_current_user_required(request, db)
 
@@ -448,7 +448,7 @@ async def list_thread_app_connections(
     thread_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """
     List all effective app connections visible at this thread.
     Returns thread-level connections first, then falls back to inherited
@@ -471,7 +471,7 @@ async def connect_thread_app(
     data: GGAppConnectionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Connect an app at thread scope (e.g. deal-specific CRM token)."""
     user = await get_current_user_required(request, db)
 
@@ -536,7 +536,7 @@ async def update_thread_app_connection(
     data: GGAppConnectionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGAppConnectionResponse:
     """Update a thread-level GGAppConnection."""
     user = await get_current_user_required(request, db)
 
@@ -573,7 +573,7 @@ async def disconnect_thread_app(
     connection_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a GGAppConnection from a thread."""
     user = await get_current_user_required(request, db)
 

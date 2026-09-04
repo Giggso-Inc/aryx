@@ -103,7 +103,7 @@ async def invite_user(
     invite_data: UserInviteRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserInviteResponse:
     """Send user invitation to email with platform link"""
     # Validate template exists if template_id is provided
     if invite_data.template_id:
@@ -256,7 +256,7 @@ async def invite_user(
 @router.get("/decrypt-registration", response_model=RegistrationInviteResponse)
 async def decrypt_registration_invite(
     e: str
-):
+) -> RegistrationInviteResponse:
     """Decrypt an encrypted invitation payload for the registration page."""
     try:
         encrypted_invite_data = decrypt_registration_params(e)
@@ -290,7 +290,7 @@ async def bulk_invite_users(
     bulk_invite_data: BulkUserInviteRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> BulkUserInviteResponse:
     """Send bulk user invitations"""
     # Validate template exists if template_id is provided
     if bulk_invite_data.template_id:
@@ -441,7 +441,7 @@ async def bulk_invite_users(
 async def register_user(
     register_data: UserRegisterEncryptedRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserTokenResponse:
     """Register new user with or without invitation, supporting encrypted passwords"""
     
     # Handle password decryption if encrypted
@@ -686,7 +686,7 @@ async def register_user(
 async def login_user(
     login_data: UserLoginEncryptedRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserTokenResponse:
     """
     Authenticate user with email and password, returning JWT tokens.
     
@@ -887,7 +887,7 @@ async def login_user(
 async def request_set_password(
     body: SetPasswordRequestBody,
     db: AsyncSession = Depends(get_db),
-):
+) -> SetPasswordRequestResponse:
     """
     For SSO-only users who want to add a password.
     Always returns the same response to avoid email enumeration.
@@ -935,7 +935,7 @@ async def request_set_password(
 async def confirm_set_password(
     body: SetPasswordConfirmRequest,
     db: AsyncSession = Depends(get_db),
-):
+) -> SetPasswordConfirmResponse:
     """
     Confirm and set a password for an SSO-only user using the emailed token.
     """
@@ -1017,7 +1017,7 @@ async def confirm_set_password(
 async def get_current_user_profile_details(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """
     Get current user's detailed profile information.
     
@@ -1090,7 +1090,7 @@ async def upload_profile_image(
     file: UploadFile = File(..., description="Profile image file (jpg, png, gif, webp)"),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> ProfileImageUploadResponse:
     """
     Upload a profile image for the current user.
     Returns the avatar_url to use in PUT /profile (avatar_url field).
@@ -1136,7 +1136,7 @@ async def upload_profile_image(
 async def remove_profile_photo(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ProfilePhotoRemoveResponse:
     """
     Remove the current user's profile photo (set avatar_url to null).
 
@@ -1165,7 +1165,7 @@ async def update_current_user_personal_info(
     profile_update: ProfileUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ProfileUpdateResponse:
     """
     Update current user's personal information only.
     
@@ -1321,7 +1321,7 @@ async def update_current_user_password(
     password_update: SimplePasswordUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> PasswordUpdateResponse:
     """
     Update current user's password with a three-field validation process.
     
@@ -1437,7 +1437,7 @@ async def update_current_user_password(
 async def forgot_password(
     forgot_password_data: ForgetPasswordRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> ForgetPasswordResponse:
     """
     Send password reset link to user's email.
     
@@ -1623,7 +1623,7 @@ This link will expire in 1 hour.
 async def reset_password(
     reset_data: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> ResetPasswordResponse:
     """
     Reset user password using a server-issued password reset token.
     
@@ -1763,7 +1763,7 @@ async def reset_password(
         )
 
 
-async def _send_default_password_reset_email(user, reset_url, product_name="Shay Suite"):
+async def _send_default_password_reset_email(user, reset_url, product_name="Shay Suite") -> bool:
     """Send default password reset email (fallback when no template is used)"""
     try:
         from email.mime.text import MIMEText

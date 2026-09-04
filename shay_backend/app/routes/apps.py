@@ -39,7 +39,7 @@ async def create_app(
     app_data: AppCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppResponse:
     """Create a new app"""
     user = await get_current_user_required(request)
     
@@ -118,7 +118,7 @@ async def list_apps(
     subCategory: Optional[str] = Query(None, description="Filter by subcategory: 'Cloud Drive' or 'Datasource' (case-insensitive)"),
     is_active: Optional[bool] = None,
     is_public: Optional[bool] = None
-):
+) -> AppList:
     """List available apps with filtering and pagination"""
     user = await get_current_user_required(request)
     
@@ -216,7 +216,7 @@ async def list_apps(
 async def get_app_categories(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppCategoryListResponse:
     """Get list of available app categories"""
     user = await get_current_user_required(request)
     
@@ -238,7 +238,7 @@ async def get_app_categories(
 async def get_app_stats(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppStats:
     """Get app statistics"""
     user = await get_current_user_required(request)
     
@@ -295,7 +295,7 @@ async def get_app(
     app_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppResponse:
     """Get a specific app by ID"""
     user = await get_current_user_required(request)
     
@@ -340,7 +340,7 @@ async def update_app(
     app_data: AppUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppResponse:
     """Update an app"""
     user = await get_current_user_required(request)
     
@@ -425,7 +425,7 @@ async def delete_app(
     app_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete an app"""
     user = await get_current_user_required(request)
     

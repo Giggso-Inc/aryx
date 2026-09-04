@@ -875,7 +875,7 @@ async def create_approval(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalResponse:
     """
     Create a new approval request for a thread message.
     
@@ -1077,7 +1077,7 @@ async def list_approvals(
     requested_by: Optional[str] = Query(None, description="Filter by user ID who last requested approval to somebody"),
     my_approvals: bool = Query(False, description="Show only approvals assigned to current user"),
     my_requests: bool = Query(False, description="Show only approvals requested by current user")
-):
+) -> ApprovalListResponse:
     """
     List approvals with filtering and pagination.
     
@@ -1358,7 +1358,7 @@ async def list_approvals(
 async def get_approval_count(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalCountResponse:
     """Get total count of approvals for the current user - uses same logic as list endpoint"""
     user = await get_current_user_required(request, db)
     
@@ -1403,7 +1403,7 @@ async def get_approval_stats(
     request: Request,
     db: AsyncSession = Depends(get_db),
     channel_id: Optional[str] = Query(None, description="Filter by channel ID")
-):
+) -> ApprovalStats:
     """Get approval statistics."""
     user = await get_current_user_required(request, db)
     
@@ -1456,7 +1456,7 @@ async def get_approval(
     approval_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalWithDetailsResponse:
     """Get a specific approval by ID."""
     user = await get_current_user_required(request, db)
     
@@ -1559,7 +1559,7 @@ async def update_approval(
     approval_data: ApprovalUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalResponse:
     """Update an approval request (only pending approvals can be updated)."""
     user = await get_current_user_required(request, db)
     
@@ -1657,7 +1657,7 @@ async def take_approval_action(
     action_data: ApprovalAction,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalResponse:
     """Take action on an approval (approve/reject)."""
     user = await get_current_user_required(request, db)
     
@@ -1760,7 +1760,7 @@ async def debug_approval_metadata(
     approval_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> Dict[str, Any]:
     """Debug endpoint to check raw approval metadata."""
     user = await get_current_user_required(request, db)
     
@@ -1792,7 +1792,7 @@ async def get_approval_history(
     approval_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> List[Dict[str, Any]]:
     """Get comprehensive approval history including all actions and reassignments."""
     user = await get_current_user_required(request, db)
     
@@ -1929,7 +1929,7 @@ async def reassign_approval(
     background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ApprovalResponse:
     """Reassign an approval to another user.
     
     This endpoint allows reassignment of approvals in any status:
@@ -2111,7 +2111,7 @@ async def delete_approval(
     approval_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete an approval (soft delete by setting is_active to 'N')."""
     user = await get_current_user_required(request, db)
     

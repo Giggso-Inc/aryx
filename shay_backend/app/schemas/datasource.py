@@ -73,7 +73,7 @@ class DatasourceCreate(BaseModel):
     
     @field_validator('filename')
     @classmethod
-    def validate_filename(cls, v, info):
+    def validate_filename(cls, v, info) -> Optional[str]:
         """Validate filename based on storage type"""
         storage_type = info.data.get('storage_type')
         
@@ -120,7 +120,7 @@ class DatasourceCreateInternal(BaseModel):
     
     @field_validator('filename')
     @classmethod
-    def validate_filename(cls, v, info):
+    def validate_filename(cls, v, info) -> Optional[str]:
         """Validate filename based on storage type"""
         storage_type = info.data.get('storage_type')
         

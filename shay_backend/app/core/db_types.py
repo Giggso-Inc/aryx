@@ -7,7 +7,9 @@ When DATABASE_URL is Oracle, they map to Oracle-compatible types.
 """
 
 import uuid
+from typing import Any
 from sqlalchemy import TypeDecorator, String, Text
+from sqlalchemy.types import TypeEngine
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB as PG_JSONB, ARRAY as PG_ARRAY
 
 
@@ -24,19 +26,19 @@ class DialectUUID(TypeDecorator):
         super().__init__(**kw)
         self.as_uuid = as_uuid
 
-    def load_dialect_impl(self, dialect):
+    def load_dialect_impl(self, dialect) -> TypeEngine:
         if dialect.name == "postgresql":
             return dialect.type_descriptor(PG_UUID(as_uuid=True))
         return dialect.type_descriptor(String(36))
 
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":
             return value
         return str(value) if not isinstance(value, str) else value
 
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":
@@ -56,7 +58,7 @@ class DialectJSON(TypeDecorator):
     impl = Text
     cache_ok = True
 
-    def load_dialect_impl(self, dialect):
+    def load_dialect_impl(self, dialect) -> TypeEngine:
         if dialect.name == "postgresql":
             return dialect.type_descriptor(PG_JSONB())
         if dialect.name == "oracle":
@@ -67,7 +69,7 @@ class DialectJSON(TypeDecorator):
                 return dialect.type_descriptor(Text())
         return dialect.type_descriptor(Text())
 
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":
@@ -78,7 +80,7 @@ class DialectJSON(TypeDecorator):
             return json.dumps(value)
         return value
 
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":
@@ -102,7 +104,7 @@ class DialectUUIDArray(TypeDecorator):
     impl = Text
     cache_ok = True
 
-    def load_dialect_impl(self, dialect):
+    def load_dialect_impl(self, dialect) -> TypeEngine:
         if dialect.name == "postgresql":
             return dialect.type_descriptor(PG_ARRAY(PG_UUID(as_uuid=True)))
         if dialect.name == "oracle":
@@ -113,7 +115,7 @@ class DialectUUIDArray(TypeDecorator):
                 return dialect.type_descriptor(Text())
         return dialect.type_descriptor(Text())
 
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":
@@ -124,7 +126,7 @@ class DialectUUIDArray(TypeDecorator):
             return json.dumps([str(v) for v in value])
         return value
 
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> Any:
         if value is None:
             return None
         if dialect.name == "postgresql":

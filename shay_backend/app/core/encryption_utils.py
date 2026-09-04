@@ -232,7 +232,7 @@ def decrypt_urlsafe_token(token: str) -> str:
             continue
     raise ValueError("Invalid encrypted token")
 
-def test_encryption():
+def test_encryption() -> dict:
     """
     Test function for development
     """

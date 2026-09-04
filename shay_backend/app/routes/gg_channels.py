@@ -132,7 +132,7 @@ async def list_channel_members(
     size: int = Query(50, ge=1, le=200),
     role:      Optional[str]  = None,
     is_active: Optional[bool] = None,
-):
+) -> GGChannelMemberList:
     """List all GGMembers at channel scope (level='channel')."""
     await get_current_user_required(request, db)
 
@@ -169,7 +169,7 @@ async def add_channel_member(
     data: GGChannelMemberCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGChannelMemberResponse:
     """Add a user to a channel via GGMember (level='channel')."""
     user = await get_current_user_required(request, db)
 
@@ -209,7 +209,7 @@ async def update_channel_member(
     data: GGChannelMemberUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGChannelMemberResponse:
     """Update a channel GGMember's role, permissions, or active status."""
     await get_current_user_required(request, db)
 
@@ -241,7 +241,7 @@ async def remove_channel_member(
     user_id:    str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a GGMember from a channel."""
     await get_current_user_required(request, db)
 
@@ -277,7 +277,7 @@ async def list_channel_app_connections(
     size: int = Query(20, ge=1, le=100),
     app_id:    Optional[str]  = None,
     is_active: Optional[bool] = None,
-):
+) -> GGChannelAppConnectionList:
     """List all GGAppConnections for a channel (level='channel')."""
     await get_current_user_required(request, db)
 
@@ -321,7 +321,7 @@ async def connect_channel_app(
     data: GGChannelAppConnectionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGChannelAppConnectionResponse:
     """Connect an app to a channel via GGAppConnection (level='channel')."""
     user = await get_current_user_required(request, db)
 
@@ -385,7 +385,7 @@ async def update_channel_app_connection(
     data: GGChannelAppConnectionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGChannelAppConnectionResponse:
     """Update a channel-level GGAppConnection."""
     user = await get_current_user_required(request, db)
 
@@ -423,7 +423,7 @@ async def disconnect_channel_app(
     connection_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Remove a GGAppConnection from a channel."""
     user = await get_current_user_required(request, db)
 

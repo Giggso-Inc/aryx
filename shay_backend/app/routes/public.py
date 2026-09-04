@@ -110,7 +110,7 @@ async def _create_placeholder_gpt_vault_for_company(db: AsyncSession, company_id
 async def create_company(
     signup_data: CompanySignupRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Creates a new company with admin user and API token.
     
@@ -378,7 +378,7 @@ async def create_company(
 async def create_company_simple(
     company_data: CompanyCreateSimpleEncrypted,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[CompanyCreationResponse]:
     """
     Creates a new company with admin user using simplified payload with encrypted password support.
     
@@ -1018,7 +1018,7 @@ async def create_company_simple(
 async def delete_company(
     company_id: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[Dict[str, Any]]:
     """Soft delete a company by setting it to inactive (for testing purposes)"""
     try:
         # Find the company
@@ -1101,7 +1101,7 @@ async def delete_company(
 async def delete_company_by_domain(
     domain: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[Dict[str, Any]]:
     """Soft delete a company by domain by setting it to inactive (for testing purposes)"""
     try:
         # Find the company by domain
@@ -1186,7 +1186,7 @@ async def delete_company_by_domain(
 async def reactivate_company(
     company_id: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[Dict[str, Any]]:
     """Reactivate a soft-deleted company by setting it back to active (for testing purposes)"""
     try:
         # Find the company
@@ -1270,7 +1270,7 @@ async def reactivate_company(
 async def reactivate_company_by_domain(
     domain: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[Dict[str, Any]]:
     """Reactivate a soft-deleted company by domain by setting it back to active (for testing purposes)"""
     try:
         # Find the company by domain
@@ -1356,7 +1356,7 @@ async def reactivate_company_by_domain(
 async def fetch_plans(
     platform_name: Optional[str] = Query(None, description="Filter plans by platform name (e.g., 'prism7', 'accsell', 'zaptag'). If not provided, returns all plans."),
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[List[SubscriptionPlanNodeResponse]]:
     """
     Fetches all available subscription plans for onboarding.
     
@@ -1438,7 +1438,7 @@ async def auto_login_after_signup(
     email: str,
     password: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserTokenResponse:
     """
     Auto-login after successful company creation.
     
@@ -1499,7 +1499,7 @@ async def auto_login_after_signup(
 async def get_my_subscription(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[SubscriptionPlanNodeResponse]:
     """
     Get current company's subscription details.
     
@@ -1617,7 +1617,7 @@ async def get_my_subscription(
 async def create_user(
     user_data: dict,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[dict]:
     """
     Create additional user for existing company.
     
@@ -1708,7 +1708,7 @@ async def create_user(
 @router.get("/zoho/access-token")
 async def get_zoho_access_token(
     platform_name: Optional[str] = None
-):
+) -> SuccessResponse[dict]:
     """
     Get Zoho access token for frontend use.
     
@@ -1774,7 +1774,7 @@ async def get_zoho_access_token(
 
 
 # Helper functions for company creation
-async def _create_subscription_for_company(company_id: str, db: AsyncSession):
+async def _create_subscription_for_company(company_id: str, db: AsyncSession) -> Optional[Subscription]:
     """Create a new subscription for an existing company"""
     try:
         # Find a default free plan
@@ -1820,7 +1820,7 @@ async def _create_subscription_for_company(company_id: str, db: AsyncSession):
         return None
 
 
-async def _create_zoho_customer(company: Company, company_data: CompanyCreateSimple, plan: SubscriptionPlan, db: AsyncSession, platform_name: Optional[str] = None):
+async def _create_zoho_customer(company: Company, company_data: CompanyCreateSimple, plan: SubscriptionPlan, db: AsyncSession, platform_name: Optional[str] = None) -> Optional[str]:
     """Create Zoho customer and subscription (non-blocking)"""
     try:
         from app.services.zoho_service import get_zoho_service
@@ -1909,7 +1909,7 @@ async def _create_zoho_customer(company: Company, company_data: CompanyCreateSim
 async def verify_email(
     verification_request: EmailVerificationRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> EmailVerificationResponse:
     """
     Verify email address using token from verification email
     
@@ -1987,7 +1987,7 @@ async def verify_email(
 async def resend_verification(
     resend_request: ResendVerificationRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> ResendVerificationResponse:
     """
     Resend verification email to user
     
@@ -2041,7 +2041,7 @@ async def resend_verification(
 async def notify_api_failure(
     error_notification: ErrorNotificationRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> ErrorNotificationResponse:
     """
     Send email notification to customer support when an API failure occurs
     
@@ -2105,7 +2105,7 @@ async def notify_api_failure(
 async def save_token_details(
     payload: SaveTokenDetailsRequest,
     db: AsyncSession = Depends(get_db)
-):
+) -> SuccessResponse[SaveTokenDetailsResponse]:
     """
     Public endpoint to save token/API details to vault and gg_vault (no JWT required).
     Accepts token_type, api_key, embedding_model, gpt_model, companyId. When token_type

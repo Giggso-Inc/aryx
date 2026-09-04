@@ -45,7 +45,7 @@ async def create_subscription_plan(
     plan_data: SubscriptionPlanCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionPlanResponse:
     """Create a new subscription plan"""
     user = await get_current_user_required(request)
     
@@ -111,7 +111,7 @@ async def list_subscription_plans(
     interval_unit: Optional[str] = None,
     sort_by: Optional[str] = Query("sort_order", description="Sort by: sort_order, name, monthly_price, created_at"),
     sort_order: Optional[str] = Query("asc", description="Sort order: asc or desc")
-):
+) -> SubscriptionPlanList:
     """List subscription plans with filtering and pagination"""
     user = await get_current_user_required(request)
     
@@ -189,7 +189,7 @@ async def get_subscription_plan(
     plan_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionPlanResponse:
     """Get subscription plan by ID"""
     user = await get_current_user_required(request)
     
@@ -215,7 +215,7 @@ async def update_subscription_plan(
     plan_data: SubscriptionPlanUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionPlanResponse:
     """Update subscription plan"""
     user = await get_current_user_required(request)
     
@@ -275,7 +275,7 @@ async def delete_subscription_plan(
     plan_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete subscription plan (soft delete)"""
     user = await get_current_user_required(request)
     
@@ -313,7 +313,7 @@ async def delete_subscription_plan(
 async def get_active_plans(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> List[SubscriptionPlanResponse]:
     """Get all active subscription plans"""
     user = await get_current_user_required(request)
     

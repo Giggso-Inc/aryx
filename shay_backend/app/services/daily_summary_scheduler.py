@@ -88,7 +88,7 @@ class DailySummaryScheduler:
         self.scheduler = AsyncIOScheduler(event_loop=loop)
         self.is_running = False
     
-    def start(self):
+    def start(self) -> None:
         """Start the scheduler"""
         if not self.is_running:
             # Run every 15 minutes to check all routine intervals
@@ -111,14 +111,14 @@ class DailySummaryScheduler:
             else:
                 print("⚠️ Warning: Job not found after adding")
     
-    def stop(self):
+    def stop(self) -> None:
         """Stop the scheduler"""
         if self.is_running:
             self.scheduler.shutdown()
             self.is_running = False
             print("⏹️ Daily summary email scheduler stopped")
     
-    async def process_daily_summaries(self):
+    async def process_daily_summaries(self) -> None:
         """
         Process and send daily summary emails for all users who need them.
         This function runs every 15 minutes and checks which users need emails
@@ -209,7 +209,7 @@ class DailySummaryScheduler:
         self,
         email_settings: EmailNotifySettings,
         db: AsyncSession
-    ):
+    ) -> None:
         """
         Send daily summary email to a user.
         

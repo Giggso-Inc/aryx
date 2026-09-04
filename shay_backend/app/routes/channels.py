@@ -118,7 +118,7 @@ async def create_channel(
     channel_data: ChannelCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChannelResponse:
     """Create a new channel with automatic workspace management"""
     user = await get_current_user_required(request)
     
@@ -307,7 +307,7 @@ async def list_channels(
     channel_type: Optional[str] = Query(None, description="Filter by channel type: email, message, voice etc."),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, name, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> ChannelList:
     """List channels for current user with sorting and pagination
     
     This endpoint only shows channels where the current user is a member.
@@ -621,7 +621,7 @@ async def list_message_channels(
     is_archived: Optional[bool] = Query(False, description="Filter by archived status. False = active channels only"),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, name, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
-):
+) -> List[ChannelResponse]:
     """
     List regular (message/chat) channels for the current user's company and the given workspace.
     Returns only channels the current user is a member of. Excludes WhatsApp; only regular channels.
@@ -743,7 +743,7 @@ async def list_company_channels(
     channel_type: Optional[str] = Query(None, description="Filter by channel type: email, message, regular, accsell, etc."),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, name, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> ChannelList:
     """List all channels in the user's company (admin view)
     
     This endpoint shows all channels in the user's company, regardless of membership.
@@ -1020,7 +1020,7 @@ async def list_my_channel_memberships(
     channel_type: Optional[str] = Query(None, description="Filter by channel type: email, message, regular, accsell, etc."),
     sort_by: Optional[str] = Query("last_message_at", description="Sort by: created_at, name, last_message_at, message_count"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> ChannelList:
     """List channels where the current user is a member (same as / endpoint)
     
     This endpoint shows channels where the current user is a member.
@@ -1268,7 +1268,7 @@ async def list_workspace_tags(
     search: Optional[str] = None,
     sort_by: Optional[str] = Query("name", description="Sort by: name, channel_count, created_at"),
     sort_order: Optional[str] = Query("asc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> WorkspaceTagList:
     """List available workspace tags (workspaces) for the user's company with sorting and pagination
     
     Available sorting options:
@@ -1355,7 +1355,7 @@ async def list_workspaces(
     search: Optional[str] = None,
     sort_by: Optional[str] = Query("name", description="Sort by: name, channel_count, created_at"),
     sort_order: Optional[str] = Query("asc", description="Sort order: asc (ascending) or desc (descending)")
-):
+) -> WorkspaceTagList:
     """List available workspaces for channel creation with sorting and pagination
     
     Available sorting options:
@@ -1444,7 +1444,7 @@ async def get_channel(
     channel_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChannelResponse:
     """Get channel by ID"""
     user = await get_current_user_required(request)
     
@@ -1594,7 +1594,7 @@ async def check_user_access(
     channel_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ChannelAccessCheckResponse:
     """
     Check whether the current user has access to a channel.
     
@@ -1662,7 +1662,7 @@ async def add_channel_member(
     body: SingleChannelMemberCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ChannelMemberResponse:
     """
     Grant access to a single user for the given channel id by email.
     
@@ -1842,7 +1842,7 @@ async def list_channel_members(
     size: int = Query(50, ge=1, le=200),
     include_inactive: bool = Query(False, description="Include inactive memberships"),
     search: Optional[str] = Query(None, description="Filter by user name or email contains"),
-):
+) -> ChannelMemberUserList:
     """
     List users who have access to a channel (members), with pagination and optional search.
     
@@ -1931,7 +1931,7 @@ async def update_channel_member(
     update_data: ChannelMemberUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> ChannelMemberUpdateResponse:
     """
     Update a channel member's role and permissions.
     
@@ -2006,7 +2006,7 @@ async def remove_channel_member(
     delete_user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """
     Remove a user's access to a channel.
     
@@ -2065,7 +2065,7 @@ async def update_channel(
     channel_data: ChannelUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> ChannelResponse:
     """Update channel. All body fields optional. Example: {"channel_tags": ["support"], "channel_sub_tags": ["tier1"]}. Send [] or null to clear."""
     user = await get_current_user_required(request)
     
@@ -2179,7 +2179,7 @@ async def add_channel_members_bulk_csv(
     csv_file: UploadFile = File(..., description="CSV file with gmail_id and role columns"),
     platform_name: Optional[str] = Query(None, description="Platform name for email notifications (optional, defaults to config value)"),
     db: AsyncSession = Depends(get_db),
-):
+) -> ChannelMemberList:
     """
     Grant access to multiple users for a channel by uploading a CSV file.
     
@@ -2483,7 +2483,7 @@ async def delete_channel(
     channel_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete channel and all related data"""
     user = await get_current_user_required(request, db)
     

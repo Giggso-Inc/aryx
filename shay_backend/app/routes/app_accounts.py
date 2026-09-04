@@ -202,7 +202,7 @@ async def create_app_account(
     app_account_data: AppAccountCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppAccountResponse:
     """Create a new app account connection"""
     user = await get_current_user_required(request, db)
     
@@ -333,7 +333,7 @@ async def list_app_accounts(
     channel_id: Optional[str] = None,
     connection_status: Optional[str] = None,
     is_active: Optional[bool] = None
-):
+) -> AppAccountList:
     """List app accounts with filtering and pagination"""
     user = await get_current_user_required(request, db)
     
@@ -391,7 +391,7 @@ async def list_app_accounts(
 async def get_app_account_stats(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppAccountStats:
     """Get app account statistics"""
     user = await get_current_user_required(request, db)
     
@@ -464,7 +464,7 @@ async def get_app_account(
     app_account_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppAccountResponse:
     """Get a specific app account by ID"""
     user = await get_current_user_required(request, db)
     
@@ -502,7 +502,7 @@ async def update_app_account(
     app_account_data: AppAccountUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppAccountResponse:
     """Update an app account"""
     user = await get_current_user_required(request, db)
     
@@ -598,7 +598,7 @@ async def delete_app_account(
     app_account_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete an app account"""
     user = await get_current_user_required(request, db)
     
@@ -635,7 +635,7 @@ async def connect_app_to_channel(
     connection_data: AppConnectionRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> AppAccountResponse:
     """Connect an app to a channel"""
     user = await get_current_user_required(request, db)
     

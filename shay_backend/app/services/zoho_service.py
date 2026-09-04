@@ -79,7 +79,7 @@ class ZohoBillingService:
         """Return env var name for this platform (e.g. PRISM_ZOHO_REFRESH_TOKEN or ZOHO_REFRESH_TOKEN)."""
         return f"{self._config_prefix}{suffix}" if self._config_prefix else suffix
     
-    def _validate_config(self):
+    def _validate_config(self) -> None:
         """Validate Zoho configuration for current platform"""
         if self._config_prefix:
             # Platform-specific (prism7, accsell, zaptag) required env vars

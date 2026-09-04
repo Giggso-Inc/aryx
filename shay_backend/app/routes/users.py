@@ -62,7 +62,7 @@ async def list_company_users(
     status: Optional[str] = Query(None, description="Filter by status: 'Active' for active users, 'Inactive' for inactive users"),
     sort_by: str = Query("name", description="Sort by field: name, email_id, role, created_datetime, updated_datetime"),
     sort_order: str = Query("asc", description="Sort order: asc or desc")
-):
+) -> UserListResponse:
     """
     List users in a company with advanced filtering, sorting, and pagination.
     
@@ -234,7 +234,7 @@ async def get_company_user(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserResponse:
     """Get a specific user in a company"""
     user = await get_current_user_required(request)
     
@@ -268,7 +268,7 @@ async def update_company_user(
     user_update: UserUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> UserResponse:
     """Update a user in a company (admin only)"""
     current_user = await get_current_user_required(request)
     
@@ -331,7 +331,7 @@ async def remove_company_user(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Remove a user from a company (admin only)"""
     current_user = await get_current_user_required(request)
     
@@ -396,7 +396,7 @@ async def get_company_user_stats(
     company_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyStats:
     """Get company user statistics"""
     user = await get_current_user_required(request)
     
@@ -470,7 +470,7 @@ async def search_users_by_name_or_email(
     email: Optional[str] = Query(None, description="Search by user email (exact match)"),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
-):
+) -> List[UserResponse]:
     """
     Search for users by name or email across the system.
     
@@ -525,7 +525,7 @@ async def delete_pending_invited_user(
     email_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """
     Delete pending invitations for a specific user by email and company.
     
@@ -603,7 +603,7 @@ async def bulk_remove_company_users(
     body: BulkRemoveUsersRequest,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> BulkRemoveUsersResponse:
     current_user = await get_current_user_required(request)
 
     if current_user.role != "admin":

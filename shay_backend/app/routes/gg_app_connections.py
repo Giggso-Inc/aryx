@@ -206,7 +206,7 @@ async def get_resolved_connection(
     workspace_id: Optional[str] = None,
     channel_id: Optional[str] = None,
     thread_id: Optional[str] = None,
-):
+) -> dict:
     """
     Returns the most specific active GGAppConnection for the given scope + app_key.
     Resolution order: thread → channel → workspace (most specific wins).
@@ -245,7 +245,7 @@ async def create_connection(
     data: GGAppConnectionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGAppConnectionResponse:
     """Create a new GGAppConnection at workspace, channel, or thread scope."""
     user = await get_current_user_required(request, db)
 
@@ -352,7 +352,7 @@ async def list_connections(
     thread_id: Optional[str] = None,
     connection_status: Optional[str] = None,
     is_active: Optional[bool] = None,
-):
+) -> GGAppConnectionList:
     """
     List GGAppConnections visible to the current user.
 
@@ -450,7 +450,7 @@ async def get_connection(
     connection_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGAppConnectionResponse:
     """Get a specific GGAppConnection by ID."""
     user = await get_current_user_required(request, db)
 
@@ -498,7 +498,7 @@ async def update_connection(
     data: GGAppConnectionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> GGAppConnectionResponse:
     """Update a GGAppConnection. Only the original connector or scope admins may update."""
     user = await get_current_user_required(request, db)
 
@@ -563,7 +563,7 @@ async def delete_connection(
     connection_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """Delete a GGAppConnection."""
     user = await get_current_user_required(request, db)
 
@@ -613,7 +613,7 @@ async def list_connections_by_scope(
     size: int = Query(20, ge=1, le=100),
     app_id: Optional[str] = None,
     is_active: Optional[bool] = None,
-):
+) -> GGAppConnectionList:
     """
     List all GGAppConnections for a specific workspace, channel, or thread scope.
     scope_type: 'workspace' | 'channel' | 'thread'

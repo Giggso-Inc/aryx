@@ -48,7 +48,7 @@ async def create_subscription(
     subscription_data: SubscriptionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionResponse:
     """Create a new subscription for a company"""
     user = await get_current_user_required(request, db)
     
@@ -147,7 +147,7 @@ async def list_subscriptions(
     billing_cycle: Optional[str] = None,
     sort_by: Optional[str] = Query("created_at", description="Sort by: created_at, amount, current_period_end"),
     sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc")
-):
+) -> SubscriptionList:
     """List subscriptions with filtering and pagination"""
     user = await get_current_user_required(request, db)
     
@@ -228,7 +228,7 @@ async def get_subscription(
     subscription_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionResponse:
     """Get subscription by ID"""
     user = await get_current_user_required(request, db)
     
@@ -261,7 +261,7 @@ async def update_subscription(
     subscription_data: SubscriptionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> SubscriptionResponse:
     """Update subscription"""
     user = await get_current_user_required(request, db)
     
@@ -304,7 +304,7 @@ async def delete_subscription(
     subscription_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> dict:
     """Delete subscription (soft delete)"""
     user = await get_current_user_required(request, db)
     
@@ -344,7 +344,7 @@ async def delete_subscription(
 async def get_my_company_current_plan(
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyCurrentPlanResponse:
     """Get current plan details for the authenticated user's company"""
     user = await get_current_user_required(request, db)
     
@@ -436,7 +436,7 @@ async def get_company_current_plan(
     company_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db)
-):
+) -> CompanyCurrentPlanResponse:
     """Get current plan details for a company"""
     user = await get_current_user_required(request, db)
     

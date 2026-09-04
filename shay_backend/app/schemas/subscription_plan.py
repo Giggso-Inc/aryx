@@ -28,7 +28,7 @@ class SubscriptionPlanBase(BaseModel):
     is_active: bool = Field(True, description="Whether the plan is active")
 
     @validator('features')
-    def validate_features(cls, v):
+    def validate_features(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return v
         # If features is a list, convert it to a dictionary with numbered keys
@@ -51,7 +51,7 @@ class SubscriptionPlanBase(BaseModel):
     platform_name: Optional[str] = Field(None, description="Platform name (e.g., 'prism7', 'accsell', 'zaptag'). Used for Zoho configuration selection")
 
     @validator('interval_unit')
-    def validate_interval_unit(cls, v):
+    def validate_interval_unit(cls, v) -> str:
         # Accept both singular and plural forms
         v_lower = v.lower()
         # Handle common plural forms
@@ -91,7 +91,7 @@ class SubscriptionPlanUpdate(BaseModel):
     is_active: Optional[bool] = Field(None, description="Whether the plan is active")
 
     @validator('features')
-    def validate_features(cls, v):
+    def validate_features(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return v
         # If features is a list, convert it to a dictionary with numbered keys
@@ -114,7 +114,7 @@ class SubscriptionPlanUpdate(BaseModel):
     platform_name: Optional[str] = Field(None, description="Platform name (e.g., 'prism7', 'accsell', 'zaptag'). Used for Zoho configuration selection")
 
     @validator('interval_unit')
-    def validate_interval_unit(cls, v):
+    def validate_interval_unit(cls, v) -> Optional[str]:
         if v is not None:
             # Accept both singular and plural forms
             v_lower = v.lower()
@@ -140,7 +140,7 @@ class SubscriptionPlanResponse(SubscriptionPlanBase):
     updated_at: datetime
     
     @validator('plan_cycles', pre=True)
-    def ensure_positive_plan_cycles(cls, value):
+    def ensure_positive_plan_cycles(cls, value) -> int:
         """
         Handle legacy records that may contain zero or negative plan_cycles.
         Coerce such values to 1 so that the response remains valid.
