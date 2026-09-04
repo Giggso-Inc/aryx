@@ -13,38 +13,37 @@ tree node (no product condition at all, or a script-conditioned rule whose
 literal comparisons can't be statically resolved) lands in the explicit
 "unscoped_or_unresolved" bucket. Every loaded rule appears SOMEWHERE in the
 output -- classification can be imperfect, silent drops cannot happen.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`rule_export_tree.py` (product tree materialization) and
+`rule_export_classify.py` (per-rule scope classification), both
+re-imported here. Zero whitebox test patches exist anywhere against
+`aryx.cpq.rule_export.*` (confirmed via grep), so the split was purely
+mechanical. `export_rules_json` — the orchestrator tying tree + rules
+together — stays here.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq.rule_export_classify import UNSCOPED, _rule_dict, classify_rule_scope
+from aryx.cpq.rule_export_tree import TreeNode, _name_index, _normalize
 from aryx.cpq.state import ConstraintRule, HidingRule, RecommendationRule
 
+__all__ = [
+    "TreeNode",
+    "UNSCOPED",
+    "_name_index",
+    "_normalize",
+    "build_product_tree",
+    "classify_rule_scope",
+    "export_rules_json",
+]
+
 logger = logging.getLogger(__name__)
-
-UNSCOPED = "unscoped_or_unresolved"
-
-
-@dataclass
-class TreeNode:
-    native_id: str
-    parent_id: str
-    name: str
-    children: list["TreeNode"]
-
-
-def _normalize(value: str) -> str:
-    """Exact-match key: case-fold + collapse whitespace. NOT fuzzy matching
-    -- a real casing divergence (e.g. '700/800 MHz' vs '700/800 MHZ') still
-    normalizes to the SAME key here on purpose (both differ only in case),
-    which is the one and only normalization this classifier performs.
-    Anything more permissive (partial match, edit distance) is explicitly
-    out of scope -- see docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md §8."""
-    return " ".join((value or "").strip().split()).upper()
 
 
 def build_product_tree(
@@ -87,93 +86,6 @@ def build_product_tree(
             continue
         nodes[parent].children.append(node)
     return nodes
-
-
-def _name_index(tree: dict[str, TreeNode]) -> dict[str, TreeNode]:
-    """{normalized name: node} -- ambiguous duplicate names are dropped
-    (never guess which one a rule's condition_value meant)."""
-    by_name: dict[str, TreeNode] = {}
-    ambiguous: set[str] = set()
-    for node in tree.values():
-        key = _normalize(node.name)
-        if key in by_name and by_name[key].native_id != node.native_id:
-            ambiguous.add(key)
-        else:
-            by_name[key] = node
-    for key in ambiguous:
-        by_name.pop(key, None)
-    return by_name
-
-
-def _leaf_names(node: TreeNode) -> list[str]:
-    """Model (leaf) names under `node` -- `node.name` itself only when it
-    IS a leaf (no children); otherwise every leaf beneath it, never the
-    intermediate family/line name itself."""
-    if not node.children:
-        return [node.name]
-    names: list[str] = []
-    for child in node.children:
-        names.extend(_leaf_names(child))
-    return names
-
-
-def _rule_condition_values(rule: Any) -> list[str] | None:
-    """Literal, staticallly-known condition values for a declarative rule.
-
-    Returns None (not []) for script-backed rules -- those are NEVER
-    statically classified (export is static, not a BML simulation), always
-    landing in UNSCOPED. Returns [] for a rule with no product-relevant
-    condition at all (also UNSCOPED, but distinctly "nothing to match").
-    """
-    if getattr(rule, "script", None) is not None:
-        return None
-    if getattr(rule, "condition_script", None) is not None:
-        return None
-    conditions = getattr(rule, "conditions", None)
-    if conditions:
-        return [v for _attr_id, v in conditions]
-    condition_value = getattr(rule, "condition_value", "") or ""
-    return [condition_value] if condition_value else []
-
-
-def classify_rule_scope(rule: Any, name_index: dict[str, TreeNode]) -> dict[str, Any]:
-    """Return {"family": ..., "product_line": ..., "model": ...} for the
-    FIRST tree node one of the rule's condition values exactly matches
-    (case/whitespace-normalized), expanded to cover descendant models when
-    the match lands on a family/line node -- or {"scope": UNSCOPED}."""
-    values = _rule_condition_values(rule)
-    if not values:
-        return {"scope": UNSCOPED}
-    for value in values:
-        node = name_index.get(_normalize(value))
-        if node is not None:
-            return {
-                "matched_node": node.name,
-                "covers_models": _leaf_names(node),
-            }
-    return {"scope": UNSCOPED}
-
-
-def _rule_dict(rule: Any) -> dict[str, Any]:
-    d: dict[str, Any] = {
-        "rule_name": rule.rule_name,
-        "target_attr_id": rule.target_attr_id,
-        "condition_attr_id": getattr(rule, "condition_attr_id", None),
-        "condition_value": getattr(rule, "condition_value", None),
-        "conditions": getattr(rule, "conditions", None),
-        "script": getattr(rule, "script", None),
-        "condition_script": getattr(rule, "condition_script", None),
-    }
-    if isinstance(rule, HidingRule):
-        d["rule_type"] = "hiding"
-        d["hide"] = rule.hide
-    elif isinstance(rule, RecommendationRule):
-        d["rule_type"] = "recommendation"
-        d["recommended_value"] = rule.recommended_value
-    elif isinstance(rule, ConstraintRule):
-        d["rule_type"] = "constraint"
-        d["allowed_values"] = rule.allowed_values
-    return d
 
 
 def export_rules_json(

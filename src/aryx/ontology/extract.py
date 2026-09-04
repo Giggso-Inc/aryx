@@ -7,6 +7,15 @@ can reach resolution or the graph.
 Provider-shape quirks (Gemini's bare-list envelope, field renames like
 entity_type / verbatim_span) are absorbed by aryx.llm_normalize at the
 complete_json boundary — this module sees the canonical schema shape only.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`extract_prompt.py` (system prompt + JSON schema) and
+`extract_records.py` (verbatim-span gate + mention-to-RawRecord mapping),
+both re-imported here. `_extract_chunk_with_retry`/`extract_mentions`
+stay here as a deliberate exception: `complete_json` is directly
+whitebox-patched (`aryx.ontology.extract.complete_json`) by
+`test_extract_mentions_retry.py`/`test_extract_mentions_concurrency.py`
+and called only from `_extract_chunk_with_retry`.
 """
 from __future__ import annotations
 
@@ -19,69 +28,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.llm import complete_json
-from aryx.models import DocumentChunk, RawRecord, SourceRef
+from aryx.models import DocumentChunk, RawRecord
+from aryx.ontology.extract_prompt import _SCHEMA, _system_prompt
+from aryx.ontology.extract_records import _mentions_to_records, _verbatim_ok
+
+__all__ = ["extract_mentions"]
 
 logger = logging.getLogger(__name__)
-
-_SYSTEM_BASE = (
-    "You extract entity mentions from document text for a domain-specific "
-    "knowledge graph. For each mention return: "
-    "(1) `type` — a singular PascalCase noun that names the REAL-WORLD CONCEPT "
-    "being referenced. Use domain-specific types when warranted (Goal, Scope, "
-    "Aim, Initiative, Capability, ValueProposition, CustomerSegment, "
-    "Milestone, Metric, Feature, Risk, Pricing, MarketSegment, Strategy, "
-    "Partner, Competitor, Dataset, KPI, RoadmapItem, etc.). Fall back to "
-    "generic NER (Organization, Person, Product, Location, Date) ONLY when "
-    "no domain-specific type fits. NEVER use generic words (Entity, Item, "
-    "Thing, Concept). "
-    "(2) `name` — the exact name as it literally appears in the text. "
-    "(3) `attributes` — typed attributes (role, founded, value, owner, etc.). "
-    "(4) `span` — a short verbatim excerpt from the text that contains the "
-    "name word-for-word. "
-    "Only emit a mention when the name appears word-for-word inside the span. "
-    "Prefer rich domain types over generic NER. Prefer fewer high-confidence "
-    "mentions over many uncertain ones."
-)
-
-
-def _system_prompt(context: str) -> str:
-    """Prepend the workspace business context so extraction is domain-aware."""
-    if not context.strip():
-        return _SYSTEM_BASE
-    return (
-        f"WORKSPACE CONTEXT (what this knowledge graph is about):\n{context.strip()}\n\n"
-        + _SYSTEM_BASE
-        + "\n\nUse the workspace context above to decide which entity types "
-        "matter. Pull domain-specific concepts (Goal, Scope, Aim, "
-        "Initiative, Capability, etc.) when relevant — NOT just generic "
-        "Organization/Person/Date."
-    )
-
-_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "mentions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string"},
-                    "name": {"type": "string"},
-                    "attributes": {"type": "object", "additionalProperties": True},
-                    "span": {"type": "string"},
-                },
-                "required": ["type", "name", "span"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["mentions"],
-    "additionalProperties": False,
-}
-
-
-def _verbatim_ok(name: str, span: str) -> bool:
-    return name.lower() in span.lower()
 
 
 def _extract_chunk_with_retry(
@@ -104,35 +57,6 @@ def _extract_chunk_with_retry(
                 )
                 time.sleep(retry_delay * attempt)
     return chunk, None, last_exc
-
-
-def _mentions_to_records(chunk: DocumentChunk, result: dict) -> tuple[list[RawRecord], int]:
-    """Apply the verbatim-span gate; returns (accepted_records, rejected_count)."""
-    records: list[RawRecord] = []
-    rejected = 0
-    for i, mention in enumerate(result.get("mentions", [])):
-        name = mention.get("name", "")
-        span = mention.get("span", "") or name
-        if not name or not mention.get("type") or not _verbatim_ok(name, span):
-            rejected += 1
-            continue
-        mention_id = f"{chunk.doc_id}:{chunk.chunk_index}:{i}"
-        records.append(RawRecord(
-            source=SourceRef(
-                system=chunk.source.system,
-                dataset=chunk.source.dataset,
-                record_id=mention_id,
-            ),
-            payload={
-                "type": mention["type"],
-                "name": name,
-                "doc_id": chunk.doc_id,
-                "chunk_index": chunk.chunk_index,
-                "span": span,
-                **(mention.get("attributes") or {}),
-            },
-        ))
-    return records, rejected
 
 
 def extract_mentions(

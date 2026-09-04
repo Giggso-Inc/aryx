@@ -20,6 +20,14 @@ row-level key and stayed 100% isolated across the graph, even though its
 tables (confirmed via dynamic_fk's own logged, correctly-rejected FK
 candidates) — a real, if coarse, connection the pipeline had no way to
 represent. See docs/design/keyless_table_linking.md for the full design.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`dimension_link_columns.py` (candidate-column extraction/filtering) and
+`dimension_link_groups.py` (union-find clustering), both re-imported
+here. Neither calls `get_settings()` nor is itself patched — the one
+patch on this module (`aryx.pipeline.dimension_link.get_settings`, from
+`tests/test_dimension_link.py`) is called only inside
+`detect_and_link_dimensions`, which stays here.
 """
 from __future__ import annotations
 
@@ -29,88 +37,23 @@ from collections.abc import Callable
 
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.pipeline.dimension_link_columns import (
+    CandidateKey,
+    ValueMap,
+    _candidate_columns,
+    _is_dimension_column,
+)
+from aryx.pipeline.dimension_link_groups import _dimension_groups
 from aryx.pipeline.value_normalize import normalize_value
 from aryx.store.entity_store import EntityStore
 
+__all__ = [
+    "CandidateKey",
+    "ValueMap",
+    "detect_and_link_dimensions",
+]
+
 logger = logging.getLogger(__name__)
-
-CandidateKey = tuple[str, str]  # (ontology_type, column)
-ValueMap = dict[str, list[int]]  # normalized_value -> [entity_id, ...]
-
-
-def _candidate_columns(
-    entities: list[tuple[int, str, dict]],
-) -> dict[str, dict[str, ValueMap]]:
-    """Group entity ids by (ontology_type, column, normalized_value)."""
-    by_type_col_val: dict[str, dict[str, ValueMap]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    for eid, etype, attrs in entities:
-        if not isinstance(attrs, dict):
-            continue
-        for col, val in attrs.items():
-            if col.startswith("_") or val is None:
-                continue
-            sval = str(val).strip()
-            if not sval:
-                continue
-            by_type_col_val[etype][col][normalize_value(sval)].append(eid)
-    return by_type_col_val
-
-
-def _is_dimension_column(
-    value_map: ValueMap, total_rows: int,
-    min_distinct: int, max_cardinality_ratio: float,
-) -> bool:
-    """A dimension column repeats across many rows (low cardinality) but
-    isn't degenerate (at least min_distinct values) — the opposite profile
-    of a usable FK key, which dynamic_fk.py already requires to be highly
-    selective (near-unique)."""
-    distinct = len(value_map)
-    if distinct < min_distinct or total_rows <= 0:
-        return False
-    return (distinct / total_rows) <= max_cardinality_ratio
-
-
-def _find(parent: dict[CandidateKey, CandidateKey], key: CandidateKey) -> CandidateKey:
-    while parent[key] != key:
-        parent[key] = parent[parent[key]]
-        key = parent[key]
-    return key
-
-
-def _union(parent: dict[CandidateKey, CandidateKey], a: CandidateKey, b: CandidateKey) -> None:
-    ra, rb = _find(parent, a), _find(parent, b)
-    if ra != rb:
-        parent[ra] = rb
-
-
-def _dimension_groups(
-    candidates: dict[CandidateKey, ValueMap], min_overlap: float, min_types: int,
-) -> list[list[CandidateKey]]:
-    """Cluster (type, col) candidates whose value sets overlap sufficiently,
-    across DIFFERENT types only, keeping only groups spanning >= min_types
-    distinct ontology types."""
-    keys = list(candidates.keys())
-    parent: dict[CandidateKey, CandidateKey] = {k: k for k in keys}
-    for i in range(len(keys)):
-        type_a, _ = keys[i]
-        values_a = set(candidates[keys[i]].keys())
-        if not values_a:
-            continue
-        for j in range(i + 1, len(keys)):
-            type_b, _ = keys[j]
-            if type_a == type_b:
-                continue
-            values_b = set(candidates[keys[j]].keys())
-            if not values_b:
-                continue
-            overlap = len(values_a & values_b) / min(len(values_a), len(values_b))
-            if overlap >= min_overlap:
-                _union(parent, keys[i], keys[j])
-
-    groups: dict[CandidateKey, list[CandidateKey]] = defaultdict(list)
-    for k in keys:
-        groups[_find(parent, k)].append(k)
-    return [g for g in groups.values() if len({etype for etype, _ in g}) >= min_types]
 
 
 def detect_and_link_dimensions(

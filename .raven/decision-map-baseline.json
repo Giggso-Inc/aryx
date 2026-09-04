@@ -6503,28 +6503,28 @@
     ],
     [
       "src/aryx/api/admin_api.py",
-      30,
-      "_local_broker"
-    ],
-    [
-      "src/aryx/api/admin_api.py",
-      59,
-      "_local_broker"
-    ],
-    [
-      "src/aryx/api/admin_api.py",
-      154,
+      104,
       "create_entity"
     ],
     [
       "src/aryx/api/admin_api.py",
-      176,
+      126,
       "update_entity"
     ],
     [
       "src/aryx/api/admin_api.py",
-      191,
+      141,
       "delete_entity"
+    ],
+    [
+      "src/aryx/api/admin_broker.py",
+      16,
+      "_local_broker"
+    ],
+    [
+      "src/aryx/api/admin_broker.py",
+      45,
+      "_local_broker"
     ],
     [
       "src/aryx/api/ask_api.py",
@@ -7173,7 +7173,7 @@
     ],
     [
       "src/aryx/api/ask_thread_api.py",
-      186,
+      162,
       "<try>"
     ],
     [
@@ -7323,68 +7323,68 @@
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      47,
-      "_build_read_progress"
+      44,
+      "doc_discover_router"
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      67,
-      "_on_progress"
+      71,
+      "summary"
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      84,
-      "_build_read_progress"
+      73,
+      "summary"
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      87,
-      "_read_job"
+      85,
+      "confirm"
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      91,
-      "<try>"
+      112,
+      "confirm"
     ],
     [
       "src/aryx/api/doc_discover_api.py",
-      124,
+      114,
+      "doc_discover_router"
+    ],
+    [
+      "src/aryx/api/doc_discover_confirm_job.py",
+      32,
       "_confirm_job"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      128,
+      "src/aryx/api/doc_discover_confirm_job.py",
+      36,
       "<try>"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      150,
-      "doc_discover_router"
+      "src/aryx/api/doc_discover_read_job.py",
+      31,
+      "_build_read_progress"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      177,
-      "summary"
+      "src/aryx/api/doc_discover_read_job.py",
+      51,
+      "_on_progress"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      179,
-      "summary"
+      "src/aryx/api/doc_discover_read_job.py",
+      68,
+      "_build_read_progress"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      191,
-      "confirm"
+      "src/aryx/api/doc_discover_read_job.py",
+      71,
+      "_read_job"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
-      218,
-      "confirm"
-    ],
-    [
-      "src/aryx/api/doc_discover_api.py",
-      220,
-      "doc_discover_router"
+      "src/aryx/api/doc_discover_read_job.py",
+      75,
+      "<try>"
     ],
     [
       "src/aryx/api/file_ingest_api.py",
@@ -7458,23 +7458,23 @@
     ],
     [
       "src/aryx/api/main.py",
-      144,
+      98,
+      "create_app"
+    ],
+    [
+      "src/aryx/api/main_mcp.py",
+      34,
       "_mount_mcp"
     ],
     [
-      "src/aryx/api/main.py",
-      146,
+      "src/aryx/api/main_mcp.py",
+      36,
       "<try>"
     ],
     [
-      "src/aryx/api/main.py",
-      160,
+      "src/aryx/api/main_mcp.py",
+      50,
       "handle_sse"
-    ],
-    [
-      "src/aryx/api/main.py",
-      291,
-      "create_app"
     ],
     [
       "src/aryx/api/observability_api.py",
@@ -7493,103 +7493,103 @@
     ],
     [
       "src/aryx/api/ontology_api.py",
-      63,
+      32,
       "ontology_router"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      37,
+      "get_config"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      39,
+      "get_config"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      42,
+      "set_config"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      49,
+      "set_config"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      57,
+      "list_types"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      59,
+      "list_types"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      62,
+      "approve_type"
+    ],
+    [
+      "src/aryx/api/ontology_api.py",
+      65,
+      "approve_type"
     ],
     [
       "src/aryx/api/ontology_api.py",
       68,
-      "get_config"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      70,
-      "get_config"
+      "set_parent"
     ],
     [
       "src/aryx/api/ontology_api.py",
       73,
-      "set_config"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      80,
-      "set_config"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      88,
-      "list_types"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      90,
-      "list_types"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      93,
-      "approve_type"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      96,
-      "approve_type"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      99,
       "set_parent"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      104,
-      "set_parent"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      108,
+      77,
       "add_type"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      110,
+      79,
       "add_type"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      116,
+      85,
       "delete_type"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      129,
+      98,
       "delete_type"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      132,
-      "export_graph"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      166,
-      "export_graph"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
-      172,
+      106,
       "import_ontology"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      177,
+      111,
       "<try>"
     ],
     [
       "src/aryx/api/ontology_api.py",
-      183,
+      117,
       "ontology_router"
+    ],
+    [
+      "src/aryx/api/ontology_api_export.py",
+      45,
+      "export_graph_response"
+    ],
+    [
+      "src/aryx/api/ontology_api_export.py",
+      79,
+      "export_graph_response"
     ],
     [
       "src/aryx/api/ontology_browse.py",
@@ -7628,37 +7628,37 @@
     ],
     [
       "src/aryx/api/workspace_api.py",
-      240,
+      237,
       "delete_workspace"
     ],
     [
       "src/aryx/broker/__init__.py",
-      80,
+      54,
       "choose"
     ],
     [
       "src/aryx/broker/__init__.py",
-      87,
+      61,
       "choose"
     ],
     [
       "src/aryx/broker/__init__.py",
-      140,
+      115,
       "<if>"
     ],
     [
       "src/aryx/broker/__init__.py",
-      151,
+      126,
       "embed"
     ],
     [
-      "src/aryx/broker/__init__.py",
-      174,
+      "src/aryx/broker/embed_backends.py",
+      72,
       "_oci_embed"
     ],
     [
-      "src/aryx/broker/__init__.py",
-      203,
+      "src/aryx/broker/embed_backends.py",
+      101,
       "_oci_embed"
     ],
     [
@@ -8123,12 +8123,12 @@
     ],
     [
       "src/aryx/cpq/intent_queue.py",
-      161,
+      107,
       "<if>"
     ],
     [
       "src/aryx/cpq/intent_queue.py",
-      198,
+      144,
       "audit_intent_conservation"
     ],
     [
@@ -8173,22 +8173,37 @@
     ],
     [
       "src/aryx/cpq/rule_trace.py",
-      130,
+      84,
+      "_get_or_open"
+    ],
+    [
+      "src/aryx/cpq/rule_trace.py",
+      95,
       "<try>"
     ],
     [
       "src/aryx/cpq/rule_trace.py",
-      143,
+      108,
       "_get_or_open"
     ],
     [
-      "src/aryx/cpq/session_guard.py",
-      81,
+      "src/aryx/cpq/rule_trace.py",
+      132,
+      "record_fire"
+    ],
+    [
+      "src/aryx/cpq/rule_trace.py",
+      179,
+      "seal"
+    ],
+    [
+      "src/aryx/cpq/session_guard_snapshot.py",
+      48,
       "restore_last_snapshot"
     ],
     [
-      "src/aryx/cpq/session_guard.py",
-      101,
+      "src/aryx/cpq/session_guard_snapshot.py",
+      68,
       "restore_last_snapshot"
     ],
     [
@@ -8205,6 +8220,16 @@
       "src/aryx/cpq/validation/transitions.py",
       69,
       "apply_constraints"
+    ],
+    [
+      "src/aryx/demo/support_data_generator.py",
+      50,
+      "generate_sites"
+    ],
+    [
+      "src/aryx/demo/support_data_generator.py",
+      65,
+      "generate_sites"
     ],
     [
       "src/aryx/export_runtime.py",
@@ -8242,39 +8267,49 @@
       "add_entities_batch"
     ],
     [
-      "src/aryx/llm.py",
-      61,
-      "complete_text"
-    ],
-    [
-      "src/aryx/llm.py",
-      119,
-      "complete_text"
-    ],
-    [
-      "src/aryx/llm_providers.py",
-      62,
+      "src/aryx/llm_providers_anthropic.py",
+      14,
       "anthropic_json"
     ],
     [
-      "src/aryx/llm_providers.py",
-      76,
+      "src/aryx/llm_providers_anthropic.py",
+      28,
       "anthropic_json"
     ],
     [
-      "src/aryx/llm_providers.py",
-      163,
+      "src/aryx/llm_providers_oci.py",
+      17,
       "_oci_chat_raw"
     ],
     [
-      "src/aryx/llm_providers.py",
-      201,
+      "src/aryx/llm_providers_oci.py",
+      55,
       "<if>"
     ],
     [
-      "src/aryx/llm_providers.py",
-      208,
+      "src/aryx/llm_providers_oci.py",
+      62,
       "_oci_chat_raw"
+    ],
+    [
+      "src/aryx/llm_runtime.py",
+      81,
+      "chat"
+    ],
+    [
+      "src/aryx/llm_runtime.py",
+      110,
+      "chat"
+    ],
+    [
+      "src/aryx/llm_text.py",
+      23,
+      "complete_text"
+    ],
+    [
+      "src/aryx/llm_text.py",
+      80,
+      "complete_text"
     ],
     [
       "src/aryx/mcp/datasource.py",
@@ -8298,27 +8333,27 @@
     ],
     [
       "src/aryx/mcp/server.py",
-      48,
+      41,
       "list_tools"
     ],
     [
       "src/aryx/mcp/server.py",
-      50,
+      43,
       "list_tools"
     ],
     [
       "src/aryx/mcp/server.py",
-      192,
+      85,
       "call_tool"
     ],
     [
       "src/aryx/mcp/server.py",
-      193,
+      86,
       "<try>"
     ],
     [
       "src/aryx/mcp/server.py",
-      231,
+      124,
       "call_tool"
     ],
     [
@@ -8722,23 +8757,23 @@
       "discover_mappings"
     ],
     [
-      "src/aryx/project.py",
-      88,
+      "src/aryx/project_full.py",
+      92,
       "<if>"
     ],
     [
-      "src/aryx/project.py",
-      108,
+      "src/aryx/project_full.py",
+      112,
       "<if>"
     ],
     [
-      "src/aryx/project.py",
-      120,
+      "src/aryx/project_full.py",
+      124,
       "<if>"
     ],
     [
-      "src/aryx/project.py",
-      137,
+      "src/aryx/project_full.py",
+      141,
       "project_graph"
     ],
     [
@@ -8833,33 +8868,33 @@
     ],
     [
       "src/aryx/store/datasource_store.py",
-      29,
-      "add"
-    ],
-    [
-      "src/aryx/store/datasource_store.py",
-      49,
-      "add"
-    ],
-    [
-      "src/aryx/store/datasource_store.py",
-      72,
-      "update"
-    ],
-    [
-      "src/aryx/store/datasource_store.py",
-      102,
-      "update"
-    ],
-    [
-      "src/aryx/store/datasource_store.py",
-      137,
+      34,
       "secret_of"
     ],
     [
       "src/aryx/store/datasource_store.py",
-      148,
+      45,
       "secret_of"
+    ],
+    [
+      "src/aryx/store/datasource_store_crud.py",
+      23,
+      "add"
+    ],
+    [
+      "src/aryx/store/datasource_store_crud.py",
+      43,
+      "add"
+    ],
+    [
+      "src/aryx/store/datasource_store_crud.py",
+      66,
+      "update"
+    ],
+    [
+      "src/aryx/store/datasource_store_crud.py",
+      96,
+      "update"
     ],
     [
       "src/aryx/store/entity_store.py",
@@ -8888,32 +8923,32 @@
     ],
     [
       "src/aryx/store/mcp_token_store.py",
-      44,
+      41,
       "issue"
     ],
     [
       "src/aryx/store/mcp_token_store.py",
-      61,
+      58,
       "<if>"
     ],
     [
       "src/aryx/store/mcp_token_store.py",
-      99,
+      96,
       "issue"
     ],
     [
-      "src/aryx/store/mcp_token_store.py",
-      123,
+      "src/aryx/store/mcp_token_store_admin.py",
+      33,
       "<if>"
     ],
     [
-      "src/aryx/store/mcp_token_store.py",
-      141,
+      "src/aryx/store/mcp_token_store_admin.py",
+      51,
       "rescope"
     ],
     [
-      "src/aryx/store/mcp_token_store.py",
-      185,
+      "src/aryx/store/mcp_token_store_auth.py",
+      32,
       "authenticate"
     ],
     [
@@ -8998,7 +9033,7 @@
     ],
     [
       "src/aryx/store/oracle_workspace.py",
-      88,
+      75,
       "create"
     ],
     [
@@ -9032,33 +9067,23 @@
       "ensure_workspace_mapping"
     ],
     [
-      "src/aryx/store/source_purge_store.py",
-      45,
+      "src/aryx/store/source_purge_helpers.py",
+      41,
       "_policy"
     ],
     [
-      "src/aryx/store/source_purge_store.py",
-      48,
+      "src/aryx/store/source_purge_helpers.py",
+      44,
       "_policy"
     ],
     [
-      "src/aryx/ui/api.py",
-      72,
-      "create_workspace"
-    ],
-    [
-      "src/aryx/ui/api.py",
-      77,
-      "delete_workspace"
-    ],
-    [
-      "src/aryx/ui/api.py",
-      115,
+      "src/aryx/ui/api_entities.py",
+      21,
       "delete_entity"
     ],
     [
-      "src/aryx/ui/api.py",
-      120,
+      "src/aryx/ui/api_entities.py",
+      26,
       "update_entity"
     ],
     [
@@ -9152,6 +9177,16 @@
       "revoke_mcp_token"
     ],
     [
+      "src/aryx/ui/api_workspaces.py",
+      29,
+      "create_workspace"
+    ],
+    [
+      "src/aryx/ui/api_workspaces.py",
+      34,
+      "delete_workspace"
+    ],
+    [
       "src/aryx/ui/ask_export.py",
       54,
       "_as_xml"
@@ -9178,42 +9213,42 @@
     ],
     [
       "src/aryx/ui/ask_panel.py",
-      51,
-      "_sample_chips"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      53,
-      "<try>"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      67,
-      "_render_usage"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      74,
-      "_render_cpq_buttons"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      107,
-      "<try>"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      123,
-      "_render_msg"
-    ],
-    [
-      "src/aryx/ui/ask_panel.py",
-      143,
+      26,
       "render"
     ],
     [
       "src/aryx/ui/ask_panel.py",
-      176,
+      59,
+      "<try>"
+    ],
+    [
+      "src/aryx/ui/ask_panel_render.py",
+      16,
+      "_render_usage"
+    ],
+    [
+      "src/aryx/ui/ask_panel_render.py",
+      23,
+      "_render_cpq_buttons"
+    ],
+    [
+      "src/aryx/ui/ask_panel_render.py",
+      56,
+      "<try>"
+    ],
+    [
+      "src/aryx/ui/ask_panel_render.py",
+      72,
+      "_render_msg"
+    ],
+    [
+      "src/aryx/ui/ask_panel_samples.py",
+      51,
+      "_sample_chips"
+    ],
+    [
+      "src/aryx/ui/ask_panel_samples.py",
+      53,
       "<try>"
     ],
     [
@@ -9988,12 +10023,12 @@
     ],
     [
       "src/aryx/worker/fn_handler.py",
-      100,
+      30,
       "handler"
     ],
     [
       "src/aryx/worker/fn_handler.py",
-      135,
+      65,
       "<try>"
     ],
     [
@@ -10007,69 +10042,49 @@
       "submit_to_dataflow"
     ],
     [
-      "src/aryx/worker/oci_functions_provisioner.py",
-      72,
-      "_get_or_create_application"
-    ],
-    [
-      "src/aryx/worker/oci_functions_provisioner.py",
-      96,
-      "_get_or_create_application"
-    ],
-    [
-      "src/aryx/worker/oci_functions_provisioner.py",
-      99,
-      "_get_or_create_function"
-    ],
-    [
-      "src/aryx/worker/oci_functions_provisioner.py",
-      132,
-      "_get_or_create_function"
-    ],
-    [
       "src/aryx/worker/oci_functions_worker.py",
       11,
       "submit_to_oci_function"
     ],
     [
       "src/aryx/workspaces.py",
-      49,
-      "_attach_partitions"
-    ],
-    [
-      "src/aryx/workspaces.py",
-      57,
+      51,
       "_drop_partitions_with_conn"
     ],
     [
       "src/aryx/workspaces.py",
+      57,
+      "nuke"
+    ],
+    [
+      "src/aryx/workspaces.py",
       79,
+      "nuke"
+    ],
+    [
+      "src/aryx/workspaces_crud.py",
+      45,
       "create"
     ],
     [
-      "src/aryx/workspaces.py",
-      120,
+      "src/aryx/workspaces_crud.py",
+      86,
       "update_metadata"
     ],
     [
-      "src/aryx/workspaces.py",
-      151,
+      "src/aryx/workspaces_partitions.py",
+      30,
+      "_attach_partitions"
+    ],
+    [
+      "src/aryx/workspaces_partitions.py",
+      42,
       "purge_data"
     ],
     [
-      "src/aryx/workspaces.py",
-      175,
+      "src/aryx/workspaces_partitions.py",
+      66,
       "purge_data"
-    ],
-    [
-      "src/aryx/workspaces.py",
-      177,
-      "nuke"
-    ],
-    [
-      "src/aryx/workspaces.py",
-      199,
-      "nuke"
     ]
   ]
 }

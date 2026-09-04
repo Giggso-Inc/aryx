@@ -766,6 +766,188 @@ Function-length violations (§2.2) that live inside files *already* covered by t
 
 **Estimated effort:** originally "several days to a couple of weeks" for 20 files; at 67 files, realistically **4–8 weeks**, file-by-file, test-gated — a genuine scope increase from the threshold revision, not an estimate this plan is trying to minimize. **Risk:** low-to-moderate per file, mitigated by one-file-at-a-time discipline and running tests before moving to the next; Tier B's untested files carry the same risk profile as Tier A's untested files did, just more of them.
 
+### 2b progress log (started 2026-09-04)
+
+Adapted pace for Tier B given its 47-file scope: grep for whitebox patches before every split (same as Tier A), verify via the file's own dedicated test(s) when they exist, but skip the full Docker container smoke-test cycle after every single file — that now runs at periodic checkpoints instead, since Tier B's files are lower-traffic/less patch-dense than Tier A's core engine modules.
+
+| File | Lines | Status |
+|---|---:|---|
+| `models.py` | 153 | ⚠️ stated exception, not split — 3 lines over, pure pydantic data contracts (stage 1-9 pipeline vocabulary) imported by 55+ files; fragmenting a single coherent vocabulary for a 3-line overage isn't worth the churn |
+| `store/action_store.py` | 158 | ⚠️ stated exception, not split — 8 lines over, single cohesive `ActionStore` DB-CRUD class, zero test coverage; splitting into mixins for a marginal overage isn't worth the untested risk (no golden-master safety net) |
+| `llm_providers.py` | 162 (was 310) | ⚠️ stated exception, 12 over — `post_json`/`ollama_json`/`openai_json`/`_parse_llm_json` can't split further: `post_json` is whitebox-patched (`aryx.llm_providers.post_json`) by `test_llm_json_parsing.py`/`test_broker_gemini_embed.py`, and both `ollama_json`/`openai_json` call it by bare name |
+| `llm_providers_anthropic.py` | 24 | ✅ clean — `anthropic_json`, zero patches |
+| `llm_providers_oci.py` | 141 | ✅ clean — `_oci_chat_raw`/`oci_genai_text`/`oci_genai_json`, zero patches |
+| `cpq/session_guard.py` | 101 (was 328) | ✅ clean re-export hub |
+| `cpq/session_guard_snapshot.py` | 80 | ✅ clean — history/undo |
+| `cpq/session_guard_loop.py` | 130 | ✅ clean — clarify-streak counters + loop-exit prompts |
+| `cpq/session_guard_invariant.py` | 118 | ✅ clean — orphan-question guardrail |
+| `cpq/pending_scope.py` | 51 (was 369) | ✅ clean re-export hub |
+| `cpq/pending_scope_state.py` | 113 | ✅ clean — set/clear + candidate building |
+| `cpq/pending_scope_resolve.py` | 165 | ⚠️ stated exception, 15 over — exact/partial/fuzzy matching ladder kept whole (shared normalization helpers, cross-referenced incident-history thresholds) |
+| `cpq/pending_scope_messages.py` | 106 | ✅ clean — re-ask phrasing + logging |
+| `cpq/bom_gate.py` | 136 (was 372) | ✅ clean — `validate_before_payload` orchestrator + re-exports |
+| `cpq/bom_gate_types.py` | 33 | ✅ clean — result dataclasses |
+| `cpq/bom_gate_noise.py` | 41 | ✅ clean — shared noise-var detection |
+| `cpq/bom_gate_provenance.py` | 94 | ✅ clean — `check_provenance` |
+| `cpq/bom_gate_required.py` | 57 | ✅ clean — `find_missing_required_fields` |
+| `cpq/bom_gate_constraints.py` | 84 | ✅ clean — `recheck_constraints` |
+| `resolution/run.py` | 287 (was 340) | ⚠️ stated exception — `_block_embeddings`/`_route_pair`/`_materialize`/`resolve` stay together: `get_settings` is called from all four and whitebox-patched (`aryx.resolution.run.get_settings`) by 2 test files, `adjudicate` is patched and called only from `_route_pair`, and `_materialize` is itself directly patched — moving any one out breaks the bound-at-import-time patch resolution |
+| `resolution/run_exact.py` | 85 | ✅ clean — `_resolve_exact`/`_partition_pair_scores`, the only two functions in the original file with zero patch exposure |
+| `project.py` | 58 (was 253) | ✅ clean — `project_auto` orchestrator + re-exports |
+| `project_full.py` | 141 | ✅ clean — `project_graph`/`_entity_iri` |
+| `project_incremental.py` | 102 | ✅ clean — `project_incremental` |
+
+| `pipeline/orchestrate.py` | 291 | ⚠️ stated exception, not split — nearly every module-level name (`get_settings`, `_relate`, `_relate_isolated`, `discover`, `resolve_run`, `project_graph`, `StageRunner`, `StageTracker`, `PostgresStore`, `EntityStore`, `FalkorStore`, `OntologyStore`, `_build_type_ancestors`, `detect_and_link_dimensions`) is directly whitebox-patched (`aryx.pipeline.orchestrate.*`) by `test_relate_resilience.py`/`test_scalability_fixes.py` and called from `run_pipeline` itself — same tightly patch-coupled shape as `ask_api.py`, just smaller |
+| `broker/__init__.py` | 126 (was 282) | ✅ clean — `Broker` core (choose/charge/register/embed dispatch) + re-exports |
+| `broker/embed_backends.py` | 145 | ✅ clean — `_BrokerMixin`: model discovery/registration + per-backend embed impls |
+| `broker/factories.py` | 59 | ✅ clean — `default_broker`/`oci_broker` |
+| `demo/support_data_generator.py` | 113 (was 281) | ✅ clean — `SupportDataGenerator` core (customers/sites/devices/agents/tags) |
+| `demo/support_data_vocab.py` | 107 | ✅ clean — vocabulary constants |
+| `demo/support_data_tickets.py` | 103 | ✅ clean — `_TicketGenMixin`: ticket + resolution generation |
+| `graph/oracle_graph_store.py` | 102 (was 293) | ✅ clean — `OracleGraphStore` core (single-row methods) |
+| `graph/oracle_graph_store_helpers.py` | 85 | ✅ clean — attr sanitization, chunking, display-name extraction |
+| `graph/oracle_graph_store_batch.py` | 146 | ✅ clean — `_OracleGraphBatchMixin`: the 3 batch write methods |
+| `api/main.py` | 101 (was 294) | ✅ clean — `create_app` router wiring + re-exports |
+| `api/main_logging.py` | 39 | ✅ clean — aryx/uvicorn.access logger setup |
+| `api/main_middleware.py` | 62 | ✅ clean — `_RequestTimingMiddleware` |
+| `api/main_mcp.py` | 109 | ✅ clean — MCP bearer auth + SSE mount |
+| `api/main_lifespan.py` | 50 | ✅ clean — startup migrations + stale-job sweep + shutdown |
+
+All splits verified via each file's own dependent test suite where host pytest could collect it (llm_providers: 57/63 passed, 6 pre-existing `oci_client.py`-unrelated failures confirmed via inspection; session_guard+pending_scope combined sweep: 74+17 passed; bom_gate: 53/53 passed; resolution/run: 42 passed + 2 pre-existing failures confirmed identical on the unmodified file via `git stash`; project.py: 32/32 passed; broker: 17/18 passed, 1 excluded pre-existing OCI-SDK issue). `demo/support_data_generator.py`, `graph/oracle_graph_store.py`, and `api/main.py` have no dedicated tests reachable from the host (pre-existing `datetime.UTC` chain or zero coverage) — verified instead via a container checkpoint covering all 35 new/changed files from this batch: clean imports for every module (including `cpq.engine`, `api.ask_api`, `pipeline.doc_discovery` as downstream sanity checks) plus live functional checks (`default_broker()` + `.embed_model_id`, `SupportDataGenerator` full generation cycle, `_mount_mcp`/`_bearer_ok` importable and callable); container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist", no new errors in logs.
+
+| `mcp/server.py` | 131 (was 238) | ✅ clean — `_dispatch`/`call_tool`/`list_tools` tool-routing entry points |
+| `mcp/server_http.py` | 30 | ✅ clean — `_get`/`_post` REST helpers |
+| `mcp/server_workspace.py` | 66 | ✅ clean — `_enrich_workspace`/`_axiom_summary` |
+| `mcp/server_sales_chat.py` | 55 | ✅ clean — sales_chat_* tool dispatch |
+| `connectors/doc_router.py` | 129 (was 239) | ✅ clean — `DocumentRouterConnector`/`ingest_documents_parallel` |
+| `connectors/doc_router_select.py` | 51 | ✅ clean — per-extension connector selection |
+| `connectors/doc_router_ingest.py` | 110 | ✅ clean — single-document ingest pipeline + timeout wrapper |
+| `graph/retrieve.py` | 80 (was 232) | ✅ clean — `gather`/`retrieve` entry points + re-exports |
+| `graph/retrieve_lookup.py` | 79 | ✅ clean — `all_types`/`_lookup` |
+| `graph/retrieve_context.py` | 97 | ✅ clean — `render_context` |
+
+`mcp/server.py`/`connectors/doc_router.py` verified via clean host imports (syntax + a directly-importable dependency chain); host pytest can't collect their dependent test files (pre-existing `datetime.UTC` chain via `mcp/auth.py`) — deferred to the next container checkpoint. `graph/retrieve.py` verified directly: 20/20 passed across its 3 dependent test files (one re-export gap caught and fixed — `_types_cache` needed explicit re-export since `test_oracle_graph_reader_shortest_path_scope.py` imports it directly to inspect the TTL cache; same mutable-dict-by-reference behavior as the rest of this plan's re-export hubs).
+
+| `api/doc_discover_api.py` | 114 (was 220) | ✅ clean — `doc_discover_router` + re-exports |
+| `api/doc_discover_read_job.py` | 94 | ✅ clean — `_read_job`/`_build_read_progress`/`_save_tmp` |
+| `api/doc_discover_confirm_job.py` | 55 | ✅ clean — `_confirm_job`/`_reset_discovery_status` |
+| `ui/ask_panel.py` | 90 (was 207) | ✅ clean — `render()` page wiring |
+| `ui/ask_panel_samples.py` | 64 | ✅ clean — suggested-question chips + entity-id extraction |
+| `ui/ask_panel_render.py` | 89 | ✅ clean — per-message rendering |
+| `worker/oci_functions_provisioner.py` | 82 (was 183) | ✅ clean — `provision_ingest_function` + re-exports |
+| `worker/oci_functions_provisioner_resources.py` | 78 | ✅ clean — Application/Function create-or-update |
+| `worker/oci_functions_provisioner_config.py` | 61 | ✅ clean — `_build_fn_config` |
+| `resolve_entities.py` | 177 (unchanged net — docstring offset the extraction) | ⚠️ stated exception — `get_settings` is called both in `resolve_run` AND internally by `_id_like_keys`, and `test_resolve_run_wiring.py` patches `aryx.resolve_entities.get_settings` expecting both to see it; `AdjudicationStore`/`make_workspace_store`/`resolve`/`resolve_chunked`/`PgChunkBackend` are likewise patched and called only from `resolve_run` |
+| `resolve_entities_selectivity.py` | 26 | ✅ clean — `_key_selectivity`, the one function with zero patch exposure |
+| `worker/fn_handler.py` | 99 (was 169) | ✅ clean — `handler` OCI Functions entry point |
+| `worker/fn_handler_dispatch.py` | 92 | ✅ clean — per-file connector routing |
+| `api/rest_ingest_api.py` | 81 (was 169) | ✅ clean — `rest_ingest_router` + re-exports |
+| `api/rest_ingest_models.py` | 54 | ✅ clean — `RestPreviewRequest`/`RestIngestRequest` |
+| `api/rest_ingest_job.py` | 71 | ✅ clean — `_type_from_url`/`_run_rest` |
+| `reasoning/engine.py` | 107 (was 168) | ⚠️ stated exception — `evaluate_workspace` stays: `get_settings`/`RuleStore`/`EntityStore`/`FalkorStore`/`ws_graph` all directly whitebox-patched (`aryx.reasoning.engine.*`) by `test_scalability_fixes.py` and called only from this function |
+| `reasoning/engine_rules.py` | 94 | ✅ clean — `_match`/`_apply_label`/`_apply_edge`/`_fire`; confirmed zero patch risk since these only receive `graph`/`entity` as parameters, never calling a module-level patched name themselves |
+
+**All 23 originally-untested Tier B files are now done.** Verified via each file's own dependent tests where host pytest could collect them (`retrieve`: 20/20; `oci_functions_provisioner`: 7/7; `resolve_entities`: 20/20; `reasoning/engine`: 9/9) plus a second container checkpoint covering all 28 new/changed modules from `mcp/server.py` onward: clean imports (including `cpq.engine`/`api.ask_api`/`pipeline.doc_discovery`/`api.main` as downstream sanity checks) plus live functional checks (`_dispatch`/`call_tool`, `DocumentRouterConnector`, `all_types`/`gather`/`render_context`/`retrieve`, `provision_ingest_function`/`_build_fn_config`, `evaluate_workspace`/`_match`); container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist", no new errors in logs.
+
+**Tested-file batch, started:**
+
+| File | Lines | Status |
+|---|---:|---|
+| `graph/oracle_graph_reader.py` | 61 (was 391) | ✅ clean — `OracleGraphReader` core (`__init__`/`graph_name`/`_connection`) |
+| `graph/oracle_graph_reader_helpers.py` | 35 | ✅ clean — `_parse_attrs`/`_entity` |
+| `graph/oracle_graph_reader_basic.py` | 110 | ✅ clean — `_OracleGraphBasicReadMixin` (get_entity/distinct_types/describe_schema/find_entities) |
+| `graph/oracle_graph_reader_neighbors.py` | 117 | ✅ clean — `_OracleGraphNeighborsMixin` (neighbors/neighbors_batch/all_relationships/provenance) |
+| `graph/oracle_graph_reader_traverse.py` | 145 | ✅ clean — `_OracleGraphTraverseMixin` (subgraph/shortest_path) |
+
+Same zero-patch, mixin-based split already established for `FalkorStore`/`OracleGraphStore` earlier in this plan. Verified: 3/3 `test_oracle_graph_reader_shortest_path_scope.py` passed; clean host imports.
+
+| `store/source_purge_store.py` | 101 (was 313) | ✅ clean — `SourcePurgeStore` core (`__init__`/`_rowcount`/`purge`) + re-exports |
+| `store/source_purge_helpers.py` | 80 | ✅ clean — result dataclasses + `rebuild_survivor_states` |
+| `store/source_purge_mutations.py` | 135 | ✅ clean — `_SourcePurgeMutationsMixin` (lock/impacted-ids/invalidate/delete/cleanup/catalog) |
+| `store/source_purge_repair.py` | 74 | ✅ clean — `_SourcePurgeRepairMixin` (golden-record repair) |
+| `api/ask_thread_api.py` | 278 | ⚠️ stated exception — `_store`/`ask_thread_router` stay: `AryxAskThreadStore`/`run_ask`/`_validate_workspace` all directly whitebox-patched (`aryx.api.ask_thread_api.*`) by `test_ask_thread_api.py` and called only from these |
+| `api/ask_thread_helpers.py` | 61 | ✅ clean — `AskThreadMessageRequest` + 3 persistence helpers, zero patch exposure |
+| `explore.py` | 140 (was 274) | ✅ clean — `domain_overview_view` orchestrator + re-exports |
+| `explore_summary.py` | 93 | ✅ clean — `summarize`/`entities_view`/`graph_view` |
+| `explore_text_match.py` | 81 | ✅ clean — brief-driven text normalization/matching |
+
+Verified: `source_purge_store` 7/7 passed (one re-export gap caught and fixed — `rebuild_survivor_states` needed explicit re-export); `ask_thread_api`+`ask_thread_retry_api` 11/11 passed; `explore` 12/12 passed (one re-export gap caught and fixed — `_matches` needed explicit re-export, same pattern as `graph/retrieve.py`'s `_types_cache` fix earlier in this batch).
+
+| `store/discovery_store.py` | 178 (was 260) | ⚠️ stated exception, 28 over — `setup_module` in `test_discovery_store.py` patches `aryx.store.discovery_store.load` ONCE for the whole test module, and nearly every method calls `load(...)`; only the pure codec helpers were safely extractable |
+| `store/discovery_store_codec.py` | 110 | ✅ clean — `DiscoveryPayloadTooLarge`/encoder/decoder/`_row_to_dict`, zero patch exposure |
+| `cpq/rule_export.py` | 163 (was 251) | ⚠️ stated exception, 13 over — `build_product_tree` stays: it calls `get_cpq_rdb()`, patched at `aryx.cpq.rule_export.get_cpq_rdb` by a multi-line `patch()` call in `test_cpq_rule_export.py` that an initial single-line grep missed (caught by the test failure, not by grep — a reminder that multi-line patch() calls need their own check) |
+| `cpq/rule_export_tree.py` | 57 | ✅ clean — `TreeNode`/`_normalize`/`_name_index`/`_leaf_names` |
+| `cpq/rule_export_classify.py` | 72 | ✅ clean — `_rule_condition_values`/`classify_rule_scope`/`_rule_dict` |
+
+Verified: `discovery_store` 18/18 passed (one re-export gap caught and fixed — `_deserialize_data`/`_serialize_data` needed explicit re-export); `rule_export` 11/11 passed after moving `build_product_tree` back to the hub. Third container checkpoint covering all 19 new/changed modules from this batch (`oracle_graph_reader`, `source_purge_store`, `ask_thread_api`, `explore`, `discovery_store`, `rule_export` groups): clean imports plus functional checks (`OracleGraphReader.shortest_path`/`subgraph`, `SourcePurgeStore.purge`, `export_rules_json`/`build_product_tree`); container restarted, 42/42 migrations applied, `/health` → 200, `/ask` → 422, no new errors.
+
+| `api/admin_api.py` | 197 (was 247) | ⚠️ stated exception — `admin_router()` stays: `get_settings`/`EntityStore`/`FalkorStore`/`_build_type_ancestors`/`project_graph` all directly whitebox-patched (`aryx.api.admin_api.*`) by `test_admin_api.py` and used across its route closures; splitting FastAPI route closures across files is a larger architectural change than this plan's mechanical splits |
+| `api/admin_broker.py` | 49 | ✅ clean — `_local_broker`, re-exported from `admin_api.py` since other modules import it from there |
+| `api/admin_models.py` | 38 | ✅ clean — request models |
+| `api/workspace_api.py` | 239 (was 242) | ⚠️ stated exception — `workspace_router()` stays: `WorkspaceStore` is directly whitebox-patched (`aryx.api.workspace_api.WorkspaceStore`) by `test_workspace_api.py`, same FastAPI-closure reasoning as `admin_api.py` |
+| `api/workspace_models.py` | 34 | ✅ clean — request models |
+
+Verified: `admin_api` 3/3 passed; `workspace_api` 1/3 passed, 2 pre-existing failures confirmed identical on the unmodified file via `git stash` (`patch("aryx.api.workspace_api.apply_migrations")` targets a name that was never imported in this module even before this session's changes — a broken test, not a regression).
+
+| `pipeline/dimension_link.py` | 182 (was 239) | ⚠️ stated exception — `detect_and_link_dimensions` stays: it's the only function calling `get_settings()`, patched by `test_dimension_link.py` |
+| `pipeline/dimension_link_columns.py` | 46 | ✅ clean — candidate-column extraction + cardinality filtering |
+| `pipeline/dimension_link_groups.py` | 54 | ✅ clean — union-find clustering |
+| `cpq/rule_trace.py` | 203 (was 238) | ⚠️ stated exception, larger than a first attempt suggested — `_store`/`_get_or_open`/`record_fire`/`seal`/`sweep_orphans` all had to move back together after an initial split broke `test_cpq_rule_trace.py`'s `monkeypatch.setattr(rule_trace, "_store", ...)` (only rebinds the hub's own attribute; a function resolving `_store()` from a different module misses it — caught by a test failure, not by grep, since there's no `patch()` string literal for a plain `monkeypatch.setattr` on a function reference) |
+| `cpq/rule_trace_state.py` | 59 | ✅ clean — contextvars/lock state + `bind_context`/`bind_pass` |
+| `cpq/rule_trace_io.py` | 35 | ✅ clean — `_trace_dir` (resolves `get_settings` fresh via local import each call, so it's unaffected by which module it lives in) |
+| `ontology/extract.py` | 161 (was 237) | ⚠️ stated exception — `_extract_chunk_with_retry`/`extract_mentions` stay: `complete_json` is directly whitebox-patched (`aryx.ontology.extract.complete_json`) by `test_extract_mentions_retry.py`/`test_extract_mentions_concurrency.py` and called only from `_extract_chunk_with_retry` |
+| `ontology/extract_prompt.py` | 63 | ✅ clean — system prompt + JSON schema |
+| `ontology/extract_records.py` | 42 | ✅ clean — verbatim-span gate + mention-to-RawRecord mapping |
+| `cpq/intent_queue.py` | 144 (was 237) | ✅ clean — `intent_dropped_count`/`reset_intent_dropped_count`/`audit_intent_conservation` (kept together: they share the module-level `_INTENT_DROPPED_COUNT` counter via `global`) |
+| `cpq/intent_queue_ops.py` | 81 | ✅ clean — queue enqueue/pop/drain/clear |
+| `cpq/intent_queue_notices.py` | 50 | ✅ clean — user-visible notices |
+
+Verified: `dimension_link` 15/15 passed; `rule_trace` 13/14 passed (1 pre-existing failure confirmed identical via `git stash`); `extract_mentions` 12/12 passed after fixing a duplicate-body bug caught during the split (an `old_string` replace left `_mentions_to_records`'s original body still present lower in the file, referencing `SourceRef` which was no longer imported — caught by a `NameError` on the very next test run, not by review); `intent_queue` 8/8 passed. Fourth container checkpoint covering all 20 new/changed modules from this batch (`admin_api`, `workspace_api`, `dimension_link`, `rule_trace`, `extract`, `intent_queue`, `rule_export` groups): clean imports plus functional checks; container restarted, 42/42 migrations applied, `/health` → 200, `/ask` → 422, no new errors.
+
+| `store/mcp_token_store.py` | 110 (was 220) | ✅ clean — `McpTokenStore.issue`/`__init__`/`close` (only `issue` is patch-tested) |
+| `store/mcp_token_store_helpers.py` | 41 | ✅ clean — `_hash`/`_decode_tools` |
+| `store/mcp_token_store_admin.py` | 89 | ✅ clean — `_McpTokenAdminMixin` (rescope/list_/revoke) |
+| `store/mcp_token_store_auth.py` | 39 | ✅ clean — `_McpTokenAuthMixin` (verify/authenticate) |
+| `workspaces.py` | 79 (was 213) | ⚠️ stated exception, still small — `nuke`/`_drop_partitions_with_conn` stay: `test_workspaces.py` does `patch.object(workspaces, "load", ...)`, which only rebinds this module's own attribute |
+| `workspaces_crud.py` | 115 | ✅ clean — `_WorkspaceCrudMixin` |
+| `workspaces_partitions.py` | 80 | ✅ clean — `_WorkspacePartitionsMixin` (attach/drop/purge_data/delete) |
+| `store/oracle_workspace.py` | 194 (was 208) | ⚠️ stated exception — `load` directly whitebox-patched across ~30 test cases, nearly every method calls it |
+| `store/oracle_workspace_helpers.py` | 37 | ✅ clean — `_parse_brief` |
+| `resolution/chunked.py` | 168 (was 191) | ⚠️ stated exception — `_score_pass`/`_cluster_pass`/`resolve_chunked` stay: `get_settings` (both) and `_materialize` (cluster pass) are directly whitebox-patched |
+| `resolution/chunked_backend.py` | 46 | ✅ clean — `ChunkBackend` protocol + `_key_pass` |
+
+Two more re-export/import gaps caught during this batch: `oracle_workspace.py` lost its `import json` when trimmed (still used by `create`/`set_brief`'s `json.dumps` calls) — caught by 14 test failures, fixed by restoring the import. Verified: `mcp_token_store` 6/6 passed (via container, since `aryx.mcp.auth` needs Python 3.11+); `workspaces` — the one test file can't collect at all due to a **pre-existing** `sys.modules` stubbing collision unrelated to this session (confirmed identical via `git stash` on the unmodified baseline and reproduced again in-container) — verified the specific patched behavior (`patch.object(workspaces, "load", ...)` intercepting `nuke()`) via a direct standalone repro instead, which passed; `oracle_workspace` 52/52 passed; `chunked` 9/9 passed. Fifth container checkpoint covering all 11 new/changed modules from this batch: clean imports plus functional checks; container restarted, 42/42 migrations applied, `/health` → 200, `/ask` → 422, no new errors.
+
+| `store/datasource_store.py` | 64 (was 184) | ✅ clean — `DatasourceStore.secret_of`/`__init__` + `open_url` + re-exports |
+| `store/datasource_store_crud.py` | 146 | ✅ clean — `_DatasourceCrudMixin` (add/list/get/update/delete/ensure) |
+| `api/ontology_api.py` | 117 (was 183) | ✅ clean — `ontology_router` + re-exports |
+| `api/ontology_api_models.py` | 27 | ✅ clean — request models |
+| `api/ontology_api_export.py` | 82 | ✅ clean — `_load_bundle`/`export_graph_response` |
+| `llm.py` | 46 (was 178) | ✅ clean — re-exports + back-compat aliases |
+| `llm_call_log.py` | 28 | ✅ clean — `_log_llm_call` |
+| `llm_oci_route.py` | 28 | ✅ clean — `_oci_model_for`/`_use_oci_for` |
+| `llm_text.py` | 80 | ✅ clean — `complete_text` |
+| `llm_json.py` | 58 | ✅ clean — `complete_json` |
+| `llm_runtime.py` | 110 (was 174) | ⚠️ stated exception — `_log_call`/`chat` stay: `complete_text` and `get_settings`/`get_pool`/`load` are directly whitebox-patched, both called only from these two |
+| `llm_runtime_state.py` | 108 | ✅ clean — live config state + turn-usage tracking |
+| `api/shay_bridge_api.py` | 162 (was 168) | ⚠️ stated exception, 12 over — `shay_bridge_router()` stays: `ShayBridgeStore`/`run_ask` directly whitebox-patched across its route closures |
+| `api/shay_bridge_models.py` | 40 | ✅ clean — request models + `_citations_from_answer` |
+
+Verified: `datasource_store` 5/8 passed on host (3 pre-existing `datetime.UTC` failures, confirmed via container: 8/8 passed there); `ontology_api` 5/5 passed; `llm_runtime` 9/9 passed; `shay_bridge_api` 6/6 passed. `llm.py`'s broader sweep (5 test files touching `complete_text`/`complete_json`) showed 156/159 passed — 2 failures confirmed identical to already-documented pre-existing engine-dispatch failures from this session's `intent_schema.py` verification, and the 3rd (`test_llm_log.py::test_executes_insert_when_dsn_set`) confirmed pre-existing by direct inspection: the `_log_llm_call` params tuple is byte-identical to the original file (verified via `git show HEAD`), and the test fails identically in a from-scratch isolated pytest run with zero session interference — a persistent environment quirk unrelated to this session's work. Final container checkpoint covering all 14 new/changed modules from this batch: clean imports plus functional checks; container restarted, 42/42 migrations applied, `/health` → 200, `/ask` → 422, no new errors.
+
+**Correction caught during final wrap-up:** `ui/api.py` had been left as an "ambiguous-coverage flag" earlier in this plan (uncertain match against `test_api_security.py`). Checked directly: `test_api_security.py` tests `aryx.api.security`, not `aryx.ui.api` at all — the automated name-match was a false positive, and `ui/api.py` is actually genuinely untested by that file (its real test is `test_ui_api_client.py`, found separately). Processed it to make Phase 2a's Tier B count genuinely complete:
+
+| File | Lines | Status |
+|---|---:|---|
+| `ui/api.py` | 120 (was 193) | ✅ clean — `ask`/`share_config`/`list_runs`/`list_jobs`/`get_job`/`get_llm_config`/`set_llm_config`/`observability` + re-exports |
+| `ui/api_http.py` | 60 | ✅ clean — low-level HTTP verbs (`_get`/`_post`/`_post_raw`/`_delete`/`_put`) |
+| `ui/api_workspaces.py` | 62 | ✅ clean — workspace-scoped calls |
+| `ui/api_entities.py` | 53 | ✅ clean — entity/graph-browse calls |
+
+`tests/test_ui_api_client.py` patches `aryx.ui.api.urllib.request.urlopen` via `unittest.mock`'s dotted-path attribute walk, which requires `urllib` to be an attribute of the `aryx.ui.api` module itself — not a bound-name gotcha in the usual sense (the real `urlopen` call happens in `api_http.py` now, and that patch DOES intercept it correctly, since `urllib.request` is one shared stdlib module object everywhere), but `mock.patch`'s own path-resolution needs the first four dotted segments to already exist as attributes before it reaches the real target. Fixed by keeping a `# noqa: F401`-marked `import urllib.request` in the hub purely for that lookup to succeed — caught by 3 test failures (`ModuleNotFoundError: No module named 'aryx.ui.api.urllib'`), not by grep. Verified: 3/3 passed after the fix; container checkpoint (imports + `/health`/`/ask`) clean.
+
+**All 47 Tier B files are now genuinely done.** Combined with Phase 2a's 20 Tier A files, every file in `src/aryx/` originally flagged as "over 150 lines" in §2.1/§3.1 that this plan scoped for Phase 2 has been split (or documented as a stated exception). Remaining under the broader "over 150 lines" umbrella but explicitly out of THIS phase's scope: the two extreme outliers `cpq/engine.py` (14,469 lines) and `api/ask_api.py` (13,058 lines), always treated as Phase 4's own separate initiative (§5), and `apps/web/`/`shay_backend/`'s own Phase 3/5 file lists.
+
 **Dependency map:** these 67 files sit in `cpq/`, `pipeline/`, `store/`, `api/`, `graph/`, `ontology/`, `resolution/`, `worker/`, `ui/`, `mcp/`, `broker/`, `demo/`, `connectors/`, and `reasoning/` — i.e. nearly every subpackage in `src/aryx/`, not one corner. Concretely:
 - `cpq/data_table_resolver.py`, `cpq/bml.py`, `cpq/rdb.py`, `cpq/state.py`, `cpq/intent_schema.py`, `cpq/bom_gate.py`, `cpq/pending_scope.py`, `cpq/session_guard.py`, `cpq/rule_export.py`, `cpq/rule_trace.py`, `cpq/intent_queue.py` are all imported by `cpq/engine.py` (Phase 4's mega-file) — a split here changes `engine.py`'s import surface even though `engine.py` itself isn't being touched yet. Verify `engine.py`'s own tests (if any) still pass after each of these splits, and grep `engine.py` for direct imports of the specific names being moved before finalizing a module boundary (see step 2 above).
 - `store/oracle_pool.py`, `store/shay_bridge_store.py`, `store/ask_thread_store.py`, `store/entity_store.py`, `store/source_purge_store.py`, `store/mcp_token_store.py`, `store/discovery_store.py`, `store/oracle_workspace.py`, `store/datasource_store.py`, `store/action_store.py` are the actual database access layer this session's Oracle-parity fixes (PRs #310–#314) live in — a bad split here has the same blast radius as those bugs did (silent data corruption or hard crashes against real Oracle data, not just a Python import error). Re-run this session's own regression tests (the `ensure_workspace_mapping`/`ensure_chat_mapping` scenarios) after touching any of these.

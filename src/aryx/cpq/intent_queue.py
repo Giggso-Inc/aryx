@@ -4,6 +4,15 @@ Keeps session_guard under the style line cap while owning:
 - pending_intent_queue enqueue / drain / pop
 - audit_intent_conservation (cpq_intent_dropped)
 - user-visible overflow / drop notices
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`intent_queue_ops.py` (queue enqueue/pop/drain/clear) and
+`intent_queue_notices.py` (user-visible notices), both re-imported here.
+Zero whitebox test patches exist anywhere against `aryx.cpq.intent_queue.*`
+(confirmed via grep), so the split was purely mechanical.
+`intent_dropped_count`/`reset_intent_dropped_count`/
+`audit_intent_conservation` stay together here since they share the
+module-level `_INTENT_DROPPED_COUNT` counter via `global`.
 """
 from __future__ import annotations
 
@@ -11,6 +20,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from aryx.cpq.intent_queue_notices import format_dropped_intent_notice, format_queue_overflow_notice
+from aryx.cpq.intent_queue_ops import (
+    clear_queue_vn,
+    drain_intent_queue_into_pending,
+    enqueue_intent_targets,
+    pop_intent_queue_head,
+)
 from aryx.cpq.state import INTENT_QUEUE_CAP, CpqSession
 
 # Re-export for `from aryx.cpq.intent_queue import INTENT_QUEUE_CAP`
@@ -42,76 +58,6 @@ def reset_intent_dropped_count() -> None:
     """Test helper — zero the dropped-intent counter."""
     global _INTENT_DROPPED_COUNT
     _INTENT_DROPPED_COUNT = 0
-
-
-def enqueue_intent_targets(
-    session: CpqSession,
-    vns: list[str],
-    *,
-    exclude: set[str] | None = None,
-    cap: int = INTENT_QUEUE_CAP,
-) -> list[str]:
-    """Append variable_names to session.pending_intent_queue (deduped, FIFO).
-
-    Returns variable_names that did not fit under ``cap`` (overflow).
-    """
-    skip = set(exclude or set())
-    overflow: list[str] = []
-    for vn in vns:
-        name = (vn or "").strip()
-        if not name or name in skip:
-            continue
-        if name in session.pending_intent_queue:
-            continue
-        if len(session.pending_intent_queue) >= cap:
-            overflow.append(name)
-            continue
-        session.pending_intent_queue.append(name)
-    if overflow:
-        seen = set(session.pending_intent_overflow)
-        for vn in overflow:
-            if vn not in seen:
-                session.pending_intent_overflow.append(vn)
-                seen.add(vn)
-    return overflow
-
-
-def pop_intent_queue_head(session: CpqSession) -> str | None:
-    """Pop and return the next queued variable_name, or None if empty."""
-    if not session.pending_intent_queue:
-        return None
-    return session.pending_intent_queue.pop(0)
-
-
-def drain_intent_queue_into_pending(
-    session: CpqSession,
-    pending: list[Any],
-    attrs: list[Any],
-) -> list[Any]:
-    """Force the queue head to the front of ``pending`` (outranks catalog order).
-
-    Does not pop the queue — head stays until cleared after apply.
-    """
-    if not session.pending_intent_queue:
-        return pending
-    head = session.pending_intent_queue[0]
-    by_vn = {getattr(a, "variable_name", ""): a for a in attrs}
-    head_attr = by_vn.get(head)
-    if head_attr is None:
-        return pending
-    rest = [a for a in pending if getattr(a, "variable_name", "") != head]
-    reordered = [head_attr] + rest
-    session.pending_variables = [a.variable_name for a in reordered]
-    return reordered
-
-
-def clear_queue_vn(session: CpqSession, variable_name: str | None) -> None:
-    """Remove a variable_name from the intent queue after successful apply."""
-    if not variable_name:
-        return
-    session.pending_intent_queue = [
-        v for v in session.pending_intent_queue if v != variable_name
-    ]
 
 
 @dataclass
@@ -196,42 +142,3 @@ def audit_intent_conservation(
         if log:
             logger.error("%s", result.message)
     return result
-
-
-def format_dropped_intent_notice(
-    dropped_vns: list[str],
-    attrs: list[Any] | None = None,
-) -> str:
-    """User-visible line for dropped intents (never fail the turn silently)."""
-    if not dropped_vns:
-        return ""
-    by_vn = {
-        getattr(a, "variable_name", ""): (
-            getattr(a, "display_label", "") or getattr(a, "variable_name", "")
-        )
-        for a in (attrs or [])
-    }
-    labels = [by_vn.get(v) or v for v in dropped_vns]
-    joined = ", ".join(f"**{lbl}**" for lbl in labels)
-    return f"⚠️ I couldn't process: {joined} — please re-ask."
-
-
-def format_queue_overflow_notice(
-    overflow_vns: list[str],
-    attrs: list[Any] | None = None,
-) -> str:
-    """User-visible line when intent queue hits the cap."""
-    if not overflow_vns:
-        return ""
-    by_vn = {
-        getattr(a, "variable_name", ""): (
-            getattr(a, "display_label", "") or getattr(a, "variable_name", "")
-        )
-        for a in (attrs or [])
-    }
-    labels = [by_vn.get(v) or v for v in overflow_vns]
-    joined = ", ".join(f"**{lbl}**" for lbl in labels)
-    return (
-        f"⚠️ I can only track {INTENT_QUEUE_CAP} additional change targets at "
-        f"once — please re-ask about: {joined}."
-    )

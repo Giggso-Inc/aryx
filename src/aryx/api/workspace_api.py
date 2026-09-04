@@ -1,4 +1,14 @@
-"""Workspace management API: create / list / delete isolated spaces."""
+"""Workspace management API: create / list / delete isolated spaces.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), the
+request models moved to `workspace_models.py` (zero patch risk).
+`workspace_router()` stays as a deliberate exception: `WorkspaceStore` is
+directly whitebox-patched (`aryx.api.workspace_api.WorkspaceStore`) by
+`tests/test_workspace_api.py` and used inside `update_workspace`'s route
+closure (splitting FastAPI route closures across files would be a much
+larger architectural change than this plan's mechanical splits — same
+reasoning as `admin_api.py`'s `admin_router()`).
+"""
 from __future__ import annotations
 
 import logging
@@ -6,9 +16,14 @@ from itertools import islice
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from aryx.api.admin_api import _local_broker
+from aryx.api.workspace_models import (
+    BriefRequest,
+    ContextRequest,
+    WorkspaceRequest,
+    WorkspaceUpdateRequest,
+)
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
 from aryx.pipeline.fk_edges import link_by_attribute
@@ -17,35 +32,17 @@ from aryx.pipeline.enrich import _build_type_ancestors
 from aryx.relationships import infer_fk_links
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
-from aryx.workspaces import WorkspaceStore, ws_graph
 from aryx.workspaces import WorkspaceStore, make_workspace_store, ws_graph
 
+__all__ = [
+    "BriefRequest",
+    "ContextRequest",
+    "WorkspaceRequest",
+    "WorkspaceUpdateRequest",
+    "workspace_router",
+]
+
 logger = logging.getLogger(__name__)
-
-
-class WorkspaceRequest(BaseModel):
-    name: str
-    description: str = ""
-    context: str = ""
-
-
-class WorkspaceUpdateRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-
-
-class ContextRequest(BaseModel):
-    context: str = ""
-
-
-class BriefRequest(BaseModel):
-    """Knowledge-modelling brief — 5 METHONTOLOGY-style competency questions."""
-
-    domain: str = ""
-    aim: str = ""
-    objectives: list[str] = []
-    scope: str = ""
-    roles: list[str] = []
 
 
 def workspace_router() -> APIRouter:

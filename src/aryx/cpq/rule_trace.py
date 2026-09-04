@@ -31,85 +31,49 @@ same reasoning as aryx.cpq.logging_context's run_id: those methods are
 called directly (with no context bound) from 30+ existing unit tests that
 construct rule/attr objects in isolation. Absent context, record_fire()
 silently does nothing.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`rule_trace_state.py` (contextvars/lock state + `bind_context`/
+`bind_pass`) and `rule_trace_io.py` (`_trace_dir`, the one piece with no
+patch coupling), both re-imported here. `_store`/`_get_or_open`/
+`record_fire`/`seal`/`sweep_orphans` stay together in the hub: an earlier
+pass moved `_store`/`sweep_orphans` out and broke
+`test_cpq_rule_trace.py`'s `monkeypatch.setattr(rule_trace, "_store", ...)`
+— that only rebinds the hub module's own attribute, so any function
+resolving `_store()` via a different module's namespace misses the
+patch. Caught by a test failure, not by grep (there's no `patch()` string
+literal to search for a plain `monkeypatch.setattr` on a function
+object).
 """
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
-import threading
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 
 from aryx.cpq.logging_context import get_run_id, install_run_id_logging
+from aryx.cpq.rule_trace_io import _trace_dir
+from aryx.cpq.rule_trace_state import (
+    _ctx_var,
+    _lock,
+    _open_sessions,
+    _pass_var,
+    _sealed_run_ids,
+    _OpenTrace,
+    bind_context,
+    bind_pass,
+)
 from aryx.store.rule_trace_store import RuleTraceStore
+
+__all__ = [
+    "bind_context",
+    "bind_pass",
+    "record_fire",
+    "seal",
+    "sweep_orphans",
+]
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
-
-# (workspace_id, catalog_prefix) for the current ask-turn -- bind once per
-# turn via bind_context(), same lifecycle as run_id itself.
-_ctx_var: contextvars.ContextVar[tuple[int, str] | None] = contextvars.ContextVar(
-    "cpq_rule_trace_ctx", default=None,
-)
-# Current fixed-point pass number within evaluate_rules_loop -- bind once
-# per loop iteration via bind_pass().
-_pass_var: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "cpq_rule_trace_pass", default=0,
-)
-
-_open_sessions: dict[str, "_OpenTrace"] = {}
-# run_ids sealed at least once, kept forever (unlike _open_sessions, which
-# sheds the full _OpenTrace -- file_path, seq_no -- once sealed). Without
-# this, seal() popping the entry from _open_sessions let a later record_fire()
-# for the same run_id find no existing entry and treat it as brand new,
-# silently reopening a fresh session/file instead of staying a no-op (Raven
-# review: test_record_fire_after_seal_is_noop flaked on glob() file-ordering
-# once 2+ trace files existed in the same directory). A bare set of run_id
-# strings is far lighter than the _OpenTrace objects it replaces; unbounded
-# growth over a long-lived process's full session history is the same class
-# of growth this system already accepts for the durable session log itself.
-_sealed_run_ids: set[str] = set()
-_lock = threading.Lock()
-
-
-@dataclass
-class _OpenTrace:
-    run_id: str
-    file_path: Path | None
-    seq_no: int = 0
-    sealed: bool = False
-
-
-def bind_context(workspace_id: int, catalog_prefix: str) -> None:
-    """Bind (workspace_id, catalog_prefix) for the current ask-turn.
-
-    Call once per incoming ask request, alongside set_run_id() -- e.g. in
-    ask_api.py right after the CpqSession is loaded/created.
-    """
-    _ctx_var.set((int(workspace_id), catalog_prefix or ""))
-
-
-def bind_pass(pass_num: int) -> None:
-    """Bind the current fixed-point pass number. Call at the top of each
-    evaluate_rules_loop() iteration, before apply_hiding_rules() etc."""
-    _pass_var.set(pass_num)
-
-
-def _trace_dir() -> Path | None:
-    """Return the configured trace directory, or None if the current
-    get_settings() doesn't look like a real Settings instance (e.g. a test
-    broadly mocking get_settings() for something unrelated) -- never
-    silently write a garbage path built from a mock's repr."""
-    from aryx.config import get_settings
-    raw = get_settings().cpq_rule_trace_dir
-    if not isinstance(raw, str) or not raw:
-        logger.warning("rule_trace: cpq_rule_trace_dir is not a real path (%r) -- skipping local file write", raw)
-        return None
-    d = Path(raw)
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _store() -> RuleTraceStore:
@@ -117,7 +81,8 @@ def _store() -> RuleTraceStore:
     return RuleTraceStore(get_settings().effective_dsn())
 
 
-def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> _OpenTrace | None:
+def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> "_OpenTrace | None":
+    from datetime import datetime, timezone
     with _lock:
         if run_id in _sealed_run_ids:
             return None
@@ -141,6 +106,27 @@ def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> _OpenTr
         logger.exception("rule_trace: durable open_session failed run_id=%s", run_id)
     logger.info("cpq: rule trace opened file=%s", file_path.name if file_path else "<local write disabled>")
     return trace
+
+
+def sweep_orphans(timeout_hours: int | None = None) -> list[str]:
+    """Seal every durable session still 'open' past the orphan timeout.
+
+    Intended to run on a schedule (cron/background task), not per-request.
+    Returns the run_ids sealed as 'orphaned_timeout', or [] if the durable
+    store is unreachable (e.g. no Oracle-variant migration exists yet for
+    aryx_rule_trace_session/entry -- Raven review, PR #156: unlike
+    open_session/append_entry/seal_session above, this had no try/except,
+    so a scheduled sweep would raise instead of degrading gracefully like
+    its siblings on an Oracle-backed deployment).
+    """
+    if timeout_hours is None:
+        from aryx.config import get_settings
+        timeout_hours = get_settings().cpq_rule_trace_orphan_timeout_hours
+    try:
+        return _store().sweep_orphans(timeout_hours=timeout_hours)
+    except Exception:
+        logger.exception("rule_trace: durable sweep_orphans failed")
+        return []
 
 
 def record_fire(
@@ -215,24 +201,3 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
     with _lock:
         _sealed_run_ids.add(run_id)
         _open_sessions.pop(run_id, None)
-
-
-def sweep_orphans(timeout_hours: int | None = None) -> list[str]:
-    """Seal every durable session still 'open' past the orphan timeout.
-
-    Intended to run on a schedule (cron/background task), not per-request.
-    Returns the run_ids sealed as 'orphaned_timeout', or [] if the durable
-    store is unreachable (e.g. no Oracle-variant migration exists yet for
-    aryx_rule_trace_session/entry -- Raven review, PR #156: unlike
-    open_session/append_entry/seal_session above, this had no try/except,
-    so a scheduled sweep would raise instead of degrading gracefully like
-    its siblings on an Oracle-backed deployment).
-    """
-    if timeout_hours is None:
-        from aryx.config import get_settings
-        timeout_hours = get_settings().cpq_rule_trace_orphan_timeout_hours
-    try:
-        return _store().sweep_orphans(timeout_hours=timeout_hours)
-    except Exception:
-        logger.exception("rule_trace: durable sweep_orphans failed")
-        return []

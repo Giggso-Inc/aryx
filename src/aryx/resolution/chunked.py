@@ -11,16 +11,23 @@ A crashed run resumes from the first block without a done marker; passes 1
 and 3 are idempotent (pass 1 skips when keys already exist for the run).
 The in-memory ``resolve()`` stays the fast path for runs under
 ARYX_ER_CHUNK_THRESHOLD (default 100K records).
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), the
+`ChunkBackend` protocol and `_key_pass` moved to `chunked_backend.py`
+(zero patch risk). `_score_pass`/`_cluster_pass` stay here as a
+deliberate exception: `get_settings` is directly whitebox-patched
+(`aryx.resolution.chunked.get_settings`) by `tests/test_chunked_resolution.py`
+and called from both, and `_materialize` (also patched) is called from
+`_cluster_pass`.
 """
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
-from typing import Protocol
+from collections.abc import Iterator
 
 from aryx.config import get_settings
-from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
-from aryx.resolution.blocking import _keys_for
+from aryx.models import EntityMember, ResolvedEntity
+from aryx.resolution.chunked_backend import ChunkBackend, _key_pass
 from aryx.resolution.classical import score_pair
 from aryx.resolution.cluster import UnionFind
 from aryx.resolution.run import _materialize, _partition_pair_scores
@@ -36,36 +43,6 @@ MAX_BLOCK = 5000
 # produce any match edges — every record ends up in its own cluster):
 # hundreds of thousands of individual round-trips instead of a handful.
 CLUSTER_LOAD_BATCH = 5000
-
-
-class ChunkBackend(Protocol):
-    """Persistence the chunked resolver needs (Postgres in prod, dict in tests)."""
-
-    def has_keys(self, run_id: int) -> bool: ...
-    def add_members(self, run_id: int, rows: list[tuple[str, int]]) -> None: ...
-    def todo_blocks(self, run_id: int) -> Iterator[str]: ...
-    def block_record_ids(self, run_id: int, key: str) -> list[int]: ...
-    def load_records(self, ids: list[int]) -> list[ResolutionRecord]: ...
-    def add_edges(self, run_id: int,
-                  edges: list[tuple[int, int, float]]) -> None: ...
-    def mark_done(self, run_id: int, key: str) -> None: ...
-    def edges(self, run_id: int) -> Iterator[tuple[int, int, float]]: ...
-
-
-def _key_pass(run_id: int, records: Iterable[ResolutionRecord],
-              backend: ChunkBackend) -> None:
-    """Pass 1: persist (block_key, record_id) rows; skipped on resume."""
-    if backend.has_keys(run_id):
-        logger.info("key pass skipped (resume) run=%s", run_id)
-        return
-    batch: list[tuple[str, int]] = []
-    for record in records:
-        batch.extend((key, record.record_id) for key in _keys_for(record.text))
-        if len(batch) >= 10_000:
-            backend.add_members(run_id, batch)
-            batch = []
-    if batch:
-        backend.add_members(run_id, batch)
 
 
 def _score_pass(run_id: int, backend: ChunkBackend) -> None:

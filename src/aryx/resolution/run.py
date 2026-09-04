@@ -9,6 +9,21 @@ Thresholds (env-tunable, defaults from the G9 sweep — see DECISIONS.md):
 Pairs routed to the human queue are treated as NON-merge for the current run
 (conservative: a wrong merge is worse than a missed merge in audited domains).
 A later human approval unions the entities via apply_decision (G10).
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), the
+exact-id resolution path and pair-score bucketing (`_resolve_exact`,
+`_partition_pair_scores` — neither calls `get_settings`/`adjudicate` nor is
+itself patched) moved to `resolution/run_exact.py`. Everything else stays
+here as a deliberate, documented exception: `get_settings` is called from
+`_block_embeddings`, `_route_pair`, `_materialize`, AND `resolve` itself,
+and `tests/test_partition_pair_scores.py`/`test_resolve_run_wiring.py`
+whitebox-patch `aryx.resolution.run.get_settings` directly — moving any one
+of those callers out would mean it could no longer reach the patched name
+via a plain `from...import` (the same bound-at-import-time gotcha this plan
+has hit before). `adjudicate` (patched by `test_adjudication.py`) is only
+called from `_route_pair`, and `_materialize` is itself directly patched
+by `test_partition_pair_scores.py` and called only from `resolve` — both
+must stay put for the same reason.
 """
 from __future__ import annotations
 
@@ -19,12 +34,12 @@ from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolution.adjudicate import adjudicate
-from aryx.resolution.blocking import normalize
 from aryx.resolution.classical import block, score_pair
 from aryx.resolution.cluster import UnionFind, golden_record_weighted
 from aryx.resolution.confidence import cluster_confidence, cluster_edges
 from aryx.resolution.golden import golden_record_with_policy
 from aryx.resolution.review_queue import ReviewSink
+from aryx.resolution.run_exact import _partition_pair_scores, _resolve_exact
 from aryx.resolution.survivorship import SurvivorshipPolicy
 
 logger = logging.getLogger(__name__)
@@ -149,74 +164,6 @@ def _materialize(member_ids: list[int], by_id: dict[int, ResolutionRecord],
         confidence=cluster_confidence(edges, len(member_ids)),
         provenance=provenance, conflicts=conflicts or None,
     )
-
-
-def _partition_pair_scores(
-    union: UnionFind, pair_scores: dict[tuple[int, int], float],
-) -> dict[int, dict[tuple[int, int], float]]:
-    """Bucket pair_scores by cluster root ONCE, before materializing clusters.
-
-    cluster_edges() (confidence.py) scans its whole pair_scores argument for
-    every call. Passing the SAME full, run-wide pair_scores dict to every
-    cluster's _materialize() call makes total cost O(clusters x edges)
-    instead of O(edges) — a real incident: for a run with ~106,000 clusters
-    and 14.3 million pair scores, that is over a trillion dict-item checks.
-    Bucketing once (union.find() is O(1) amortized with path compression,
-    already applied by earlier union() calls) and handing each cluster only
-    its OWN small subset restores the correct O(edges + clusters) cost.
-    """
-    by_root: dict[int, dict[tuple[int, int], float]] = {}
-    for (left, right), score in pair_scores.items():
-        root = union.find(left)
-        by_root.setdefault(root, {})[(left, right)] = score
-    return by_root
-
-
-def _resolve_exact(
-    records: list[ResolutionRecord],
-    union: UnionFind,
-    pair_scores: dict[tuple[int, int], float],
-    run_id: int | None,
-) -> int:
-    """Exact-equality grouping for id-keyed data — no fuzzy scoring.
-
-    Fuzzy similarity is semantically invalid for opaque identifiers:
-    sequential ids like 18722401146 vs 18722401147 score 0.909+ on string
-    similarity and transitively collapse whole id ranges into one entity.
-    Here two records merge ONLY when their normalized match text is
-    identical. O(n), no embedding or LLM calls, no review-queue writes.
-
-    Records with empty/blank match text NEVER merge — each stays its own
-    entity. (The fuzzy path scores '' vs '' as 1.0, silently merging every
-    record that lacks the match-key attribute.)
-
-    Returns:
-        Number of merge operations performed.
-    """
-    groups: dict[str, list[int]] = {}
-    empty_text = 0
-    for record in records:
-        key = normalize(record.text)
-        if not key:
-            empty_text += 1
-            continue
-        groups.setdefault(key, []).append(record.record_id)
-
-    merged = 0
-    for member_ids in groups.values():
-        if len(member_ids) <= 1:
-            continue
-        # Chain pairs (k-1 edges at 1.0), not all O(k^2) pairs: sufficient for
-        # cluster_edges' contract (any within-cluster edge >= threshold) while
-        # bounding memory on pathological duplicate sets.
-        anchor = member_ids[0]
-        for other in member_ids[1:]:
-            union.union(anchor, other)
-            pair_scores[(anchor, other)] = 1.0
-            merged += 1
-    logger.info("resolve run_id=%s mode=exact_ids groups=%d records=%d merged=%d empty_text=%d",
-                run_id, len(groups), len(records), merged, empty_text)
-    return merged
 
 
 def resolve(

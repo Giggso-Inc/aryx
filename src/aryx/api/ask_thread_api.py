@@ -1,4 +1,15 @@
-"""Aryx Ask endpoints backed by Shay channel/thread/message storage."""
+"""Aryx Ask endpoints backed by Shay channel/thread/message storage.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03),
+`AskThreadMessageRequest`/`_is_replayable_response`/
+`_release_failed_request_after_persist_error`/
+`_complete_request_after_success` moved to `ask_thread_helpers.py` (zero
+patch risk — see that module's docstring). `_store`/`ask_thread_router`
+stay here as a deliberate exception: `AryxAskThreadStore`/`run_ask`/
+`_validate_workspace` are all directly whitebox-patched
+(`aryx.api.ask_thread_api.*`) by `tests/test_ask_thread_api.py` and
+called only from `_store()`/the router's route closures.
+"""
 
 from __future__ import annotations
 
@@ -8,23 +19,21 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from aryx.api.ask_api import AskRequest, Turn, _validate_workspace, run_ask
+from aryx.api.ask_thread_helpers import (
+    AskThreadMessageRequest,
+    _complete_request_after_success,
+    _is_replayable_response,
+    _release_failed_request_after_persist_error,
+)
 from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.store.ask_thread_store import AryxAskThreadStore
 
 logger = logging.getLogger(__name__)
 
-
-class AskThreadMessageRequest(BaseModel):
-    workspace_id: int = 1
-    shay_workspace_id: str
-    thread_id: str
-    request_id: str
-    question: str
-    session_data: dict[str, Any] = Field(default_factory=dict)
+__all__ = ["AskThreadMessageRequest", "ask_thread_router"]
 
 
 def _store() -> AryxAskThreadStore:
@@ -34,39 +43,6 @@ def _store() -> AryxAskThreadStore:
     for the Oracle port.
     """
     return AryxAskThreadStore(get_settings().effective_dsn())
-
-
-def _is_replayable_response(response: dict[str, Any] | None) -> bool:
-    """Return whether a cached response represents a completed Ask run."""
-    return bool(response) and not bool(response.get("error"))
-
-
-def _release_failed_request_after_persist_error(
-    store: AryxAskThreadStore,
-    thread_id: str,
-    request_id: str,
-) -> str:
-    """Release a failed Ask run, returning an error if the status write fails."""
-    try:
-        store.mark_request_retryable(thread_id, request_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("ask request retry release failed: %s", exc)
-        return str(exc)
-    return ""
-
-
-def _complete_request_after_success(
-    store: AryxAskThreadStore,
-    thread_id: str,
-    request_id: str,
-) -> str:
-    """Close a successful request before persisting its assistant response."""
-    try:
-        store.mark_request_completed(thread_id, request_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("ask request completion persist failed: %s", exc)
-        return str(exc)
-    return ""
 
 
 def ask_thread_router() -> APIRouter:

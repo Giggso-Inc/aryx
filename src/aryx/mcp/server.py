@@ -1,11 +1,19 @@
-"""Aryx MCP server — stdio + SSE. Wraps REST so any MCP host can drive it."""
+"""Aryx MCP server — stdio + SSE. Wraps REST so any MCP host can drive it.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`mcp/server_http.py` (`_get`/`_post` REST helpers), `mcp/server_workspace.py`
+(`_enrich_workspace`/`_axiom_summary`), and `mcp/server_sales_chat.py`
+(sales_chat_* tool dispatch), all re-imported here. Zero whitebox test
+patches exist anywhere against `aryx.mcp.server.*` (confirmed via grep),
+so the split was purely mechanical. `_dispatch`/`call_tool`/`list_tools`
+stay here as the tool-routing entry points.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-import urllib.request
 from typing import Any
 
 import mcp.types as types
@@ -13,13 +21,14 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from aryx.mcp.auth import current_principal
+from aryx.mcp.server_http import _get, _post
+from aryx.mcp.server_sales_chat import _dispatch_sales_chat
+from aryx.mcp.server_workspace import _enrich_workspace
 from aryx.mcp.tools import tool_specs
 
 logger = logging.getLogger(__name__)
 
-_API_URL = os.environ.get("ARYX_API_URL", "http://localhost:8088").rstrip("/")
 _DEFAULT_WS = int(os.environ.get("ARYX_MCP_DEFAULT_WORKSPACE", "1"))
-_POST_TIMEOUT = int(os.environ.get("ARYX_MCP_POST_TIMEOUT", "50"))
 server = Server("aryx")
 
 
@@ -28,84 +37,10 @@ def _ws(args: dict[str, Any]) -> int:
     return int(args.get("workspace_id") or _DEFAULT_WS)
 
 
-def _get(path: str) -> Any:
-    url = f"{_API_URL}{path}"
-    with urllib.request.urlopen(url, timeout=20) as resp:  # noqa: S310
-        return json.loads(resp.read().decode())
-
-
-def _post(path: str, body: dict) -> Any:
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"{_API_URL}{path}", data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=_POST_TIMEOUT) as resp:  # noqa: S310
-        return json.loads(resp.read().decode())
-
-
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     principal = current_principal()
     return [spec for spec in tool_specs() if principal.allows(spec.name)]
-
-
-def _enrich_workspace(ws: dict) -> dict:
-    """Add entity/relationship counts + type breakdown for one workspace."""
-    wid = int(ws.get("id", 1))
-    try:
-        types_doc = _get(f"/ontology/types?workspace_id={wid}") or {}
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "id": wid, "name": ws.get("name", ""),
-            "description": ws.get("description", ""),
-            "brief": ws.get("brief", {}),
-            "entity_count": 0, "relationship_count": 0,
-            "entity_types": [], "relationship_types": [],
-            "axiom_count": 0, "axiom_kinds": {},
-            "stats_error": str(exc),
-        }
-    axiom_count, axiom_kinds = _axiom_summary(wid)
-
-    def _norm(items: list, key: str) -> list[dict]:
-        out: list[dict] = []
-        for t in items or []:
-            if isinstance(t, dict):
-                out.append({"name": t.get("name") or t.get("type") or "",
-                            "count": int(t.get(key) or t.get("count") or 0)})
-            else:
-                out.append({"name": str(t), "count": 0})
-        return [t for t in out if t["name"]]
-    ents = _norm(types_doc.get("types") or types_doc.get("entity_types"),
-                 "instance_count")
-    rels = _norm(types_doc.get("relationships")
-                 or types_doc.get("relationship_types"), "count")
-    return {
-        "id": wid,
-        "name": ws.get("name", ""),
-        "description": ws.get("description", ""),
-        "brief": ws.get("brief", {}),
-        "entity_count": int(types_doc.get("entity_count")
-                            or sum(t["count"] for t in ents)),
-        "relationship_count": sum(t["count"] for t in rels),
-        "entity_types": ents,
-        "relationship_types": rels,
-        "axiom_count": axiom_count,
-        "axiom_kinds": axiom_kinds,
-    }
-
-
-def _axiom_summary(workspace_id: int) -> tuple[int, dict]:
-    try:
-        doc = _get(f"/ontology/axioms?workspace_id={workspace_id}") or {}
-    except Exception:  # noqa: BLE001 — axioms advisory in MCP card
-        return 0, {}
-    axioms = doc.get("axioms") or []
-    kinds: dict[str, int] = {}
-    for ax in axioms:
-        if k := str(ax.get("kind") or ""):
-            kinds[k] = kinds.get(k, 0) + 1
-    return len(axioms), kinds
 
 
 def _dispatch(name: str, a: dict) -> Any:
@@ -118,49 +53,7 @@ def _dispatch(name: str, a: dict) -> Any:
             "message": f"MCP token is not authorized for tool {name!r}",
         }
     if name.startswith("sales_chat_"):
-        from sales_streamlit.mcp_service import SalesChatService
-
-        service = SalesChatService(principal)
-        try:
-            if name == "sales_chat_start":
-                return service.start(a.get("actor_id"))
-            if name == "sales_chat_list_threads":
-                return service.list_threads(
-                    a.get("actor_id"),
-                    int(a.get("limit") or 50),
-                )
-            if name == "sales_chat_get_messages":
-                return service.get_messages(
-                    a.get("actor_id"),
-                    a.get("thread_id"),
-                    int(a.get("limit") or 100),
-                )
-            if name == "sales_chat_send":
-                return service.send(
-                    actor_id=a.get("actor_id"),
-                    thread_id=a.get("thread_id"),
-                    request_id=a.get("request_id"),
-                    message=a.get("message"),
-                )
-            if name == "sales_chat_confirm":
-                return service.confirm(
-                    actor_id=a.get("actor_id"),
-                    thread_id=a.get("thread_id"),
-                    message_id=a.get("message_id"),
-                    request_id=a.get("request_id"),
-                )
-            if name == "sales_chat_resolve_route":
-                return service.resolve_route(
-                    actor_id=a.get("actor_id"),
-                    thread_id=a.get("thread_id"),
-                )
-            if name == "sales_chat_bootstrap":
-                return service.bootstrap(
-                    a.get("actor_id"),
-                    a.get("thread_id"),
-                )
-        finally:
-            service.close()
+        return _dispatch_sales_chat(name, a, principal)
     if name == "list":
         workspaces = _get("/admin/workspaces?workspace_id=1") or []
         return [_enrich_workspace(ws) for ws in workspaces]
