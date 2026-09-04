@@ -2,78 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Clock, Plus } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { AskHistoryDrawer } from "@/components/ask/AskHistoryDrawer";
-import { AskSearchInput } from "@/components/ask/AskSearchInput";
 import { Composer } from "@/components/ask/Composer";
-import { MessageList } from "@/components/ask/MessageList";
 import { api } from "@/lib/api";
+import { askThreadHref, threadMessageToTurn, uid } from "@/lib/ask-page-utils";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
-import type { AskThreadMessage, ChatTurn, Citation, Usage } from "@/lib/types";
-
-const STARTERS = [
-  "Who are our top customers by revenue?",
-  "Show me all open tickets for a specific account",
-  "What products does this customer own?",
-];
-
-const FOLLOWUPS = [
-  "What else do we know about that Customer?",
-  "Show me the underlying records",
-  "What's missing or weak in this data?",
-];
-
-function uid() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  const bytes = new Uint8Array(16);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i += 1) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(
-    bytes,
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20),
-  ].join("-");
-}
-
-function askThreadHref(shayWorkspaceId: string, threadId?: string) {
-  return threadId
-    ? `/workspaces/${shayWorkspaceId}/ask?thread=${encodeURIComponent(threadId)}`
-    : `/workspaces/${shayWorkspaceId}/ask`;
-}
-
-function threadMessageToTurn(message: AskThreadMessage): ChatTurn {
-  return {
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    sequenceNumber: message.sequence_number,
-    requestId: message.request_id ?? null,
-    citations: message.citations,
-    usage: message.usage,
-    jsonResponse: message.json_response ?? null,
-    jsonButtonFlag: message.json_button_flag ?? false,
-    beautify: message.beautify ?? "",
-    beautifyButtonFlag: message.beautify_button_flag ?? false,
-    apiShareButtonFlag: message.api_share_button_flag ?? false,
-    sessionData: message.session_data ?? {},
-  };
-}
+import type { ChatTurn, Citation, Usage } from "@/lib/types";
+import { AskControlsBar } from "./_components/AskControlsBar";
+import { AskTranscript } from "./_components/AskTranscript";
 
 export default function HomePage() {
   const router = useRouter();
@@ -474,84 +413,36 @@ export default function HomePage() {
 
       <div className="app-shell-offset flex min-h-0 flex-1">
         <main className="workspace-section-shell flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] flex-1 flex-col overflow-hidden pt-4 pb-6">
-          <section
-            aria-label="Ask controls"
-            className="mb-4 flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-navy-100 bg-white p-3 shadow-soft"
-          >
-            <AskSearchInput
-              value={messageSearch}
-              onChange={setMessageSearch}
-              placeholder="Search this conversation..."
-              ariaLabel="Search this conversation"
-              resultLabel={normalizedMessageSearch
-                ? `${filteredTurns.length} ${filteredTurns.length === 1 ? "match" : "matches"}`
-                : undefined}
-              disabled={turns.length === 0}
-              className="h-10 min-w-0 flex-1 max-w-96 rounded-xl border-navy-200 bg-navy-50 shadow-none"
-            />
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowHistory((v) => !v)}
-                className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3.5 text-[12px] font-medium text-navy-600 shadow-sm hover:bg-navy-50"
-              >
-                <Clock size={12} /> History
-              </button>
-              {shayWorkspaceId && selectedThreadId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    router.push(askThreadHref(shayWorkspaceId));
-                    setTurns([]);
-                    setInput("");
-                    setMessageSearch("");
-                    setSessionData({});
-                  }}
-                  className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-800 bg-navy-800 px-3.5 text-[12px] font-semibold text-white shadow-sm hover:bg-navy-700"
-                >
-                  <Plus size={12} /> New Ask
-                </button>
-              )}
-            </div>
-          </section>
+          <AskControlsBar
+            messageSearch={messageSearch}
+            onMessageSearchChange={setMessageSearch}
+            resultCount={normalizedMessageSearch ? filteredTurns.length : null}
+            hasTurns={turns.length > 0}
+            onToggleHistory={() => setShowHistory((v) => !v)}
+            showNewAsk={!!(shayWorkspaceId && selectedThreadId)}
+            onNewAsk={() => {
+              if (!shayWorkspaceId) return;
+              router.push(askThreadHref(shayWorkspaceId));
+              setTurns([]);
+              setInput("");
+              setMessageSearch("");
+              setSessionData({});
+            }}
+          />
 
-          {loadingThread ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center text-[12px] text-subtle">
-              Loading thread…
-            </div>
-          ) : showEmpty ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto animate-fade-in">
-              <div className="w-full pb-6" />
-            </div>
-          ) : (
-            <div
-              ref={transcriptRef}
-              className="min-h-0 flex-1 overflow-y-auto pb-6 pr-1"
-              onScroll={(event) => {
-                if (event.currentTarget.scrollTop < 48) {
-                  void loadOlderMessages();
-                }
-              }}
-            >
-              {loadingOlder && (
-                <div className="mb-3 text-center text-[11px] text-subtle">
-                  Loading older messages…
-                </div>
-              )}
-              {normalizedMessageSearch && filteredTurns.length === 0 ? (
-                <div className="py-12 text-center text-[12px] text-subtle" aria-live="polite">
-                  No messages match “{messageSearch.trim()}”.
-                </div>
-              ) : (
-                <MessageList
-                  turns={filteredTurns}
-                  workspaceId={workspaceId}
-                  conversationId={conversationIdRef.current}
-                  autoScroll={autoScrollTranscript && !normalizedMessageSearch}
-                />
-              )}
-            </div>
-          )}
+          <AskTranscript
+            transcriptRef={transcriptRef}
+            loadingThread={loadingThread}
+            showEmpty={showEmpty}
+            loadingOlder={loadingOlder}
+            normalizedMessageSearch={normalizedMessageSearch}
+            messageSearch={messageSearch}
+            filteredTurns={filteredTurns}
+            workspaceId={workspaceId}
+            conversationId={conversationIdRef.current}
+            autoScrollTranscript={autoScrollTranscript}
+            onScrollNearTop={() => void loadOlderMessages()}
+          />
 
           <div className="shrink-0 border-t border-transparent bg-canvas/95 pt-4 backdrop-blur supports-[backdrop-filter]:bg-canvas/88">
             <Composer

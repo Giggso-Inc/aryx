@@ -971,6 +971,195 @@ Previously **unassigned to any phase** — §9's summary table originally called
 
 **Estimated effort:** originally "a few days to a week" for 13 files; at 43 files, realistically **2–3 weeks** — page/component splits are still largely mechanical, so this scales more gently than Phase 2/5's logic-heavy files, but it's still more than 3× the file count.
 
+### Phase 3 progress log (started 2026-09-04)
+
+Step 3's own first check, done: `apps/web` has **zero test infrastructure** — no jest/vitest config, no test files, no test script in `package.json` (only `dev`/`build`/`start`/`lint`). Verification for every file in this phase therefore relies on `npx tsc --noEmit` (type-check) + `npm run build` (full Next.js build) + a container rebuild/restart + a curl smoke test of a page that renders the changed component, checking for a clean server startup log and a 200 response — there is no way for this session to visually confirm interactive/rendered correctness (no browser tool available); that check is the user's own to do before treating a given file as fully verified, not just build-clean.
+
+`node_modules` was not installed at session start — `npm install` was run once (501 packages, pre-existing deprecation warnings/audit findings in the dependency tree, out of scope for this refactor). A running `aryx-web-1` Docker container (from `docker-compose-oci.yml`, the same compose file used throughout this plan's Python-side verification) serves port 3000 with a standalone production build — local `npm run dev` cannot bind that port, so verification uses the same container-rebuild-and-restart pattern already established for the Python API: `docker compose -f docker-compose-oci.yml build web` → `up -d --force-recreate web` → curl.
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/brand/Header.tsx` | 182 (was 527) | ⚠️ stated exception, 32 over — the exported `Header` component's own state/effects (sidebar-collapse localStorage sync, workspace-name fetch, CSS-var offset sync) are one cohesive unit; further fragmenting hooks across files would hurt readability for marginal line-count gain |
+| `components/brand/AppSidebar.tsx` | 188 | ⚠️ stated exception, 38 over — one self-contained sidebar widget (profile-menu state + outside-click/Escape handling); same reasoning as `Header.tsx` |
+| `components/brand/HeaderNavLinks.tsx` | 73 | ✅ clean — `SidebarLink`/`TopNavLink` |
+| `components/brand/header-meta.tsx` | 67 | ✅ clean — `headerMeta`/`workspaceTabIcon` |
+| `components/brand/HeaderTitleArea.tsx` | 71 | ✅ clean — the topbar title/workspace-nav JSX, extracted so `Header.tsx` didn't have to inline it |
+
+Confirmed via grep that `AppSidebar`/`SidebarLink`/`TopNavLink`/`workspaceTabIcon`/`headerMeta` have zero external importers (internal to `Header.tsx` only) — safe to move freely; 16 files import `Header` itself, all via the unchanged `@/components/brand/Header` path. One type error caught by `tsc --noEmit` during the split: `HeaderTitleArea`'s `section` prop was typed as `WorkspaceSection | undefined` but `parseWorkspaceScope` actually returns `WorkspaceSection | null` — fixed by widening the prop type. Verified: `tsc --noEmit` clean, `npm run build` exit 0 with an identical route manifest to the pre-split baseline, container rebuilt/restarted cleanly (`✓ Ready in 101ms`, no errors in logs), `/login` returns 200 with the correct page title.
+
+**`app/settings/page.tsx` split — DONE.** 622 lines -> 9 files, all clean (≤150 lines each):
+
+| File | Lines | Status |
+|---|---:|---|
+| `app/settings/page.tsx` | 63 (was 622) | ✅ clean — `SettingsPage` shell (tab bar + `Header`) |
+| `app/settings/_components/shared.tsx` | 34 | ✅ clean — `Section`/`CopyButton` |
+| `app/settings/_components/McpTab.tsx` | 125 | ✅ clean — issue-token form + state |
+| `app/settings/_components/McpTokenList.tsx` | 58 | ✅ clean — active-tokens table |
+| `app/settings/_components/McpConnectionConfig.tsx` | 69 | ✅ clean — client config snippets |
+| `app/settings/_components/LlmTab.tsx` | 72 | ✅ clean |
+| `app/settings/_components/OntologyTab.tsx` | 150 | ✅ clean (right at the line) |
+| `app/settings/_components/OntologyFormatPicker.tsx` | 35 | ✅ clean |
+| `app/settings/_components/DangerTab.tsx` | 75 | ✅ clean |
+
+This file was already organized into 4 visually-distinct tab components (`McpTab`/`LlmTab`/`OntologyTab`/`DangerTab`) plus 2 shared helpers — exactly the low-risk JSX-boundary pattern the plan's own Phase 3 item 1 describes. Used a Next.js `_components/` subfolder (underscore prefix excludes it from routing) rather than sibling files directly in the route folder. One incidental cleanup: `McpTab`'s original `useWorkspace()` call destructured `workspaceId` but never used it (dead code in the original) — dropped during the move since it was directly in the code being relocated, not a separate cleanup pass. Verified: `tsc --noEmit` clean on the first pass, `npm run build` exit 0 (`/settings` bundle 5.32 kB vs. baseline's 5.25 kB — the small increase is normal module-boundary overhead from splitting into more chunks), container rebuilt/restarted cleanly, `/settings` → 200.
+
+**`app/page.tsx` split — DONE (partial by design, deliberate stated exception).** 580 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `app/page.tsx` | 471 (was 580) | ⚠️ stated exception, deliberately NOT split further — `HomePage`'s state, effects, `send()` (with its embedded 2-phase fetch-failure recovery poll), and `loadOlderMessages()` |
+| `lib/ask-page-utils.ts` | 50 | ✅ clean — `uid`/`askThreadHref`/`threadMessageToTurn` |
+| `app/_components/AskControlsBar.tsx` | 59 | ✅ clean — search bar + History/New Ask buttons |
+| `app/_components/AskTranscript.tsx` | 77 | ✅ clean — transcript loading/empty/search-miss/message-list states |
+
+**Why `page.tsx` itself wasn't split further, unlike `Header.tsx`/`app/settings/page.tsx`:** this is the app's primary Ask/chat page — `send()`'s catch block runs a genuinely tightly-coupled two-phase recovery poll (fast 3s x20, then slow 15s x56, covering a 900s `headersTimeout` window) reading and writing half a dozen refs/state setters by closure (`activeThreadRef`, `optimisticThreadRef`, `cancelRecoveryRef`, `sendInFlightRef`, `setTurns`, `setSessionData`). `apps/web` has zero test infrastructure (confirmed at this phase's start), so mechanically extracting this logic into standalone functions carries real risk of a subtle correctness bug in production chat (e.g. breaking the recovery poll's cancellation race, or the optimistic-thread-id swap) with no automated way to catch it before a user hits it live. This mirrors exactly the judgment call the Python side of this plan made for `ask_api.py`'s equally load-bearing, equally tightly-coupled `_run_cpq_turn_inner()` — carved out as Phase 4's own separate initiative requiring dedicated regression tests *before* any code moves, not attempted as a mechanical split. Only the side-effect-free pieces (pure utils, presentational JSX with no closures over the send/recovery logic) were extracted here. Two incidental cleanups caught during the move: `STARTERS`/`FOLLOWUPS` constants were defined but never referenced anywhere in the original file (confirmed via grep — a different, unrelated `STARTERS` exists in `components/start/Goals.tsx`) — dropped as dead code found directly in the code being relocated. One type error caught by `tsc --noEmit`: `AskTranscript`'s `transcriptRef` prop was typed `RefObject<HTMLDivElement | null>` but `useRef<HTMLDivElement>(null)` actually produces `RefObject<HTMLDivElement>` under this project's React types — fixed by correcting the prop type. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly, `/` → 200.
+
+**`components/shay/WorkspaceSettingsPage.tsx` split — DONE (partial by design, deliberate stated exception).** 817 lines -> 6 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/shay/WorkspaceSettingsPage.tsx` | 403 (was 817) | ⚠️ stated exception, 253 over — retains all of `WorkspaceSettingsPage`'s state and handlers (`load`, `saveWorkspace`, `addMember`, `updateMemberRole`, `removeMember`, `purgeWorkspaceData`, `deleteWorkspace`) plus the top-level render wiring, as one auditable unit |
+| `components/shay/workspace-settings/types.ts` | 24 | ✅ clean — `SettingsTab`/`MEMBER_ROLES`/`SETTINGS_TABS`/`DisplayWorkspaceMember`/`roleLabel` |
+| `components/shay/workspace-settings/shared.tsx` | 39 | ✅ clean — `InlineNotice`/`ProfileSummaryField` |
+| `components/shay/workspace-settings/AppsTab.tsx` | 16 | ✅ clean |
+| `components/shay/workspace-settings/DangerZoneTab.tsx` | 67 | ✅ clean — purge/delete workspace actions |
+| `components/shay/workspace-settings/AddMemberModal.tsx` | 172 | ⚠️ stated exception, 22 over — one self-contained modal (search + filtered available-users list + per-user role select), splitting further would fragment one cohesive interaction into pieces with no independent reuse |
+| `components/shay/workspace-settings/MembersTab.tsx` | 137 | ✅ clean — member grid + `AddMemberModal` trigger |
+
+**Why the hub wasn't split further:** `WorkspaceSettingsPage`'s handlers include real workspace member management and workspace deletion (`deleteWorkspace()`, `purgeWorkspaceData()`) with zero test coverage — the same reasoning applied to `app/page.tsx`'s `send()`/recovery-poll above. Only the presentational tabs/modal (no closures over the risky handlers, driven entirely by props) were extracted; the stateful core stays together as one auditable unit. `MembersTab`'s inline "add member" modal (~120 lines of the original file) was pulled into its own `AddMemberModal.tsx` since it was already a fully self-contained interaction (own local state for search text and pending per-user role selections) with a clean props boundary (`open`/`availableUsers`/`memberBusy`/`onAddMember`/`onClose`). Confirmed via grep that `MembersTab`/`AppsTab`/`DangerZoneTab`/`InlineNotice`/`ProfileSummaryField`/`MEMBER_ROLES`/`SETTINGS_TABS` had zero external importers beyond this file — safe to move freely. Verified: `tsc --noEmit` clean, `npm run build` exit 0 (`/workspaces/[workspaceId]/settings` route builds at 6.94 kB), container rebuilt/restarted cleanly (`✓ Ready in 107ms`, no errors in logs), `/settings` and `/workspaces` both → 200.
+
+**`components/shay/AdminUsersPageView.tsx` (668) + `components/shay/AdminUsersPageParts.tsx` (562) split — DONE.** 1,230 lines combined -> 12 files in a new `components/shay/admin-users/` subfolder:
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/shay/AdminUsersPageView.tsx` | 189 (was 668) | ⚠️ stated exception, 39 over — the top-level tab shell + `Alert`; mostly an unavoidably-long props interface for the view, not entangled logic |
+| `components/shay/admin-users/types.ts` | 35 | ✅ clean — `AdminTab`/`TableTab`/filter option lists/`SETTINGS_TABS` |
+| `components/shay/admin-users/shared.tsx` | 33 | ✅ clean — `RoleBadge`/`EmptyState`/`capitalize`, shared by both tables |
+| `components/shay/admin-users/widgets.tsx` | 77 | ✅ clean — `LoadingState`/`MetricCard` |
+| `components/shay/admin-users/InviteUserModal.tsx` | 198 | ⚠️ stated exception, 48 over — one self-contained multi-row invite dialog, same reasoning as `AddMemberModal.tsx` above |
+| `components/shay/admin-users/UsersTable.tsx` | 146 | ✅ clean — table + `UserCell`/`Avatar`/`StatusBadge` |
+| `components/shay/admin-users/InvitationsTable.tsx` | 87 | ✅ clean |
+| `components/shay/admin-users/UsersToolbar.tsx` | 82 | ✅ clean — search + role/status filters + invite button |
+| `components/shay/admin-users/UsersListPanel.tsx` | 84 | ✅ clean — table-tab header + table swap |
+| `components/shay/admin-users/UsersSection.tsx` | 118 | ✅ clean — composes metrics + toolbar + list panel |
+| `components/shay/admin-users/SubscriptionSection.tsx` | 106 | ✅ clean — `PlanStatCard`/`FeatureBadge`/`formatLabel` |
+| `components/shay/admin-users/CompanyProfileSection.tsx` | 135 | ✅ clean — `ProfileField`/`ProfileTextarea` |
+
+Both source files were already organized into clearly separable pieces (tab sections, table components, a modal) with no shared mutable state between them — a props-driven UI, unlike `WorkspaceSettingsPage.tsx`'s CRUD hub, so no stated-exception logic core was needed beyond the two self-contained dialogs/shells noted above. One dead-code removal caught during the move: `TabButton` in the original `AdminUsersPageParts.tsx` was exported but had zero importers anywhere in `apps/web` (confirmed via grep) — `AdminUsersPageView.tsx` builds its own inline tab buttons instead — dropped as dead code found directly in the file being split. `UsersSection.tsx` was itself split a second time (203 -> 118 lines) after its first pass came in over the limit, pulling the toolbar and the list-panel into their own files. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 104ms`), `/admin/users` → 200.
+
+**`components/data/DataExplorer.tsx` split — DONE (partial by design, deliberate stated exception).** 514 lines -> 5 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/data/DataExplorer.tsx` | 339 (was 514) | ⚠️ stated exception, deliberately NOT split further — `DataExplorer`'s state and all handlers (`openSource`, `downloadSource`/`downloadSourceByKey`, `deleteSource`/`deleteSourceByKey`, `downloadAsset`/`previewAsset`, `deleteAsset`/`deleteAssetByKey`, `confirmDelete`) plus the render |
+| `components/data/data-explorer/source-page-loader.ts` | 53 | ✅ clean — `loadSourcesPage`/`mergeDetailMetrics`/`triggerDownload`, module-level, no closure over component state |
+| `components/data/data-explorer/csv-preview.ts` | 60 | ✅ clean — `parseCsvPreview`/`parseCsvRows`, pure |
+| `components/data/data-explorer/Tab.tsx` | 12 | ✅ clean — presentational, fully props-driven |
+| `components/data/data-explorer/DeleteConfirmModal.tsx` | 55 | ✅ clean — presentational, fully props-driven |
+
+**Why the hub wasn't split further:** `DataExplorer`'s handlers perform real, irreversible data-destroying actions (`deleteSourceByKey`/`deleteAssetByKey` — deletes source records, entity provenance, and graph data) with zero test coverage, all closured over shared component state (`workspaceId`, `activeSourceDetail`, `busyKey`, `sources`) — the same risk category as `WorkspaceSettingsPage.tsx`'s member/workspace deletion above. Only pieces with no closure over that state (module-level API/CSV helpers, and presentational components driven entirely by props) were extracted. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 113ms`), `/data` → 200.
+
+**`components/shay/WorkspaceIndexPage.tsx` split — DONE (partial by design, deliberate stated exception).** 462 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/shay/WorkspaceIndexPage.tsx` | 335 (was 462) | ⚠️ stated exception, deliberately NOT split further — state, `load`, the workspace-metrics effect, and handlers (`saveEditedWorkspace`, `createWorkspace`, `deleteWorkspace`) |
+| `components/shay/workspace-index/resolve-source-count.ts` | 28 | ✅ clean — `resolveWorkspaceDataSourceCount`, pure |
+| `components/shay/workspace-index/CreateWorkspaceModal.tsx` | 90 | ✅ clean — presentational, fully props-driven |
+| `components/shay/workspace-index/DeleteWorkspaceModal.tsx` | 71 | ✅ clean — presentational, fully props-driven |
+
+**Why the hub wasn't split further:** `deleteWorkspace()` is a real, irreversible destructive action with zero test coverage, closured over `workspaceToDelete`/`deletingWorkspaceId`/session state — same risk category as `WorkspaceSettingsPage.tsx` and `DataExplorer.tsx` above. Only the pure helper and the two dialogs (fully props-driven, no closure over the deletion/creation logic itself) were extracted. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 103ms`), `/workspaces` → 200.
+
+**`components/graph/EntityGraph.tsx` split — DONE (partial by design, deliberate stated exception).** 1,167 lines (the largest file in this phase) -> 12 files in a new `components/graph/entity-graph/` subfolder:
+
+| File | Lines | Status |
+|---|---:|---|
+| `components/graph/EntityGraph.tsx` | 474 (was 1,167) | ⚠️ stated exception, deliberately NOT split further — all state, effects, and handlers (`load`, `selectEntity`, `expandOnCanvas`, `navigateTo`) for the interactive canvas |
+| `components/graph/entity-graph/types.ts` | 39 | ✅ clean — `EntityNode`/`EntityRel`/`OverviewNode`/`OverviewEdge`/`GraphOverview`/`GraphMode`/`TruncatedEdgeData`/`NeighborNode` |
+| `components/graph/entity-graph/visual-helpers.ts` | 29 | ✅ clean — width constants, `hexToRgba`, `clippedLineStyle` |
+| `components/graph/entity-graph/TruncatedEdge.tsx` | 67 | ✅ clean — `TruncatedSmoothStepEdge`/`edgeTypes` |
+| `components/graph/entity-graph/DetailPanel.tsx` | 121 | ✅ clean — node detail sidebar, fully props-driven |
+| `components/graph/entity-graph/PathFinder.tsx` | 71 | ✅ clean |
+| `components/graph/entity-graph/GraphSidebar.tsx` | 174 | ⚠️ stated exception, 24 over — one cohesive control panel (mode switch + search + type filter + counts + path-finder toggle), fully props-driven with no destructive logic of its own |
+| `components/graph/entity-graph/build-entity-nodes.tsx` | 99 | ✅ clean — pure, node styling/labels for real entities |
+| `components/graph/entity-graph/build-schema-nodes.tsx` | 57 | ✅ clean — pure, placeholder nodes for uninstantiated ontology types |
+| `components/graph/entity-graph/build-graph-edges.ts` | 71 | ✅ clean — pure, `edgeKey`/`edgePairKey`/`buildGraphEdges` |
+| `components/graph/entity-graph/build-graph.ts` | 70 | ✅ clean — pure orchestrator, `buildGraph`/`resolveFocusSourceEntityIds` |
+| `components/graph/entity-graph/build-overview-graph.tsx` | 73 | ✅ clean — pure, overview-mode node/edge construction |
+
+**Why the hub wasn't split further:** unlike the pure graph-construction logic (safe to split freely — no closures, no side effects, straightforward to reason about even without tests), `EntityGraph`'s own state and handlers are a tightly-coupled interactive unit (node selection, incremental on-canvas expansion, cross-entity navigation, path-finding, three graph modes) all reading/writing the same `nodes`/`edges`/`selectedId`/`expandedIds` state via `useCallback`s that reference each other. This is read-only/exploratory (no destructive actions, unlike the CRUD hubs split earlier in this phase), but the interdependency itself is the risk: splitting these callbacks across files without a regression test suite risks a subtle behavioral change (e.g. breaking `detailRequestId`'s stale-response guard, or `fitOnNextRender`'s one-shot fit-view timing). `GraphSidebar.tsx` came in 24 lines over the limit as one control panel; not split further since its five sections are meaningless in isolation (a "mode switch" button by itself has no reason to be its own file) and all read the same handful of props. Verified: `tsc --noEmit` clean on the first pass, `npm run build` exit 0 (`/graph` bundle unchanged at 1.48 kB), container rebuilt/restarted cleanly (`✓ Ready in 104ms`), `/graph` → 200.
+
+**Tier A's `components/`/`app/` files are now complete (9 of 13 — `EntityGraph.tsx`, `WorkspaceSettingsPage.tsx`, `AdminUsersPageView.tsx`, `AdminUsersPageParts.tsx`, `app/settings/page.tsx`, `app/page.tsx`, `Header.tsx`, `DataExplorer.tsx`, `WorkspaceIndexPage.tsx`).** The remaining 4 are `lib/` files.
+
+**`lib/shay-api.ts` split — DONE.** 874 lines -> 11 files in a new `lib/shay-api/` subfolder, all clean:
+
+| File | Lines | Status |
+|---|---:|---|
+| `lib/shay-api.ts` | 20 (was 874) | ✅ clean — thin re-export hub, spreads each domain object into `shayApi` |
+| `lib/shay-api/constants.ts` | 4 | ✅ clean — `SHAY_BASE`/`SHAY_WORKSPACES_BASE`/`SHAY_GG_WORKSPACES_BASE`/`ARYX_BASE` |
+| `lib/shay-api/http.ts` | 117 | ✅ clean — `requestJSON`/`cachedRequestJSON`/`query`/`withBearerAuth`/`invalidateShayCache`/`normalizeDatasourceList`/`shayGetCache` |
+| `lib/shay-api/workspace-reference.ts` | 82 | ✅ clean — `withWorkspaceReference` and the legacy-numeric-id resolution it wraps |
+| `lib/shay-api/auth.ts` | 116 | ✅ clean — login/register/password-reset/SSO |
+| `lib/shay-api/company.ts` | 27 | ✅ clean — company profile read/update |
+| `lib/shay-api/company-users.ts` | 149 | ✅ clean — company user/invitation management |
+| `lib/shay-api/workspaces.ts` | 111 | ✅ clean — workspace CRUD |
+| `lib/shay-api/workspace-members.ts` | 84 | ✅ clean — member CRUD |
+| `lib/shay-api/workspace-apps.ts` | 76 | ✅ clean — app-connection CRUD |
+| `lib/shay-api/datasources.ts` | 53 | ✅ clean |
+| `lib/shay-api/bridge.ts` | 76 | ✅ clean — Aryx-bridge endpoints |
+
+Confirmed via grep that every importer across `apps/web` (16 files) imports only `shayApi` and `getShayAccessToken` — no internal helper was used outside this file, so the domain split was safe to do freely, unlike the CRUD-hub UI components split earlier in this phase. One caching-behavior preservation catch: the first draft of `workspaces.ts`'s `getWorkspace` dropped the original's dual-cache-key population (populating both the requested legacy id and the resolved id in `shayGetCache` so a second call under either id hits cache) — restored exactly to avoid a silent behavior change, since this is a mechanical split, not a rewrite. `company.ts` (originally combined with company-user management) came in at 171 lines on the first pass — split again into `company.ts` (profile) and `company-users.ts` (user/invitation management). Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 132ms`), 8 routes touching `shayApi` (`/`, `/login`, `/register`, `/workspaces`, `/settings`, `/admin/users`, `/data`, `/graph`) all → 200.
+
+**`lib/api.ts` split — DONE.** 696 lines -> 12 files in a new `lib/api/` subfolder, all clean:
+
+| File | Lines | Status |
+|---|---:|---|
+| `lib/api.ts` | 27 (was 696) | ✅ clean — thin re-export hub |
+| `lib/api/core.ts` | 40 | ✅ clean — `fetchJSON`/`fetchBlob`/`BASE`/`DataSourceDeleteResult` |
+| `lib/api/workspaces.ts` | 51 | ✅ clean — workspace admin CRUD + survivorship |
+| `lib/api/ask.ts` | 85 | ✅ clean — Ask/threads/share-config + Accuracy Lab |
+| `lib/api/data-sources.ts` | 85 | ✅ clean — Data Explorer endpoints |
+| `lib/api/ontology-types.ts` | 74 | ✅ clean — type/relationship CRUD + AI-assist |
+| `lib/api/ontology-rules.ts` | 31 | ✅ clean |
+| `lib/api/ontology-versions-interchange.ts` | 54 | ✅ clean — versions + publish/import |
+| `lib/api/jobs.ts` | 50 | ✅ clean — jobs, ingest questions, observability |
+| `lib/api/wizard.ts` | 92 | ✅ clean — guided setup, brief drafting, datasource CRUD, file upload |
+| `lib/api/entity-graph-api.ts` | 47 | ✅ clean — FalkorDB entity/graph endpoints |
+| `lib/api/ingest-flows.ts` | 91 | ✅ clean — DB connect/discover/ingest, doc discovery, REST ingest |
+| `lib/api/mcp-tokens.ts` | 18 | ✅ clean |
+
+Confirmed via grep that every one of the ~48 importers across `apps/web` imports only `api` (plus the `DataSourceDeleteResult` type, used solely inside this file originally) — grouped by the file's own comment-delimited sections (Data Explorer, Ontology, Wizard, Entity graph, etc.), which mapped directly onto the new files with no ambiguity about where a method belonged. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 101ms`), 12 routes spanning most of this file's domains (`/`, `/login`, `/workspaces`, `/settings`, `/admin/users`, `/data`, `/graph`, `/home`, `/ingest`, `/model`, `/observability`, `/brief`) all → 200.
+
+**`lib/types.ts` split — DONE.** 474 lines -> 10 files in a new `lib/types/` subfolder, all clean — pure type declarations, zero runtime risk, purely mechanical:
+
+| File | Lines | Status |
+|---|---:|---|
+| `lib/types.ts` | 13 (was 474) | ✅ clean — re-export hub (`export * from`) |
+| `lib/types/workspace.ts` | 7 | ✅ clean |
+| `lib/types/ask.ts` | 103 | ✅ clean — `Citation`/`Usage`/`AskResponse`/`ChatTurn`/`AskThread*`/`AskHistoryTurn` |
+| `lib/types/lab.ts` | 48 | ✅ clean — Accuracy Lab (`Grounding`/`AbResult`/`ReasonerCheck`) |
+| `lib/types/data-sources.ts` | 97 | ✅ clean — Data Explorer catalog/list types |
+| `lib/types/data-source-detail.ts` | 43 | ✅ clean — `DataSourceDetail`/`XmlGeneratedAsset`, imports `SourceActionState` from `data-sources.ts` |
+| `lib/types/ontology.ts` | 64 | ✅ clean — types/relationships/rules/survivorship/versions |
+| `lib/types/ingest.ts` | 64 | ✅ clean — ingest questions, brief, quiz, datasource, doc discovery |
+| `lib/types/observability.ts` | 15 | ✅ clean |
+| `lib/types/mcp.ts` | 11 | ✅ clean |
+
+Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 102ms`), the same 12-route smoke test as `lib/api.ts` all → 200.
+
+**`lib/shay-session.ts` split — DONE (partial by design, deliberate stated exception).** 450 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `lib/shay-session.ts` | 208 (was 450) | ⚠️ stated exception, 58 over — the cross-tab refresh orchestration (`performRefresh`, `waitForCrossTabRefresh`, `refreshAcrossTabs`, `refreshShayAccessToken`) and `fetchWithShayAuth`, plus re-exports of everything below |
+| `lib/shay-session/errors.ts` | 49 | ✅ clean — `HttpStatusError`/`createHttpStatusError`/`isHttpStatusError`/`readErrorDetail`, pure |
+| `lib/shay-session/refresh-lock.ts` | 78 | ✅ clean — the localStorage cross-tab refresh-lock primitive, self-contained |
+| `lib/shay-session/store.ts` | 148 | ✅ clean — the session read/write/subscribe API (`getStoredShaySession`/`storeShaySession`/`clearStoredShaySession`/`subscribeToShaySession`) |
+
+**Why the hub wasn't split further:** this is this codebase's actual auth token-refresh logic — cross-tab coordination via a localStorage lock to prevent every open tab from refreshing simultaneously when an access token expires, with zero test coverage. The four async functions left in the hub call each other in a specific retry/wait sequence (`refreshAcrossTabs` tries to acquire the lock, and if another tab holds it, polls `waitForCrossTabRefresh` for that tab's result before retrying once) — splitting this across files without a regression test risks silently breaking the race-condition handling itself, which would surface as either duplicate refresh calls hammering the auth endpoint or a tab getting stuck signed-out. Only pieces with no dependency on that specific sequencing (pure error helpers, the generic lock read/write primitive, the plain session-storage CRUD) were extracted. Confirmed via grep that every importer (`shay-auth.tsx`, `shay-api/http.ts`, `lib/api/*`, two components) uses only symbols still exported from the hub — no import path changed. Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 109ms`), 9 routes spanning auth-touching pages (`/`, `/login`, `/register`, `/workspaces`, `/settings`, `/admin/users`, `/data`, `/graph`, `/home`) all → 200. Note: a curl smoke test can exercise page load but not the actual interactive login/token-refresh flow itself — that needs the user's own verification in a browser, per this phase's standing no-browser-tool caveat (§ Phase 3 progress log intro).
+
+**Phase 3's entire Tier A (all 13 files) is now complete.** Next: Tier B's 30 files (150–400 lines).
+
 ### Phase 4 — The two mega-files (`cpq/engine.py`, `api/ask_api.py`) — separate initiative, not part of this cleanup pass
 
 This phase is **design work, not refactor-and-go**:

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FolderPlus, Search, X } from "lucide-react";
+import { FolderPlus, Search } from "lucide-react";
 import { AuthGuard } from "./AuthGuard";
 import {
   WorkspaceIndexCard,
@@ -16,35 +16,9 @@ import { useShayAuth } from "@/lib/shay-auth";
 import { storeShaySession } from "@/lib/shay-session";
 import type { ShayWorkspace } from "@/lib/shay-types";
 import { workspaceSectionHref } from "@/lib/workspace-route";
-
-function resolveWorkspaceDataSourceCount({
-  summarySourceCount,
-  catalogSourceCount,
-  datasourceTotal,
-  datasourceItemsCount,
-}: {
-  summarySourceCount: number | null;
-  catalogSourceCount: number | null;
-  datasourceTotal: number | null;
-  datasourceItemsCount: number | null;
-}) {
-  const candidates = [
-    summarySourceCount,
-    catalogSourceCount,
-    datasourceTotal,
-    datasourceItemsCount,
-  ];
-  const firstPositive = candidates.find(
-    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
-  );
-  if (typeof firstPositive === "number") {
-    return firstPositive;
-  }
-  const firstKnown = candidates.find(
-    (value): value is number => typeof value === "number" && Number.isFinite(value),
-  );
-  return firstKnown ?? null;
-}
+import { CreateWorkspaceModal } from "./workspace-index/CreateWorkspaceModal";
+import { DeleteWorkspaceModal } from "./workspace-index/DeleteWorkspaceModal";
+import { resolveWorkspaceDataSourceCount } from "./workspace-index/resolve-source-count";
 
 export function WorkspaceIndexPage() {
   const router = useRouter();
@@ -318,129 +292,28 @@ export function WorkspaceIndexPage() {
           )}
         </div>
 
-        {showCreateModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-navy-900/35 px-4">
-            <div className="w-full max-w-lg rounded-[2rem] border border-navy-100 bg-white p-6 shadow-soft">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-2xl font-semibold text-navy-900">
-                    Create a workspace
-                  </h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Spin up a new Aryx workspace and bridge it into the shared runtime.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={resetModal}
-                  className="focus-ring rounded-full border border-navy-100 p-2 text-navy-500 hover:bg-navy-50"
-                  aria-label="Close create workspace dialog"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+        <CreateWorkspaceModal
+          open={showCreateModal}
+          name={name}
+          description={description}
+          modalError={modalError}
+          saving={saving}
+          onNameChange={setName}
+          onDescriptionChange={setDescription}
+          onClose={resetModal}
+          onCreate={() => void createWorkspace()}
+        />
 
-              <div className="mt-6 space-y-4">
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Workspace name"
-                  className="focus-ring w-full rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
-                />
-                <textarea
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  rows={5}
-                  placeholder="What will this workspace own across auth, Aryx ingest, and Ask?"
-                  className="focus-ring w-full resize-none rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
-                />
-                {modalError ? (
-                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    {modalError}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={resetModal}
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={createWorkspace}
-                  disabled={!name.trim() || saving}
-                  className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700 disabled:opacity-50"
-                >
-                  <FolderPlus size={16} />
-                  {saving ? "Creating..." : "Create Workspace"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {workspaceToDelete ? (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-navy-900/35 px-4">
-            <div className="w-full max-w-md rounded-[2rem] border border-navy-100 bg-white p-6 shadow-soft">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-2xl font-semibold text-navy-900">
-                    Delete workspace
-                  </h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Delete <span className="font-semibold text-navy-900">{workspaceToDelete.name}</span> from the workspace list.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeleteError(null);
-                    setWorkspaceToDelete(null);
-                  }}
-                  className="focus-ring rounded-full border border-navy-100 p-2 text-navy-500 hover:bg-navy-50"
-                  aria-label="Close delete workspace dialog"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <p className="mt-5 text-sm text-subtle">
-                This action removes the workspace and cannot be undone from this screen.
-              </p>
-
-              {deleteError ? (
-                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {deleteError}
-                </div>
-              ) : null}
-
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeleteError(null);
-                    setWorkspaceToDelete(null);
-                  }}
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={deleteWorkspace}
-                  disabled={deletingWorkspaceId === workspaceToDelete.id}
-                  className="focus-ring rounded-2xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-rose-700 disabled:opacity-50"
-                >
-                  {deletingWorkspaceId === workspaceToDelete.id ? "Deleting..." : "Delete Workspace"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        <DeleteWorkspaceModal
+          workspace={workspaceToDelete}
+          deleteError={deleteError}
+          deleting={Boolean(workspaceToDelete && deletingWorkspaceId === workspaceToDelete.id)}
+          onClose={() => {
+            setDeleteError(null);
+            setWorkspaceToDelete(null);
+          }}
+          onConfirm={() => void deleteWorkspace()}
+        />
 
         {workspaceToEdit ? (
           <WorkspaceProfileDialog

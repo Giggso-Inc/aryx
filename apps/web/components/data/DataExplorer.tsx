@@ -4,55 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import { Database, ListTree, Loader2, Network } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
-import type { DataSourceCatalogItem, DataSourceCatalogPage, DataSourceDetail, DataSummary, XmlGeneratedAsset } from "@/lib/types";
+import type { DataSourceCatalogItem, DataSourceDetail, DataSummary, XmlGeneratedAsset } from "@/lib/types";
 import { GraphLens } from "./GraphLens";
 import { SourcesLens, type SourceFilter } from "./SourcesLens";
 import { SourceDetailView } from "./SourceDetail";
 import { TreeLens } from "./TreeLens";
+import { DeleteConfirmModal } from "./data-explorer/DeleteConfirmModal";
+import { Tab } from "./data-explorer/Tab";
+import { parseCsvPreview } from "./data-explorer/csv-preview";
+import { loadSourcesPage, mergeDetailMetrics, triggerDownload } from "./data-explorer/source-page-loader";
 
 type Lens = "sources" | "tree" | "graph";
 type DeleteRequest =
   | { kind: "source"; sourceKey: string; sourceName: string }
   | { kind: "asset"; sourceKey: string; sourceName: string; assetKey: string; assetName: string };
-
-async function loadSourcesPage(
-  workspaceId: number,
-  options: { page: number; pageSize: number; query: string; category: SourceFilter },
-): Promise<DataSourceCatalogPage> {
-  const result = await api.listDataSourcesPage(workspaceId, options);
-  const isUnfilteredSingleSource = options.query.trim() === ""
-    && options.category === "all"
-    && result.total === 1
-    && result.items.length === 1;
-  if (!isUnfilteredSingleSource || result.items[0].edge_count != null) return result;
-
-  try {
-    const overview = await api.getEntityGraphOverview(workspaceId);
-    return {
-      ...result,
-      items: [{ ...result.items[0], edge_count: overview.relationship_count }],
-    };
-  } catch {
-    return result;
-  }
-}
-
-function mergeDetailMetrics(
-  detail: DataSourceDetail,
-  fallback: { total_entities?: number; node_count?: number; edge_count?: number },
-): DataSourceDetail {
-  return {
-    ...detail,
-    entity_summary: {
-      ...detail.entity_summary,
-      node_count: detail.entity_summary.node_count
-        ?? fallback.node_count
-        ?? fallback.total_entities
-        ?? detail.entity_summary.total_entities,
-      edge_count: detail.entity_summary.edge_count ?? fallback.edge_count,
-    },
-  };
-}
 
 /** The Data tab: source registry first, then resolved-entity exploration. */
 export function DataExplorer() {
@@ -372,143 +337,3 @@ export function DataExplorer() {
   );
 }
 
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-function parseCsvPreview(text: string): Record<string, string>[] {
-  const rows = parseCsvRows(text).filter((row) => row.some((cell) => cell.trim() !== ""));
-  if (rows.length < 2) return [];
-  const headers = rows[0].map((cell) => cell.trim());
-  return rows.slice(1, 6).map((row) => {
-    const record: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      record[header || `column_${index + 1}`] = row[index] ?? "";
-    });
-    return record;
-  });
-}
-
-function parseCsvRows(text: string): string[][] {
-  const rows: string[][] = [];
-  let currentRow: string[] = [];
-  let currentValue = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-
-    if (char === "\"") {
-      if (inQuotes && next === "\"") {
-        currentValue += "\"";
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (char === "," && !inQuotes) {
-      currentRow.push(currentValue);
-      currentValue = "";
-      continue;
-    }
-
-    if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") {
-        index += 1;
-      }
-      currentRow.push(currentValue);
-      rows.push(currentRow);
-      currentRow = [];
-      currentValue = "";
-      continue;
-    }
-
-    currentValue += char;
-  }
-
-  if (currentValue.length > 0 || currentRow.length > 0) {
-    currentRow.push(currentValue);
-    rows.push(currentRow);
-  }
-
-  return rows;
-}
-
-function Tab({ icon, label, active, onClick }: {
-  icon: React.ReactNode; label: string; active: boolean; onClick: () => void;
-}) {
-  return (
-    <button type="button" onClick={onClick}
-      className={"flex items-center gap-1.5 border-b-2 px-4 py-2 text-[13px] font-semibold " +
-        (active ? "border-steel-500 text-navy-900"
-                : "border-transparent text-subtle hover:text-navy-700")}>
-      {icon} {label}
-    </button>
-  );
-}
-
-function DeleteConfirmModal({
-  title,
-  message,
-  onCancel,
-  onConfirm,
-}: {
-  title: string;
-  message: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/45 px-4 py-8"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="delete-confirm-title"
-      onClick={onCancel}
-    >
-      <div
-        className="w-full max-w-lg rounded-[1.5rem] border border-navy-100 bg-white p-6 shadow-soft"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <p
-          id="delete-confirm-title"
-          className="text-lg font-semibold text-navy-900"
-        >
-          {title}
-        </p>
-        <p className="mt-3 text-sm leading-6 text-subtle">
-          {message}
-        </p>
-        <p className="mt-2 text-sm text-rose-600">
-          This action cannot be undone.
-        </p>
-        <div className="mt-6 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="focus-ring rounded-full border border-navy-100 bg-white px-4 py-2 text-sm font-semibold text-navy-700 transition-colors hover:bg-navy-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="focus-ring rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-700"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

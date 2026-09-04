@@ -5,3 +5,7 @@ out/
 .env*.local
 .model.env
 .raven/
+# Raven Enterprise -- never commit these
+.raven/manifest.secrets.json
+.raven/.cache/
+.model.env
