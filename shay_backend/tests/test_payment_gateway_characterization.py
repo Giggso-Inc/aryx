@@ -255,7 +255,7 @@ class TestCreateHostedPage:
 class TestFetchByHostedId:
     def test_non_admin_403(self, mock_db, regular_user):
         client = _make_client(mock_db)
-        with _auth(regular_user, "hosted_pages"):
+        with _auth(regular_user, "hosted_pages_fetch"):
             resp = client.get("/api/v1/payment-gateway/zoho/subscriptions/fetchByHostedId/hp-123", headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
@@ -263,7 +263,7 @@ class TestFetchByHostedId:
         zoho_instance = MagicMock()
         zoho_instance.base_url = "https://prism.zoho.example/billing/v1"
         client = _make_client(mock_db)
-        with _auth(admin_user, "hosted_pages"), _zoho("hosted_pages", zoho_instance):
+        with _auth(admin_user, "hosted_pages_fetch"), _zoho("hosted_pages_fetch", zoho_instance):
             resp = client.get("/api/v1/payment-gateway/zoho/subscriptions/fetchByHostedId/hp-123", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -278,7 +278,7 @@ class TestFetchByHostedId:
 class TestUpdateSubscriptionHostedPage:
     def test_non_admin_403(self, mock_db, regular_user):
         client = _make_client(mock_db)
-        with _auth(regular_user, "hosted_pages"):
+        with _auth(regular_user, "hosted_pages_update"):
             resp = client.put(
                 "/api/v1/payment-gateway/zoho/subscriptions/hostedPage/update",
                 json={"subscriptionId": "zsub-001"},
@@ -290,7 +290,7 @@ class TestUpdateSubscriptionHostedPage:
         zoho_instance = MagicMock()
         zoho_instance.update_subscription_hosted_page = AsyncMock(return_value={"hostedPageId": "hp-999"})
         client = _make_client(mock_db)
-        with _auth(admin_user, "hosted_pages"), _zoho("hosted_pages", zoho_instance):
+        with _auth(admin_user, "hosted_pages_update"), _zoho("hosted_pages_update", zoho_instance):
             resp = client.put(
                 "/api/v1/payment-gateway/zoho/subscriptions/hostedPage/update",
                 json={"subscriptionId": "zsub-001"},
@@ -470,7 +470,7 @@ class TestReactivateSubscription:
         zoho_instance = MagicMock()
         zoho_instance.reactivate_subscription = AsyncMock(return_value={"subscription": {"status": "live"}})
         client = _make_client(mock_db)
-        with _auth(regular_user, "subscription_cancel"), _zoho("subscription_cancel", zoho_instance):
+        with _auth(regular_user, "subscription_reactivate"), _zoho("subscription_reactivate", zoho_instance):
             resp = client.post(
                 "/api/v1/payment-gateway/zoho/subscriptions/reactivate",
                 json={"subscriptionId": "zsub-001"},
@@ -485,7 +485,7 @@ class TestReactivateSubscription:
             side_effect=RuntimeError("Zoho API error: 400 - invalid subscription id 107202")
         )
         client = _make_client(mock_db)
-        with _auth(regular_user, "subscription_cancel"), _zoho("subscription_cancel", zoho_instance):
+        with _auth(regular_user, "subscription_reactivate"), _zoho("subscription_reactivate", zoho_instance):
             resp = client.post(
                 "/api/v1/payment-gateway/zoho/subscriptions/reactivate",
                 json={"subscriptionId": "bad-id"},

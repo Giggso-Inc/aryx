@@ -13,7 +13,7 @@ from app.models.channel import Channel
 from app.models.message import Message
 from app.models.subscription_plan import SubscriptionPlan
 
-from .helpers import (
+from .helpers_feature_parsing import (
     _parse_channel_limit_from_features,
     _parse_message_limit_from_features,
     _parse_storage_limit_from_features,

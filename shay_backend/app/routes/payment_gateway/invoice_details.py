@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.schemas.common import SuccessResponse, CompanySubscriptionDetailsRequest, CompanyInvoiceDetailsResponse
 
-from .helpers import _fetch_invoice_details_for_company
+from .helpers_invoice import _fetch_invoice_details_for_company
 
 logger = logging.getLogger(__name__)
 

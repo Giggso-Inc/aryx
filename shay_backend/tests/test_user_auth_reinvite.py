@@ -40,8 +40,8 @@ def test_bulk_invite_allows_inactive_existing_user(mock_db, mock_company):
     )
 
     client = _make_client(mock_db)
-    with patch("app.routes.user_auth.invitations.link_shortener_service.shorten", new=AsyncMock(return_value="short-link")), \
-         patch("app.routes.user_auth.invitations.email_service.send_invitation_email", return_value=True):
+    with patch("app.routes.user_auth._invitation_helpers.link_shortener_service.shorten", new=AsyncMock(return_value="short-link")), \
+         patch("app.routes.user_auth._invitation_helpers.email_service.send_invitation_email", return_value=True):
         response = client.post(
             "/api/v1/user-auth/bulk-invite",
             json={

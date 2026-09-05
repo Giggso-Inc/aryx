@@ -1,6 +1,14 @@
 """
 GET /zoho/invoices/{invoice_id}/download   download_invoice
 (mounted at /api/v1/payment-gateway)
+
+Thin orchestrator: handles the auth/authorization checks, resolves the
+company/subscription, then delegates invoice-ownership verification and the
+PDF download itself to invoice_download_verify.py. Split from a single
+~171-line handler (Raven style compliance, wave B).
+get_current_user_required and get_zoho_service stay bound in THIS module
+because tests/test_payment_gateway_characterization.py patches them on
+`app.routes.payment_gateway.invoice_download`.
 """
 
 import logging
@@ -16,6 +24,8 @@ from app.middleware.auth_middleware import get_current_user_required
 from app.models.company import Company
 from app.models.subscription import Subscription
 from app.services.zoho_service import get_zoho_service
+
+from .invoice_download_verify import verify_invoice_ownership, download_invoice_pdf_response
 
 logger = logging.getLogger(__name__)
 
@@ -119,47 +129,13 @@ async def download_invoice(
 
         # Default to 'prism7' if platform_name is not provided (since PRISM credentials are configured)
         effective_platform_name = platform_name if platform_name else 'prism7'
-
-        if subscription and subscription.zoho_customer_id:
-            # Verify invoice belongs to this customer by fetching invoice details
-            zoho_service_instance = get_zoho_service(effective_platform_name)
-            try:
-                # Get invoice details to verify it belongs to the customer
-                invoices = await zoho_service_instance.get_customer_invoices(subscription.zoho_customer_id)
-                invoice_found = any(inv.get('invoice_id') == invoice_id for inv in invoices)
-
-                if not invoice_found:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Invoice does not belong to your company"
-                    )
-            except Exception as verify_error:
-                logger.warning(f"Could not verify invoice ownership: {verify_error}")
-                # Continue with download attempt - Zoho API will handle authorization
-
-        # Get appropriate Zoho service instance
         zoho_service_instance = get_zoho_service(effective_platform_name)
 
-        # Download invoice PDF from Zoho
-        try:
-            pdf_content = await zoho_service_instance.download_invoice_pdf(invoice_id)
-
-            # Return PDF as downloadable file
-            return Response(
-                content=pdf_content,
-                media_type="application/pdf",
-                headers={
-                    "Content-Disposition": f'attachment; filename="invoice_{invoice_id}.pdf"',
-                    "Content-Type": "application/pdf"
-                }
-            )
-
-        except Exception as zoho_error:
-            logger.error(f"Zoho API error downloading invoice: {zoho_error}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to download invoice: {str(zoho_error)}"
-            )
+        # Verify invoice belongs to this customer (best-effort; see
+        # invoice_download_verify.py's documented swallowed-bug note), then
+        # download the PDF from Zoho.
+        await verify_invoice_ownership(zoho_service_instance, subscription, invoice_id)
+        return await download_invoice_pdf_response(zoho_service_instance, invoice_id)
 
     except HTTPException:
         raise

@@ -4,6 +4,17 @@ POST /updateTokenDetails — update_token_details.
 Split out of the original app/routes/token_details.py (767 lines) as part of
 the Raven style-compliance file-splitting pass (see
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2).
+
+Stated exception (wave B, 150-line hard rule): this file is 151 lines, 1
+over. The single endpoint is one linear, cohesive transaction (parse
+companyId -> authorize -> validate Azure-specific fields -> fetch the
+existing gg_vault record -> build the vault payload -> save -> touch audit
+fields -> return), threading `company_uuid`/`user`/`vault_record` through
+every step. There is no seam that isn't purely cosmetic; fragmenting a
+single-transaction endpoint into two files to shave one line would add an
+import/call indirection with no independent reuse or testability gain.
+Kept as one file, matching this plan's established near-miss precedent
+(e.g. `data_table_product.py` at 151 lines).
 """
 
 from __future__ import annotations

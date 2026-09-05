@@ -1,8 +1,10 @@
 """
-Zoho hosted-page endpoints (mounted at /api/v1/payment-gateway):
+Zoho hosted-page create endpoint (mounted at /api/v1/payment-gateway):
   POST /zoho/subscriptions/hostedPage/create           create_zoho_hosted_page
-  GET  /zoho/subscriptions/fetchByHostedId/{hostedPageId}  fetch_by_hosted_id
-  PUT  /zoho/subscriptions/hostedPage/update           update_subscription_hosted_page
+
+The other two hosted-page endpoints (fetch_by_hosted_id,
+update_subscription_hosted_page) live in sibling files
+hosted_pages_fetch.py / hosted_pages_update.py.
 
 Stated exception: create_zoho_hosted_page is ~155 lines on its own (over the
 ~150-line-per-file target for the whole module) because it has two full,
@@ -13,9 +15,7 @@ fragment a single try/except's logic without isolating any independently
 reusable concern.
 """
 
-from typing import Optional
-
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timedelta
@@ -23,17 +23,12 @@ import uuid
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.middleware.auth_middleware import get_current_user_required
 from app.models.company import Company
 from app.models.subscription_plan import SubscriptionPlan
 from app.models.subscription import Subscription
-from app.schemas.common import SuccessResponse, ZohoHostedPageRequest, ZohoHostedPageResponse, SubscriptionUpdateRequest
+from app.schemas.common import SuccessResponse, ZohoHostedPageRequest, ZohoHostedPageResponse
 from app.services.zoho_service import get_zoho_service
 from fastapi import Depends
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -191,135 +186,4 @@ async def create_zoho_hosted_page(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create hosted page: {str(e)}"
-        )
-
-
-@router.get("/zoho/subscriptions/fetchByHostedId/{hostedPageId}", response_model=SuccessResponse[dict])
-async def fetch_by_hosted_id(
-    hostedPageId: str,
-    request: Request,
-    platform_name: Optional[str] = None
-) -> SuccessResponse[dict]:
-    """
-    Retrieve hosted page data by hosted page ID.
-
-    This endpoint fetches hosted page information from Zoho.
-
-    Args:
-        platform_name: Platform name (e.g., 'prism7', 'accsell', 'zaptag'). If one of these, uses that platform's Zoho configuration.
-    """
-    try:
-        # Get current user for authentication
-        user = await get_current_user_required(request)
-
-        # Verify user is company admin
-        if user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only company admins can access hosted page data"
-            )
-
-        # Get appropriate Zoho service instance based on platform_name (for future Zoho API calls)
-        zoho_service_instance = get_zoho_service(platform_name)
-
-        # For now, return a placeholder response as per Node.js implementation
-        # In a real implementation, this would fetch data from Zoho API using zoho_service_instance
-        base_url = zoho_service_instance.base_url.replace('/billing/v1', '') if zoho_service_instance.base_url else 'https://zoho.com'
-        hosted_page_data = {
-            "hostedPageId": hostedPageId,
-            "status": "active",
-            "url": f"{base_url}/hosted-page/{hostedPageId}"
-        }
-
-        return SuccessResponse(
-            success=True,
-            data=hosted_page_data,
-            message="Hosted page retrieved successfully",
-            code=status.HTTP_200_OK
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve hosted page: {str(e)}"
-        )
-
-
-@router.put("/zoho/subscriptions/hostedPage/update", response_model=SuccessResponse[dict])
-async def update_subscription_hosted_page(
-    subscription_request: SubscriptionUpdateRequest,
-    request: Request
-) -> SuccessResponse[dict]:
-    """
-    Create a hosted page for updating a subscription.
-
-    This endpoint creates a Zoho hosted payment page that allows customers
-    to update their subscription (change plan, add addons, etc.).
-
-    Reference: https://www.zoho.com/billing/api/v1/hosted-pages/#update-a-subscription
-    """
-    try:
-        # Validate request
-        if not subscription_request:
-            return SuccessResponse(
-                success=False,
-                data=None,
-                message="Subscription request is required",
-                code=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get current user for authentication
-        user = await get_current_user_required(request)
-
-        # Verify user is company admin
-        if user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only company admins can update subscriptions"
-            )
-
-        # Get platform_name from request
-        platform_name = subscription_request.platform_name
-
-        # Get appropriate Zoho service instance based on platform_name
-        zoho_service_instance = get_zoho_service(platform_name)
-
-        # Convert Pydantic model to dict for service
-        subscription_data = subscription_request.model_dump(exclude_none=True)
-
-        # Call Zoho service to create update subscription hosted page
-        try:
-            zoho_response = await zoho_service_instance.update_subscription_hosted_page(subscription_data)
-
-            if zoho_response and zoho_response.get('hostedPageId'):
-                return SuccessResponse(
-                    success=True,
-                    data=zoho_response,
-                    message="Hosted page for subscription update created successfully",
-                    code=status.HTTP_200_OK
-                )
-            else:
-                return SuccessResponse(
-                    success=False,
-                    data=None,
-                    message="Failed to create hosted page for subscription update",
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-        except Exception as zoho_error:
-            logger.error(f"Zoho API error: {zoho_error}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create hosted page: {str(zoho_error)}"
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Exception at update subscription hosted page: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
         )

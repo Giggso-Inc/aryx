@@ -18,11 +18,11 @@ kept anyway so any future submodule addition preserves the same discipline.
 Endpoints (method, path -> submodule):
   POST /zoho/subscriptions/hostedPage/create              -> hosted_pages
   POST /zoho/subscriptions/create                         -> subscription_create
-  GET  /zoho/subscriptions/fetchByHostedId/{hostedPageId}  -> hosted_pages
+  GET  /zoho/subscriptions/fetchByHostedId/{hostedPageId}  -> hosted_pages_fetch
   POST /zoho/subscriptions/updateCompanyPlan               -> subscription_plan_update
-  PUT  /zoho/subscriptions/hostedPage/update               -> hosted_pages
+  PUT  /zoho/subscriptions/hostedPage/update               -> hosted_pages_update
   POST /zoho/subscriptions/cancel                          -> subscription_cancel
-  POST /zoho/subscriptions/reactivate                      -> subscription_cancel
+  POST /zoho/subscriptions/reactivate                      -> subscription_reactivate
   POST /zoho/subscriptions/validatePayment                 -> validate_payment
   POST /zoho/webhook/subscription                          -> webhook
   POST /zoho/subscriptions/validation/{user_id}            -> subscription_validation
@@ -34,9 +34,12 @@ Endpoints (method, path -> submodule):
 from fastapi import APIRouter
 
 from . import hosted_pages
+from . import hosted_pages_fetch
+from . import hosted_pages_update
 from . import subscription_create
 from . import subscription_plan_update
 from . import subscription_cancel
+from . import subscription_reactivate
 from . import validate_payment
 from . import webhook
 from . import subscription_validation
@@ -46,9 +49,12 @@ from . import invoice_download
 
 router = APIRouter()
 router.include_router(hosted_pages.router)
+router.include_router(hosted_pages_fetch.router)
+router.include_router(hosted_pages_update.router)
 router.include_router(subscription_create.router)
 router.include_router(subscription_plan_update.router)
 router.include_router(subscription_cancel.router)
+router.include_router(subscription_reactivate.router)
 router.include_router(validate_payment.router)
 router.include_router(webhook.router)
 router.include_router(subscription_validation.router)

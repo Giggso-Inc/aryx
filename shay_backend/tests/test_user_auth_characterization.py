@@ -134,9 +134,9 @@ class TestInviteUser:
         )
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.invitations.link_shortener_service.shorten",
+        with patch("app.routes.user_auth._invitation_helpers.link_shortener_service.shorten",
                    new=AsyncMock(return_value="short-link")), \
-             patch("app.routes.user_auth.invitations.email_service.send_invitation_email",
+             patch("app.routes.user_auth._invitation_helpers.email_service.send_invitation_email",
                    return_value=True):
             resp = client.post(
                 "/api/v1/user-auth/invite",
@@ -298,7 +298,7 @@ class TestRequestSetPassword:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.sso_password.email_service.send_password_reset_email") as mock_send:
+        with patch("app.routes.user_auth.request_set_password.email_service.send_password_reset_email") as mock_send:
             resp = client.post(
                 "/api/v1/user-auth/set-password/request",
                 json={"email_id": "user@example.com"},
@@ -323,7 +323,7 @@ class TestRequestSetPassword:
         fake_token.token = "abc123"
         with patch("app.models.email_verification_token.EmailVerificationToken.create_token",
                    return_value=fake_token), \
-             patch("app.routes.user_auth.sso_password.email_service.send_password_reset_email") as mock_send:
+             patch("app.routes.user_auth.request_set_password.email_service.send_password_reset_email") as mock_send:
             resp = client.post(
                 "/api/v1/user-auth/set-password/request",
                 json={"email_id": "sso@example.com"},
@@ -392,7 +392,7 @@ class TestConfirmSetPassword:
         )
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.sso_password.get_password_hash", return_value="new-hash"):
+        with patch("app.routes.user_auth.confirm_set_password.get_password_hash", return_value="new-hash"):
             resp = client.post("/api/v1/user-auth/set-password/confirm", json=self._payload())
 
         assert resp.status_code == 200
@@ -417,7 +417,7 @@ class TestGetCurrentUserProfileDetails:
         admin_user.oauth_provider = "local"
 
         client = _make_client(mock_db)
-        with patch("app.routes.user_auth.profile.get_current_user_required",
+        with patch("app.routes.user_auth.get_profile.get_current_user_required",
                    new=AsyncMock(return_value=admin_user)):
             resp = client.get(
                 "/api/v1/user-auth/profile",
@@ -438,7 +438,7 @@ class TestUploadProfileImage:
     @pytest.mark.unit
     def test_invalid_extension_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with patch("app.routes.user_auth.profile.get_current_user_required",
+        with patch("app.routes.user_auth.upload_photo.get_current_user_required",
                    new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 "/api/v1/user-auth/profile/upload-image",
@@ -455,9 +455,9 @@ class TestUploadProfileImage:
             return_value={"file_url": "https://storage.example.com/avatar.png"}
         )
         client = _make_client(mock_db)
-        with patch("app.routes.user_auth.profile.get_current_user_required",
+        with patch("app.routes.user_auth.upload_photo.get_current_user_required",
                    new=AsyncMock(return_value=admin_user)), \
-             patch("app.routes.user_auth.profile.get_file_storage_service",
+             patch("app.routes.user_auth.upload_photo.get_file_storage_service",
                    return_value=storage_service):
             resp = client.post(
                 "/api/v1/user-auth/profile/upload-image",
@@ -479,7 +479,7 @@ class TestRemoveProfilePhoto:
     def test_user_row_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = AsyncMock(return_value=_scalar_result(None))
         client = _make_client(mock_db)
-        with patch("app.routes.user_auth.profile.get_current_user_required",
+        with patch("app.routes.user_auth.remove_photo.get_current_user_required",
                    new=AsyncMock(return_value=admin_user)):
             resp = client.delete(
                 "/api/v1/user-auth/profile/photo",
@@ -493,7 +493,7 @@ class TestRemoveProfilePhoto:
         user_row.avatar_url = "https://old-avatar.png"
         mock_db.execute = AsyncMock(return_value=_scalar_result(user_row))
         client = _make_client(mock_db)
-        with patch("app.routes.user_auth.profile.get_current_user_required",
+        with patch("app.routes.user_auth.remove_photo.get_current_user_required",
                    new=AsyncMock(return_value=admin_user)):
             resp = client.delete(
                 "/api/v1/user-auth/profile/photo",

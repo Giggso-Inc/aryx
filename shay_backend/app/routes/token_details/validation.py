@@ -3,17 +3,16 @@ POST /llmValidation/gpt-token-validation — llm_validation.
 
 Split out of the original app/routes/token_details.py (767 lines) as part of
 the Raven style-compliance file-splitting pass (see
-docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2).
-
-Stated exception: this file is ~355 lines, above the ~150-line target. The
-single endpoint is one cohesive request flow — decode the token, then branch
-on llmType (azureopenai / chatgpt / gemini / unsupported) with each branch's
-own try/except mapping provider-specific exceptions to a response shape.
-Splitting the branches into separate files would fragment a single
-endpoint's error-handling contract across modules and force each branch
-module to duplicate the shared `cost`/`cb_context`/logger setup, without
-making any branch independently reusable or testable — none of the
-per-provider blocks are called from anywhere else. Kept as one file.
+docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2), then
+further split in wave B (150-line hard rule): each provider branch
+(azureopenai / chatgpt / gemini) is now its own module
+(validation_azure.py / validation_chatgpt.py / validation_gemini.py),
+called from this file's dispatcher. This is safe against the whitebox test
+patches in tests/test_token_details_characterization.py because those
+patches all target `app.services.llm_validation_service.*` (the functions
+themselves), not any `app.routes.token_details.validation*` path — every
+branch imports its provider functions locally from that service module at
+call time, unchanged by which file the branch code lives in.
 """
 
 from __future__ import annotations
@@ -26,6 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.schemas.common import LLMValidatorRequest, SuccessResponse
+from app.routes.token_details.validation_azure import _validate_azure_openai
+from app.routes.token_details.validation_chatgpt import _validate_chatgpt
+from app.routes.token_details.validation_gemini import _validate_gemini_token
 
 router = APIRouter()
 
@@ -49,14 +51,6 @@ async def llm_validation(
 
     # Import validation functions and exceptions
     from app.services.llm_validation_service import (
-        updateAzureOpenAiChat,
-        updateOpenAiChat,
-        validate_gemini,
-        RateLimitError,
-        InvalidArgument,
-        Forbidden,
-        ServiceUnavailable,
-        InternalServerError,
         get_openai_callback,
         LANGCHAIN_AVAILABLE
     )
@@ -102,275 +96,16 @@ async def llm_validation(
         cb_context = nullcontext()
 
     with cb_context as cb:
-        # -------------------- Azure OpenAI --------------------
         if llmType == "azureopenai":
-            try:
-                logger.info("## Request received for the AzureOpenAI API...")
-                logger.info(
-                    f"Deployment Name: {deploymentName}\nEndpoint: {endpoint}\nAPI Version: {apiVersion}"
-                )
+            return _validate_azure_openai(
+                logger, deploymentName, endpoint, apiVersion, apiKey, cb, LANGCHAIN_AVAILABLE
+            )
 
-                # Validate required fields for Azure
-                if not apiVersion or not endpoint:
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "payload_issue",
-                            "cost": cost,
-                            "message": "API version and endpoint are required for Azure OpenAI"
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_400_BAD_REQUEST
-                    )
-
-                response = updateAzureOpenAiChat(
-                    prompt="This is a test",
-                    openaiToken=apiKey,
-                    deploymentName=deploymentName,
-                    endpoint=endpoint,
-                    apiVersion=apiVersion
-                )
-
-                logger.info(f"Response: {response}")
-
-                # Get cost from callback if available
-                if LANGCHAIN_AVAILABLE and get_openai_callback and hasattr(cb, 'total_cost'):
-                    cost = cb.total_cost
-
-                return SuccessResponse(
-                    success=True,
-                    data={
-                        "status": "success",
-                        "type": "text",
-                        "cost": cost,
-                        "message": "Great news! Your API token for Azure OpenAI is valid and ready to power your Model."
-                    },
-                    message="Validation successful",
-                    code=status.HTTP_200_OK
-                )
-
-            except Exception as exp:
-                error_msg = str(exp)
-
-                if "Resource not found" in error_msg:
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "resource_issue",
-                            "cost": cost,
-                            "message": "The provided API version or endpoint appears to be invalid."
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_400_BAD_REQUEST
-                    )
-
-                elif "invalid subscription key" in error_msg.lower():
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "invalid_key",
-                            "cost": cost,
-                            "message": "The provided Token (API Key) appears to be invalid."
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_401_UNAUTHORIZED
-                    )
-
-                elif "The API deployment for this resource does not exist." in error_msg:
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "deployment_issue",
-                            "cost": cost,
-                            "message": "The API deployment for this resource does not exist."
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_404_NOT_FOUND
-                    )
-
-                else:
-                    logger.exception("Azure OpenAI validation failed.")
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "text",
-                            "cost": cost,
-                            "message": "Uh-oh! There is an issue validating your Azure OpenAI API token."
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-
-        # -------------------- OpenAI / ChatGPT --------------------
         elif llmType == "chatgpt":
-            try:
-                logger.info(f"## Request received for OpenAI Model: {model}")
+            return _validate_chatgpt(logger, apiKey, model, cb, LANGCHAIN_AVAILABLE)
 
-                userPrompt = "This is a test"
-                response = updateOpenAiChat(userPrompt, apiKey, model)
-
-                # Get cost from callback if available
-                if LANGCHAIN_AVAILABLE and get_openai_callback and hasattr(cb, 'total_cost'):
-                    cost = cb.total_cost
-
-                return SuccessResponse(
-                    success=True,
-                    data={
-                        "status": "success",
-                        "type": "text",
-                        "cost": cost,
-                        "message": "Great news! Your API token for OpenAI is valid and ready to power your Model."
-                    },
-                    message="Validation successful",
-                    code=status.HTTP_200_OK
-                )
-
-            except RateLimitError as exp:
-                logger.exception(f"Quota exceeded. Issue: {exp}")
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "quota_issue",
-                        "cost": cost,
-                        "message": "Insufficient quota for the provided token. Please upgrade your plan."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_429_TOO_MANY_REQUESTS
-                )
-
-            except Exception as exp:
-                logger.exception(f"OpenAI validation failed. Issue: {exp}")
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "text",
-                        "cost": cost,
-                        "message": "Uh-oh! There is an issue validating your OpenAI API token."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-        # -------------------- Gemini --------------------
         elif llmType == "gemini":
-            try:
-                logger.info("## Request received for the Gemini API...")
-
-                response = validate_gemini(apiKey, model, "This is a test prompt.")
-                logger.info(f"Response: {response}")
-
-                return SuccessResponse(
-                    success=True,
-                    data={
-                        "status": "success",
-                        "type": "text",
-                        "cost": 0.0,
-                        "message": "Great news! Your API token for Gemini is valid and ready to power your Model."
-                    },
-                    message="Validation successful",
-                    code=status.HTTP_200_OK
-                )
-
-            except InvalidArgument as exp:
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "invalid_key",
-                        "cost": 0.0,
-                        "message": "The provided API key or model name is invalid."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_400_BAD_REQUEST
-                )
-
-            except Forbidden:
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "permission_denied",
-                        "cost": 0.0,
-                        "message": "The API key does not have access to the requested model."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_403_FORBIDDEN
-                )
-
-            except ServiceUnavailable:
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "service_unavailable",
-                        "cost": 0.0,
-                        "message": "The Gemini service is temporarily unavailable. Please try again later."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_503_SERVICE_UNAVAILABLE
-                )
-
-            except InternalServerError:
-                return SuccessResponse(
-                    success=False,
-                    data={
-                        "status": "failed",
-                        "type": "internal_error",
-                        "cost": 0.0,
-                        "message": "An internal error occurred on the Gemini service."
-                    },
-                    message="Validation failed",
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            except Exception as exp:
-                error_msg = str(exp)
-                logger.exception(f"Gemini validation failed. Issue: {exp}")
-
-                # Check for common error patterns
-                if "API key" in error_msg or "invalid" in error_msg.lower():
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "invalid_key",
-                            "cost": 0.0,
-                            "message": f"The provided API key or model name is invalid. Error: {error_msg}"
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_400_BAD_REQUEST
-                    )
-                elif "model" in error_msg.lower() or "not found" in error_msg.lower():
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "invalid_key",
-                            "cost": 0.0,
-                            "message": f"Model '{model}' not found or invalid. Please check the model name. Error: {error_msg}"
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_400_BAD_REQUEST
-                    )
-                else:
-                    return SuccessResponse(
-                        success=False,
-                        data={
-                            "status": "failed",
-                            "type": "text",
-                            "cost": 0.0,
-                            "message": f"Uh-oh! There is an issue validating your Gemini API token. Error: {error_msg}"
-                        },
-                        message="Validation failed",
-                        code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+            return _validate_gemini_token(logger, apiKey, model)
 
         # -------------------- Unsupported Provider --------------------
         else:

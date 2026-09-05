@@ -18,11 +18,17 @@ Version: 1.0.0
 
 from fastapi import APIRouter
 
-from app.routes.user_auth import invitations
+from app.routes.user_auth import invite
+from app.routes.user_auth import decrypt_registration
+from app.routes.user_auth import bulk_invite
 from app.routes.user_auth import register
 from app.routes.user_auth import login
-from app.routes.user_auth import sso_password
-from app.routes.user_auth import profile
+from app.routes.user_auth import request_set_password
+from app.routes.user_auth import confirm_set_password
+from app.routes.user_auth import get_profile
+from app.routes.user_auth import upload_photo
+from app.routes.user_auth import remove_photo
+from app.routes.user_auth import update_profile
 from app.routes.user_auth import update_password
 from app.routes.user_auth import forgot_password
 from app.routes.user_auth import reset_password
@@ -37,15 +43,22 @@ router = APIRouter()
 # update_current_user_personal_info,
 # update_current_user_password, forgot_password, reset_password
 #
-# registration.py and password_reset.py were each further split (see
+# registration.py, password_reset.py, invitations.py, profile.py, and
+# sso_password.py were each further split (see
 # docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5 follow-up) into
 # one file per endpoint; router inclusion order below is unchanged from the
 # original registration order.
-router.include_router(invitations.router)
+router.include_router(invite.router)
+router.include_router(decrypt_registration.router)
+router.include_router(bulk_invite.router)
 router.include_router(register.router)
 router.include_router(login.router)
-router.include_router(sso_password.router)
-router.include_router(profile.router)
+router.include_router(request_set_password.router)
+router.include_router(confirm_set_password.router)
+router.include_router(get_profile.router)
+router.include_router(upload_photo.router)
+router.include_router(remove_photo.router)
+router.include_router(update_profile.router)
 router.include_router(update_password.router)
 router.include_router(forgot_password.router)
 router.include_router(reset_password.router)

@@ -40,8 +40,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-PATCH_TARGET = "app.routes.notifications.realtime.get_current_user_required"
-PATCH_TARGET_EMAIL = "app.routes.notifications.email_settings.get_current_user_required"
+PATCH_TARGET_GET = "app.routes.notifications.get_settings.get_current_user_required"
+PATCH_TARGET_SAVE = "app.routes.notifications.save_settings.get_current_user_required"
+PATCH_TARGET_UPDATE = "app.routes.notifications.update_settings.get_current_user_required"
+PATCH_TARGET_EMAIL_SAVE = "app.routes.notifications.email_save.get_current_user_required"
+PATCH_TARGET_EMAIL_UPDATE = "app.routes.notifications.email_update.get_current_user_required"
+PATCH_TARGET_EMAIL_GET = "app.routes.notifications.email_get.get_current_user_required"
+PATCH_TARGET_EMAIL_TRIGGER = "app.routes.notifications.email_trigger.get_current_user_required"
+PATCH_TARGET = PATCH_TARGET_GET
 
 
 def _make_client(mock_db):
@@ -224,7 +230,7 @@ REALTIME_SAVE_PAYLOAD = {
 def test_save_realtime_settings_invalid_uuid_returns_400(mock_db, regular_user):
     client = _make_client(mock_db)
     payload = dict(REALTIME_SAVE_PAYLOAD, workspace_id="bad-uuid")
-    with _auth(regular_user):
+    with _auth(regular_user, target=PATCH_TARGET_SAVE):
         resp = client.post("/api/v1/notifications/save", json=payload)
     assert resp.status_code == 400
 
@@ -232,7 +238,7 @@ def test_save_realtime_settings_invalid_uuid_returns_400(mock_db, regular_user):
 def test_save_realtime_settings_channel_not_found_returns_404(mock_db, regular_user):
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=None))
     client = _make_client(mock_db)
-    with _auth(regular_user):
+    with _auth(regular_user, target=PATCH_TARGET_SAVE):
         resp = client.post("/api/v1/notifications/save", json=REALTIME_SAVE_PAYLOAD)
     assert resp.status_code == 404
     assert "Channel with ID" in resp.json()["detail"]
@@ -250,7 +256,7 @@ def test_save_realtime_settings_creates_new_when_absent(mock_db, admin_user):
         ]
     )
     client = _make_client(mock_db)
-    with _auth(admin_user):
+    with _auth(admin_user, target=PATCH_TARGET_SAVE):
         resp = client.post("/api/v1/notifications/save", json=REALTIME_SAVE_PAYLOAD)
     assert resp.status_code == 200
     mock_db.add.assert_called_once()
@@ -268,7 +274,7 @@ def test_save_realtime_settings_workspace_mismatch_returns_400(mock_db, admin_us
         ]
     )
     client = _make_client(mock_db)
-    with _auth(admin_user):
+    with _auth(admin_user, target=PATCH_TARGET_SAVE):
         resp = client.post("/api/v1/notifications/save", json=REALTIME_SAVE_PAYLOAD)
     assert resp.status_code == 400
     assert "does not belong to the specified workspace" in resp.json()["detail"]
@@ -284,7 +290,7 @@ REALTIME_UPDATE_PAYLOAD = dict(REALTIME_SAVE_PAYLOAD, id=VALID_NOTIF_ID)
 def test_update_realtime_settings_not_found_returns_404(mock_db, regular_user):
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=None))
     client = _make_client(mock_db)
-    with _auth(regular_user):
+    with _auth(regular_user, target=PATCH_TARGET_UPDATE):
         resp = client.put("/api/v1/notifications/update", json=REALTIME_UPDATE_PAYLOAD)
     assert resp.status_code == 404
 
@@ -294,7 +300,7 @@ def test_update_realtime_settings_wrong_owner_returns_403(mock_db, regular_user)
     notification = _mk_notification(user_id="user-001")
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=notification))
     client = _make_client(mock_db)
-    with _auth(regular_user):
+    with _auth(regular_user, target=PATCH_TARGET_UPDATE):
         resp = client.put("/api/v1/notifications/update", json=REALTIME_UPDATE_PAYLOAD)
     assert resp.status_code == 403
     assert "only update your own" in resp.json()["detail"]
@@ -313,7 +319,7 @@ def test_update_realtime_settings_success(mock_db, admin_user):
         ]
     )
     client = _make_client(mock_db)
-    with _auth(admin_user):
+    with _auth(admin_user, target=PATCH_TARGET_UPDATE):
         resp = client.put("/api/v1/notifications/update", json=REALTIME_UPDATE_PAYLOAD)
     assert resp.status_code == 200
     assert mock_db.commit.await_count == 1
@@ -343,7 +349,7 @@ EMAIL_SAVE_PAYLOAD = {
 def test_save_email_settings_invalid_routine_returns_400(mock_db, regular_user):
     client = _make_client(mock_db)
     payload = dict(EMAIL_SAVE_PAYLOAD, routine=999)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_SAVE):
         resp = client.post("/api/v1/notifications/emailnotifysettings/save", json=payload)
     assert resp.status_code == 400
     assert "Invalid routine value" in resp.json()["detail"]
@@ -352,7 +358,7 @@ def test_save_email_settings_invalid_routine_returns_400(mock_db, regular_user):
 def test_save_email_settings_user_not_found_returns_404(mock_db, regular_user):
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=None))
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_SAVE):
         resp = client.post("/api/v1/notifications/emailnotifysettings/save", json=EMAIL_SAVE_PAYLOAD)
     assert resp.status_code == 404
 
@@ -366,7 +372,7 @@ def test_save_email_settings_creates_new(mock_db, regular_user):
         ]
     )
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_SAVE):
         resp = client.post("/api/v1/notifications/emailnotifysettings/save", json=EMAIL_SAVE_PAYLOAD)
     assert resp.status_code == 200
     mock_db.add.assert_called_once()
@@ -382,7 +388,7 @@ EMAIL_UPDATE_PAYLOAD = dict(EMAIL_SAVE_PAYLOAD, id=VALID_NOTIF_ID)
 def test_update_email_settings_invalid_routine_returns_400(mock_db, regular_user):
     client = _make_client(mock_db)
     payload = dict(EMAIL_UPDATE_PAYLOAD, routine=13)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_UPDATE):
         resp = client.put("/api/v1/notifications/emailnotifysettings/update", json=payload)
     assert resp.status_code == 400
 
@@ -390,7 +396,7 @@ def test_update_email_settings_invalid_routine_returns_400(mock_db, regular_user
 def test_update_email_settings_not_found_returns_404(mock_db, regular_user):
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=None))
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_UPDATE):
         resp = client.put("/api/v1/notifications/emailnotifysettings/update", json=EMAIL_UPDATE_PAYLOAD)
     assert resp.status_code == 404
 
@@ -406,7 +412,7 @@ def test_update_email_settings_success(mock_db, regular_user):
     notification.last_email_notify_time = None
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=notification))
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_UPDATE):
         resp = client.put("/api/v1/notifications/emailnotifysettings/update", json=EMAIL_UPDATE_PAYLOAD)
     assert resp.status_code == 200
     assert mock_db.commit.await_count == 1
@@ -418,7 +424,7 @@ def test_update_email_settings_success(mock_db, regular_user):
 
 def test_get_email_settings_invalid_uuid_returns_400(mock_db, regular_user):
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_GET):
         resp = client.get("/api/v1/notifications/emailnotifysettings/not-a-uuid")
     assert resp.status_code == 400
 
@@ -426,7 +432,7 @@ def test_get_email_settings_invalid_uuid_returns_400(mock_db, regular_user):
 def test_get_email_settings_user_not_found_returns_404(mock_db, regular_user):
     mock_db.execute = AsyncMock(return_value=_FakeResult(scalar_one_or_none=None))
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_GET):
         resp = client.get(f"/api/v1/notifications/emailnotifysettings/{VALID_USER_ID}")
     assert resp.status_code == 404
 
@@ -440,7 +446,7 @@ def test_get_email_settings_missing_returns_defaults(mock_db, regular_user):
         ]
     )
     client = _make_client(mock_db)
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL):
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_GET):
         resp = client.get(f"/api/v1/notifications/emailnotifysettings/{VALID_USER_ID}")
     assert resp.status_code == 200
     body = resp.json()
@@ -456,7 +462,7 @@ def test_get_email_settings_missing_returns_defaults(mock_db, regular_user):
 def test_trigger_scheduler_not_running_returns_503(mock_db, regular_user):
     fake_scheduler = MagicMock()
     fake_scheduler.is_running = False
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL), patch(
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_TRIGGER), patch(
         "app.services.daily_summary_scheduler.daily_summary_scheduler", fake_scheduler
     ):
         client = _make_client(mock_db)
@@ -469,7 +475,7 @@ def test_trigger_scheduler_success(mock_db, regular_user):
     fake_scheduler = MagicMock()
     fake_scheduler.is_running = True
     fake_scheduler.process_daily_summaries = AsyncMock()
-    with _auth(regular_user, target=PATCH_TARGET_EMAIL), patch(
+    with _auth(regular_user, target=PATCH_TARGET_EMAIL_TRIGGER), patch(
         "app.services.daily_summary_scheduler.daily_summary_scheduler", fake_scheduler
     ):
         client = _make_client(mock_db)
@@ -487,7 +493,7 @@ def test_trigger_scheduler_anonymous_when_auth_raises(mock_db):
     fake_scheduler = MagicMock()
     fake_scheduler.is_running = True
     fake_scheduler.process_daily_summaries = AsyncMock()
-    with patch(PATCH_TARGET_EMAIL, new=AsyncMock(side_effect=RuntimeError("no auth"))), patch(
+    with patch(PATCH_TARGET_EMAIL_TRIGGER, new=AsyncMock(side_effect=RuntimeError("no auth"))), patch(
         "app.services.daily_summary_scheduler.daily_summary_scheduler", fake_scheduler
     ):
         client = _make_client(mock_db)
