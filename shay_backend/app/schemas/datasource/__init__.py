@@ -5,7 +5,10 @@ This package replaces the former single-file app/schemas/datasource.py
 (445 lines) as part of Raven Phase 5a file-size compliance. It is split
 into:
 
-- core.py         -- DatasourceConfig + create/update request schemas
+- config.py           -- shared DatasourceConfig storage-config model
+- create.py           -- public-API create request schemas (channel-scoped)
+- create_internal.py  -- internal-API create request schemas (thread-scoped)
+- update.py           -- update request schema
 - responses.py    -- single/list/bulk/with-relations response schemas
 - stats.py        -- statistics and type-count schemas
 - processing.py    -- processing request/response + per-storage-type create schemas
@@ -19,14 +22,10 @@ including app/routes/datasources/{crud,upload,bulk,connections,embedding,
 processing}.py.
 """
 
-from .core import (
-    DatasourceConfig,
-    DatasourceCreate,
-    DatasourceBulkCreate,
-    DatasourceCreateInternal,
-    DatasourceBulkCreateInternal,
-    DatasourceUpdate,
-)
+from .config import DatasourceConfig
+from .create import DatasourceCreate, DatasourceBulkCreate
+from .create_internal import DatasourceCreateInternal, DatasourceBulkCreateInternal
+from .update import DatasourceUpdate
 from .responses import (
     DatasourceResponse,
     DatasourceList,
