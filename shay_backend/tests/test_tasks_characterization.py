@@ -187,7 +187,7 @@ class TestCreateTask:
     def test_message_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.create"):
             resp = client.post(
                 "/api/v1/tasks/",
                 json={"title": "T", "message_id": str(uuid.uuid4()), "assigned_to": str(uuid.uuid4())},
@@ -215,9 +215,9 @@ class TestCreateTask:
         )
         mock_db.refresh = AsyncMock(side_effect=_simulate_task_refresh)
 
-        with _auth(admin_user, "tasks.crud"), \
-             patch("app.routes.tasks.crud.link_shortener_service.shorten", new=AsyncMock(return_value="#")), \
-             patch("app.routes.tasks.crud.process_task_assignment_notifications", new=AsyncMock()):
+        with _auth(admin_user, "tasks.create"), \
+             patch("app.routes.tasks.create.link_shortener_service.shorten", new=AsyncMock(return_value="#")), \
+             patch("app.routes.tasks.create.process_task_assignment_notifications", new=AsyncMock()):
             resp = client.post(
                 "/api/v1/tasks/",
                 json={
@@ -250,7 +250,7 @@ class TestListTasks:
     def test_no_channels_returns_empty_list(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult())  # user_channels_query -> scalars().all() == []
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.list_tasks"):
             resp = client.get("/api/v1/tasks/", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -266,7 +266,7 @@ class TestListTasks:
         any authenticated user who belongs to at least one active channel."""
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(all_=[uuid.uuid4()]))  # user_channels_query
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.list_tasks"):
             resp = client.get("/api/v1/tasks/", headers=AUTH_HEADERS)
         assert resp.status_code == 500
 
@@ -280,7 +280,7 @@ class TestGetTaskCount:
     def test_no_channels_returns_zero(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult())
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.count"):
             resp = client.get("/api/v1/tasks/count", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"task_count": 0}
@@ -292,7 +292,7 @@ class TestGetTaskCount:
         logic as list_tasks endpoint", inheriting the same crash."""
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(all_=[uuid.uuid4()]))  # user_channels_query
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.count"):
             resp = client.get("/api/v1/tasks/count", headers=AUTH_HEADERS)
         assert resp.status_code == 500
 
@@ -306,7 +306,7 @@ class TestGetTask:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.detail"):
             resp = client.get(f"/api/v1/tasks/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Task not found"
@@ -316,7 +316,7 @@ class TestGetTask:
         client = _make_client(mock_db)
         task = _mock_task()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=task))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.detail"):
             resp = client.get(f"/api/v1/tasks/{task.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -336,7 +336,7 @@ class TestUpdateTask:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.update"):
             resp = client.put(f"/api/v1/tasks/{uuid.uuid4()}", json={"title": "x"}, headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -345,7 +345,7 @@ class TestUpdateTask:
         client = _make_client(mock_db)
         task = _mock_task(message_id=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=task))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.update"):
             resp = client.put(
                 f"/api/v1/tasks/{task.id}",
                 json={"title": "Updated Title"},
@@ -365,7 +365,7 @@ class TestDeleteTask:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.delete"):
             resp = client.delete(f"/api/v1/tasks/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -375,7 +375,7 @@ class TestDeleteTask:
         task = _mock_task(created_by=admin_user.id, message_id=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=task))
         mock_db.delete = AsyncMock()
-        with _auth(admin_user, "tasks.crud"):
+        with _auth(admin_user, "tasks.delete"):
             resp = client.delete(f"/api/v1/tasks/{task.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"message": "Task deleted successfully"}
@@ -478,7 +478,7 @@ class TestGetTaskStats:
         validation fails and FastAPI returns 500, even on this "no data" path."""
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(all_=[]))
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.stats"):
             resp = client.get("/api/v1/tasks/stats/overview", headers=AUTH_HEADERS)
         assert resp.status_code == 500
 
@@ -492,7 +492,7 @@ class TestGetTaskStats:
             _FakeResult(all_=[uuid.uuid4()]),  # workspace_query
             _FakeResult(all_=[uuid.uuid4()]),  # channels_query
         )
-        with _auth(admin_user, "tasks.listing"):
+        with _auth(admin_user, "tasks.stats"):
             resp = client.get("/api/v1/tasks/stats/overview", headers=AUTH_HEADERS)
         assert resp.status_code == 500
 

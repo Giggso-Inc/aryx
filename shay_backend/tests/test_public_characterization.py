@@ -208,10 +208,10 @@ class TestCreateCompanySimple:
             _FakeResult(scalar_one_or_none=None),  # existing user check
         )
         with patch(
-            "app.routes.public.signup.email_verification_service.generate_verification_token",
+            "app.routes.public.signup_create_simple_email.email_verification_service.generate_verification_token",
             new=AsyncMock(return_value=MagicMock(token="tok-123")),
         ), patch(
-            "app.routes.public.signup.email_verification_service.send_verification_email",
+            "app.routes.public.signup_create_simple_email.email_verification_service.send_verification_email",
             new=AsyncMock(return_value=True),
         ):
             client = _make_client(mock_db)

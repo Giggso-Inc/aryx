@@ -19,10 +19,13 @@ Version: 1.0.0
 from fastapi import APIRouter
 
 from app.routes.user_auth import invitations
-from app.routes.user_auth import registration
+from app.routes.user_auth import register
+from app.routes.user_auth import login
 from app.routes.user_auth import sso_password
 from app.routes.user_auth import profile
-from app.routes.user_auth import password_reset
+from app.routes.user_auth import update_password
+from app.routes.user_auth import forgot_password
+from app.routes.user_auth import reset_password
 
 router = APIRouter()
 
@@ -33,8 +36,16 @@ router = APIRouter()
 # get_current_user_profile_details, upload_profile_image, remove_profile_photo,
 # update_current_user_personal_info,
 # update_current_user_password, forgot_password, reset_password
+#
+# registration.py and password_reset.py were each further split (see
+# docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5 follow-up) into
+# one file per endpoint; router inclusion order below is unchanged from the
+# original registration order.
 router.include_router(invitations.router)
-router.include_router(registration.router)
+router.include_router(register.router)
+router.include_router(login.router)
 router.include_router(sso_password.router)
 router.include_router(profile.router)
-router.include_router(password_reset.router)
+router.include_router(update_password.router)
+router.include_router(forgot_password.router)
+router.include_router(reset_password.router)

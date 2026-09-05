@@ -207,7 +207,7 @@ class TestLoginUser:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.registration.verify_password", return_value=False):
+        with patch("app.routes.user_auth._login_helpers.verify_password", return_value=False):
             resp = client.post("/api/v1/user-auth/login", json=self._payload())
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Invalid password"
@@ -223,7 +223,7 @@ class TestLoginUser:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.registration.verify_password",
+        with patch("app.routes.user_auth._login_helpers.verify_password",
                    side_effect=RuntimeError("boom")):
             resp = client.post("/api/v1/user-auth/login", json=self._payload())
         assert resp.status_code == 500
@@ -255,10 +255,10 @@ class TestLoginUser:
         )
         client = _make_client(mock_db)
 
-        with patch("app.routes.user_auth.registration.verify_password", return_value=True), \
-             patch("app.routes.user_auth.registration.ensure_workspace_membership", new=AsyncMock()), \
-             patch("app.routes.user_auth.registration.create_access_token", return_value="access-token"), \
-             patch("app.routes.user_auth.registration.create_refresh_token", return_value="refresh-token"):
+        with patch("app.routes.user_auth._login_helpers.verify_password", return_value=True), \
+             patch("app.routes.user_auth.login.ensure_workspace_membership", new=AsyncMock()), \
+             patch("app.routes.user_auth.login.create_access_token", return_value="access-token"), \
+             patch("app.routes.user_auth.login.create_refresh_token", return_value="refresh-token"):
             resp = client.post("/api/v1/user-auth/login", json=self._payload())
 
         assert resp.status_code == 200
@@ -615,7 +615,7 @@ class TestUpdateCurrentUserPassword:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db, with_user_state="user-001")
 
-        with patch("app.routes.user_auth.password_reset.verify_password", return_value=False):
+        with patch("app.routes.user_auth.update_password.verify_password", return_value=False):
             resp = client.put("/api/v1/user-auth/password", json=self._payload())
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Current password is incorrect"
@@ -627,7 +627,7 @@ class TestUpdateCurrentUserPassword:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db, with_user_state="user-001")
 
-        with patch("app.routes.user_auth.password_reset.verify_password", return_value=True):
+        with patch("app.routes.user_auth.update_password.verify_password", return_value=True):
             resp = client.put(
                 "/api/v1/user-auth/password",
                 json=self._payload(
@@ -646,8 +646,8 @@ class TestUpdateCurrentUserPassword:
         mock_db.execute = AsyncMock(return_value=_scalar_result(user))
         client = _make_client(mock_db, with_user_state="user-001")
 
-        with patch("app.routes.user_auth.password_reset.verify_password", return_value=True), \
-             patch("app.routes.user_auth.password_reset.get_password_hash", return_value="new-hash"):
+        with patch("app.routes.user_auth.update_password.verify_password", return_value=True), \
+             patch("app.routes.user_auth.update_password.get_password_hash", return_value="new-hash"):
             resp = client.put("/api/v1/user-auth/password", json=self._payload())
 
         assert resp.status_code == 200

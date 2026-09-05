@@ -6,9 +6,10 @@ docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5). Both helpers here
 are used by more than one submodule:
 
 - `_format_user_name_from_email` is used by invitations.py.
-- `_send_default_password_reset_email` is used by password_reset.py's
-  `forgot_password` endpoint (kept here so both existing test files that
-  patch it can be pointed at one stable path).
+- `_send_default_password_reset_email` is used by
+  `_forgot_password_helpers.py`'s `_generate_and_send_reset_email` (which
+  backs forgot_password.py's `forgot_password` endpoint) — kept here so
+  tests that patch it can be pointed at one stable path.
 """
 
 import re

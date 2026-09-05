@@ -18,7 +18,7 @@ from app.schemas.approval import ApprovalReassign, ApprovalResponse
 from app.services.audit_service import log as audit_log_write
 from app.services.link_shortener_service import link_shortener_service
 
-from .notifications import process_approval_reassignment_notifications
+from .notifications_reassigned_process import process_approval_reassignment_notifications
 
 router = APIRouter()
 

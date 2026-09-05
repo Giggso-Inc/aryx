@@ -98,10 +98,10 @@ def test_register_reactivates_inactive_existing_user_with_invite(mock_db, mock_c
     mock_db.refresh = AsyncMock()
 
     client = _make_client(mock_db)
-    with patch("app.routes.user_auth.registration.get_password_hash", return_value="hashed-password"), \
-         patch("app.routes.user_auth.registration.ensure_workspace_membership", new=AsyncMock()), \
-         patch("app.routes.user_auth.registration.create_access_token", return_value="access-token"), \
-         patch("app.routes.user_auth.registration.create_refresh_token", return_value="refresh-token"):
+    with patch("app.routes.user_auth.register.get_password_hash", return_value="hashed-password"), \
+         patch("app.routes.user_auth.register.ensure_workspace_membership", new=AsyncMock()), \
+         patch("app.routes.user_auth.register.create_access_token", return_value="access-token"), \
+         patch("app.routes.user_auth.register.create_refresh_token", return_value="refresh-token"):
         response = client.post(
             "/api/v1/user-auth/register",
             json={

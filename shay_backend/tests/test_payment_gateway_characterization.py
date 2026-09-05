@@ -618,7 +618,7 @@ class TestFetchCompanySubscriptionDetails:
     def test_user_not_in_company_403(self, mock_db, admin_user):
         other_company_id = str(_uid())
         client = _make_client(mock_db)
-        with _auth(admin_user, "subscription_details"):
+        with _auth(admin_user, "subscription_details_auth"):
             resp = client.post(
                 "/api/v1/payment-gateway/zoho/subscriptions/fetchCompanySubscriptionDetails",
                 json={"companyId": other_company_id},
@@ -651,7 +651,7 @@ class TestFetchCompanySubscriptionDetails:
         zoho_instance = MagicMock()
         zoho_instance.get_customer_invoices = AsyncMock(return_value=[])
         client = _make_client(mock_db)
-        with _auth(admin_user, "subscription_details"), _zoho("subscription_details", zoho_instance):
+        with _auth(admin_user, "subscription_details_auth"), _zoho("subscription_details_zoho", zoho_instance):
             resp = client.post(
                 "/api/v1/payment-gateway/zoho/subscriptions/fetchCompanySubscriptionDetails",
                 json={"companyId": company_id},

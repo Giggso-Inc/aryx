@@ -197,7 +197,7 @@ class TestSupportedLogTypes:
     @pytest.mark.unit
     def test_returns_configured_list(self, mock_db):
         client = _make_client(mock_db)
-        with patch("app.routes.datasources.crud.settings.SUPPORTED_LOG_TYPES", ["android", "python"]):
+        with patch("app.routes.datasources.misc.settings.SUPPORTED_LOG_TYPES", ["android", "python"]):
             resp = client.get("/api/v1/datasources/supported-log-types")
         assert resp.status_code == 200
         assert resp.json() == ["android", "python"]
@@ -239,7 +239,7 @@ class TestCreateDatasource:
     def test_channel_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "create"):
             resp = client.post("/api/v1/datasources/", json=self._payload(), headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Channel not found"
@@ -253,7 +253,7 @@ class TestCreateDatasource:
             _FakeResult(all_=[existing]),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "create"):
             resp = client.post("/api/v1/datasources/", json=self._payload(), headers=AUTH_HEADERS)
         assert resp.status_code == 409
         assert "already exists in this channel" in resp.json()["detail"]
@@ -267,7 +267,7 @@ class TestCreateDatasource:
         )
         client = _make_client(mock_db)
         payload = self._payload(storage_type="cloud", filename="x.csv")
-        with _auth(admin_user):
+        with _auth(admin_user, "create"):
             resp = client.post("/api/v1/datasources/", json=payload, headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Provider is required for cloud storage type"
@@ -281,8 +281,8 @@ class TestCreateDatasource:
         )
         mock_db.refresh = AsyncMock(side_effect=_simulate_refresh)
         client = _make_client(mock_db)
-        with _auth(admin_user), \
-             patch("app.routes.datasources.crud.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with _auth(admin_user, "create"), \
+             patch("app.routes.datasources._create_persist.handle_vault_integration", new=AsyncMock(return_value=None)):
             resp = client.post("/api/v1/datasources/", json=self._payload(), headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -301,7 +301,7 @@ class TestUploadFile:
     def test_company_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"):
+        with _auth(admin_user, "upload_single"):
             resp = client.post(
                 "/api/v1/datasources/upload",
                 files={"file": ("a.csv", b"a,b\n1,2\n", "text/csv")},
@@ -314,9 +314,9 @@ class TestUploadFile:
     def test_happy_path_returns_upload_metadata(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=_company()))
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"), \
-             patch("app.routes.datasources.upload.get_file_storage_service", return_value=_storage_service()), \
-             patch("app.routes.datasources.upload.validate_file_content", return_value=True):
+        with _auth(admin_user, "upload_single"), \
+             patch("app.routes.datasources.upload_single.get_file_storage_service", return_value=_storage_service()), \
+             patch("app.routes.datasources.upload_single.validate_file_content", return_value=True):
             resp = client.post(
                 "/api/v1/datasources/upload",
                 files={"file": ("a.csv", b"a,b\n1,2\n", "text/csv")},
@@ -337,9 +337,9 @@ class TestUploadFile:
         (unlike several other endpoints in this file)."""
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=_company()))
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"), \
-             patch("app.routes.datasources.upload.get_file_storage_service", return_value=_storage_service()), \
-             patch("app.routes.datasources.upload.validate_file_content", return_value=False):
+        with _auth(admin_user, "upload_single"), \
+             patch("app.routes.datasources.upload_single.get_file_storage_service", return_value=_storage_service()), \
+             patch("app.routes.datasources.upload_single.validate_file_content", return_value=False):
             resp = client.post(
                 "/api/v1/datasources/upload",
                 files={"file": ("a.csv", b"a,b\n1,2\n", "text/csv")},
@@ -357,7 +357,7 @@ class TestCreateDatasourceFromUpload:
     @pytest.mark.unit
     def test_invalid_metadata_json_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"):
+        with _auth(admin_user, "from_upload"):
             resp = client.post(
                 "/api/v1/datasources/from-upload",
                 data={"channel_id": str(uuid.uuid4()), "datasource_metadata": "{not json"},
@@ -371,7 +371,7 @@ class TestCreateDatasourceFromUpload:
     def test_channel_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"):
+        with _auth(admin_user, "from_upload"):
             resp = client.post(
                 "/api/v1/datasources/from-upload",
                 data={"channel_id": str(uuid.uuid4())},
@@ -402,7 +402,7 @@ class TestCreateDatasourcesFromUploadBulk:
         400 check below is unreachable in practice."""
         client = _make_client(mock_db)
         payload = {"datasources": [{"channel_id": str(uuid.uuid4())}]}
-        with _auth(admin_user, "upload"):
+        with _auth(admin_user, "from_upload_bulk"):
             resp = client.post(
                 "/api/v1/datasources/from-upload/bulk",
                 data={"datasources_data": json.dumps(payload)},
@@ -418,7 +418,7 @@ class TestCreateDatasourcesFromUploadBulk:
     @pytest.mark.unit
     def test_missing_datasources_data_also_returns_422(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "upload"):
+        with _auth(admin_user, "from_upload_bulk"):
             resp = client.post(
                 "/api/v1/datasources/from-upload/bulk",
                 files=[("files", ("a.csv", b"1,2\n", "text/csv"))],
@@ -443,7 +443,7 @@ class TestCreateDatasourcesBulk:
             "storage_type": "local",
             "channel_id": str(uuid.uuid4()),
         }]}
-        with _auth(admin_user, "bulk"):
+        with _auth(admin_user, "bulk_create"):
             resp = client.post("/api/v1/datasources/bulk", json=payload, headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -473,7 +473,7 @@ class TestCreateDatasourcesBulkInternal:
     @pytest.mark.unit
     def test_invalid_api_key_returns_401(self, mock_db):
         client = _make_client(mock_db)
-        with patch("app.routes.datasources.bulk.settings.ML_API_KEY", "expected-key"):
+        with patch("app.routes.datasources._bulk_internal_auth.settings.ML_API_KEY", "expected-key"):
             resp = client.post(
                 "/api/v1/datasources/internal/bulk",
                 json={"datasources": [{
@@ -491,7 +491,7 @@ class TestCreateDatasourcesBulkInternal:
         correctly-supplied X-API-Key header into a 500, not a 401 — the
         'not configured' check runs before the equality check."""
         client = _make_client(mock_db)
-        with patch("app.routes.datasources.bulk.settings.ML_API_KEY", ""):
+        with patch("app.routes.datasources._bulk_internal_auth.settings.ML_API_KEY", ""):
             resp = client.post(
                 "/api/v1/datasources/internal/bulk",
                 json={"datasources": [{
@@ -516,7 +516,7 @@ class TestListDatasources:
             _FakeResult(all_=[]),        # main query
         )
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "list_datasources"):
             resp = client.get("/api/v1/datasources/", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -528,8 +528,8 @@ class TestListDatasources:
     @pytest.mark.unit
     def test_invalid_channel_id_format_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user), \
-             patch("app.routes.datasources.crud.check_channel_access", new=AsyncMock(return_value=True)):
+        with _auth(admin_user, "list_datasources"), \
+             patch("app.routes.datasources.list_datasources.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get("/api/v1/datasources/", params={"channel_id": "not-a-uuid"}, headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert "Invalid channel_id format" in resp.json()["detail"]
@@ -554,7 +554,7 @@ class TestDatasourceStats:
             _FakeResult(all_=[]),               # provider breakdown
         )
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "stats_count"):
             resp = client.get("/api/v1/datasources/stats", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -575,7 +575,7 @@ class TestDatasourceTypeCount:
         Row.count = 2
         mock_db.execute = _exec_seq(_FakeResult(rows=[Row]))
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "stats_count"):
             resp = client.get("/api/v1/datasources/count", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -594,7 +594,7 @@ class TestGetDatasource:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "get_datasource"):
             resp = client.get(f"/api/v1/datasources/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -607,7 +607,7 @@ class TestGetDatasource:
             _FakeResult(scalar_one_or_none=channel),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "get_datasource"):
             resp = client.get(f"/api/v1/datasources/{ds.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -624,7 +624,7 @@ class TestDownloadDatasource:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"):
+        with _auth(admin_user, "download_datasource"):
             resp = client.get(f"/api/v1/datasources/{uuid.uuid4()}/download", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -633,9 +633,9 @@ class TestDownloadDatasource:
         ds = _mock_datasource(storage_type="database", provider="mysql", config={}, file_url=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"), \
-             patch("app.routes.datasources.processing.get_storage_file_path_for_deletion", return_value=None), \
-             patch("app.routes.datasources.processing.get_external_view_url_for_datasource", return_value=None):
+        with _auth(admin_user, "download_datasource"), \
+             patch("app.routes.datasources.download_datasource.get_storage_file_path_for_deletion", return_value=None), \
+             patch("app.routes.datasources.download_datasource.get_external_view_url_for_datasource", return_value=None):
             resp = client.get(f"/api/v1/datasources/{ds.id}/download", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert "do not have a viewable or downloadable file" in resp.json()["detail"]
@@ -645,9 +645,9 @@ class TestDownloadDatasource:
         ds = _mock_datasource(storage_type="local", config={}, file_url=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"), \
-             patch("app.routes.datasources.processing.get_storage_file_path_for_deletion", return_value=None), \
-             patch("app.routes.datasources.processing.get_external_view_url_for_datasource", return_value=None):
+        with _auth(admin_user, "download_datasource"), \
+             patch("app.routes.datasources.download_datasource.get_storage_file_path_for_deletion", return_value=None), \
+             patch("app.routes.datasources.download_datasource.get_external_view_url_for_datasource", return_value=None):
             resp = client.get(f"/api/v1/datasources/{ds.id}/download", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "No downloadable file found for this datasource"
@@ -657,9 +657,9 @@ class TestDownloadDatasource:
         ds = _mock_datasource(storage_type="local", filename="report.csv")
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"), \
-             patch("app.routes.datasources.processing.get_storage_file_path_for_deletion", return_value="path/report.csv"), \
-             patch("app.routes.datasources.processing.get_file_storage_service", return_value=_storage_service()):
+        with _auth(admin_user, "download_datasource"), \
+             patch("app.routes.datasources.download_datasource.get_storage_file_path_for_deletion", return_value="path/report.csv"), \
+             patch("app.routes.datasources.download_datasource.get_file_storage_service", return_value=_storage_service()):
             resp = client.get(f"/api/v1/datasources/{ds.id}/download", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.content == b"file-bytes"
@@ -675,7 +675,7 @@ class TestUpdateDatasource:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "update"):
             resp = client.put(f"/api/v1/datasources/{uuid.uuid4()}", json={"name": "New"}, headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -693,7 +693,7 @@ class TestUpdateDatasource:
             _FakeResult(scalar_one_or_none=channel),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "update"):
             resp = client.put(f"/api/v1/datasources/{ds.id}", json={"name": "New Name"}, headers=AUTH_HEADERS)
         assert resp.status_code == 500
 
@@ -707,7 +707,7 @@ class TestDeleteDatasource:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "delete"):
             resp = client.delete(f"/api/v1/datasources/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -717,7 +717,7 @@ class TestDeleteDatasource:
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         mock_db.delete = AsyncMock()
         client = _make_client(mock_db)
-        with _auth(admin_user):
+        with _auth(admin_user, "delete"):
             resp = client.delete(f"/api/v1/datasources/{ds.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"message": "Datasource deleted successfully"}
@@ -739,7 +739,7 @@ class TestProcessDatasources:
         therefore 500s inside the handler with an AttributeError, even
         though FastAPI's own request validation passes."""
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"):
+        with _auth(admin_user, "process_datasource"):
             resp = client.post(
                 "/api/v1/datasources/process",
                 json={"datasource_ids": [str(uuid.uuid4())]},
@@ -753,7 +753,7 @@ class TestProcessDatasources:
         name `datasource_id` fails FastAPI's own request validation before
         ever reaching the handler, since the schema requires `datasource_ids`."""
         client = _make_client(mock_db)
-        with _auth(admin_user, "processing"):
+        with _auth(admin_user, "process_datasource"):
             resp = client.post(
                 "/api/v1/datasources/process",
                 json={"datasource_id": str(uuid.uuid4())},
@@ -775,7 +775,7 @@ class TestBulkManageDatasourceConnections:
         own `if action not in [...]: raise HTTPException(400, ...)` check
         ever runs — that check is dead code for this field."""
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "bulk_connection"):
             resp = client.post(
                 "/api/v1/datasources/bulk-connection",
                 json={"datasource_ids": [str(uuid.uuid4())], "action": "toggle"},
@@ -788,7 +788,7 @@ class TestBulkManageDatasourceConnections:
         mock_db.execute = _exec_seq(_FakeResult(all_=[]))
         client = _make_client(mock_db)
         ds_id = str(uuid.uuid4())
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "bulk_connection"):
             resp = client.post(
                 "/api/v1/datasources/bulk-connection",
                 json={"datasource_ids": [ds_id], "action": "connect"},
@@ -802,7 +802,7 @@ class TestBulkManageDatasourceConnections:
         ds = _mock_datasource(is_connected=False)
         mock_db.execute = _exec_seq(_FakeResult(all_=[ds]))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "bulk_connection"):
             resp = client.post(
                 "/api/v1/datasources/bulk-connection",
                 json={"datasource_ids": [ds.id], "action": "connect"},
@@ -824,7 +824,7 @@ class TestConnectDisconnect:
     def test_connect_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "connect"):
             resp = client.post(f"/api/v1/datasources/{uuid.uuid4()}/connect", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -833,7 +833,7 @@ class TestConnectDisconnect:
         ds = _mock_datasource(is_connected=True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "connect"):
             resp = client.post(f"/api/v1/datasources/{ds.id}/connect", headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Datasource is already connected"
@@ -843,7 +843,7 @@ class TestConnectDisconnect:
         ds = _mock_datasource(is_connected=False)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "connect"):
             resp = client.post(f"/api/v1/datasources/{ds.id}/connect", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -855,7 +855,7 @@ class TestConnectDisconnect:
         ds = _mock_datasource(is_connected=False)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "disconnect"):
             resp = client.post(f"/api/v1/datasources/{ds.id}/disconnect", headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Datasource is already disconnected"
@@ -865,7 +865,7 @@ class TestConnectDisconnect:
         ds = _mock_datasource(is_connected=True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "disconnect"):
             resp = client.post(f"/api/v1/datasources/{ds.id}/disconnect", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -882,7 +882,7 @@ class TestConnectionStatus:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "connection_status"):
             resp = client.get(f"/api/v1/datasources/{uuid.uuid4()}/connection-status", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -891,7 +891,7 @@ class TestConnectionStatus:
         ds = _mock_datasource(is_connected=True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "connections"):
+        with _auth(admin_user, "connection_status"):
             resp = client.get(f"/api/v1/datasources/{ds.id}/connection-status", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -908,8 +908,8 @@ class TestEmbeddingStatusByChannel:
         channel_id = str(uuid.uuid4())
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"), \
-             patch("app.routes.datasources.embedding.check_channel_access", new=AsyncMock(return_value=True)):
+        with _auth(admin_user, "embedding_status"), \
+             patch("app.routes.datasources.embedding_status.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get(f"/api/v1/datasources/embedding-status/{channel_id}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Channel not found"
@@ -925,8 +925,8 @@ class TestEmbeddingStatusByChannel:
             _FakeResult(all_=[ds_done, ds_pending]),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"), \
-             patch("app.routes.datasources.embedding.check_channel_access", new=AsyncMock(return_value=True)):
+        with _auth(admin_user, "embedding_status"), \
+             patch("app.routes.datasources.embedding_status.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get(f"/api/v1/datasources/embedding-status/{channel_id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -967,7 +967,7 @@ class TestRegenerateEmbedding:
     def test_not_found_returns_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"):
+        with _auth(admin_user, "embedding_regenerate"):
             resp = client.post(f"/api/v1/datasources/embedding/regenerate/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -976,7 +976,7 @@ class TestRegenerateEmbedding:
         ds = _mock_datasource(added_by="some-other-user-id")
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"):
+        with _auth(admin_user, "embedding_regenerate"):
             resp = client.post(f"/api/v1/datasources/embedding/regenerate/{ds.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 403
         assert "don't have permission" in resp.json()["detail"]
@@ -986,7 +986,7 @@ class TestRegenerateEmbedding:
         ds = _mock_datasource(added_by=admin_user.id, giggso_vault_id=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=ds))
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"):
+        with _auth(admin_user, "embedding_regenerate"):
             resp = client.post(f"/api/v1/datasources/embedding/regenerate/{ds.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert "does not have vault integration" in resp.json()["detail"]
@@ -1003,13 +1003,13 @@ class TestRegenerateEmbedding:
         socket_service = MagicMock()
         socket_service.is_socket_connected = MagicMock(return_value=False)
         client = _make_client(mock_db)
-        with _auth(admin_user, "embedding"), \
-             patch("app.routes.datasources.embedding.get_completed_embeddings_by_channel", new=AsyncMock(return_value=[])), \
-             patch("app.routes.datasources.embedding.get_openai_vault_token_for_company", new=AsyncMock(return_value=None)), \
-             patch("app.routes.datasources.embedding.extract_table_names_from_datasources", return_value=None), \
-             patch("app.routes.datasources.embedding.ml_service.request_embedding_processing",
+        with _auth(admin_user, "embedding_regenerate"), \
+             patch("app.routes.datasources.embedding_regenerate.get_completed_embeddings_by_channel", new=AsyncMock(return_value=[])), \
+             patch("app.routes.datasources.embedding_regenerate.get_openai_vault_token_for_company", new=AsyncMock(return_value=None)), \
+             patch("app.routes.datasources._regenerate_ml_call.extract_table_names_from_datasources", return_value=None), \
+             patch("app.routes.datasources._regenerate_ml_call.ml_service.request_embedding_processing",
                    new=AsyncMock(return_value={"success": True})), \
-             patch("app.routes.datasources.embedding.get_socket_service", return_value=socket_service):
+             patch("app.routes.datasources._regenerate_ml_call.get_socket_service", return_value=socket_service):
             resp = client.post(f"/api/v1/datasources/embedding/regenerate/{ds.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
