@@ -922,78 +922,78 @@
       "<assign>"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      30,
+      "shay_backend/app/routes/agent/callback.py",
+      29,
       "ai_callback"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      35,
+      "shay_backend/app/routes/agent/callback.py",
+      34,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      79,
+      "shay_backend/app/routes/agent/callback.py",
+      78,
       "<assign>"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      103,
-      "ai_status_update"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      108,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      121,
-      "<assign>"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      162,
-      "ai_stats"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      164,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      234,
-      "trigger_ai_processing"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      241,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      279,
-      "<assign>"
-    ],
-    [
-      "shay_backend/app/routes/agent.py",
-      301,
+      "shay_backend/app/routes/agent/process_ai_request.py",
+      19,
       "process_ai_request"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      305,
+      "shay_backend/app/routes/agent/process_ai_request.py",
+      23,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      345,
+      "shay_backend/app/routes/agent/process_ai_request.py",
+      62,
       "<assign>"
     ],
     [
-      "shay_backend/app/routes/agent.py",
-      369,
+      "shay_backend/app/routes/agent/process_ai_request.py",
+      86,
+      "<assign>"
+    ],
+    [
+      "shay_backend/app/routes/agent/stats.py",
+      22,
+      "ai_stats"
+    ],
+    [
+      "shay_backend/app/routes/agent/stats.py",
+      24,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/agent/status.py",
+      20,
+      "ai_status_update"
+    ],
+    [
+      "shay_backend/app/routes/agent/status.py",
+      25,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/agent/status.py",
+      38,
+      "<assign>"
+    ],
+    [
+      "shay_backend/app/routes/agent/trigger.py",
+      32,
+      "trigger_ai_processing"
+    ],
+    [
+      "shay_backend/app/routes/agent/trigger.py",
+      39,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/agent/trigger.py",
+      77,
       "<assign>"
     ],
     [
@@ -1402,104 +1402,104 @@
       "list_apps"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      53,
-      "_raise_for_bridge_error"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      62,
-      "_raise_for_bridge_error"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      65,
-      "_resolve_aryx_workspace_id"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      75,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      92,
-      "_resolve_aryx_workspace_id"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      106,
+      "shay_backend/app/routes/aryx/_ask.py",
+      23,
       "ask"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      122,
+      "shay_backend/app/routes/aryx/_ask.py",
+      39,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      135,
+      "shay_backend/app/routes/aryx/_ask.py",
+      52,
       "ask"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      138,
+      "shay_backend/app/routes/aryx/_documents.py",
+      32,
       "call_aryx_docs_read"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      156,
+      "shay_backend/app/routes/aryx/_documents.py",
+      50,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      166,
+      "shay_backend/app/routes/aryx/_documents.py",
+      60,
       "call_aryx_docs_read"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      169,
-      "call_aryx_job_status"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      179,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      191,
-      "call_aryx_job_status"
-    ],
-    [
-      "shay_backend/app/routes/aryx.py",
-      219,
+      "shay_backend/app/routes/aryx/_documents.py",
+      88,
       "document_summary"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      234,
+      "shay_backend/app/routes/aryx/_documents.py",
+      103,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      242,
+      "shay_backend/app/routes/aryx/_documents.py",
+      111,
       "document_summary"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      247,
+      "shay_backend/app/routes/aryx/_documents.py",
+      116,
       "confirm_documents"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      264,
+      "shay_backend/app/routes/aryx/_documents.py",
+      133,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/aryx.py",
-      277,
+      "shay_backend/app/routes/aryx/_documents.py",
+      146,
       "confirm_documents"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_jobs.py",
+      26,
+      "call_aryx_job_status"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_jobs.py",
+      36,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_jobs.py",
+      48,
+      "call_aryx_job_status"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_shared.py",
+      24,
+      "_raise_for_bridge_error"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_shared.py",
+      33,
+      "_raise_for_bridge_error"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_shared.py",
+      36,
+      "_resolve_aryx_workspace_id"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_shared.py",
+      46,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/aryx/_shared.py",
+      63,
+      "_resolve_aryx_workspace_id"
     ],
     [
       "shay_backend/app/routes/attachments/detail.py",
@@ -1662,124 +1662,124 @@
       "upload_file"
     ],
     [
-      "shay_backend/app/routes/audit.py",
-      26,
-      "_audit_query"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      49,
-      "_audit_query"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      52,
-      "_get_user_names"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      59,
-      "_get_user_names"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      64,
-      "_get_related_user_ids_for_audit_rows"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      92,
-      "_get_related_user_ids_for_audit_rows"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      167,
-      "list_audit_log"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      255,
-      "list_audit_log"
-    ],
-    [
-      "shay_backend/app/routes/audit.py",
-      259,
+      "shay_backend/app/routes/audit/channel.py",
+      28,
       "list_channel_audit_log"
     ],
     [
-      "shay_backend/app/routes/audit.py",
-      321,
+      "shay_backend/app/routes/audit/channel.py",
+      70,
       "list_channel_audit_log"
     ],
     [
-      "shay_backend/app/routes/audit.py",
-      325,
-      "list_thread_audit_log"
+      "shay_backend/app/routes/audit/helpers.py",
+      27,
+      "_audit_query"
     ],
     [
-      "shay_backend/app/routes/audit.py",
-      389,
-      "list_thread_audit_log"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
-      40,
-      "login"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
+      "shay_backend/app/routes/audit/helpers.py",
       52,
-      "login"
+      "_audit_query"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      59,
+      "shay_backend/app/routes/audit/list_all.py",
+      27,
+      "list_audit_log"
+    ],
+    [
+      "shay_backend/app/routes/audit/list_all.py",
+      97,
+      "list_audit_log"
+    ],
+    [
+      "shay_backend/app/routes/audit/related_users.py",
+      27,
+      "_get_user_names"
+    ],
+    [
+      "shay_backend/app/routes/audit/related_users.py",
+      34,
+      "_get_user_names"
+    ],
+    [
+      "shay_backend/app/routes/audit/related_users.py",
+      39,
+      "_get_related_user_ids_for_audit_rows"
+    ],
+    [
+      "shay_backend/app/routes/audit/related_users.py",
+      67,
+      "_get_related_user_ids_for_audit_rows"
+    ],
+    [
+      "shay_backend/app/routes/audit/thread.py",
+      28,
+      "list_thread_audit_log"
+    ],
+    [
+      "shay_backend/app/routes/audit/thread.py",
+      72,
+      "list_thread_audit_log"
+    ],
+    [
+      "shay_backend/app/routes/auth/callback.py",
+      34,
       "oauth_callback"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      61,
+      "shay_backend/app/routes/auth/callback.py",
+      36,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      172,
+      "shay_backend/app/routes/auth/dev_token.py",
+      25,
+      "get_dev_token"
+    ],
+    [
+      "shay_backend/app/routes/auth/dev_token.py",
+      77,
+      "get_dev_token"
+    ],
+    [
+      "shay_backend/app/routes/auth/get_me.py",
+      20,
+      "get_current_user_info"
+    ],
+    [
+      "shay_backend/app/routes/auth/get_me.py",
+      25,
+      "get_current_user_info"
+    ],
+    [
+      "shay_backend/app/routes/auth/login.py",
+      19,
+      "login"
+    ],
+    [
+      "shay_backend/app/routes/auth/login.py",
+      31,
+      "login"
+    ],
+    [
+      "shay_backend/app/routes/auth/refresh.py",
+      20,
       "refresh_token"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      174,
+      "shay_backend/app/routes/auth/refresh.py",
+      22,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      214,
-      "get_current_user_info"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
-      219,
-      "get_current_user_info"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
-      231,
+      "shay_backend/app/routes/auth/update_me.py",
+      21,
       "update_current_user"
     ],
     [
-      "shay_backend/app/routes/auth.py",
-      249,
+      "shay_backend/app/routes/auth/update_me.py",
+      39,
       "update_current_user"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
-      253,
-      "get_dev_token"
-    ],
-    [
-      "shay_backend/app/routes/auth.py",
-      305,
-      "get_dev_token"
     ],
     [
       "shay_backend/app/routes/channels/channel_metrics.py",
@@ -3452,34 +3452,34 @@
       "update_workspace_member"
     ],
     [
-      "shay_backend/app/routes/gmail_connect.py",
-      53,
-      "gmail_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/gmail_connect.py",
-      64,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/gmail_connect.py",
-      88,
-      "gmail_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/gmail_connect.py",
-      92,
+      "shay_backend/app/routes/gmail_connect/callback.py",
+      25,
       "gmail_connect_callback"
     ],
     [
-      "shay_backend/app/routes/gmail_connect.py",
-      127,
+      "shay_backend/app/routes/gmail_connect/callback.py",
+      60,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/gmail_connect.py",
-      181,
+      "shay_backend/app/routes/gmail_connect/callback.py",
+      114,
       "gmail_connect_callback"
+    ],
+    [
+      "shay_backend/app/routes/gmail_connect/initiate.py",
+      24,
+      "gmail_connect_initiate"
+    ],
+    [
+      "shay_backend/app/routes/gmail_connect/initiate.py",
+      35,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/gmail_connect/initiate.py",
+      59,
+      "gmail_connect_initiate"
     ],
     [
       "shay_backend/app/routes/messages/ai_processing.py",
@@ -4952,54 +4952,54 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/sf_connect.py",
-      42,
-      "_pkce_pair"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      47,
-      "_pkce_pair"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      50,
-      "_get_state_secret"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      51,
-      "_get_state_secret"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      102,
-      "sf_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      113,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      144,
-      "sf_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/sf_connect.py",
-      148,
+      "shay_backend/app/routes/sf_connect/callback.py",
+      26,
       "sf_connect_callback"
     ],
     [
-      "shay_backend/app/routes/sf_connect.py",
-      185,
+      "shay_backend/app/routes/sf_connect/callback.py",
+      63,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/sf_connect.py",
-      245,
+      "shay_backend/app/routes/sf_connect/callback.py",
+      123,
       "sf_connect_callback"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/initiate.py",
+      25,
+      "sf_connect_initiate"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/initiate.py",
+      36,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/initiate.py",
+      67,
+      "sf_connect_initiate"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/state.py",
+      22,
+      "_pkce_pair"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/state.py",
+      27,
+      "_pkce_pair"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/state.py",
+      30,
+      "_get_state_secret"
+    ],
+    [
+      "shay_backend/app/routes/sf_connect/state.py",
+      31,
+      "_get_state_secret"
     ],
     [
       "shay_backend/app/routes/shortener.py",
@@ -5032,99 +5032,99 @@
       "redirect_short_link"
     ],
     [
-      "shay_backend/app/routes/sso.py",
-      81,
-      "sso_initiate"
-    ],
-    [
-      "shay_backend/app/routes/sso.py",
-      97,
+      "shay_backend/app/routes/sso/callback.py",
+      90,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/sso.py",
-      104,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/sso.py",
-      121,
-      "sso_initiate"
-    ],
-    [
-      "shay_backend/app/routes/sso.py",
-      172,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/sso.py",
-      234,
+      "shay_backend/app/routes/sso/callback.py",
+      147,
       "sso_callback"
     ],
     [
-      "shay_backend/app/routes/subscription_plans.py",
-      32,
+      "shay_backend/app/routes/sso/initiate.py",
+      28,
+      "sso_initiate"
+    ],
+    [
+      "shay_backend/app/routes/sso/initiate.py",
+      44,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/sso/initiate.py",
+      51,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/sso/initiate.py",
+      68,
+      "sso_initiate"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/active.py",
+      24,
+      "get_active_plans"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/active.py",
+      38,
+      "get_active_plans"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/create.py",
+      25,
+      "create_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/create.py",
+      78,
+      "create_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      27,
+      "get_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      48,
+      "get_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      52,
+      "update_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      109,
+      "update_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      113,
+      "delete_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/detail.py",
+      148,
+      "delete_subscription_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscription_plans/helpers.py",
+      8,
       "validate_uuid"
     ],
     [
-      "shay_backend/app/routes/subscription_plans.py",
-      44,
-      "create_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      97,
-      "create_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      101,
+      "shay_backend/app/routes/subscription_plans/list_plans.py",
+      24,
       "list_subscription_plans"
     ],
     [
-      "shay_backend/app/routes/subscription_plans.py",
-      179,
+      "shay_backend/app/routes/subscription_plans/list_plans.py",
+      102,
       "list_subscription_plans"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      188,
-      "get_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      209,
-      "get_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      213,
-      "update_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      270,
-      "update_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      274,
-      "delete_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      309,
-      "delete_subscription_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      313,
-      "get_active_plans"
-    ],
-    [
-      "shay_backend/app/routes/subscription_plans.py",
-      327,
-      "get_active_plans"
     ],
     [
       "shay_backend/app/routes/subscriptions/company_plan_by_id.py",
@@ -5207,74 +5207,74 @@
       "list_subscriptions"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      57,
-      "submit_support_request"
-    ],
-    [
-      "shay_backend/app/routes/support.py",
-      129,
-      "submit_support_request"
-    ],
-    [
-      "shay_backend/app/routes/support.py",
-      154,
+      "shay_backend/app/routes/support/company_list.py",
+      26,
       "list_support_requests_by_company"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      166,
+      "shay_backend/app/routes/support/company_list.py",
+      38,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      189,
+      "shay_backend/app/routes/support/company_list.py",
+      61,
       "list_support_requests_by_company"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      199,
+      "shay_backend/app/routes/support/detail.py",
+      31,
       "get_support_request"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      217,
+      "shay_backend/app/routes/support/detail.py",
+      49,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      222,
+      "shay_backend/app/routes/support/detail.py",
+      54,
       "get_support_request"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      226,
+      "shay_backend/app/routes/support/detail.py",
+      58,
       "update_support_request"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      246,
+      "shay_backend/app/routes/support/detail.py",
+      78,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      256,
+      "shay_backend/app/routes/support/detail.py",
+      88,
       "update_support_request"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      260,
+      "shay_backend/app/routes/support/detail.py",
+      92,
       "delete_support_request"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      279,
+      "shay_backend/app/routes/support/detail.py",
+      111,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/support.py",
-      286,
+      "shay_backend/app/routes/support/detail.py",
+      118,
       "delete_support_request"
+    ],
+    [
+      "shay_backend/app/routes/support/submit.py",
+      29,
+      "submit_support_request"
+    ],
+    [
+      "shay_backend/app/routes/support/submit.py",
+      101,
+      "submit_support_request"
     ],
     [
       "shay_backend/app/routes/tasks/_assign_helpers.py",
@@ -6487,34 +6487,34 @@
       "update_workspace"
     ],
     [
-      "shay_backend/app/routes/zoho_connect.py",
-      64,
-      "zoho_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/zoho_connect.py",
-      75,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/zoho_connect.py",
-      100,
-      "zoho_connect_initiate"
-    ],
-    [
-      "shay_backend/app/routes/zoho_connect.py",
-      104,
+      "shay_backend/app/routes/zoho_connect/callback.py",
+      25,
       "zoho_connect_callback"
     ],
     [
-      "shay_backend/app/routes/zoho_connect.py",
-      150,
+      "shay_backend/app/routes/zoho_connect/callback.py",
+      71,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/zoho_connect.py",
-      209,
+      "shay_backend/app/routes/zoho_connect/callback.py",
+      130,
       "zoho_connect_callback"
+    ],
+    [
+      "shay_backend/app/routes/zoho_connect/initiate.py",
+      24,
+      "zoho_connect_initiate"
+    ],
+    [
+      "shay_backend/app/routes/zoho_connect/initiate.py",
+      35,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/zoho_connect/initiate.py",
+      60,
+      "zoho_connect_initiate"
     ],
     [
       "shay_backend/app/schemas/subscription_plan/base.py",

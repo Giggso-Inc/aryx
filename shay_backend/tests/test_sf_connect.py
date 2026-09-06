@@ -60,7 +60,7 @@ def _make_http_mock(method: str, resp_json: dict, status: int = 200) -> AsyncMoc
 def test_initiate_rejects_invalid_sid():
     """sid with special chars must return 400 invalid_sid."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": "bad sid with spaces!", "redirect_uri": _VALID_REDIRECT},
@@ -72,7 +72,7 @@ def test_initiate_rejects_invalid_sid():
 def test_initiate_rejects_overlong_sid():
     """sid longer than 128 chars must return 400 invalid_sid."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": "a" * 200, "redirect_uri": _VALID_REDIRECT},
@@ -84,7 +84,7 @@ def test_initiate_rejects_overlong_sid():
 def test_initiate_rejects_invalid_redirect_uri():
     """redirect_uri not in allowlist must return 400 invalid_redirect_uri."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=False):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=False):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": "https://evil.example.com/steal"},
@@ -96,7 +96,7 @@ def test_initiate_rejects_invalid_redirect_uri():
 def test_initiate_happy_path_returns_sf_authorization_url():
     """Valid request must return a login.salesforce.com authorization_url with PKCE."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": _VALID_REDIRECT},
@@ -116,7 +116,7 @@ def test_initiate_happy_path_returns_sf_authorization_url():
 def test_callback_state_failure_redirects_to_root():
     """Tampered state must redirect to '/'."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect._verify_sf_state", side_effect=ValueError("bad")):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", side_effect=ValueError("bad")):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"code": "c", "state": "tampered"},
@@ -129,7 +129,7 @@ def test_callback_state_failure_redirects_to_root():
 def test_callback_provider_error_redirects_with_error_fragment():
     """Salesforce returning error=access_denied must redirect with #error= fragment."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect._verify_sf_state", return_value=_STATE_DATA):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", return_value=_STATE_DATA):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"error": "access_denied", "state": "s"},
@@ -147,8 +147,8 @@ def test_callback_token_exchange_failure_redirects_with_error():
     bad_cm.__aexit__ = AsyncMock(return_value=None)
     bad_cm.post = AsyncMock(side_effect=Exception("connection refused"))
 
-    with patch("app.routes.sf_connect._verify_sf_state", return_value=_STATE_DATA), \
-         patch("app.routes.sf_connect.httpx.AsyncClient", return_value=bad_cm):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", return_value=_STATE_DATA), \
+         patch("app.routes.sf_connect.callback.httpx.AsyncClient", return_value=bad_cm):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"code": "c", "state": "s"},
@@ -166,8 +166,8 @@ def test_callback_no_email_redirects_with_error():
     })
     profile_cm = _make_http_mock("get", {"user_id": "uid"})  # no email
 
-    with patch("app.routes.sf_connect._verify_sf_state", return_value=_STATE_DATA), \
-         patch("app.routes.sf_connect.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", return_value=_STATE_DATA), \
+         patch("app.routes.sf_connect.callback.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"code": "c", "state": "s"},
@@ -193,8 +193,8 @@ def test_callback_happy_path_redirects_with_sf_data_fragment():
         "username": "rep@salesforce.dev",
     })
 
-    with patch("app.routes.sf_connect._verify_sf_state", return_value=_STATE_DATA), \
-         patch("app.routes.sf_connect.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", return_value=_STATE_DATA), \
+         patch("app.routes.sf_connect.callback.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"code": "c", "state": "s"},
@@ -218,8 +218,8 @@ def test_callback_missing_instance_url_redirects_with_error():
     client = TestClient(_make_app(), raise_server_exceptions=False)
     token_cm = _make_http_mock("post", {"access_token": "tok"})  # no instance_url
 
-    with patch("app.routes.sf_connect._verify_sf_state", return_value=_STATE_DATA), \
-         patch("app.routes.sf_connect.httpx.AsyncClient", return_value=token_cm):
+    with patch("app.routes.sf_connect.callback._verify_sf_state", return_value=_STATE_DATA), \
+         patch("app.routes.sf_connect.callback.httpx.AsyncClient", return_value=token_cm):
         resp = client.get(
             "/api/v1/sf/connect/callback",
             params={"code": "c", "state": "s"},
@@ -237,7 +237,7 @@ def test_initiate_scope_does_not_contain_api_all():
     removed in this fix — Salesforce rejects it with invalid_scope.
     """
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": _VALID_REDIRECT},
@@ -250,7 +250,7 @@ def test_initiate_scope_does_not_contain_api_all():
 def test_initiate_scope_contains_only_valid_scopes():
     """Authorization URL scope must be exactly 'api refresh_token openid'."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.sf_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.sf_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/sf/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": _VALID_REDIRECT},
@@ -264,7 +264,7 @@ def test_initiate_scope_contains_only_valid_scopes():
 def test_pkce_pair_produces_valid_s256_challenge():
     """_pkce_pair must produce a verifier and a valid S256 code_challenge."""
     import hashlib
-    from app.routes.sf_connect import _pkce_pair
+    from app.routes.sf_connect.state import _pkce_pair
 
     verifier, challenge = _pkce_pair()
 
