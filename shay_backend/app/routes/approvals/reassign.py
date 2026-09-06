@@ -5,9 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import attributes
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.approval import Approval
@@ -16,9 +14,11 @@ from app.models.message import Message
 from app.models.user import User
 from app.schemas.approval import ApprovalReassign, ApprovalResponse
 from app.services.audit_service import log as audit_log_write
-from app.services.link_shortener_service import link_shortener_service
 
+from .approval_response import to_approval_response
+from .notification_links import build_notification_urls
 from .notifications_reassigned_process import process_approval_reassignment_notifications
+from .reassign_metadata import record_reassignment
 
 router = APIRouter()
 
@@ -116,66 +116,21 @@ async def reassign_approval(
     new_approver_result = await db.execute(new_approver_stmt)
     new_approver = new_approver_result.scalar_one_or_none()
 
-    # Track reassignment in metadata
-    if not approval.approval_metadata:
-        approval.approval_metadata = {}
+    # Track reassignment (and status-reset, if applicable) in metadata
+    record_reassignment(
+        approval, user, previous_approver_id, previous_approver, new_approver,
+        reassign_data.new_approver_user_id, reassign_data.notes, was_completed, current_time,
+    )
 
-    if 'reassignments' not in approval.approval_metadata:
-        approval.approval_metadata['reassignments'] = []
-
-    # Track reassignment
-    reassignment_entry = {
-        'previous_approver_id': str(previous_approver_id),
-        'new_approver_id': str(reassign_data.new_approver_user_id),
-        'reassigned_by': str(user.id),
-        'reassigned_at': current_time.isoformat(),
-        'notes': reassign_data.notes,
-        'previous_status': approval.status if not was_completed else 'pending',
-        'status_reset': was_completed,
-        'reset_reason': 'reassigned_completed_approval' if was_completed else None,
-        'previous_approver_name': previous_approver.name if previous_approver else None,
-        'new_approver_name': new_approver.name if new_approver else None,
-        'reassigned_by_name': user.name if hasattr(user, 'name') else None
-    }
-
-    approval.approval_metadata['reassignments'].append(reassignment_entry)
-
-    # Also track as a status change if status was reset
-    if was_completed:
-        if 'status_changes' not in approval.approval_metadata:
-            approval.approval_metadata['status_changes'] = []
-
-        approval.approval_metadata['status_changes'].append({
-            'old_status': 'approved' if approval.status == 'pending' else 'rejected',
-            'new_status': 'pending',
-            'changed_by': str(user.id),
-            'changed_at': current_time.isoformat(),
-            'comment': f"Status reset to pending due to reassignment to {new_approver.name if new_approver else 'new approver'}",
-            'rejection_reason': None,
-            'action_type': 'reassignment_reset'
-        })
-
-    # Mark the JSONB field as modified so SQLAlchemy detects the change
-    attributes.flag_modified(approval, 'approval_metadata')
     await audit_log_write(db, user.id, "approval.reassigned", "approval", approval.id, channel_id=approval.channel_id, thread_id=approval.thread_id, details={"new_approver_id": str(reassign_data.new_approver_user_id)})
     await db.commit()
     await db.refresh(approval)
 
     # Process approval reassignment notifications in background
     if reassign_channel_id and approval.approver_user_id and reassign_thread_id:
-        # Use the canonical frontend root for real-time notifications.
-        platform_url = settings.PLATFORM_URL
-
-        # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
-        redirect_url = await link_shortener_service.shorten(
-            f"{platform_url}/threads/{reassign_channel_id}/{reassign_thread_id}?openApproval=true", db,
-            thread_id=reassign_thread_id, channel_id=reassign_channel_id, entity_type="approval",
-        ) if platform_url else "#"
-        # Construct notification settings URL (shortened; channel-level)
-        notification_settings_url = await link_shortener_service.shorten(
-            f"{platform_url}/threads/{reassign_channel_id}?openSettings=true&tab=notification", db,
-            channel_id=reassign_channel_id, entity_type="channel",
-        ) if platform_url else "#"
+        redirect_url, notification_settings_url = await build_notification_urls(
+            reassign_channel_id, reassign_thread_id, db
+        )
 
         background_tasks.add_task(
             process_approval_reassignment_notifications,
@@ -186,21 +141,4 @@ async def reassign_approval(
             notification_settings_url  # Pre-constructed notification settings URL
         )
 
-    # Convert UUID fields to strings for the response
-    return ApprovalResponse(
-        id=str(approval.id),
-        message_id=str(approval.message_id) if approval.message_id else None,
-        requested_by_user_id=str(approval.requested_by_user_id) if approval.requested_by_user_id else None,
-        approver_user_id=str(approval.approver_user_id) if approval.approver_user_id else None,
-        status=approval.status,
-        title=approval.title,
-        description=approval.description,
-        approval_notes=approval.approval_notes,
-        rejection_reason=approval.rejection_reason,
-        comment=approval.comment,
-        is_active=approval.is_active,
-        created_at=approval.created_at,
-        updated_at=approval.updated_at,
-        approved_at=approval.approved_at,
-        rejected_at=approval.rejected_at
-    )
+    return to_approval_response(approval)

@@ -2,8 +2,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from sqlalchemy import and_, select
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import generate_approval_id
@@ -11,13 +10,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.approval import Approval
-from app.models.channel_member import ChannelMember
-from app.models.message import Message, Thread
-from app.models.user import User
 from app.schemas.approval import ApprovalCreate, ApprovalResponse
 from app.services.audit_service import log as audit_log_write
 from app.services.link_shortener_service import link_shortener_service
 
+from .approval_response import to_approval_response
+from .create_validation import load_and_validate_create_target
 from .notifications_created_process import process_approval_notifications
 
 router = APIRouter()
@@ -52,76 +50,7 @@ async def create_approval(
     """
     user = await get_current_user_required(request, db)
 
-    # Get message first to determine thread_id if not provided
-    message_stmt = select(Message).where(Message.id == approval_data.message_id)
-    message_result = await db.execute(message_stmt)
-    message = message_result.scalar_one_or_none()
-
-    if not message:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Message not found"
-        )
-
-    # Use provided thread_id or auto-detect from message
-    thread_id = approval_data.thread_id or str(message.thread_id)
-
-    # Validate thread exists and user has access
-    thread_stmt = select(Thread).where(Thread.id == thread_id)
-    thread_result = await db.execute(thread_stmt)
-    thread = thread_result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
-        )
-
-    # Validate message belongs to the thread
-    if str(message.thread_id) != thread_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Message does not belong to the specified thread"
-        )
-
-    # Validate approver is a channel member
-    approver_member_stmt = select(ChannelMember).where(
-        and_(
-            ChannelMember.channel_id == thread.channel_id,
-            ChannelMember.user_id == approval_data.approver_user_id,
-            ChannelMember.is_active == True
-        )
-    )
-    approver_member_result = await db.execute(approver_member_stmt)
-    approver_member = approver_member_result.scalar_one_or_none()
-
-    if not approver_member:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Approver must be an active member of the channel"
-        )
-
-    # Check if there's already an active approval for this thread (via message IDs in thread)
-    thread_msg_ids_stmt = select(Message.id).where(Message.thread_id == thread_id)
-    thread_msg_ids_result = await db.execute(thread_msg_ids_stmt)
-    thread_msg_ids = [row[0] for row in thread_msg_ids_result.all()]
-
-    if thread_msg_ids:
-        existing_approval_stmt = select(Approval).where(
-            and_(
-                Approval.message_id.in_(thread_msg_ids),
-                Approval.is_active == "Y",
-                Approval.status == "pending"
-            )
-        )
-        existing_approval_result = await db.execute(existing_approval_stmt)
-        existing_approval = existing_approval_result.scalar_one_or_none()
-
-        if existing_approval:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="There is already a pending approval for this thread"
-            )
+    message, thread, thread_id, approver_user = await load_and_validate_create_target(approval_data, db)
 
     # Auto-generate title and description if not provided
     title = approval_data.title
@@ -133,11 +62,6 @@ async def create_approval(
     description = approval_data.description
     if not description:
         description = f"Approval request for message in thread: {thread.title or 'Untitled Thread'}"
-
-    # Get approver user information for tracking
-    approver_user_stmt = select(User).where(User.id == approval_data.approver_user_id)
-    approver_user_result = await db.execute(approver_user_stmt)
-    approver_user = approver_user_result.scalar_one_or_none()
 
     # channel_id resolved from thread for notifications (not stored on Approval)
     resolved_channel_id = thread.channel_id
@@ -197,21 +121,4 @@ async def create_approval(
             notification_settings_url  # Pre-constructed notification settings URL
         )
 
-    # Convert UUID fields to strings for the response
-    return ApprovalResponse(
-        id=str(approval.id),
-        message_id=str(approval.message_id) if approval.message_id else None,
-        requested_by_user_id=str(approval.requested_by_user_id) if approval.requested_by_user_id else None,
-        approver_user_id=str(approval.approver_user_id) if approval.approver_user_id else None,
-        status=approval.status,
-        title=approval.title,
-        description=approval.description,
-        approval_notes=approval.approval_notes,
-        rejection_reason=approval.rejection_reason,
-        comment=approval.comment,
-        is_active=approval.is_active,
-        created_at=approval.created_at,
-        updated_at=approval.updated_at,
-        approved_at=approval.approved_at,
-        rejected_at=approval.rejected_at
-    )
+    return to_approval_response(approval)

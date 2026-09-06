@@ -1408,6 +1408,22 @@ Full suite after wave B5: `60 failed, 1578 passed, 2 skipped, 52 errors` (1578 =
 
 **Gap found during wave B5's final sweep, not previously tracked:** `app/routes/approvals/` has 5 oversized files never queued in any prior wave's "still outstanding" list — `list.py` (329), `history_builder.py` (298), `create.py` (217), `reassign.py` (206), `history.py` (182). This package's `notifications.py` was split in the earlier 12-worst-offenders follow-up, but these 5 siblings were missed at that time and every wave since. Queued as wave B6 — the true last remaining piece of the file-length sweep.
 
+**Full sweep — wave B6 complete (2026-09-06): `app/routes/approvals/`, the final piece.**
+
+- `list.py` (329→130) — extracted `list_query.py` (filter/query building) and `list_row.py` (per-row response construction, previously duplicated verbatim across both pagination branches — now shared).
+- `history_builder.py` (298→50) — its prior "stated exception" docstring did not hold up: `build_approval_history`'s three independent metadata blocks (initial assignment, reassignments, status changes) split into `history_timeline_initial.py`/`history_timeline_changes.py`; the unrelated `build_approval_context` moved to `history_context.py`; the original file is now a thin orchestrator.
+- `create.py` (217→124) — extracted `create_validation.py` (message/thread/approver validation cascade) and a shared `approval_response.py` serializer (also reused by `reassign.py`). `settings`/`link_shortener_service` usage deliberately kept inline rather than proxied, to preserve `mock.patch` attribute-resolution at the original call site.
+- `reassign.py` (206→144) — extracted `reassign_metadata.py` (reassignment/status-reset bookkeeping) and `notification_links.py` (shared URL builder), reusing `approval_response.py`.
+- `history.py` (182→74) — extracted `history_access.py` (403 access-check) and `history_timeline_view.py` (this endpoint's own timeline builder, kept separate from `history_builder.py`'s since the two produce different shapes).
+
+No patch-target rewrites were needed — `create`/`reassign`/`history`/`list` kept their original module names, and directly-patched names (`get_current_user_required`, `audit_log_write`, `settings`, `link_shortener_service`) stayed as module-level imports at their original call sites by design. 3 spot-checks (corrupting `create.settings`, `create.link_shortener_service.shorten`, `reassign.audit_log_write` to `_WRONG` suffixes) all broke tests as expected, confirming the imports are load-bearing where they sit; restored after.
+
+Full suite after wave B6: `60 failed, 1578 passed, 2 skipped, 52 errors` — identical failing-test identities to baseline (the only approvals-adjacent line in the failure list is the pre-existing `test_integration_db.py::TestSchemaExists::test_table_exists[gg_approvals]`, failing for the same no-local-Postgres reason as every other `test_integration_db.py` case). All touched/new files `ast.parse` clean.
+
+**Full sweep complete.** A final full-repo scan of `app/routes/**/*.py` confirms zero files over 150 lines remain anywhere in the entire tree, except the 2 documented stated exceptions from wave B1 (`payment_gateway/hosted_pages.py` at 189, `token_details/update.py` at 162) — both re-confirmed still justified as of this writeup. Every wave (12-worst-offenders, A, B1, B2/B3, B4, B5, B6) is committed. Phase 5a/5b (`shay_backend/` file-length compliance) is done.
+
+**Process note for future waves elsewhere in this plan:** one staging mistake surfaced and was fixed during wave B5 — `git add <package-dir>` does not stage the deletion of a sibling flat file with a different name (e.g. `app/routes/audit.py` deleted, `app/routes/audit/` added) since the deletion lives outside the added directory. Always also explicitly `git add` the old flat file path when a flat-file-to-package split changes the base name, or run a final `git status --short | grep '^ D'` check before committing to catch any stragglers.
+
 **5b — Tier B (57 additional files, 150–400 lines, new to this revision):**
 1. Run the dedicated-test-file check (§2.1's corrected methodology) against all 57 before splitting any of them — do not assume Tier A's 23-of-36 untested ratio simply extrapolates.
 2. `app/routes/aryx.py` (289 lines, the Shay↔Aryx bridge endpoint file) splits under Phase 2's `store/`-file caution level, not this phase's default route-file risk level — it's the one Tier B file with a direct dependency on this session's own Oracle-parity fixes.

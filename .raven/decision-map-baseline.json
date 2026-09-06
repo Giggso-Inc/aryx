@@ -1103,13 +1103,23 @@
     ],
     [
       "shay_backend/app/routes/approvals/create.py",
-      27,
+      25,
       "create_approval"
     ],
     [
       "shay_backend/app/routes/approvals/create.py",
-      201,
+      124,
       "create_approval"
+    ],
+    [
+      "shay_backend/app/routes/approvals/create_validation.py",
+      14,
+      "load_and_validate_create_target"
+    ],
+    [
+      "shay_backend/app/routes/approvals/create_validation.py",
+      103,
+      "load_and_validate_create_target"
     ],
     [
       "shay_backend/app/routes/approvals/delete.py",
@@ -1153,88 +1163,118 @@
     ],
     [
       "shay_backend/app/routes/approvals/history.py",
-      19,
+      20,
       "debug_approval_metadata"
     ],
     [
       "shay_backend/app/routes/approvals/history.py",
-      38,
+      39,
       "debug_approval_metadata"
     ],
     [
       "shay_backend/app/routes/approvals/history.py",
-      51,
+      52,
       "get_approval_history"
     ],
     [
       "shay_backend/app/routes/approvals/history.py",
-      182,
+      74,
       "get_approval_history"
     ],
     [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      31,
-      "build_approval_history"
+      "shay_backend/app/routes/approvals/history_access.py",
+      15,
+      "check_history_access"
     ],
     [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      73,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      146,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      192,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      227,
-      "build_approval_history"
-    ],
-    [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      230,
+      "shay_backend/app/routes/approvals/history_context.py",
+      17,
       "build_approval_context"
     ],
     [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      246,
+      "shay_backend/app/routes/approvals/history_context.py",
+      33,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/approvals/history_builder.py",
-      298,
+      "shay_backend/app/routes/approvals/history_context.py",
+      85,
       "build_approval_context"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_changes.py",
+      39,
+      "build_reassignment_entries"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_changes.py",
+      77,
+      "build_reassignment_entries"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_changes.py",
+      80,
+      "build_status_change_entries"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_changes.py",
+      130,
+      "build_status_change_entries"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_initial.py",
+      29,
+      "build_initial_assignment_entries"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_initial.py",
+      57,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/approvals/history_timeline_initial.py",
+      104,
+      "build_initial_assignment_entries"
     ],
     [
       "shay_backend/app/routes/approvals/list.py",
-      44,
+      31,
       "list_approvals"
     ],
     [
       "shay_backend/app/routes/approvals/list.py",
-      170,
+      78,
       "<if>"
     ],
     [
       "shay_backend/app/routes/approvals/list.py",
-      182,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/approvals/list.py",
-      265,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/approvals/list.py",
-      323,
+      124,
       "list_approvals"
+    ],
+    [
+      "shay_backend/app/routes/approvals/list_query.py",
+      22,
+      "build_approval_list_query"
+    ],
+    [
+      "shay_backend/app/routes/approvals/list_query.py",
+      112,
+      "build_approval_list_query"
+    ],
+    [
+      "shay_backend/app/routes/approvals/list_row.py",
+      26,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/approvals/notification_links.py",
+      11,
+      "build_notification_urls"
+    ],
+    [
+      "shay_backend/app/routes/approvals/notification_links.py",
+      37,
+      "build_notification_urls"
     ],
     [
       "shay_backend/app/routes/approvals/notifications_created_process.py",
@@ -1298,8 +1338,13 @@
     ],
     [
       "shay_backend/app/routes/approvals/reassign.py",
-      190,
+      144,
       "reassign_approval"
+    ],
+    [
+      "shay_backend/app/routes/approvals/reassign_metadata.py",
+      14,
+      "record_reassignment"
     ],
     [
       "shay_backend/app/routes/approvals/stats.py",
