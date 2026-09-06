@@ -1,18 +1,18 @@
 """
 Datasource list endpoint (GET /).
 
-Stated exception (162 lines): the endpoint independently supports
-channel-level and thread-level (dedup-by-filename) pagination paths on top
-of ~8 optional filters; the shared filter-building and row-building were
-already extracted to _list_filters.py / _list_response_builder.py, and
-further splitting the two pagination branches would fragment one cohesive
-control flow without reducing real duplication.
+Scope resolution (channel_id/thread_id parsing + access checks) and the
+thread-level dedup-by-filename pagination path are further extracted to
+_list_scope_resolution.py and _list_thread_dedup.py (Raven
+style-compliance, wave B4). The shared filter-building and row-building
+were already extracted to _list_filters.py / _list_response_builder.py;
+what remains here is building the two queries and choosing between the
+thread-dedup and normal-pagination branch.
 """
 
-import uuid
-from typing import Optional, Tuple
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,10 +22,11 @@ from app.models.channel import Channel
 from app.models.channel_member import ChannelMember
 from app.models.datasource import Datasource
 from app.schemas.datasource import DatasourceListWithRelations
-from app.utils.channel_access import check_channel_access, check_channel_access_by_thread
 
 from ._list_filters import build_common_datasource_filters
 from ._list_response_builder import build_datasource_list_rows, fetch_channel_membership_map
+from ._list_scope_resolution import resolve_list_scope
+from ._list_thread_dedup import dedupe_thread_datasources
 
 router = APIRouter()
 
@@ -61,29 +62,7 @@ async def list_datasources(
     """
     user = await get_current_user_required(request)
 
-    if channel_id:
-        await check_channel_access(db, user, channel_id)
-
-    channel_uuid = None
-    if channel_id:
-        try:
-            channel_uuid = uuid.UUID(channel_id) if isinstance(channel_id, str) else channel_id
-        except (ValueError, AttributeError):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid channel_id format: {channel_id}"
-            )
-
-    thread_uuid = None
-    if thread_id:
-        try:
-            thread_uuid = uuid.UUID(thread_id)
-        except (ValueError, TypeError):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid thread_id format: {thread_id}"
-            )
-        await check_channel_access_by_thread(db, user, thread_id)
+    channel_uuid, thread_uuid = await resolve_list_scope(db, user, channel_id, thread_id)
 
     type_filter = data_source_type if data_source_type else storage_type
 
@@ -131,26 +110,7 @@ async def list_datasources(
     if thread_uuid:
         result = await db.execute(query)
         all_datasources = result.scalars().all()
-
-        # Sort: embedding_status==2 (completed) first, then by created_at desc, then id desc
-        # So per filename we keep: completed row if any, else the latest row
-        def _thread_ds_sort_key(ds) -> Tuple[int, float, str]:
-            ts = ds.created_at.timestamp() if ds.created_at else 0
-            return (0 if (ds.embedding_status == 2) else 1, -ts, str(ds.id or ""))
-
-        all_datasources_sorted = sorted(all_datasources, key=_thread_ds_sort_key)
-        seen_filenames = {}
-        unique_datasources = []
-        for ds in all_datasources_sorted:
-            filename_key = (ds.filename or ds.name or "unknown").strip() or "unknown"
-            if filename_key not in seen_filenames:
-                seen_filenames[filename_key] = True
-                unique_datasources.append(ds)
-
-        total_count = len(unique_datasources)
-        start_idx = (page - 1) * size
-        end_idx = start_idx + size
-        datasources = unique_datasources[start_idx:end_idx]
+        total_count, datasources = dedupe_thread_datasources(all_datasources, page, size)
     else:
         # For channel-level queries: apply pagination normally
         query = query.offset((page - 1) * size).limit(size)

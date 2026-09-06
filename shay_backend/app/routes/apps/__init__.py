@@ -14,8 +14,12 @@ registration order for a given HTTP method, and a single-segment dynamic
 path like GET /{app_id} would otherwise swallow literal single-segment
 paths such as GET /categories or GET /stats. The static-path submodules
 (create, list_apps, categories_stats) are therefore included BEFORE the
-dynamic-path submodule (detail), preserving the original file's endpoint
+dynamic-path submodules (detail_*), preserving the original file's endpoint
 declaration order exactly.
+
+Update (wave B4): detail.py (155 lines, GET+PUT+DELETE on /{app_id}) was
+split one-endpoint-per-file into detail_get.py, detail_update.py, and
+detail_delete.py.
 """
 
 from fastapi import APIRouter
@@ -23,13 +27,17 @@ from fastapi import APIRouter
 from . import create
 from . import list_apps
 from . import categories_stats
-from . import detail
+from . import detail_get
+from . import detail_update
+from . import detail_delete
 from .common import security, CLOUD_DRIVE_APP_KEYS, EXCLUDED_APP_KEYS
 
 router = APIRouter()
 router.include_router(create.router)
 router.include_router(list_apps.router)
 router.include_router(categories_stats.router)
-router.include_router(detail.router)
+router.include_router(detail_get.router)
+router.include_router(detail_update.router)
+router.include_router(detail_delete.router)
 
 __all__ = ["router", "security", "CLOUD_DRIVE_APP_KEYS", "EXCLUDED_APP_KEYS"]

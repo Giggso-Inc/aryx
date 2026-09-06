@@ -2,34 +2,27 @@
 Datasource POST /upload/bulk endpoint (upload multiple files to storage,
 optionally kicking off Aryx knowledge-graph ingestion per file).
 
-Stated exception (177 lines): ~45 lines are docstring/comments describing
-the additive Aryx behavior (kept verbatim — it documents a real backward-
-compatibility guarantee); the per-file loop body itself is one cohesive
-upload-then-optionally-ingest sequence that doesn't split into independent
-reusable pieces the way the other bulk endpoints' loops did.
+The per-batch Aryx setup and the per-file upload-then-optionally-ingest
+step are split out to _upload_bulk_files_aryx_setup.py and
+_upload_bulk_files_item.py (Raven style-compliance, wave B4) — what
+remains here is the endpoint itself: resolve the company, resolve the
+batch-level Aryx setup once, then loop.
 """
 
-import os
-import uuid
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.company import Company
-from app.routes.aryx import (
-    _resolve_aryx_workspace_id as _resolve_aryx_workspace_id_for_datasources,
-    call_aryx_docs_read,
-)
-from app.routes.workspaces import _get_workspace_or_404
 from app.schemas.datasource import FileUploadBulkResponse
-from app.services.file_storage import generate_structured_path, get_file_storage_service
-from app.utils.file_validation import validate_file_content
-from app.utils.permissions import require_active_workspace_role
-from sqlalchemy import select
+from app.services.file_storage import get_file_storage_service
+
+from ._upload_bulk_files_aryx_setup import _resolve_aryx_setup_for_bulk_upload
+from ._upload_bulk_files_item import _upload_one_bulk_file
 
 router = APIRouter()
 
@@ -76,18 +69,9 @@ async def upload_files_bulk(
     # kind="aryx" was actually requested. Any failure here becomes a per-file
     # aryx_ingestion.error below rather than a hard failure of the upload
     # (which must still succeed for callers not opting into this feature).
-    aryx_workspace_id: Optional[int] = None
-    aryx_setup_error: Optional[str] = None
-    if kind == "aryx":
-        if not workspace_id:
-            aryx_setup_error = "workspace_id is required when kind='aryx'"
-        else:
-            try:
-                target_workspace = await _get_workspace_or_404(db, workspace_id)
-                await require_active_workspace_role(db, user.id, uuid.UUID(str(target_workspace.id)))
-                aryx_workspace_id = await _resolve_aryx_workspace_id_for_datasources(workspace_id)
-            except HTTPException as exc:
-                aryx_setup_error = str(exc.detail)
+    aryx_workspace_id, aryx_setup_error = await _resolve_aryx_setup_for_bulk_upload(
+        db, user, kind, workspace_id
+    )
 
     # Get file storage service
     storage_service = get_file_storage_service()
@@ -96,84 +80,14 @@ async def upload_files_bulk(
     failed_files = []
 
     for file in files:
-        try:
-            # Validate file
-            if not file.filename:
-                failed_files.append({
-                    "filename": "unknown",
-                    "error": "File name is required"
-                })
-                continue
-
-            # Read file content
-            file_content = await file.read()
-
-            # Validate file content before uploading (if validation is required)
-            if isValidationRequired and not validate_file_content(file_content, file.filename):
-                failed_files.append({
-                    "filename": file.filename,
-                    "error": "File validation failed - no valid section headers found"
-                })
-                continue
-
-            # Generate structured path
-            file_extension = os.path.splitext(file.filename)[1]
-            base_filename = os.path.splitext(file.filename)[0]
-            current_date = datetime.now().strftime("%Y-%m-%d")
-
-            # Use structured path for datasource files
-            structured_path = generate_structured_path(
-                company_name=company.name,
-                company_id=str(company.id),
-                file_type="datasource",
-                original_filename=file.filename,
-                base_filename=base_filename,
-                file_extension=file_extension,
-                current_date=current_date
-            )
-
-            # Upload file with structured path
-            upload_result = await storage_service.upload_file(
-                file_content=file_content,
-                destination_path=structured_path,
-                original_filename=file.filename
-            )
-
-            uploaded_entry = {
-                "filename": file.filename,
-                "storage_path": upload_result["storage_path"],
-                "file_url": upload_result["file_url"],
-                "file_size": len(file_content),
-                "file_type": file.content_type or "application/octet-stream",
-                "provider": upload_result["provider"]
-            }
-
-            # --- Additive: start Aryx ingestion for this file using the
-            # bytes already read above. Never touches uploaded_entry's
-            # existing keys — only adds aryx_ingestion.
-            if kind == "aryx":
-                if aryx_setup_error:
-                    uploaded_entry["aryx_ingestion"] = {"error": aryx_setup_error}
-                else:
-                    try:
-                        aryx_result = await call_aryx_docs_read(
-                            aryx_workspace_id,
-                            [(file.filename, file_content, file.content_type)],
-                        )
-                        uploaded_entry["aryx_ingestion"] = {
-                            "discovery_id": aryx_result.get("discovery_id"),
-                            "status": "queued",
-                        }
-                    except HTTPException as exc:
-                        uploaded_entry["aryx_ingestion"] = {"error": str(exc.detail)}
-
+        uploaded_entry, failed_entry = await _upload_one_bulk_file(
+            file, company, isValidationRequired, kind,
+            aryx_workspace_id, aryx_setup_error, storage_service,
+        )
+        if uploaded_entry is not None:
             uploaded_files.append(uploaded_entry)
-
-        except Exception as e:
-            failed_files.append({
-                "filename": file.filename,
-                "error": str(e)
-            })
+        if failed_entry is not None:
+            failed_files.append(failed_entry)
 
     return FileUploadBulkResponse(
         uploaded_files=uploaded_files,

@@ -73,7 +73,7 @@ class TestAryxIngestionStatusHelper:
     def test_fetches_live_status_when_discovery_id_present(self):
         from app.routes.datasources import _aryx_ingestion_status_for
         fake_status = {"status": "running", "stage": "Reading", "pct": 64}
-        with patch("app.routes.datasources._embedding_helpers.call_aryx_job_status",
+        with patch("app.routes.datasources._embedding_helpers._aryx_status.call_aryx_job_status",
                    new=AsyncMock(return_value=fake_status)) as mock_call:
             result = _run(_aryx_ingestion_status_for({"aryx": {"discovery_id": "disc-123"}}))
         assert result == fake_status
@@ -81,7 +81,7 @@ class TestAryxIngestionStatusHelper:
 
     def test_degrades_gracefully_when_aryx_unreachable(self):
         from app.routes.datasources import _aryx_ingestion_status_for
-        with patch("app.routes.datasources._embedding_helpers.call_aryx_job_status",
+        with patch("app.routes.datasources._embedding_helpers._aryx_status.call_aryx_job_status",
                    new=AsyncMock(side_effect=HTTPException(502, "Aryx unreachable"))):
             result = _run(_aryx_ingestion_status_for({"aryx": {"discovery_id": "disc-123"}}))
         assert result == {"error": "status temporarily unavailable"}
@@ -100,7 +100,7 @@ def test_upload_bulk_without_kind_is_unaffected(mock_db, admin_user):
 
     with patch("app.routes.datasources.upload_bulk_files.get_current_user_required", new=AsyncMock(return_value=admin_user)), \
          patch("app.routes.datasources.upload_bulk_files.get_file_storage_service", return_value=_mock_storage_service()), \
-         patch("app.routes.datasources.upload_bulk_files.validate_file_content", return_value=True):
+         patch("app.routes.datasources._upload_bulk_files_item.validate_file_content", return_value=True):
         response = client.post(
             "/api/v1/datasources/upload/bulk",
             files={"files": ("report.csv", b"a,b\n1,2\n", "text/csv")},
@@ -122,11 +122,11 @@ def test_upload_bulk_with_kind_aryx_starts_ingestion(mock_db, admin_user):
 
     with patch("app.routes.datasources.upload_bulk_files.get_current_user_required", new=AsyncMock(return_value=admin_user)), \
          patch("app.routes.datasources.upload_bulk_files.get_file_storage_service", return_value=_mock_storage_service()), \
-         patch("app.routes.datasources.upload_bulk_files.validate_file_content", return_value=True), \
-         patch("app.routes.datasources.upload_bulk_files._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)), \
-         patch("app.routes.datasources.upload_bulk_files.require_active_workspace_role", new=AsyncMock(return_value="admin")), \
-         patch("app.routes.datasources.upload_bulk_files._resolve_aryx_workspace_id_for_datasources", new=AsyncMock(return_value=10)), \
-         patch("app.routes.datasources.upload_bulk_files.call_aryx_docs_read",
+         patch("app.routes.datasources._upload_bulk_files_item.validate_file_content", return_value=True), \
+         patch("app.routes.datasources._upload_bulk_files_aryx_setup._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)), \
+         patch("app.routes.datasources._upload_bulk_files_aryx_setup.require_active_workspace_role", new=AsyncMock(return_value="admin")), \
+         patch("app.routes.datasources._upload_bulk_files_aryx_setup._resolve_aryx_workspace_id_for_datasources", new=AsyncMock(return_value=10)), \
+         patch("app.routes.datasources._upload_bulk_files_item.call_aryx_docs_read",
                new=AsyncMock(return_value={"discovery_id": "disc-abc"})) as mock_read:
         response = client.post(
             "/api/v1/datasources/upload/bulk",
@@ -155,7 +155,7 @@ def test_upload_bulk_kind_aryx_without_workspace_id_fails_gracefully_per_file(mo
 
     with patch("app.routes.datasources.upload_bulk_files.get_current_user_required", new=AsyncMock(return_value=admin_user)), \
          patch("app.routes.datasources.upload_bulk_files.get_file_storage_service", return_value=_mock_storage_service()), \
-         patch("app.routes.datasources.upload_bulk_files.validate_file_content", return_value=True):
+         patch("app.routes.datasources._upload_bulk_files_item.validate_file_content", return_value=True):
         response = client.post(
             "/api/v1/datasources/upload/bulk",
             files={"files": ("report.csv", b"a,b\n1,2\n", "text/csv")},

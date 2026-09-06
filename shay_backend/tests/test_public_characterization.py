@@ -483,7 +483,7 @@ class TestVerifyEmail:
         user = _mock_user()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))  # workspace lookup
         with patch(
-            "app.routes.public.verification.email_verification_service.verify_token",
+            "app.routes.public.verify_email.email_verification_service.verify_token",
             new=AsyncMock(return_value=(company, user)),
         ):
             client = _make_client(mock_db)
@@ -496,7 +496,7 @@ class TestVerifyEmail:
     @pytest.mark.unit
     def test_invalid_token_returns_500(self, mock_db):
         with patch(
-            "app.routes.public.verification.email_verification_service.verify_token",
+            "app.routes.public.verify_email.email_verification_service.verify_token",
             new=AsyncMock(side_effect=ValueError("bad token")),
         ):
             client = _make_client(mock_db)
@@ -512,7 +512,7 @@ class TestResendVerification:
     @pytest.mark.unit
     def test_already_verified_returns_success_no_email(self, mock_db):
         with patch(
-            "app.routes.public.verification.email_verification_service.resend_verification",
+            "app.routes.public.resend_verification.email_verification_service.resend_verification",
             new=AsyncMock(return_value=None),
         ):
             client = _make_client(mock_db)
@@ -527,7 +527,7 @@ class TestResendVerification:
     @pytest.mark.unit
     def test_email_sent_true(self, mock_db):
         with patch(
-            "app.routes.public.verification.email_verification_service.resend_verification",
+            "app.routes.public.resend_verification.email_verification_service.resend_verification",
             new=AsyncMock(return_value=True),
         ):
             client = _make_client(mock_db)

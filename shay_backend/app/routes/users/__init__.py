@@ -24,12 +24,21 @@ GET /company/{company_id}/users vs GET /company/{company_id}/users/{user_id}
 vs GET /company/{company_id}/stats vs GET /search), so registration order
 here is not load-bearing. It is preserved anyway, matching the original
 file's declaration order, as a courtesy.
+
+Update (wave B4): list_users.py (210 lines) had its sort/status validation
+and company-wide count queries moved into list_users_helpers.py, and its
+duplicated paginated/non-paginated response branches unified. detail.py
+(187 lines, GET+PUT+DELETE on the same (company_id, user_id) pair) was
+split one-endpoint-per-file into detail_get.py, detail_update.py, and
+detail_delete.py.
 """
 
 from fastapi import APIRouter
 
 from . import list_users
-from . import detail
+from . import detail_get
+from . import detail_update
+from . import detail_delete
 from . import stats
 from . import search
 from . import invitations
@@ -37,7 +46,9 @@ from . import bulk
 
 router = APIRouter()
 router.include_router(list_users.router)
-router.include_router(detail.router)
+router.include_router(detail_get.router)
+router.include_router(detail_update.router)
+router.include_router(detail_delete.router)
 router.include_router(stats.router)
 router.include_router(search.router)
 router.include_router(invitations.router)

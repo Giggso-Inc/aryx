@@ -164,7 +164,7 @@ class TestGetTemplateContentById:
         (tmp_path / "reset.html").write_text("content-here")
         template = _make_template(file_path=str(tmp_path / "reset.html"))
         mock_db.execute = AsyncMock(return_value=_scalar(template))
-        with patch("app.routes.template.files_get.settings.TEMPLATE_DIR", str(tmp_path)):
+        with patch("app.routes.template.files_content.settings.TEMPLATE_DIR", str(tmp_path)):
             client = _make_client(mock_db)
             resp = client.get(f"/api/v1/template/content/{template.template_id}")
         assert resp.status_code == 200
@@ -173,7 +173,7 @@ class TestGetTemplateContentById:
     @pytest.mark.unit
     def test_content_template_not_found_returns_404(self, mock_db, tmp_path):
         mock_db.execute = AsyncMock(return_value=_scalar(None))
-        with patch("app.routes.template.files_get.settings.TEMPLATE_DIR", str(tmp_path)):
+        with patch("app.routes.template.files_content.settings.TEMPLATE_DIR", str(tmp_path)):
             client = _make_client(mock_db)
             resp = client.get("/api/v1/template/content/NOPE")
         assert resp.status_code == 404
@@ -269,8 +269,8 @@ class TestUpdateTemplateFile:
         (tmp_path / "reset.html").write_text("old content")
         template = _make_template(file_path=str(tmp_path / "reset.html"))
         mock_db.execute = AsyncMock(return_value=_scalar(template))
-        with patch("app.routes.template.files_mutate.settings.TEMPLATE_DIR", str(tmp_path)), \
-             patch("app.routes.template.files_mutate.settings.ALLOWED_TEMPLATE_TYPES", [".html"]):
+        with patch("app.routes.template.files_update.settings.TEMPLATE_DIR", str(tmp_path)), \
+             patch("app.routes.template.files_update.settings.ALLOWED_TEMPLATE_TYPES", [".html"]):
             client = _make_client(mock_db)
             resp = client.put(
                 f"/api/v1/template/files/{template.template_id}",
@@ -283,8 +283,8 @@ class TestUpdateTemplateFile:
     @pytest.mark.unit
     def test_update_record_not_found_returns_404(self, mock_db, tmp_path):
         mock_db.execute = AsyncMock(return_value=_scalar(None))
-        with patch("app.routes.template.files_mutate.settings.TEMPLATE_DIR", str(tmp_path)), \
-             patch("app.routes.template.files_mutate.settings.ALLOWED_TEMPLATE_TYPES", [".html"]):
+        with patch("app.routes.template.files_update.settings.TEMPLATE_DIR", str(tmp_path)), \
+             patch("app.routes.template.files_update.settings.ALLOWED_TEMPLATE_TYPES", [".html"]):
             client = _make_client(mock_db)
             resp = client.put(
                 "/api/v1/template/files/NOPE",
@@ -305,7 +305,7 @@ class TestDeleteTemplateFile:
         template = _make_template(file_path=str(tmp_path / "reset.html"))
         mock_db.execute = AsyncMock(return_value=_scalar(template))
         mock_db.delete = AsyncMock()
-        with patch("app.routes.template.files_mutate.settings.TEMPLATE_DIR", str(tmp_path)):
+        with patch("app.routes.template.files_delete.settings.TEMPLATE_DIR", str(tmp_path)):
             client = _make_client(mock_db)
             resp = client.delete(f"/api/v1/template/files/{template.template_id}")
         assert resp.status_code == 200
@@ -314,7 +314,7 @@ class TestDeleteTemplateFile:
     @pytest.mark.unit
     def test_delete_record_not_found_returns_404(self, mock_db, tmp_path):
         mock_db.execute = AsyncMock(return_value=_scalar(None))
-        with patch("app.routes.template.files_mutate.settings.TEMPLATE_DIR", str(tmp_path)):
+        with patch("app.routes.template.files_delete.settings.TEMPLATE_DIR", str(tmp_path)):
             client = _make_client(mock_db)
             resp = client.delete("/api/v1/template/files/NOPE")
         assert resp.status_code == 404

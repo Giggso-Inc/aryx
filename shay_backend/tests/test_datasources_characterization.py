@@ -529,7 +529,7 @@ class TestListDatasources:
     def test_invalid_channel_id_format_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
         with _auth(admin_user, "list_datasources"), \
-             patch("app.routes.datasources.list_datasources.check_channel_access", new=AsyncMock(return_value=True)):
+             patch("app.routes.datasources._list_scope_resolution.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get("/api/v1/datasources/", params={"channel_id": "not-a-uuid"}, headers=AUTH_HEADERS)
         assert resp.status_code == 400
         assert "Invalid channel_id format" in resp.json()["detail"]
@@ -554,7 +554,7 @@ class TestDatasourceStats:
             _FakeResult(all_=[]),               # provider breakdown
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "stats_count"):
+        with _auth(admin_user, "stats_count.stats"):
             resp = client.get("/api/v1/datasources/stats", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -575,7 +575,7 @@ class TestDatasourceTypeCount:
         Row.count = 2
         mock_db.execute = _exec_seq(_FakeResult(rows=[Row]))
         client = _make_client(mock_db)
-        with _auth(admin_user, "stats_count"):
+        with _auth(admin_user, "stats_count.count"):
             resp = client.get("/api/v1/datasources/count", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()

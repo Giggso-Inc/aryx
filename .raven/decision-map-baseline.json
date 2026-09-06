@@ -998,22 +998,32 @@
     ],
     [
       "shay_backend/app/routes/app_accounts/connect.py",
-      32,
+      31,
       "connect_app_to_channel"
     ],
     [
       "shay_backend/app/routes/app_accounts/connect.py",
-      154,
+      120,
       "connect_app_to_channel"
     ],
     [
+      "shay_backend/app/routes/app_accounts/connection_settings.py",
+      24,
+      "resolve_create_connection_settings"
+    ],
+    [
+      "shay_backend/app/routes/app_accounts/connection_settings.py",
+      72,
+      "resolve_create_connection_settings"
+    ],
+    [
       "shay_backend/app/routes/app_accounts/create.py",
-      32,
+      31,
       "create_app_account"
     ],
     [
       "shay_backend/app/routes/app_accounts/create.py",
-      154,
+      120,
       "create_app_account"
     ],
     [
@@ -1035,11 +1045,6 @@
       "shay_backend/app/routes/app_accounts/detail.py",
       104,
       "delete_app_account"
-    ],
-    [
-      "shay_backend/app/routes/app_accounts/helpers.py",
-      115,
-      "handle_app_account_vault_integration"
     ],
     [
       "shay_backend/app/routes/app_accounts/list.py",
@@ -1070,6 +1075,11 @@
       "shay_backend/app/routes/app_accounts/stats.py",
       92,
       "get_app_account_stats"
+    ],
+    [
+      "shay_backend/app/routes/app_accounts/vault.py",
+      73,
+      "handle_app_account_vault_integration"
     ],
     [
       "shay_backend/app/routes/approvals/action.py",
@@ -1352,34 +1362,34 @@
       "create_app"
     ],
     [
-      "shay_backend/app/routes/apps/detail.py",
+      "shay_backend/app/routes/apps/detail_delete.py",
+      21,
+      "delete_app"
+    ],
+    [
+      "shay_backend/app/routes/apps/detail_delete.py",
+      51,
+      "delete_app"
+    ],
+    [
+      "shay_backend/app/routes/apps/detail_get.py",
       23,
       "get_app"
     ],
     [
-      "shay_backend/app/routes/apps/detail.py",
+      "shay_backend/app/routes/apps/detail_get.py",
       49,
       "get_app"
     ],
     [
-      "shay_backend/app/routes/apps/detail.py",
-      53,
+      "shay_backend/app/routes/apps/detail_update.py",
+      23,
       "update_app"
     ],
     [
-      "shay_backend/app/routes/apps/detail.py",
-      121,
+      "shay_backend/app/routes/apps/detail_update.py",
+      91,
       "update_app"
-    ],
-    [
-      "shay_backend/app/routes/apps/detail.py",
-      125,
-      "delete_app"
-    ],
-    [
-      "shay_backend/app/routes/apps/detail.py",
-      155,
-      "delete_app"
     ],
     [
       "shay_backend/app/routes/apps/list_apps.py",
@@ -1542,33 +1552,73 @@
       "get_attachment_stats"
     ],
     [
+      "shay_backend/app/routes/attachments/task_access.py",
+      17,
+      "_get_task_or_404"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_access.py",
+      28,
+      "_get_task_or_404"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_access.py",
+      31,
+      "_check_task_access"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_access.py",
+      45,
+      "_get_company_or_404"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_access.py",
+      55,
+      "_get_company_or_404"
+    ],
+    [
       "shay_backend/app/routes/attachments/task_bulk.py",
-      37,
+      40,
       "bulk_upload_task_attachments"
     ],
     [
-      "shay_backend/app/routes/attachments/task_bulk.py",
-      109,
-      "<try>"
+      "shay_backend/app/routes/attachments/task_bulk_helpers.py",
+      31,
+      "_validate_file_count"
     ],
     [
-      "shay_backend/app/routes/attachments/task_detail.py",
-      25,
+      "shay_backend/app/routes/attachments/task_bulk_helpers.py",
+      39,
+      "_validate_total_size"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_bulk_helpers.py",
+      52,
+      "_process_one_file"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_bulk_helpers.py",
+      102,
+      "_process_one_file"
+    ],
+    [
+      "shay_backend/app/routes/attachments/task_detail_delete.py",
+      21,
       "delete_task_attachment"
     ],
     [
-      "shay_backend/app/routes/attachments/task_detail.py",
-      91,
+      "shay_backend/app/routes/attachments/task_detail_delete.py",
+      65,
       "delete_task_attachment"
     ],
     [
-      "shay_backend/app/routes/attachments/task_detail.py",
-      95,
+      "shay_backend/app/routes/attachments/task_detail_update.py",
+      24,
       "update_task_attachment"
     ],
     [
-      "shay_backend/app/routes/attachments/task_detail.py",
-      174,
+      "shay_backend/app/routes/attachments/task_detail_update.py",
+      81,
       "update_task_attachment"
     ],
     [
@@ -1593,12 +1643,12 @@
     ],
     [
       "shay_backend/app/routes/attachments/task_upload.py",
-      34,
+      35,
       "upload_task_attachment"
     ],
     [
       "shay_backend/app/routes/attachments/task_upload.py",
-      155,
+      124,
       "upload_task_attachment"
     ],
     [
@@ -2147,59 +2197,109 @@
       "accept_invitation"
     ],
     [
-      "shay_backend/app/routes/companies/detail.py",
+      "shay_backend/app/routes/companies/detail_get.py",
       22,
       "get_company"
     ],
     [
-      "shay_backend/app/routes/companies/detail.py",
+      "shay_backend/app/routes/companies/detail_get.py",
       47,
       "get_company"
     ],
     [
-      "shay_backend/app/routes/companies/detail.py",
-      51,
-      "update_company"
-    ],
-    [
-      "shay_backend/app/routes/companies/detail.py",
-      85,
-      "update_company"
-    ],
-    [
-      "shay_backend/app/routes/companies/detail.py",
-      89,
+      "shay_backend/app/routes/companies/detail_stats.py",
+      23,
       "get_company_stats"
     ],
     [
-      "shay_backend/app/routes/companies/detail.py",
-      121,
+      "shay_backend/app/routes/companies/detail_stats.py",
+      55,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/companies/detail.py",
-      149,
+      "shay_backend/app/routes/companies/detail_stats.py",
+      83,
       "get_company_stats"
     ],
     [
-      "shay_backend/app/routes/companies/invitations.py",
-      37,
-      "invite_user"
+      "shay_backend/app/routes/companies/detail_update.py",
+      22,
+      "update_company"
+    ],
+    [
+      "shay_backend/app/routes/companies/detail_update.py",
+      56,
+      "update_company"
     ],
     [
       "shay_backend/app/routes/companies/invitations.py",
-      122,
-      "invite_user"
-    ],
-    [
-      "shay_backend/app/routes/companies/invitations.py",
-      136,
+      41,
       "list_invitations"
     ],
     [
       "shay_backend/app/routes/companies/invitations.py",
-      335,
+      92,
       "list_invitations"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      20,
+      "_validate_invitation_sort"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      34,
+      "_build_distinct_invitation_query"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      64,
+      "_build_distinct_invitation_query"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      67,
+      "_apply_invitation_sort"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      68,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      75,
+      "_apply_invitation_sort"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      78,
+      "_count_pending_invitations"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_query.py",
+      104,
+      "_count_pending_invitations"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_response.py",
+      18,
+      "_build_invitation_responses"
+    ],
+    [
+      "shay_backend/app/routes/companies/invitations_response.py",
+      63,
+      "_build_invitation_responses"
+    ],
+    [
+      "shay_backend/app/routes/companies/invite.py",
+      24,
+      "invite_user"
+    ],
+    [
+      "shay_backend/app/routes/companies/invite.py",
+      109,
+      "invite_user"
     ],
     [
       "shay_backend/app/routes/companies/list_company.py",
@@ -2243,18 +2343,18 @@
     ],
     [
       "shay_backend/app/routes/datasources/_bulk_embedding_dispatch.py",
-      38,
+      35,
+      "trigger_bulk_embeddings"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_bulk_embedding_process_group.py",
+      20,
       "_process_embedding_group"
     ],
     [
-      "shay_backend/app/routes/datasources/_bulk_embedding_dispatch.py",
-      72,
+      "shay_backend/app/routes/datasources/_bulk_embedding_process_group.py",
+      54,
       "<try>"
-    ],
-    [
-      "shay_backend/app/routes/datasources/_bulk_embedding_dispatch.py",
-      127,
-      "trigger_bulk_embeddings"
     ],
     [
       "shay_backend/app/routes/datasources/_bulk_internal_auth.py",
@@ -2357,44 +2457,44 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      54,
-      "get_openai_vault_token_for_company"
-    ],
-    [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      74,
-      "get_openai_vault_token_for_company"
-    ],
-    [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      77,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_scope_queries.py",
+      16,
       "get_completed_embeddings_by_channel"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      79,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_scope_queries.py",
+      18,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      107,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_scope_queries.py",
+      46,
       "get_completed_embeddings_by_thread"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      109,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_scope_queries.py",
+      48,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      133,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_status_update.py",
+      15,
       "update_embedding_status_batch"
     ],
     [
-      "shay_backend/app/routes/datasources/_embedding_helpers.py",
-      142,
+      "shay_backend/app/routes/datasources/_embedding_helpers/_status_update.py",
+      24,
       "<try>"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_embedding_helpers/_vault_token.py",
+      12,
+      "get_openai_vault_token_for_company"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_embedding_helpers/_vault_token.py",
+      32,
+      "get_openai_vault_token_for_company"
     ],
     [
       "shay_backend/app/routes/datasources/_from_upload_bulk_item.py",
@@ -2415,6 +2515,16 @@
       "shay_backend/app/routes/datasources/_from_upload_persist.py",
       75,
       "finalize_from_upload_datasource"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_from_upload_validate.py",
+      22,
+      "validate_from_upload_request"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_from_upload_validate.py",
+      65,
+      "validate_from_upload_request"
     ],
     [
       "shay_backend/app/routes/datasources/_list_filters.py",
@@ -2480,6 +2590,16 @@
       "shay_backend/app/routes/datasources/_list_response_builder.py",
       138,
       "build_datasource_list_rows"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_list_scope_resolution.py",
+      19,
+      "resolve_list_scope"
+    ],
+    [
+      "shay_backend/app/routes/datasources/_list_scope_resolution.py",
+      53,
+      "resolve_list_scope"
     ],
     [
       "shay_backend/app/routes/datasources/_metadata_generator.py",
@@ -2693,12 +2813,12 @@
     ],
     [
       "shay_backend/app/routes/datasources/from_upload.py",
-      36,
+      34,
       "create_datasource_from_upload"
     ],
     [
       "shay_backend/app/routes/datasources/from_upload.py",
-      98,
+      62,
       "<try>"
     ],
     [
@@ -2723,17 +2843,12 @@
     ],
     [
       "shay_backend/app/routes/datasources/list_datasources.py",
-      34,
+      35,
       "list_datasources"
     ],
     [
       "shay_backend/app/routes/datasources/list_datasources.py",
-      131,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/datasources/list_datasources.py",
-      163,
+      123,
       "list_datasources"
     ],
     [
@@ -2767,39 +2882,39 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      33,
+      "shay_backend/app/routes/datasources/stats_count/_helpers.py",
+      12,
       "_parse_channel_uuid"
     ],
     [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      43,
+      "shay_backend/app/routes/datasources/stats_count/_helpers.py",
+      22,
       "_exclude_thread_level"
     ],
     [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      44,
+      "shay_backend/app/routes/datasources/stats_count/_helpers.py",
+      23,
       "_exclude_thread_level"
     ],
     [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      51,
-      "get_datasource_stats"
-    ],
-    [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      129,
-      "get_datasource_stats"
-    ],
-    [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      142,
+      "shay_backend/app/routes/datasources/stats_count/count.py",
+      21,
       "get_datasource_type_count"
     ],
     [
-      "shay_backend/app/routes/datasources/stats_count.py",
-      186,
+      "shay_backend/app/routes/datasources/stats_count/count.py",
+      65,
       "get_datasource_type_count"
+    ],
+    [
+      "shay_backend/app/routes/datasources/stats_count/stats.py",
+      21,
+      "get_datasource_stats"
+    ],
+    [
+      "shay_backend/app/routes/datasources/stats_count/stats.py",
+      99,
+      "get_datasource_stats"
     ],
     [
       "shay_backend/app/routes/datasources/update.py",
@@ -2813,12 +2928,12 @@
     ],
     [
       "shay_backend/app/routes/datasources/upload_bulk_files.py",
-      38,
+      31,
       "upload_files_bulk"
     ],
     [
       "shay_backend/app/routes/datasources/upload_bulk_files.py",
-      178,
+      92,
       "upload_files_bulk"
     ],
     [
@@ -2832,74 +2947,64 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/_shared.py",
-      58,
+      "shay_backend/app/routes/gg_app_connections/access.py",
+      16,
       "assert_scope_exists"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/_shared.py",
-      88,
+      "shay_backend/app/routes/gg_app_connections/access.py",
+      46,
       "assert_scope_exists"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/_shared.py",
-      91,
+      "shay_backend/app/routes/gg_app_connections/access.py",
+      49,
       "assert_member_access"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/_shared.py",
-      162,
+      "shay_backend/app/routes/gg_app_connections/access.py",
+      120,
       "assert_member_access"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/collection.py",
-      77,
+      "shay_backend/app/routes/gg_app_connections/create.py",
+      22,
       "create_connection"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/collection.py",
-      168,
+      "shay_backend/app/routes/gg_app_connections/create.py",
+      113,
       "create_connection"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/collection.py",
-      172,
-      "list_connections"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/collection.py",
-      264,
-      "list_connections"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      29,
-      "get_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      68,
-      "get_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      72,
-      "update_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      130,
-      "update_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      134,
+      "shay_backend/app/routes/gg_app_connections/delete_connection.py",
+      19,
       "delete_connection"
     ],
     [
-      "shay_backend/app/routes/gg_app_connections/detail.py",
-      171,
+      "shay_backend/app/routes/gg_app_connections/delete_connection.py",
+      56,
       "delete_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_app_connections/get_connection.py",
+      25,
+      "get_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_app_connections/get_connection.py",
+      64,
+      "get_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_app_connections/list.py",
+      24,
+      "list_connections"
+    ],
+    [
+      "shay_backend/app/routes/gg_app_connections/list.py",
+      116,
+      "list_connections"
     ],
     [
       "shay_backend/app/routes/gg_app_connections/scope.py",
@@ -2912,44 +3017,54 @@
       "list_connections_by_scope"
     ],
     [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      33,
-      "list_channel_app_connections"
+      "shay_backend/app/routes/gg_app_connections/update_connection.py",
+      22,
+      "update_connection"
     ],
     [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      70,
-      "list_channel_app_connections"
-    ],
-    [
-      "shay_backend/app/routes/gg_channels/connections.py",
+      "shay_backend/app/routes/gg_app_connections/update_connection.py",
       80,
+      "update_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/conn_connect.py",
+      25,
       "connect_channel_app"
     ],
     [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      139,
+      "shay_backend/app/routes/gg_channels/conn_connect.py",
+      84,
       "connect_channel_app"
     ],
     [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      143,
-      "update_channel_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      178,
-      "update_channel_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      182,
+      "shay_backend/app/routes/gg_channels/conn_disconnect.py",
+      21,
       "disconnect_channel_app"
     ],
     [
-      "shay_backend/app/routes/gg_channels/connections.py",
-      211,
+      "shay_backend/app/routes/gg_channels/conn_disconnect.py",
+      50,
       "disconnect_channel_app"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/conn_list.py",
+      25,
+      "list_channel_app_connections"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/conn_list.py",
+      62,
+      "list_channel_app_connections"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/conn_update.py",
+      23,
+      "update_channel_app_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/conn_update.py",
+      58,
+      "update_channel_app_connection"
     ],
     [
       "shay_backend/app/routes/gg_channels/helpers.py",
@@ -2962,34 +3077,34 @@
       "_get_channel_or_404"
     ],
     [
-      "shay_backend/app/routes/gg_channels/members.py",
-      32,
+      "shay_backend/app/routes/gg_channels/mem_list.py",
+      24,
       "list_channel_members"
     ],
     [
-      "shay_backend/app/routes/gg_channels/members.py",
-      62,
+      "shay_backend/app/routes/gg_channels/mem_list.py",
+      54,
       "list_channel_members"
     ],
     [
-      "shay_backend/app/routes/gg_channels/members.py",
-      111,
-      "update_channel_member"
-    ],
-    [
-      "shay_backend/app/routes/gg_channels/members.py",
-      140,
-      "update_channel_member"
-    ],
-    [
-      "shay_backend/app/routes/gg_channels/members.py",
-      144,
+      "shay_backend/app/routes/gg_channels/mem_remove.py",
+      21,
       "remove_channel_member"
     ],
     [
-      "shay_backend/app/routes/gg_channels/members.py",
-      169,
+      "shay_backend/app/routes/gg_channels/mem_remove.py",
+      46,
       "remove_channel_member"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/mem_update.py",
+      22,
+      "update_channel_member"
+    ],
+    [
+      "shay_backend/app/routes/gg_channels/mem_update.py",
+      51,
+      "update_channel_member"
     ],
     [
       "shay_backend/app/routes/gg_datasources/connection.py",
@@ -3032,98 +3147,98 @@
       "create_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/create_from_upload.py",
-      38,
-      "create_datasource_from_upload"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/create_from_upload.py",
-      158,
-      "create_datasource_from_upload"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/create_from_upload.py",
-      162,
+      "shay_backend/app/routes/gg_datasources/create_from_upload/bulk.py",
+      32,
       "create_datasources_from_upload_bulk"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/create_from_upload.py",
-      288,
+      "shay_backend/app/routes/gg_datasources/create_from_upload/bulk.py",
+      116,
       "create_datasources_from_upload_bulk"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      41,
-      "get_datasource"
+      "shay_backend/app/routes/gg_datasources/create_from_upload/single.py",
+      34,
+      "create_datasource_from_upload"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      51,
-      "get_datasource"
+      "shay_backend/app/routes/gg_datasources/create_from_upload/single.py",
+      110,
+      "create_datasource_from_upload"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      55,
+      "shay_backend/app/routes/gg_datasources/detail/download.py",
+      25,
       "download_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      99,
+      "shay_backend/app/routes/gg_datasources/detail/download.py",
+      69,
       "download_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      103,
+      "shay_backend/app/routes/gg_datasources/detail/get.py",
+      19,
+      "get_datasource"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/detail/get.py",
+      29,
+      "get_datasource"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/detail/status.py",
+      20,
+      "update_processing_status"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/detail/status.py",
+      42,
+      "update_processing_status"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/detail/update.py",
+      20,
       "update_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      123,
+      "shay_backend/app/routes/gg_datasources/detail/update.py",
+      40,
       "update_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      127,
+      "shay_backend/app/routes/gg_datasources/detail/update.py",
+      44,
       "delete_datasource"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      144,
-      "update_processing_status"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/detail.py",
-      166,
-      "update_processing_status"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      31,
-      "get_embedding_status"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      81,
-      "get_embedding_status"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      95,
-      "ml_embedding_webhook"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      100,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      136,
+      "shay_backend/app/routes/gg_datasources/embedding/regenerate.py",
+      20,
       "regenerate_embedding"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/embedding.py",
-      158,
+      "shay_backend/app/routes/gg_datasources/embedding/regenerate.py",
+      42,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/embedding/status.py",
+      18,
+      "get_embedding_status"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/embedding/status.py",
+      68,
+      "get_embedding_status"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/embedding/webhook.py",
+      18,
+      "ml_embedding_webhook"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/embedding/webhook.py",
+      23,
       "<try>"
     ],
     [
@@ -3162,84 +3277,84 @@
       "bulk_manage_connections"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      34,
-      "get_resolved_datasources"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      50,
-      "_fetch"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      63,
-      "_fetch"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      73,
-      "get_resolved_datasources"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      77,
-      "get_datasource_stats"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      113,
-      "get_datasource_stats"
-    ],
-    [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      126,
+      "shay_backend/app/routes/gg_datasources/query/count.py",
+      19,
       "get_datasource_type_count"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      161,
+      "shay_backend/app/routes/gg_datasources/query/count.py",
+      54,
       "get_datasource_type_count"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      165,
+      "shay_backend/app/routes/gg_datasources/query/list_all.py",
+      20,
       "list_datasources"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/query.py",
-      209,
+      "shay_backend/app/routes/gg_datasources/query/list_all.py",
+      64,
       "list_datasources"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      94,
-      "get_supported_log_types"
+      "shay_backend/app/routes/gg_datasources/query/resolved.py",
+      23,
+      "get_resolved_datasources"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      96,
-      "get_supported_log_types"
+      "shay_backend/app/routes/gg_datasources/query/resolved.py",
+      39,
+      "_fetch"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      107,
-      "upload_file"
+      "shay_backend/app/routes/gg_datasources/query/resolved.py",
+      52,
+      "_fetch"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      127,
-      "upload_file"
+      "shay_backend/app/routes/gg_datasources/query/resolved.py",
+      62,
+      "get_resolved_datasources"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      138,
+      "shay_backend/app/routes/gg_datasources/query/stats.py",
+      19,
+      "get_datasource_stats"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/query/stats.py",
+      55,
+      "get_datasource_stats"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/upload/bulk.py",
+      19,
       "upload_files_bulk"
     ],
     [
-      "shay_backend/app/routes/gg_datasources/upload.py",
-      170,
+      "shay_backend/app/routes/gg_datasources/upload/bulk.py",
+      51,
       "upload_files_bulk"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/upload/misc.py",
+      13,
+      "get_supported_log_types"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/upload/misc.py",
+      15,
+      "get_supported_log_types"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/upload/single.py",
+      17,
+      "upload_file"
+    ],
+    [
+      "shay_backend/app/routes/gg_datasources/upload/single.py",
+      37,
+      "upload_file"
     ],
     [
       "shay_backend/app/routes/gg_workspaces/app_connections/connect.py",
@@ -4472,34 +4587,39 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/public/delete.py",
-      19,
-      "delete_company"
-    ],
-    [
-      "shay_backend/app/routes/public/delete.py",
-      24,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/public/delete.py",
-      64,
-      "<assign>"
-    ],
-    [
-      "shay_backend/app/routes/public/delete.py",
-      102,
+      "shay_backend/app/routes/public/delete_by_domain.py",
+      23,
       "delete_company_by_domain"
     ],
     [
-      "shay_backend/app/routes/public/delete.py",
-      107,
+      "shay_backend/app/routes/public/delete_by_domain.py",
+      28,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/public/delete.py",
-      148,
+      "shay_backend/app/routes/public/delete_by_id.py",
+      23,
+      "delete_company"
+    ],
+    [
+      "shay_backend/app/routes/public/delete_by_id.py",
+      28,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/public/delete_shared.py",
+      22,
+      "soft_delete_company_records"
+    ],
+    [
+      "shay_backend/app/routes/public/delete_shared.py",
+      51,
       "<assign>"
+    ],
+    [
+      "shay_backend/app/routes/public/delete_shared.py",
+      59,
+      "soft_delete_company_records"
     ],
     [
       "shay_backend/app/routes/public/notifications.py",
@@ -4522,34 +4642,49 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/public/reactivate.py",
-      19,
-      "reactivate_company"
-    ],
-    [
-      "shay_backend/app/routes/public/reactivate.py",
-      24,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/public/reactivate.py",
-      65,
-      "<assign>"
-    ],
-    [
-      "shay_backend/app/routes/public/reactivate.py",
-      103,
+      "shay_backend/app/routes/public/reactivate_by_domain.py",
+      23,
       "reactivate_company_by_domain"
     ],
     [
-      "shay_backend/app/routes/public/reactivate.py",
-      108,
+      "shay_backend/app/routes/public/reactivate_by_domain.py",
+      28,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/public/reactivate.py",
-      150,
+      "shay_backend/app/routes/public/reactivate_by_id.py",
+      23,
+      "reactivate_company"
+    ],
+    [
+      "shay_backend/app/routes/public/reactivate_by_id.py",
+      28,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/public/reactivate_shared.py",
+      22,
+      "reactivate_company_records"
+    ],
+    [
+      "shay_backend/app/routes/public/reactivate_shared.py",
+      52,
       "<assign>"
+    ],
+    [
+      "shay_backend/app/routes/public/reactivate_shared.py",
+      60,
+      "reactivate_company_records"
+    ],
+    [
+      "shay_backend/app/routes/public/resend_verification.py",
+      19,
+      "resend_verification"
+    ],
+    [
+      "shay_backend/app/routes/public/resend_verification.py",
+      31,
+      "<try>"
     ],
     [
       "shay_backend/app/routes/public/signup.py",
@@ -4797,23 +4932,13 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/public/verification.py",
-      23,
+      "shay_backend/app/routes/public/verify_email.py",
+      22,
       "verify_email"
     ],
     [
-      "shay_backend/app/routes/public/verification.py",
-      33,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/public/verification.py",
-      101,
-      "resend_verification"
-    ],
-    [
-      "shay_backend/app/routes/public/verification.py",
-      113,
+      "shay_backend/app/routes/public/verify_email.py",
+      32,
       "<try>"
     ],
     [
@@ -5002,24 +5127,24 @@
       "get_active_plans"
     ],
     [
-      "shay_backend/app/routes/subscriptions/company_plan.py",
-      86,
-      "get_my_company_current_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscriptions/company_plan.py",
-      117,
-      "get_my_company_current_plan"
-    ],
-    [
-      "shay_backend/app/routes/subscriptions/company_plan.py",
-      121,
+      "shay_backend/app/routes/subscriptions/company_plan_by_id.py",
+      25,
       "get_company_current_plan"
     ],
     [
-      "shay_backend/app/routes/subscriptions/company_plan.py",
-      169,
+      "shay_backend/app/routes/subscriptions/company_plan_by_id.py",
+      73,
       "get_company_current_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscriptions/company_plan_mine.py",
+      27,
+      "get_my_company_current_plan"
+    ],
+    [
+      "shay_backend/app/routes/subscriptions/company_plan_mine.py",
+      58,
+      "get_my_company_current_plan"
     ],
     [
       "shay_backend/app/routes/subscriptions/create.py",
@@ -5602,6 +5727,26 @@
       "<try>"
     ],
     [
+      "shay_backend/app/routes/template/files_content.py",
+      23,
+      "get_template_content_by_id"
+    ],
+    [
+      "shay_backend/app/routes/template/files_content.py",
+      42,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/template/files_delete.py",
+      23,
+      "delete_template_file"
+    ],
+    [
+      "shay_backend/app/routes/template/files_delete.py",
+      42,
+      "<try>"
+    ],
+    [
       "shay_backend/app/routes/template/files_download.py",
       19,
       "download_template_file"
@@ -5613,22 +5758,12 @@
     ],
     [
       "shay_backend/app/routes/template/files_get.py",
-      24,
+      19,
       "get_template_file"
     ],
     [
       "shay_backend/app/routes/template/files_get.py",
-      40,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/template/files_get.py",
-      98,
-      "get_template_content_by_id"
-    ],
-    [
-      "shay_backend/app/routes/template/files_get.py",
-      117,
+      35,
       "<try>"
     ],
     [
@@ -5642,23 +5777,13 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/template/files_mutate.py",
-      27,
+      "shay_backend/app/routes/template/files_update.py",
+      25,
       "update_template_file"
     ],
     [
-      "shay_backend/app/routes/template/files_mutate.py",
-      52,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/template/files_mutate.py",
-      128,
-      "delete_template_file"
-    ],
-    [
-      "shay_backend/app/routes/template/files_mutate.py",
-      147,
+      "shay_backend/app/routes/template/files_update.py",
+      50,
       "<try>"
     ],
     [
@@ -6142,44 +6267,44 @@
       "bulk_remove_company_users"
     ],
     [
-      "shay_backend/app/routes/users/detail.py",
-      28,
-      "get_company_user"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      38,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      57,
-      "get_company_user"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      61,
-      "update_company_user"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      72,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      121,
-      "update_company_user"
-    ],
-    [
-      "shay_backend/app/routes/users/detail.py",
-      125,
+      "shay_backend/app/routes/users/detail_delete.py",
+      25,
       "remove_company_user"
     ],
     [
-      "shay_backend/app/routes/users/detail.py",
-      184,
+      "shay_backend/app/routes/users/detail_delete.py",
+      84,
       "remove_company_user"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_get.py",
+      25,
+      "get_company_user"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_get.py",
+      35,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_get.py",
+      54,
+      "get_company_user"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_update.py",
+      26,
+      "update_company_user"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_update.py",
+      37,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/users/detail_update.py",
+      86,
+      "update_company_user"
     ],
     [
       "shay_backend/app/routes/users/invitations.py",
@@ -6198,13 +6323,33 @@
     ],
     [
       "shay_backend/app/routes/users/list_users.py",
-      35,
+      38,
       "list_company_users"
     ],
     [
       "shay_backend/app/routes/users/list_users.py",
-      79,
+      56,
       "<if>"
+    ],
+    [
+      "shay_backend/app/routes/users/list_users.py",
+      118,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/users/list_users.py",
+      133,
+      "list_company_users"
+    ],
+    [
+      "shay_backend/app/routes/users/list_users_helpers.py",
+      37,
+      "_get_company_user_counts"
+    ],
+    [
+      "shay_backend/app/routes/users/list_users_helpers.py",
+      63,
+      "_get_company_user_counts"
     ],
     [
       "shay_backend/app/routes/users/search.py",
@@ -6242,34 +6387,19 @@
       "create_workspace"
     ],
     [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
+      "shay_backend/app/routes/workspaces/delete.py",
       27,
       "delete_workspace"
     ],
     [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
+      "shay_backend/app/routes/workspaces/delete.py",
       40,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
+      "shay_backend/app/routes/workspaces/delete.py",
       90,
       "delete_workspace"
-    ],
-    [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
-      94,
-      "purge_workspace"
-    ],
-    [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
-      108,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/workspaces/delete_purge.py",
-      151,
-      "purge_workspace"
     ],
     [
       "shay_backend/app/routes/workspaces/helpers.py",
@@ -6320,6 +6450,21 @@
       "shay_backend/app/routes/workspaces/list_get.py",
       84,
       "list_workspaces"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/purge.py",
+      25,
+      "purge_workspace"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/purge.py",
+      39,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/purge.py",
+      82,
+      "purge_workspace"
     ],
     [
       "shay_backend/app/routes/workspaces/stats.py",

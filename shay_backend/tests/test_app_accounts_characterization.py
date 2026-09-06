@@ -262,7 +262,7 @@ class TestCreateAppAccount:
         )
         client = _make_client(mock_db)
         with _auth(admin_user, "create"), \
-                patch("app.routes.app_accounts.create.handle_app_account_vault_integration", new=AsyncMock(
+                patch("app.routes.app_accounts.connection_settings.handle_app_account_vault_integration", new=AsyncMock(
                     side_effect=Exception("Failed to save credentials to vault"))):
             resp = client.post(
                 "/api/v1/app-accounts/",

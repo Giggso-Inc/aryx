@@ -21,20 +21,33 @@ registration order for a given HTTP method, and a single-segment dynamic
 path like GET /{company_id} would otherwise swallow literal single-segment
 paths such as GET /test or GET /my. The static-path submodule
 (list_company) is therefore included BEFORE the dynamic-path submodules
-(detail, invitations, accept), preserving the original file's endpoint
-declaration order exactly.
+(detail_*, invite, invitations, accept), preserving the original file's
+endpoint declaration order exactly.
+
+Update (wave B4): detail.py (156 lines, GET/PUT on /{company_id} + GET
+/{company_id}/stats) was split one-endpoint-per-file into detail_get.py,
+detail_update.py, and detail_stats.py. invitations.py (343 lines, POST
+/{company_id}/invite + GET /{company_id}/invitations) was split into
+invite.py (the POST) and invitations.py (the GET, further split into
+invitations_query.py and invitations_response.py helper modules).
 """
 
 from fastapi import APIRouter
 
-from . import list_company
-from . import detail
-from . import invitations
 from . import accept
+from . import detail_get
+from . import detail_stats
+from . import detail_update
+from . import invitations
+from . import invite
+from . import list_company
 
 router = APIRouter()
 router.include_router(list_company.router)
-router.include_router(detail.router)
+router.include_router(detail_get.router)
+router.include_router(detail_update.router)
+router.include_router(detail_stats.router)
+router.include_router(invite.router)
 router.include_router(invitations.router)
 router.include_router(accept.router)
 

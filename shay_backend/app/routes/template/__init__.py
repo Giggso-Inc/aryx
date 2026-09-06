@@ -40,16 +40,24 @@ are registered before db_detail's GET /{identifier}, so that single dynamic
 segment never has a chance to swallow a literal sibling (same precedent as
 channels/ and gg_datasources/), even though today's endpoint set does not
 actually collide.
+
+Update (Raven style-compliance wave B4): files_get.py (175 lines, GET
+/files/{filename} + GET /content/{template_id}) was split one-endpoint-per-
+file into files_get.py and files_content.py. files_mutate.py (194 lines,
+PUT + DELETE on /files/{identifier}) was split into files_update.py and
+files_delete.py, in the same PUT-then-DELETE order as the original file.
 """
 
 from fastapi import APIRouter
 
 from . import db_detail
 from . import db_list
+from . import files_content
+from . import files_delete
 from . import files_download
 from . import files_get
 from . import files_list
-from . import files_mutate
+from . import files_update
 from . import files_upload
 from .helpers import (
     generate_template_id,
@@ -63,9 +71,11 @@ from .helpers import (
 router = APIRouter(tags=["Templates"])
 router.include_router(files_list.router)
 router.include_router(files_get.router)
+router.include_router(files_content.router)
 router.include_router(files_download.router)
 router.include_router(files_upload.router)
-router.include_router(files_mutate.router)
+router.include_router(files_update.router)
+router.include_router(files_delete.router)
 router.include_router(db_list.router)
 router.include_router(db_detail.router)
 

@@ -2,11 +2,12 @@
 Datasource POST /from-upload endpoint (upload a file and create a datasource
 row for it in one call).
 
-Stated exception (164 lines): validation, upload, metadata-build, and the
-finalize-with-vault call are already delegated to _upload_shared.py and
-_from_upload_persist.py; what remains is the single linear happy-path
-sequence gluing them together plus its five distinct 4xx/5xx guard clauses,
-which read as one cohesive endpoint rather than independent units.
+Guard clauses (channel lookup/access, duplicate-name, filename, company
+lookup) are further extracted to _from_upload_validate.py (Raven
+style-compliance, wave B4). Validation, upload, metadata-build, and the
+finalize-with-vault call are delegated to _upload_shared.py and
+_from_upload_persist.py; what remains here is the single linear happy-path
+sequence gluing them together.
 """
 
 import os
@@ -14,19 +15,16 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
-from app.models.channel import Channel
-from app.models.company import Company
-from app.models.datasource import Datasource
 from app.schemas.datasource import DatasourceResponse
 from app.services.file_storage import generate_structured_path, get_file_storage_service
 from app.utils.file_validation import validate_file_content
 
 from ._from_upload_persist import finalize_from_upload_datasource
+from ._from_upload_validate import validate_from_upload_request
 from ._upload_shared import build_config_from_upload_result, build_enhanced_metadata_for_upload
 
 router = APIRouter()
@@ -57,41 +55,7 @@ async def create_datasource_from_upload(
                 detail="Invalid JSON in datasource_metadata"
             )
 
-    # Get channel
-    stmt = select(Channel).where(Channel.id == channel_id)
-    result = await db.execute(stmt)
-    channel = result.scalar_one_or_none()
-
-    if not channel:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
-
-    # Check permissions
-    if not channel.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to channel")
-
-    # Check for duplicate datasource in the same channel (if name provided)
-    if name:
-        existing_datasource_stmt = select(Datasource).where(
-            and_(Datasource.name == name, Datasource.channel_id == channel_id)
-        )
-        existing_datasource_result = await db.execute(existing_datasource_stmt)
-        if existing_datasource_result.scalars().first():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Datasource with name '{name}' already exists in this channel"
-            )
-
-    # Validate file
-    if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File name is required")
-
-    # Get company information
-    company_stmt = select(Company).where(Company.id == user.company_id)
-    company_result = await db.execute(company_stmt)
-    company = company_result.scalar_one_or_none()
-
-    if not company:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    channel, company = await validate_from_upload_request(db, user, channel_id, name, file)
 
     storage_service = get_file_storage_service()
 

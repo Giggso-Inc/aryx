@@ -110,7 +110,7 @@ class TestGetCompanyById:
 
     def _client(self, user=None):
         u = user or self.admin_user
-        with patch("app.routes.companies.detail.get_current_user_required", new=AsyncMock(return_value=u)):
+        with patch("app.routes.companies.detail_get.get_current_user_required", new=AsyncMock(return_value=u)):
             app = FastAPI()
             app.include_router(router, prefix="/companies")
             app.dependency_overrides[get_db] = lambda: self.mock_db
@@ -195,7 +195,7 @@ class TestUpdateCompany:
 
     def _client(self, user=None):
         u = user or self.admin_user
-        with patch("app.routes.companies.detail.get_current_user_required", new=AsyncMock(return_value=u)):
+        with patch("app.routes.companies.detail_update.get_current_user_required", new=AsyncMock(return_value=u)):
             app = FastAPI()
             app.include_router(router, prefix="/companies")
             app.dependency_overrides[get_db] = lambda: self.mock_db
@@ -242,7 +242,7 @@ class TestInviteUser:
 
     def _client(self, user=None):
         u = user or self.admin_user
-        with patch("app.routes.companies.invitations.get_current_user_required", new=AsyncMock(return_value=u)):
+        with patch("app.routes.companies.invite.get_current_user_required", new=AsyncMock(return_value=u)):
             app = FastAPI()
             app.include_router(router, prefix="/companies")
             app.dependency_overrides[get_db] = lambda: self.mock_db
@@ -311,7 +311,7 @@ class TestGetCompanyStats:
             _scalar_n(5),    # attachment count
         ])
 
-        with patch("app.routes.companies.detail.get_current_user_required", new=AsyncMock(return_value=self.admin_user)):
+        with patch("app.routes.companies.detail_stats.get_current_user_required", new=AsyncMock(return_value=self.admin_user)):
             app = FastAPI()
             app.include_router(router, prefix="/companies")
             app.dependency_overrides[get_db] = lambda: self.mock_db
@@ -323,7 +323,7 @@ class TestGetCompanyStats:
     @pytest.mark.unit
     def test_get_stats_company_not_found(self):
         self.mock_db.execute = AsyncMock(return_value=_scalar_result(None))
-        with patch("app.routes.companies.detail.get_current_user_required", new=AsyncMock(return_value=self.admin_user)):
+        with patch("app.routes.companies.detail_stats.get_current_user_required", new=AsyncMock(return_value=self.admin_user)):
             app = FastAPI()
             app.include_router(router, prefix="/companies")
             app.dependency_overrides[get_db] = lambda: self.mock_db

@@ -8,14 +8,12 @@ docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2).
 
 from __future__ import annotations
 
-import copy
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.app import App
@@ -23,7 +21,8 @@ from app.models.app_account import AppAccount
 from app.models.channel import Channel
 from app.schemas.app_account import AppAccountCreate, AppAccountResponse
 
-from .helpers import build_app_account_response, build_sharepoint_credentials_metadata, handle_app_account_vault_integration
+from .connection_settings import resolve_create_connection_settings
+from .helpers import build_app_account_response
 
 router = APIRouter()
 
@@ -87,48 +86,15 @@ async def create_app_account(
             detail="App is already connected to this channel"
         )
 
-    # Process connection_settings - append Client ID and Secret for Jira
-    connection_settings = app_account_data.connection_settings
-    if connection_settings and isinstance(connection_settings, dict):
-        # Create a copy to avoid modifying the original
-        connection_settings = copy.deepcopy(connection_settings)
-        provider = connection_settings.get("provider")
-        if provider == "jira":
-            connection_settings["client_id"] = settings.JIRA_CLIENT_ID
-            connection_settings["client_secret"] = settings.JIRA_CLIENT_SECRET
-
-    # Handle vault integration for SharePoint credentials
-    if app.app_key and app.app_key.lower() in ['sharepoint', 'share_point']:
-        if connection_settings and isinstance(connection_settings, dict):
-            # Build SharePoint credentials metadata for vault
-            credentials_metadata = build_sharepoint_credentials_metadata(connection_settings)
-
-            if credentials_metadata:
-                try:
-                    vault_result = await handle_app_account_vault_integration(
-                        credentials_metadata=credentials_metadata,
-                        user_id=str(user.id),
-                        company_id=str(channel.company_id),
-                        db=db,
-                        required=True
-                    )
-                    if vault_result:
-                        # Remove sensitive credentials from connection_settings (keep only non-sensitive metadata)
-                        sanitized_settings = {
-                            "provider": connection_settings.get("provider"),
-                            "oauth_provider": connection_settings.get("oauth_provider"),
-                            "connection_method": connection_settings.get("connection_method"),
-                            "email_id": connection_settings.get("email_id"),
-                            "scope": connection_settings.get("scope")
-                        }
-                        connection_settings = sanitized_settings
-                except HTTPException as e:
-                    raise e
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=f"Failed to integrate with vault service: {str(e)}"
-                    )
+    # Process connection_settings: inject Jira client credentials, and for
+    # SharePoint apps push credentials to the vault and sanitize the settings.
+    connection_settings = await resolve_create_connection_settings(
+        app_key=app.app_key,
+        connection_settings=app_account_data.connection_settings,
+        user_id=str(user.id),
+        company_id=str(channel.company_id),
+        db=db,
+    )
 
     # Create app account
     app_account = AppAccount(

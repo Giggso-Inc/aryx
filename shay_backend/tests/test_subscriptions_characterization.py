@@ -386,7 +386,7 @@ class TestGetMyCompanyCurrentPlan:
     def test_user_without_company_returns_free_plan(self, mock_db, admin_user):
         admin_user.company_id = None
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_mine"):
             resp = client.get("/api/v1/subscriptions/company/my/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -397,7 +397,7 @@ class TestGetMyCompanyCurrentPlan:
         admin_user.company_id = _uid()
         mock_db.execute = _exec_seq(_FakeResult(first_=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_mine"):
             resp = client.get("/api/v1/subscriptions/company/my/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["plan_code"] == "free"
@@ -408,7 +408,7 @@ class TestGetMyCompanyCurrentPlan:
         plan = _mock_plan()
         mock_db.execute = _exec_seq(_FakeResult(first_=(sub, plan)))
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_mine"):
             resp = client.get("/api/v1/subscriptions/company/my/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -423,14 +423,14 @@ class TestGetMyCompanyCurrentPlan:
 class TestGetCompanyCurrentPlan:
     def test_invalid_uuid_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_by_id"):
             resp = client.get("/api/v1/subscriptions/company/not-a-uuid/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 400
 
     def test_company_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_by_id"):
             resp = client.get(f"/api/v1/subscriptions/company/{_uid()}/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -438,7 +438,7 @@ class TestGetCompanyCurrentPlan:
         company = _mock_company()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=company))
         client = _make_client(mock_db)
-        with _auth(regular_user, "company_plan"):
+        with _auth(regular_user, "company_plan_by_id"):
             resp = client.get(f"/api/v1/subscriptions/company/{company.id}/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
@@ -449,7 +449,7 @@ class TestGetCompanyCurrentPlan:
             _FakeResult(first_=None),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_by_id"):
             resp = client.get(f"/api/v1/subscriptions/company/{company.id}/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["plan_code"] == "free"
@@ -463,7 +463,7 @@ class TestGetCompanyCurrentPlan:
             _FakeResult(first_=(sub, plan)),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "company_plan"):
+        with _auth(admin_user, "company_plan_by_id"):
             resp = client.get(f"/api/v1/subscriptions/company/{company.id}/current-plan", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["plan_code"] == plan.plan_code

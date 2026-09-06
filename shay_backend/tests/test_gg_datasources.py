@@ -139,8 +139,13 @@ def _make_client(mock_db, current_user=None):
 
 
 _GG_DATASOURCES_AUTH_SUBMODULES = (
-    "upload", "create_from_upload", "create", "query",
-    "embedding", "processing", "detail", "connection",
+    "upload.single", "upload.bulk",
+    "create_from_upload.single", "create_from_upload.bulk",
+    "create",
+    "query.resolved", "query.stats", "query.count", "query.list_all",
+    "embedding.status", "embedding.regenerate",
+    "processing", "connection",
+    "detail.get", "detail.download", "detail.update", "detail.status",
 )
 
 
@@ -532,7 +537,7 @@ class TestRegenerateEmbeddingResponseSchema:
 class TestSupportedLogTypes:
     @pytest.mark.unit
     def test_returns_list(self, mock_db, admin_user):
-        with patch("app.routes.gg_datasources.upload.settings") as mock_settings:
+        with patch("app.routes.gg_datasources.upload.misc.settings") as mock_settings:
             mock_settings.SUPPORTED_LOG_TYPES = ["nginx", "apache", "syslog"]
             client = _make_client(mock_db, admin_user)
             resp = client.get("/gg-datasources/supported-log-types")
@@ -541,7 +546,7 @@ class TestSupportedLogTypes:
 
     @pytest.mark.unit
     def test_returns_configured_types(self, mock_db, admin_user):
-        with patch("app.routes.gg_datasources.upload.settings") as mock_settings:
+        with patch("app.routes.gg_datasources.upload.misc.settings") as mock_settings:
             mock_settings.SUPPORTED_LOG_TYPES = ["nginx", "apache"]
             client = _make_client(mock_db, admin_user)
             resp = client.get("/gg-datasources/supported-log-types")
@@ -581,7 +586,7 @@ class TestUploadFile:
             "original_filename": "test.csv",
         }
         with patch(
-            "app.routes.gg_datasources.upload._upload_single_file",
+            "app.routes.gg_datasources.upload.single._upload_single_file",
             new=AsyncMock(return_value=upload_result),
         ):
             client = _make_client(mock_db, admin_user)
@@ -611,7 +616,7 @@ class TestUploadFile:
         mock_db.execute = AsyncMock(return_value=_scalar(company))
         from fastapi import HTTPException as FastAPIHTTPException
         with patch(
-            "app.routes.gg_datasources.upload._upload_single_file",
+            "app.routes.gg_datasources.upload.single._upload_single_file",
             new=AsyncMock(side_effect=FastAPIHTTPException(status_code=400, detail="File validation failed")),
         ):
             client = _make_client(mock_db, admin_user)
@@ -627,7 +632,7 @@ class TestUploadFile:
         company = _make_company_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(company))
         with patch(
-            "app.routes.gg_datasources.upload._upload_single_file",
+            "app.routes.gg_datasources.upload.single._upload_single_file",
             new=AsyncMock(side_effect=Exception("Storage connection refused")),
         ):
             client = _make_client(mock_db, admin_user)
@@ -659,7 +664,7 @@ class TestUploadFilesBulk:
             }
 
         with patch(
-            "app.routes.gg_datasources.upload._upload_single_file",
+            "app.routes.gg_datasources.upload.bulk._upload_single_file",
             new=AsyncMock(side_effect=_upload_side_effect),
         ):
             client = _make_client(mock_db, admin_user)
@@ -700,7 +705,7 @@ class TestUploadFilesBulk:
             }
 
         with patch(
-            "app.routes.gg_datasources.upload._upload_single_file",
+            "app.routes.gg_datasources.upload.bulk._upload_single_file",
             new=AsyncMock(side_effect=_side_effect),
         ):
             client = _make_client(mock_db, admin_user)
@@ -813,11 +818,11 @@ class TestCreateFromUpload:
 
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload",
@@ -846,11 +851,11 @@ class TestCreateFromUpload:
 
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload",
@@ -879,11 +884,11 @@ class TestCreateFromUpload:
 
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload",
@@ -912,11 +917,11 @@ class TestCreateFromUpload:
 
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload",
@@ -968,11 +973,11 @@ class TestCreateFromUpload:
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
         upload_result = dict(self._upload_result, original_filename="my_file.csv")
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             # No name field provided — should auto-generate
             resp = client.post(
@@ -1001,11 +1006,11 @@ class TestCreateFromUpload:
 
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.single._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload",
@@ -1048,11 +1053,11 @@ class TestCreateFromUploadBulk:
         mock_db.refresh = AsyncMock(side_effect=_refresh)
 
         ds_list = [{"level": "channel", "scope_id": _CH_ID, "name": "Test DS"}]
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.bulk._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload/bulk",
@@ -1094,11 +1099,11 @@ class TestCreateFromUploadBulk:
         company = _make_company_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(company))
         ds_list = [{"level": "bad_level", "scope_id": _CH_ID, "name": "DS1"}]
-        with patch("app.routes.gg_datasources.create_from_upload._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
-             patch("app.routes.gg_datasources.create_from_upload.generate_datasource_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.clean_metadata", return_value={}), \
-             patch("app.routes.gg_datasources.create_from_upload.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
-             patch("app.routes.gg_datasources.create_from_upload.handle_vault_integration", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_datasources.create_from_upload.bulk._upload_single_file", new=AsyncMock(return_value=self._upload_result)), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.generate_datasource_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.clean_metadata", return_value={}), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.enhance_datasource_metadata", new=AsyncMock(return_value={})), \
+             patch("app.routes.gg_datasources.create_from_upload._metadata.handle_vault_integration", new=AsyncMock(return_value=None)):
             client = _make_client(mock_db, admin_user)
             resp = client.post(
                 "/gg-datasources/from-upload/bulk",
@@ -1655,7 +1660,7 @@ class TestRegenerateEmbedding:
         )
         mock_db.execute = AsyncMock(return_value=_scalar(ds))
         with patch(
-            "app.routes.gg_datasources.embedding.ml_service.request_embedding_processing",
+            "app.routes.gg_datasources.embedding.regenerate.ml_service.request_embedding_processing",
             new=AsyncMock(return_value=None),
         ):
             client = _make_client(mock_db, admin_user)
@@ -1699,7 +1704,7 @@ class TestRegenerateEmbedding:
         )
         mock_db.execute = AsyncMock(return_value=_scalar(ds))
         with patch(
-            "app.routes.gg_datasources.embedding.ml_service.request_embedding_processing",
+            "app.routes.gg_datasources.embedding.regenerate.ml_service.request_embedding_processing",
             new=AsyncMock(side_effect=Exception("ML service timeout")),
         ):
             client = _make_client(mock_db, admin_user)
@@ -2110,7 +2115,7 @@ class TestDownloadDatasource:
         storage_service = MagicMock()
         storage_service.download_file = AsyncMock(return_value=b"%PDF-1.4 content")
         with patch(
-            "app.routes.gg_datasources.detail.get_file_storage_service",
+            "app.routes.gg_datasources.detail.download.get_file_storage_service",
             return_value=storage_service,
         ):
             client = _make_client(mock_db, admin_user)
@@ -2130,7 +2135,7 @@ class TestDownloadDatasource:
         storage_service = MagicMock()
         storage_service.download_file = AsyncMock(return_value=b"content")
         with patch(
-            "app.routes.gg_datasources.detail.get_file_storage_service",
+            "app.routes.gg_datasources.detail.download.get_file_storage_service",
             return_value=storage_service,
         ):
             client = _make_client(mock_db, admin_user)
@@ -2211,7 +2216,7 @@ class TestDownloadDatasource:
         storage_service = MagicMock()
         storage_service.download_file = AsyncMock(side_effect=Exception("S3 connection failed"))
         with patch(
-            "app.routes.gg_datasources.detail.get_file_storage_service",
+            "app.routes.gg_datasources.detail.download.get_file_storage_service",
             return_value=storage_service,
         ):
             client = _make_client(mock_db, admin_user)

@@ -119,10 +119,10 @@ class TestPurgeWorkspace:
         )
 
         with (
-            patch("app.routes.workspaces.delete_purge.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-            patch("app.routes.workspaces.delete_purge.require_active_workspace_role", new=AsyncMock(return_value="admin")),
-            patch("app.routes.workspaces.delete_purge.httpx.AsyncClient", return_value=fake_client),
-            patch("app.routes.workspaces.delete_purge._aryx_headers", return_value={"x-aryx-api-key": "k"}),
+            patch("app.routes.workspaces.purge.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+            patch("app.routes.workspaces.purge.require_active_workspace_role", new=AsyncMock(return_value="admin")),
+            patch("app.routes.workspaces.purge.httpx.AsyncClient", return_value=fake_client),
+            patch("app.routes.workspaces.purge._aryx_headers", return_value={"x-aryx-api-key": "k"}),
         ):
             resp = _client(mock_db).post(f"/api/v1/workspaces/{WORKSPACE_ID}/purge")
 
@@ -144,10 +144,10 @@ class TestPurgeWorkspace:
         fake_client = _FakeAsyncClient(get=AsyncMock(return_value=mapping_resp))
 
         with (
-            patch("app.routes.workspaces.delete_purge.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-            patch("app.routes.workspaces.delete_purge.require_active_workspace_role", new=AsyncMock(return_value="admin")),
-            patch("app.routes.workspaces.delete_purge.httpx.AsyncClient", return_value=fake_client),
-            patch("app.routes.workspaces.delete_purge._aryx_headers", return_value={"x-aryx-api-key": "k"}),
+            patch("app.routes.workspaces.purge.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+            patch("app.routes.workspaces.purge.require_active_workspace_role", new=AsyncMock(return_value="admin")),
+            patch("app.routes.workspaces.purge.httpx.AsyncClient", return_value=fake_client),
+            patch("app.routes.workspaces.purge._aryx_headers", return_value={"x-aryx-api-key": "k"}),
         ):
             resp = _client(mock_db).post(f"/api/v1/workspaces/{WORKSPACE_ID}/purge")
 
@@ -159,7 +159,7 @@ class TestPurgeWorkspace:
         mock_db.execute = AsyncMock(return_value=_scalar_result(None))
 
         with patch(
-            "app.routes.workspaces.delete_purge.get_current_user_required",
+            "app.routes.workspaces.purge.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             resp = _client(mock_db).post(f"/api/v1/workspaces/{WORKSPACE_ID}/purge")

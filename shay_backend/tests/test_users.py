@@ -147,7 +147,7 @@ class TestUpdateUser:
         admin_user.can_access_company = MagicMock(return_value=True)
         mock_db.execute = AsyncMock()
 
-        with patch("app.routes.users.detail.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.users.detail_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/users/company/{admin_user.company_id}/users/{admin_user.id}",
                 json={"role": "user"},

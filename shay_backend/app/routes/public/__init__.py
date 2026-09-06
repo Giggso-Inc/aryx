@@ -16,18 +16,36 @@ Version: 1.0.0
 
 from fastapi import APIRouter
 
-from . import signup, users, delete, reactivate, plans, subscription, auth, verification, zoho, notifications, vault
+from . import (
+    auth,
+    delete_by_domain,
+    delete_by_id,
+    notifications,
+    plans,
+    resend_verification,
+    signup,
+    subscription,
+    reactivate_by_domain,
+    reactivate_by_id,
+    users,
+    vault,
+    verify_email,
+    zoho,
+)
 
 router = APIRouter()
 
 router.include_router(signup.router)
 router.include_router(users.router)
-router.include_router(delete.router)
-router.include_router(reactivate.router)
+router.include_router(delete_by_id.router)
+router.include_router(delete_by_domain.router)
+router.include_router(reactivate_by_id.router)
+router.include_router(reactivate_by_domain.router)
 router.include_router(plans.router)
 router.include_router(subscription.router)
 router.include_router(auth.router)
-router.include_router(verification.router)
+router.include_router(verify_email.router)
+router.include_router(resend_verification.router)
 router.include_router(zoho.router)
 router.include_router(notifications.router)
 router.include_router(vault.router)

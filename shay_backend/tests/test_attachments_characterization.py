@@ -487,8 +487,8 @@ class TestDeleteTaskAttachment:
         att = _make_attachment(user_id=admin_user.id)
         mock_db.execute = AsyncMock(side_effect=[_scalar(task), _scalar(att)])
         mock_db.delete = AsyncMock()
-        with _auth(admin_user, "task_detail"), \
-             patch("app.routes.attachments.task_detail.get_file_storage_service", return_value=_fake_storage_service()):
+        with _auth(admin_user, "task_detail_delete"), \
+             patch("app.routes.attachments.task_detail_delete.get_file_storage_service", return_value=_fake_storage_service()):
             client = _make_client(mock_db)
             resp = client.delete(f"/api/v1/attachments/task/{_TASK_ID}/attachments/{_ATT_ID}")
         assert resp.status_code == 200
@@ -498,7 +498,7 @@ class TestDeleteTaskAttachment:
         task = _make_task(workspace_id=None)
         att = _make_attachment(user_id="someone-else")
         mock_db.execute = AsyncMock(side_effect=[_scalar(task), _scalar(att)])
-        with _auth(regular_user, "task_detail"):
+        with _auth(regular_user, "task_detail_delete"):
             client = _make_client(mock_db)
             resp = client.delete(f"/api/v1/attachments/task/{_TASK_ID}/attachments/{_ATT_ID}")
         assert resp.status_code == 403
@@ -515,7 +515,7 @@ class TestUpdateTaskAttachment:
         att = _make_attachment(user_id=admin_user.id)
         att.task_id = _TASK_ID
         mock_db.execute = AsyncMock(side_effect=[_scalar(task), _scalar(att)])
-        with _auth(admin_user, "task_detail"):
+        with _auth(admin_user, "task_detail_update"):
             client = _make_client(mock_db)
             resp = client.put(
                 f"/api/v1/attachments/task/{_TASK_ID}/attachments/{_ATT_ID}",
@@ -527,7 +527,7 @@ class TestUpdateTaskAttachment:
     def test_update_attachment_not_found_returns_404(self, mock_db, admin_user):
         task = _make_task(workspace_id=None)
         mock_db.execute = AsyncMock(side_effect=[_scalar(task), _scalar(None)])
-        with _auth(admin_user, "task_detail"):
+        with _auth(admin_user, "task_detail_update"):
             client = _make_client(mock_db)
             resp = client.put(
                 f"/api/v1/attachments/task/{_TASK_ID}/attachments/{_ATT_ID}",

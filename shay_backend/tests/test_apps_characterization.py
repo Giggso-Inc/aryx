@@ -257,7 +257,7 @@ class TestGetApp:
     def test_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_get"):
             resp = client.get(f"/api/v1/apps/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -265,7 +265,7 @@ class TestGetApp:
         app_obj = _mock_app(is_public=False)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=app_obj))
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_get"):
             resp = client.get(f"/api/v1/apps/{app_obj.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
@@ -273,7 +273,7 @@ class TestGetApp:
         app_obj = _mock_app()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=app_obj))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_get"):
             resp = client.get(f"/api/v1/apps/{app_obj.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["app_key"] == "slack"
@@ -286,14 +286,14 @@ class TestGetApp:
 class TestUpdateApp:
     def test_non_admin_403(self, mock_db, regular_user):
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_update"):
             resp = client.put(f"/api/v1/apps/{_uid()}", json={"app_name": "New"}, headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
     def test_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_update"):
             resp = client.put(f"/api/v1/apps/{_uid()}", json={"app_name": "New"}, headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -309,7 +309,7 @@ class TestUpdateApp:
             _FakeResult(scalar_one_or_none=None),       # app_name conflict check (no match)
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_update"):
             resp = client.put(f"/api/v1/apps/{app_obj.id}", json={"app_name": "Renamed"}, headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["app_name"] == "Renamed"
@@ -322,14 +322,14 @@ class TestUpdateApp:
 class TestDeleteApp:
     def test_non_admin_403(self, mock_db, regular_user):
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_delete"):
             resp = client.delete(f"/api/v1/apps/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
     def test_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_delete"):
             resp = client.delete(f"/api/v1/apps/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -338,7 +338,7 @@ class TestDeleteApp:
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=app_obj))
         mock_db.delete = AsyncMock()
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_delete"):
             resp = client.delete(f"/api/v1/apps/{app_obj.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["message"] == "App deleted successfully"

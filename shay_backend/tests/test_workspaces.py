@@ -309,11 +309,11 @@ def test_delete_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
     fake_async_client.__aexit__ = AsyncMock(return_value=None)
 
     with (
-        patch("app.routes.workspaces.delete_purge.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-        patch("app.routes.workspaces.delete_purge.require_active_workspace_role", new=AsyncMock(return_value="admin")),
-        patch("app.routes.workspaces.delete_purge.httpx.AsyncClient", return_value=fake_async_client),
-        patch("app.routes.workspaces.delete_purge._delete_aryx_workspace_bridge", new=AsyncMock()),
-        patch("app.routes.workspaces.delete_purge._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}),
+        patch("app.routes.workspaces.delete.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces.delete.require_active_workspace_role", new=AsyncMock(return_value="admin")),
+        patch("app.routes.workspaces.delete.httpx.AsyncClient", return_value=fake_async_client),
+        patch("app.routes.workspaces.delete._delete_aryx_workspace_bridge", new=AsyncMock()),
+        patch("app.routes.workspaces.delete._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}),
     ):
         response = client.delete(
             f"/api/v1/workspaces/{workspace_id}",

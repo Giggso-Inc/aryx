@@ -33,6 +33,14 @@ segment (GET/DELETE /{attachment_id}) and the task-scoped routes (always
 under the literal "/task/..." prefix, 3+ segments) never overlap in path
 shape, so registration order between the two groups is not load-bearing —
 it is kept identical to the source file purely for readability.
+
+Update (Raven style-compliance wave B4): task_detail.py (174 lines, DELETE +
+PUT on the same task-attachment) was further split into
+task_detail_delete.py and task_detail_update.py, one endpoint per file.
+task_bulk.py's per-file validation/upload logic moved into
+task_bulk_helpers.py, and the task lookup / workspace-access / company
+lookup checks shared by task_upload.py, task_bulk.py, and the two
+task_detail_* modules moved into task_access.py.
 """
 
 from fastapi import APIRouter
@@ -41,7 +49,8 @@ from . import detail
 from . import list as list_
 from . import stats
 from . import task_bulk
-from . import task_detail
+from . import task_detail_delete
+from . import task_detail_update
 from . import task_list
 from . import task_stats
 from . import task_upload
@@ -55,7 +64,8 @@ router.include_router(stats.router)
 router.include_router(task_upload.router)
 router.include_router(task_list.router)
 router.include_router(task_stats.router)
-router.include_router(task_detail.router)
+router.include_router(task_detail_delete.router)
+router.include_router(task_detail_update.router)
 router.include_router(task_bulk.router)
 
 __all__ = ["router"]

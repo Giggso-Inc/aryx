@@ -170,10 +170,10 @@ class TestGetResolvedConnection:
         admin_user = _make_user_mock()
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.resolved.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ), patch(
-            "app.routes.gg_app_connections.collection.resolve_gg_app_connection",
+            "app.routes.gg_app_connections.resolved.resolve_gg_app_connection",
             new=AsyncMock(return_value=conn),
         ):
             client = _make_client(mock_db)
@@ -192,10 +192,10 @@ class TestGetResolvedConnection:
         admin_user = _make_user_mock()
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.resolved.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ), patch(
-            "app.routes.gg_app_connections.collection.resolve_gg_app_connection",
+            "app.routes.gg_app_connections.resolved.resolve_gg_app_connection",
             new=AsyncMock(return_value=None),
         ):
             client = _make_client(mock_db)
@@ -212,7 +212,7 @@ class TestGetResolvedConnection:
         admin_user = _make_user_mock()
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.resolved.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -229,7 +229,7 @@ class TestCreateConnection:
 
     def _post(self, client, body, admin_user):
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.create.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             return client.post("/gg-app-connections/", json=body)
@@ -337,7 +337,7 @@ class TestCreateConnection:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.create.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -370,7 +370,7 @@ class TestCreateConnection:
         ])
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.create.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -390,7 +390,7 @@ class TestCreateConnection:
         admin_user.company_id = "company-001"
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.create.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -429,7 +429,7 @@ class TestListConnections:
         mock_db.execute = AsyncMock(side_effect=[result_count, result_rows, result_users])
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.list.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -453,7 +453,7 @@ class TestListConnections:
         mock_db.execute = AsyncMock(side_effect=[result_count, result_rows])
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.list.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -481,7 +481,7 @@ class TestListConnections:
         mock_db.execute = AsyncMock(side_effect=[result_count, result_rows, result_users])
 
         with patch(
-            "app.routes.gg_app_connections.collection.get_current_user_required",
+            "app.routes.gg_app_connections.list.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -521,7 +521,7 @@ class TestGetConnection:
         ])
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.get_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -539,7 +539,7 @@ class TestGetConnection:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.get_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -579,7 +579,7 @@ class TestUpdateConnection:
         ])
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.update_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -599,7 +599,7 @@ class TestUpdateConnection:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.update_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -640,7 +640,7 @@ class TestDeleteConnection:
         mock_db.delete = AsyncMock()
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.delete_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)
@@ -658,7 +658,7 @@ class TestDeleteConnection:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
 
         with patch(
-            "app.routes.gg_app_connections.detail.get_current_user_required",
+            "app.routes.gg_app_connections.delete_connection.get_current_user_required",
             new=AsyncMock(return_value=admin_user),
         ):
             client = _make_client(mock_db)

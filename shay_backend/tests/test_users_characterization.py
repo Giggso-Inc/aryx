@@ -208,7 +208,7 @@ class TestGetCompanyUser:
     def test_access_denied_403(self, mock_db, regular_user):
         _grant_company_access(regular_user, False)
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_get"):
             resp = client.get(f"/api/v1/users/company/{_uid()}/users/{_uid()}", headers={"Authorization": "Bearer t"})
         assert resp.status_code == 403
 
@@ -216,7 +216,7 @@ class TestGetCompanyUser:
         _grant_company_access(admin_user, True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_get"):
             resp = client.get(f"/api/v1/users/company/{_uid()}/users/{_uid()}", headers={"Authorization": "Bearer t"})
         assert resp.status_code == 404
 
@@ -225,7 +225,7 @@ class TestGetCompanyUser:
         row = _mock_user_row()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=row))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_get"):
             resp = client.get(f"/api/v1/users/company/{_uid()}/users/{row.id}", headers={"Authorization": "Bearer t"})
         assert resp.status_code == 200
         assert resp.json()["id"] == str(row.id)
@@ -240,7 +240,7 @@ class TestUpdateCompanyUser:
     def test_access_denied_403(self, mock_db, regular_user):
         _grant_company_access(regular_user, False)
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_update"):
             resp = client.put(
                 f"/api/v1/users/company/{_uid()}/users/{_uid()}",
                 json={"name": "x"},
@@ -252,7 +252,7 @@ class TestUpdateCompanyUser:
         _grant_company_access(regular_user, True)
         regular_user.role = "user"
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_update"):
             resp = client.put(
                 f"/api/v1/users/company/{_uid()}/users/{_uid()}",
                 json={"name": "x"},
@@ -265,7 +265,7 @@ class TestUpdateCompanyUser:
         _grant_company_access(admin_user, True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_update"):
             resp = client.put(
                 f"/api/v1/users/company/{_uid()}/users/{_uid()}",
                 json={"name": "x"},
@@ -282,7 +282,7 @@ class TestUpdateCompanyUser:
         row = _mock_user_row()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=row))
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_update"):
             resp = client.put(
                 f"/api/v1/users/company/{_uid()}/users/{row.id}",
                 json={"role": "admin"},
@@ -296,7 +296,7 @@ class TestUpdateCompanyUser:
         row = _mock_user_row(name="old-name")
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=row))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_update"):
             resp = client.put(
                 f"/api/v1/users/company/{_uid()}/users/{row.id}",
                 json={"name": "new-name"},
@@ -315,7 +315,7 @@ class TestRemoveCompanyUser:
     def test_non_admin_403(self, mock_db, regular_user):
         regular_user.company_id = "company-001"
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_delete"):
             resp = client.delete(
                 "/api/v1/users/company/company-001/users/some-user",
                 headers={"Authorization": "Bearer t"},
@@ -325,7 +325,7 @@ class TestRemoveCompanyUser:
     def test_self_removal_blocked_400(self, mock_db, admin_user):
         admin_user.company_id = "company-001"
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_delete"):
             resp = client.delete(
                 f"/api/v1/users/company/company-001/users/{admin_user.id}",
                 headers={"Authorization": "Bearer t"},
@@ -337,7 +337,7 @@ class TestRemoveCompanyUser:
         admin_user.company_id = "company-001"
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_delete"):
             resp = client.delete(
                 "/api/v1/users/company/company-001/users/other-user",
                 headers={"Authorization": "Bearer t"},
@@ -353,7 +353,7 @@ class TestRemoveCompanyUser:
             _FakeResult(all_=[membership]),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_delete"):
             resp = client.delete(
                 "/api/v1/users/company/company-001/users/other-user",
                 headers={"Authorization": "Bearer t"},

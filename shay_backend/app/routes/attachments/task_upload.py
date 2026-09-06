@@ -16,18 +16,19 @@ import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import generate_attachment_id
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.attachment import Attachment
-from app.models.company import Company
 from app.schemas.attachment import TaskAttachmentResponse
 from app.services.file_storage import generate_structured_path, get_file_storage_service
+from .task_access import _check_task_access, _get_company_or_404, _get_task_or_404
 
 router = APIRouter()
+
+_ALLOWED_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.pdf', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.mp4', '.avi', '.mp3', '.wav', '.csv', '.json', '.xml', '.log']
 
 
 @router.post("/task/{task_id}/upload", response_model=TaskAttachmentResponse)
@@ -41,40 +42,16 @@ async def upload_task_attachment(
     """Upload a file attachment to a specific task"""
     user = await get_current_user_required(request)
 
-    # Get task
-    from app.models.task import Task
-    task_stmt = select(Task).where(Task.id == task_id)
-    result = await db.execute(task_stmt)
-    task = result.scalar_one_or_none()
-
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
-
-    # Check if user has access to the task
-    if task.workspace_id:
-        # Get workspace to check permissions
-        from app.models.workspace import Workspace
-        workspace_stmt = select(Workspace).where(Workspace.id == task.workspace_id)
-        workspace_result = await db.execute(workspace_stmt)
-        workspace = workspace_result.scalar_one_or_none()
-
-        if workspace and not workspace.is_accessible_by_user(user.company_id, user.role):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied to task workspace"
-            )
+    task = await _get_task_or_404(db, task_id)
+    await _check_task_access(db, task, user)
 
     # Validate file type - allow common file types
-    allowed_extensions = ['.jpeg', '.jpg', '.png', '.pdf', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.mp4', '.avi', '.mp3', '.wav', '.csv', '.json', '.xml', '.log']
     file_extension = os.path.splitext(file.filename)[1].lower()
 
-    if file_extension not in allowed_extensions:
+    if file_extension not in _ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File type {file_extension} not allowed. Allowed types: {', '.join(allowed_extensions)}"
+            detail=f"File type {file_extension} not allowed. Allowed types: {', '.join(_ALLOWED_EXTENSIONS)}"
         )
 
     # Validate file size (50MB limit for task attachments)
@@ -89,15 +66,7 @@ async def upload_task_attachment(
     content = await file.read()
 
     # Get company information for structured path
-    company_stmt = select(Company).where(Company.id == user.company_id)
-    company_result = await db.execute(company_stmt)
-    company = company_result.scalar_one_or_none()
-
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
-        )
+    company = await _get_company_or_404(db, user.company_id)
 
     # Generate structured path for task attachment files
     attachment_id = generate_attachment_id()
