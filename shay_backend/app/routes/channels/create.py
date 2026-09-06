@@ -3,6 +3,10 @@ Channel creation endpoint.
 
 Split out of the original app/routes/channels.py (2,630 lines) — see
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5.
+
+The workspace_id/workspace_tag resolution (find existing workspace or
+auto-create one for a new tag) was further split out to create_workspace.py
+in wave B3 to bring this file under 150 lines.
 """
 
 from datetime import datetime
@@ -12,13 +16,13 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.auth import generate_channel_id, generate_workspace_id
+from app.core.auth import generate_channel_id
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.channel import Channel
-from app.models.workspace import Workspace
 from app.models.channel_member import ChannelMember
 from app.services.audit_service import log as audit_log_write
 from app.schemas.channel import ChannelCreate, ChannelResponse
+from .create_workspace import resolve_or_create_workspace
 
 router = APIRouter()
 
@@ -52,65 +56,7 @@ async def create_channel(
             detail="Cannot provide both workspace_tag and workspace_id. Choose one."
         )
 
-    workspace = None
-
-    # Scenario 1: User provides workspace_id (existing workspace)
-    if channel_data.workspace_id:
-        try:
-            from uuid import UUID
-            workspace_uuid = UUID(channel_data.workspace_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid workspace_id format"
-            )
-
-        # Check if workspace exists and belongs to user's company
-        workspace_stmt = select(Workspace).where(
-            and_(
-                Workspace.id == workspace_uuid,
-                Workspace.company_id == user.company_id,
-                Workspace.is_active == True
-            )
-        )
-        workspace_result = await db.execute(workspace_stmt)
-        workspace = workspace_result.scalar_one_or_none()
-
-        if not workspace:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Workspace not found or you don't have access to it"
-            )
-
-    # Scenario 2: User provides workspace_tag (create or find existing workspace)
-    else:
-        # Check if workspace (tag) already exists for this company
-        workspace_stmt = select(Workspace).where(
-            and_(
-                Workspace.name == channel_data.workspace_tag,
-                Workspace.company_id == user.company_id,
-                Workspace.is_active == True
-            )
-        )
-        workspace_result = await db.execute(workspace_stmt)
-        workspace = workspace_result.scalar_one_or_none()
-
-        # If workspace doesn't exist, create it
-        if not workspace:
-            workspace = Workspace(
-                id=generate_workspace_id(),
-                name=channel_data.workspace_tag,
-                description=f"Auto-created workspace for tag: {channel_data.workspace_tag}",
-                company_id=user.company_id,
-                is_public=channel_data.is_public,
-                ai_enabled=channel_data.ai_enabled,
-                ai_provider="openai",
-                ai_model="gpt-4",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            db.add(workspace)
-            await db.flush()  # Flush to get the workspace ID
+    workspace = await resolve_or_create_workspace(db, channel_data, user)
 
     # Check if channel with same name already exists in this workspace
     existing_channel_stmt = select(Channel).where(
@@ -172,11 +118,7 @@ async def create_channel(
     await db.refresh(channel)
     await db.refresh(workspace)
 
-    # Create response with workspace name and metrics (new channels start with 1 user - the creator)
-    # Task and approval counts for new channel (will be 0)
-    task_count = 0
-    approval_count = 0
-
+    # New channels start with 1 user (the creator) and 0 tasks/approvals.
     response_data = ChannelResponse(
         id=str(channel.id),
         name=channel.name,
@@ -196,8 +138,8 @@ async def create_channel(
         total_apps_connected=0,  # New channel has no apps connected
         total_users=1,  # New channel has 1 user (the creator)
         total_datasources=0,  # New channel has no datasources yet
-        task_count=task_count,
-        approval_count=approval_count,
+        task_count=0,
+        approval_count=0,
         created_at=channel.created_at,
         updated_at=channel.updated_at
     )

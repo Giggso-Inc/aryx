@@ -26,7 +26,20 @@ Features:
 
 from fastapi import APIRouter
 
-from . import assignment, count, create, delete, detail, list_tasks, stats, thread_tasks, update
+from . import (
+    assign,
+    count,
+    create,
+    delete,
+    detail,
+    list_tasks,
+    stats,
+    status_update,
+    thread_create,
+    thread_detail,
+    thread_status,
+    update,
+)
 
 router = APIRouter()
 # NOTE ON ORDER: count.router's literal `GET /count` and stats.router's
@@ -42,7 +55,10 @@ router.include_router(create.router)
 router.include_router(detail.router)
 router.include_router(update.router)
 router.include_router(delete.router)
-router.include_router(assignment.router)
-router.include_router(thread_tasks.router)
+router.include_router(assign.router)
+router.include_router(status_update.router)
+router.include_router(thread_detail.router)
+router.include_router(thread_status.router)
+router.include_router(thread_create.router)
 
 __all__ = ["router"]

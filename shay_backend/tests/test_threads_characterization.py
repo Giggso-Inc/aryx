@@ -207,7 +207,7 @@ class TestCreateThread:
     @pytest.mark.unit
     def test_invalid_channel_id_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.create"):
             resp = client.post(
                 "/api/v1/threads/",
                 json={"channel_id": "not-a-uuid", "title": "T"},
@@ -220,7 +220,7 @@ class TestCreateThread:
     def test_channel_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.create"):
             resp = client.post(
                 "/api/v1/threads/",
                 json={"channel_id": str(uuid.uuid4()), "title": "T"},
@@ -234,7 +234,7 @@ class TestCreateThread:
         channel = _mock_channel(company_id=admin_user.company_id)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=channel))
         mock_db.refresh = AsyncMock(side_effect=_simulate_thread_refresh)
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.create"):
             resp = client.post(
                 "/api/v1/threads/",
                 json={"channel_id": str(channel.id), "title": "New Thread"},
@@ -256,7 +256,7 @@ class TestListThreads:
     def test_channel_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.list"):
             resp = client.get(f"/api/v1/threads/?channel_id={uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -271,7 +271,7 @@ class TestListThreads:
             _FakeResult(all_=[thread]),                # query (.scalars().all())
             _FakeResult(scalar_one_or_none=None),       # first_msg lookup for the one thread
         )
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.list"):
             resp = client.get(f"/api/v1/threads/?channel_id={channel.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -290,7 +290,7 @@ class TestGetThread:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.get"):
             resp = client.get(f"/api/v1/threads/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Thread not found"
@@ -305,7 +305,7 @@ class TestGetThread:
             _FakeResult(scalar_one_or_none=channel),
             _FakeResult(scalar_one_or_none=None),  # first_msg lookup
         )
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.get"):
             resp = client.get(f"/api/v1/threads/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["title"] == "Thread title"
@@ -320,7 +320,7 @@ class TestUpdateThread:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.update"):
             resp = client.put(f"/api/v1/threads/{uuid.uuid4()}", json={"title": "x"}, headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -334,7 +334,7 @@ class TestUpdateThread:
             _FakeResult(scalar_one_or_none=channel),
         )
         mock_db.refresh = AsyncMock(side_effect=_simulate_thread_refresh)
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.update"):
             resp = client.put(
                 f"/api/v1/threads/{thread.id}",
                 json={"title": "Renamed"},
@@ -354,7 +354,7 @@ class TestDeleteThread:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.delete"):
             resp = client.delete(f"/api/v1/threads/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -367,7 +367,7 @@ class TestDeleteThread:
             _FakeResult(scalar_one_or_none=thread),
             _FakeResult(scalar_one_or_none=channel),
         )
-        with _auth(regular_user, "threads.crud"):
+        with _auth(regular_user, "threads.crud.delete"):
             resp = client.delete(f"/api/v1/threads/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 403
         assert resp.json()["detail"] == "Only administrators can delete threads"
@@ -383,7 +383,7 @@ class TestDeleteThread:
             _FakeResult(scalar_val=3),  # message_count
         )
         mock_db.delete = AsyncMock()
-        with _auth(admin_user, "threads.crud"):
+        with _auth(admin_user, "threads.crud.delete"):
             resp = client.delete(f"/api/v1/threads/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -399,7 +399,7 @@ class TestListThreadMembers:
     @pytest.mark.unit
     def test_invalid_thread_id_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.list"):
             resp = client.get("/api/v1/threads/not-a-uuid/members", headers=AUTH_HEADERS)
         assert resp.status_code == 400
 
@@ -411,7 +411,7 @@ class TestListThreadMembers:
             _FakeResult(all_=[member]),  # members list (.scalars().all())
             _FakeResult(scalar_val=1),   # count
         )
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.list"):
             resp = client.get(f"/api/v1/threads/{member.thread_id}/members", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -428,7 +428,7 @@ class TestAddThreadMember:
     def test_level_mismatch_returns_422(self, mock_db, admin_user):
         client = _make_client(mock_db)
         thread_id = uuid.uuid4()
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.add"):
             resp = client.post(
                 f"/api/v1/threads/{thread_id}/members",
                 json={"user_id": str(uuid.uuid4()), "level": "channel", "thread_id": str(thread_id)},
@@ -443,7 +443,7 @@ class TestAddThreadMember:
         user_id = uuid.uuid4()
         mock_db.execute = _exec_seq()  # no db.execute calls before commit/refresh
         mock_db.refresh = AsyncMock()
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.add"):
             resp = client.post(
                 f"/api/v1/threads/{thread_id}/members",
                 json={"user_id": str(user_id), "level": "thread", "thread_id": str(thread_id)},
@@ -465,7 +465,7 @@ class TestUpdateThreadMember:
     @pytest.mark.unit
     def test_invalid_uuid_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.update"):
             resp = client.put(
                 "/api/v1/threads/not-a-uuid/members/also-not-a-uuid",
                 json={"role": "admin"},
@@ -477,7 +477,7 @@ class TestUpdateThreadMember:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.update"):
             resp = client.put(
                 f"/api/v1/threads/{uuid.uuid4()}/members/{uuid.uuid4()}",
                 json={"role": "admin"},
@@ -490,7 +490,7 @@ class TestUpdateThreadMember:
         client = _make_client(mock_db)
         member = _mock_member()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=member))
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.update"):
             resp = client.put(
                 f"/api/v1/threads/{member.thread_id}/members/{member.user_id}",
                 json={"role": "admin"},
@@ -510,7 +510,7 @@ class TestRemoveThreadMember:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.remove"):
             resp = client.delete(
                 f"/api/v1/threads/{uuid.uuid4()}/members/{uuid.uuid4()}",
                 headers=AUTH_HEADERS,
@@ -523,7 +523,7 @@ class TestRemoveThreadMember:
         member = _mock_member()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=member))
         mock_db.delete = AsyncMock()
-        with _auth(admin_user, "threads.members"):
+        with _auth(admin_user, "threads.members.remove"):
             resp = client.delete(
                 f"/api/v1/threads/{member.thread_id}/members/{member.user_id}",
                 headers=AUTH_HEADERS,
@@ -540,7 +540,7 @@ class TestListThreadAppConnections:
     @pytest.mark.unit
     def test_invalid_thread_id_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.list"):
             resp = client.get("/api/v1/threads/not-a-uuid/app-connections", headers=AUTH_HEADERS)
         assert resp.status_code == 400
 
@@ -548,8 +548,8 @@ class TestListThreadAppConnections:
     def test_happy_path_returns_connections(self, mock_db, admin_user):
         client = _make_client(mock_db)
         conn = _mock_conn()
-        with _auth(admin_user, "threads.app_connections"), patch(
-            "app.routes.threads.app_connections.get_all_connections_for_scope", new=AsyncMock(return_value=[conn])
+        with _auth(admin_user, "threads.app_connections.list"), patch(
+            "app.routes.threads.app_connections.list.get_all_connections_for_scope", new=AsyncMock(return_value=[conn])
         ):
             resp = client.get(f"/api/v1/threads/{conn.thread_id}/app-connections", headers=AUTH_HEADERS)
         assert resp.status_code == 200
@@ -567,7 +567,7 @@ class TestConnectThreadApp:
     def test_level_mismatch_returns_422(self, mock_db, admin_user):
         client = _make_client(mock_db)
         thread_id = uuid.uuid4()
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.connect"):
             resp = client.post(
                 f"/api/v1/threads/{thread_id}/app-connections",
                 json={"app_id": str(uuid.uuid4()), "level": "channel", "thread_id": str(thread_id)},
@@ -580,7 +580,7 @@ class TestConnectThreadApp:
         client = _make_client(mock_db)
         thread_id = uuid.uuid4()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.connect"):
             resp = client.post(
                 f"/api/v1/threads/{thread_id}/app-connections",
                 json={"app_id": str(uuid.uuid4()), "level": "thread", "thread_id": str(thread_id)},
@@ -595,7 +595,7 @@ class TestConnectThreadApp:
         thread_id = uuid.uuid4()
         membership = _mock_member(thread_id=thread_id, user_id=admin_user.id)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=membership))
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.connect"):
             resp = client.post(
                 f"/api/v1/threads/{thread_id}/app-connections",
                 json={
@@ -623,7 +623,7 @@ class TestUpdateThreadAppConnection:
     @pytest.mark.unit
     def test_invalid_uuid_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.update"):
             resp = client.put(
                 "/api/v1/threads/not-a-uuid/app-connections/also-not-a-uuid",
                 json={"connection_name": "x"},
@@ -635,7 +635,7 @@ class TestUpdateThreadAppConnection:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.update"):
             resp = client.put(
                 f"/api/v1/threads/{uuid.uuid4()}/app-connections/{uuid.uuid4()}",
                 json={"connection_name": "x"},
@@ -651,7 +651,7 @@ class TestUpdateThreadAppConnection:
             _FakeResult(scalar_one_or_none=conn),        # conn lookup
             _FakeResult(scalar_one_or_none=admin_user),  # connector lookup
         )
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.update"):
             resp = client.put(
                 f"/api/v1/threads/{conn.thread_id}/app-connections/{conn.id}",
                 json={"connection_name": "Renamed Conn"},
@@ -671,7 +671,7 @@ class TestDisconnectThreadApp:
     @pytest.mark.unit
     def test_invalid_uuid_returns_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.disconnect"):
             resp = client.delete(
                 "/api/v1/threads/not-a-uuid/app-connections/also-not-a-uuid",
                 headers=AUTH_HEADERS,
@@ -682,7 +682,7 @@ class TestDisconnectThreadApp:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.disconnect"):
             resp = client.delete(
                 f"/api/v1/threads/{uuid.uuid4()}/app-connections/{uuid.uuid4()}",
                 headers=AUTH_HEADERS,
@@ -695,7 +695,7 @@ class TestDisconnectThreadApp:
         conn = _mock_conn()
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=conn))
         mock_db.delete = AsyncMock()
-        with _auth(admin_user, "threads.app_connections"):
+        with _auth(admin_user, "threads.app_connections.disconnect"):
             resp = client.delete(
                 f"/api/v1/threads/{conn.thread_id}/app-connections/{conn.id}",
                 headers=AUTH_HEADERS,

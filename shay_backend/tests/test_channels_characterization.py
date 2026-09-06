@@ -431,7 +431,7 @@ class TestListWorkspaces:
             _FakeResult(scalar_val=1),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "tags"):
+        with _auth(admin_user, "tags_workspaces"):
             resp = client.get("/api/v1/channels/workspaces", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["tags"][0]["name"] == workspace.name
@@ -483,7 +483,7 @@ class TestCheckUserAccess:
     def test_channel_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{_uid()}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -492,7 +492,7 @@ class TestCheckUserAccess:
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=channel))
         client = _make_client(mock_db)
         admin_user.is_admin = True
-        with _auth(admin_user, "detail"):
+        with _auth(admin_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{channel.id}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"has_access": True, "reason": "admin"}
@@ -501,7 +501,7 @@ class TestCheckUserAccess:
         channel = _mock_channel(company_id="other-company")
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=channel))
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{channel.id}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"has_access": False, "reason": "company_mismatch"}
@@ -510,7 +510,7 @@ class TestCheckUserAccess:
         channel = _mock_channel(company_id="company-001", is_public=True)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=channel))
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{channel.id}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"has_access": True, "reason": "public"}
@@ -523,7 +523,7 @@ class TestCheckUserAccess:
             _FakeResult(scalar_one_or_none=member),
         )
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{channel.id}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"has_access": True, "reason": "member"}
@@ -535,7 +535,7 @@ class TestCheckUserAccess:
             _FakeResult(scalar_one_or_none=None),
         )
         client = _make_client(mock_db)
-        with _auth(regular_user, "detail"):
+        with _auth(regular_user, "detail_access"):
             resp = client.get(f"/api/v1/channels/{channel.id}/access", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"has_access": False, "reason": "not_member"}
@@ -608,7 +608,7 @@ class TestAddChannelMember:
         client = _make_client(mock_db)
         with _auth(admin_user, "members_single"), \
                 patch("app.routes.channels.members_single.audit_log_write", new=AsyncMock()), \
-                patch("app.routes.channels.members_single.email_service.send_channel_member_notification", return_value=True):
+                patch("app.routes.channels.members_single_notify.email_service.send_channel_member_notification", return_value=True):
             resp = client.post(
                 f"/api/v1/channels/{channel.id}/members",
                 json={"mail_id": "member@example.com", "role": "user"},
@@ -648,7 +648,7 @@ class TestListChannelMembers:
     def test_channel_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "members_single"), patch("app.routes.channels.members_single.check_channel_access", new=AsyncMock(return_value=True)):
+        with _auth(admin_user, "members_single_list"), patch("app.routes.channels.members_single_list.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get(f"/api/v1/channels/{_uid()}/members", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -660,7 +660,7 @@ class TestListChannelMembers:
             _FakeResult(scalar_val=0),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "members_single"), patch("app.routes.channels.members_single.check_channel_access", new=AsyncMock(return_value=True)):
+        with _auth(admin_user, "members_single_list"), patch("app.routes.channels.members_single_list.check_channel_access", new=AsyncMock(return_value=True)):
             resp = client.get(f"/api/v1/channels/{channel.id}/members", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"items": [], "total": 0}
@@ -919,7 +919,7 @@ class TestDeleteChannel:
     def test_channel_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "mutate"):
+        with _auth(admin_user, "mutate_delete"):
             resp = client.delete(f"/api/v1/channels/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -928,7 +928,7 @@ class TestDeleteChannel:
         channel.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=channel))
         client = _make_client(mock_db)
-        with _auth(admin_user, "mutate"):
+        with _auth(admin_user, "mutate_delete"):
             resp = client.delete(f"/api/v1/channels/{channel.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 403
 
@@ -947,7 +947,7 @@ class TestDeleteChannel:
             # approvals_stmt build raises before execute is reached
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "mutate"), patch("app.routes.channels.mutate.audit_log_write", new=AsyncMock()):
+        with _auth(admin_user, "mutate_delete"), patch("app.routes.channels.mutate_delete.audit_log_write", new=AsyncMock()):
             resp = client.delete(f"/api/v1/channels/{channel.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 500
         assert "Approval" in resp.json()["detail"]

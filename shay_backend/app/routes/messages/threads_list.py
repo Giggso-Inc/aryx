@@ -1,14 +1,17 @@
 """
-GET /threads and GET /threads/{thread_id} — thread listing and detail.
+GET /threads — list_threads.
 
 Split out of the original app/routes/messages.py (2,513 lines) — see
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5.
 
 Registration order note: GET /threads (list_threads, a literal path) must
 be registered before any GET /{thread_id}-style dynamic route elsewhere in
-this package (messages_read.get_thread_messages), or the literal string
-"threads" would be swallowed by the dynamic pattern. See
+this package (messages_read_thread.get_thread_messages), or the literal
+string "threads" would be swallowed by the dynamic pattern. See
 app/routes/messages/__init__.py.
+
+Wave B2: get_thread_details (GET /threads/{thread_id}) split out to its own
+sibling file, threads_detail.py.
 """
 
 from typing import Optional
@@ -20,8 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.channel import Channel
-from app.models.message import Message, Thread
+from app.models.message import Thread
 from app.schemas.message import ThreadResponse, ThreadList
+from .threads_first_message import get_first_message_id
+from .threads_list_sort import apply_thread_sort
 
 router = APIRouter()
 
@@ -80,31 +85,7 @@ async def list_threads(
         query = query.where(Thread.title.ilike(f"%{search}%"))
 
     # Add sorting
-    if sort_by == "created_at":
-        if sort_order.lower() == "asc":
-            query = query.order_by(Thread.created_at.asc())
-        else:
-            query = query.order_by(Thread.created_at.desc())
-    elif sort_by == "updated_at":
-        if sort_order.lower() == "asc":
-            query = query.order_by(Thread.updated_at.asc())
-        else:
-            query = query.order_by(Thread.updated_at.desc())
-    elif sort_by == "last_message_at":
-        if sort_order.lower() == "asc":
-            query = query.order_by(func.coalesce(Thread.last_message_at, Thread.created_at).asc())
-        else:
-            query = query.order_by(func.coalesce(Thread.last_message_at, Thread.created_at).desc())
-    elif sort_by == "message_count":
-        if sort_order.lower() == "asc":
-            query = query.order_by(Thread.message_count.asc())
-        else:
-            query = query.order_by(Thread.message_count.desc())
-    else:  # Default: sort by last_message_at
-        if sort_order.lower() == "asc":
-            query = query.order_by(func.coalesce(Thread.last_message_at, Thread.created_at).asc())
-        else:
-            query = query.order_by(func.coalesce(Thread.last_message_at, Thread.created_at).desc())
+    query = apply_thread_sort(query, sort_by, sort_order)
 
     # Add pagination
     offset = (page - 1) * size
@@ -129,14 +110,7 @@ async def list_threads(
     # Get first message ID for each thread
     thread_responses = []
     for thread in threads:
-        # Get the first message in this thread (lowest sequence_number)
-        first_message_query = select(Message.id).where(
-            Message.thread_id == thread.id
-        ).order_by(Message.sequence_number.asc()).limit(1)
-
-        first_message_result = await db.execute(first_message_query)
-        first_message = first_message_result.scalar_one_or_none()
-        first_message_id = str(first_message) if first_message else None
+        first_message_id = await get_first_message_id(db, thread.id)
 
         thread_response = ThreadResponse(
             id=str(thread.id),
@@ -160,69 +134,4 @@ async def list_threads(
         total=total,
         page=page,
         size=size
-    )
-
-
-@router.get("/threads/{thread_id}", response_model=ThreadResponse)
-async def get_thread_details(
-    thread_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-) -> ThreadResponse:
-    """Get thread details by thread ID"""
-    user = await get_current_user_required(request)
-
-    # Get thread
-    stmt = select(Thread).where(Thread.id == thread_id)
-    result = await db.execute(stmt)
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
-        )
-
-    # Get channel
-    stmt = select(Channel).where(Channel.id == thread.channel_id)
-    result = await db.execute(stmt)
-    channel = result.scalar_one_or_none()
-
-    if not channel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Channel not found"
-        )
-
-    # Check permissions
-    if not channel.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to channel"
-        )
-
-    # Get the first message in this thread (lowest sequence_number)
-    first_message_query = select(Message.id).where(
-        Message.thread_id == thread.id
-    ).order_by(Message.sequence_number.asc()).limit(1)
-
-    first_message_result = await db.execute(first_message_query)
-    first_message = first_message_result.scalar_one_or_none()
-    first_message_id = str(first_message) if first_message else None
-
-    # Return thread details in the same structure as ThreadResponse
-    return ThreadResponse(
-        id=str(thread.id),
-        title=thread.title,
-        description=thread.description,
-        channel_id=str(thread.channel_id),
-        is_active=thread.is_active,
-        is_archived=thread.is_archived,
-        message_count=thread.message_count,
-        last_message_at=thread.last_message_at,
-        ai_enabled=thread.ai_enabled,
-        ai_summary=thread.ai_summary,
-        first_message_id=first_message_id,
-        created_at=thread.created_at,
-        updated_at=thread.updated_at
     )

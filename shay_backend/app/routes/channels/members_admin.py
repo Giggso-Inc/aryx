@@ -35,16 +35,7 @@ async def update_channel_member(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> ChannelMemberUpdateResponse:
-    """
-    Update a channel member's role and permissions.
-
-    This endpoint allows admins to modify the role and permissions of existing channel members.
-    Only company administrators have permission to update member roles.
-
-    Author: Pranhav Vimalbalaji
-    Version: 1.0.0
-    Last date modified: 13/08/2025
-    """
+    """Update a channel member's role/permissions. Admins only."""
     current_user = await get_current_user_required(request)
 
     # Only admins can update member roles
@@ -110,16 +101,7 @@ async def remove_channel_member(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Remove a user's access to a channel.
-
-    This endpoint allows admins to remove a user's membership from a channel. Only company
-    administrators have permission to remove channel members.
-
-    Author: Pranhav Vimalbalaji
-    Version: 1.0.0
-    Last date modified: 13/08/2025
-    """
+    """Remove a user's channel membership. Admins only."""
     current_user = await get_current_user_required(request)
 
     # Only admins can remove members

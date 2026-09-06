@@ -9,7 +9,7 @@ not reused by any other endpoint.
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ._shared import convert_checklists_to_dict, format_due_date_for_response
-from ._details import build_task_details, build_task_context
+from ._details_context import build_task_details, build_task_context
 from ._history import build_task_history
 
 

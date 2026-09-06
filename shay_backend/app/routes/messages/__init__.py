@@ -11,18 +11,28 @@ registration) needs zero changes.
 
 Route registration ORDER matters here: FastAPI/Starlette matches routes in
 registration order for a given HTTP method, and GET /{thread_id}
-(messages_read.get_thread_messages) is a single-segment dynamic path that
-would otherwise swallow the literal GET /threads path. threads_list (which
-owns GET /threads) is therefore included BEFORE messages_read, preserving
-the original file's endpoint declaration order exactly.
+(messages_read_thread.get_thread_messages) is a single-segment dynamic path
+that would otherwise swallow the literal GET /threads path. threads_list
+(which owns GET /threads) is therefore included BEFORE messages_read_thread,
+preserving the original file's endpoint declaration order exactly.
+
+Wave B2 (docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md) split several of
+the still-oversized Phase-5 submodules further, one file per endpoint or
+named sub-step helper: messages_read.py -> messages_read_thread.py +
+messages_read_detail.py; threads_list.py's get_thread_details endpoint ->
+threads_detail.py. See each new submodule's own docstring for what moved
+where and why.
 """
 
 from fastapi import APIRouter
 
 from . import threads_create
+from . import threads_by_phone
 from . import threads_list
+from . import threads_detail
 from . import messages_create
-from . import messages_read
+from . import messages_read_thread
+from . import messages_read_detail
 from . import messages_hide
 from . import messages_update
 from . import messages_delete
@@ -43,9 +53,12 @@ from .ai_processing import trigger_ai_processing
 
 router = APIRouter()
 router.include_router(threads_create.router)
+router.include_router(threads_by_phone.router)
 router.include_router(threads_list.router)
+router.include_router(threads_detail.router)
 router.include_router(messages_create.router)
-router.include_router(messages_read.router)
+router.include_router(messages_read_thread.router)
+router.include_router(messages_read_detail.router)
 router.include_router(messages_hide.router)
 router.include_router(messages_update.router)
 router.include_router(messages_delete.router)

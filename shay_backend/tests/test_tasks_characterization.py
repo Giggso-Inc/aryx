@@ -391,7 +391,7 @@ class TestAssignTask:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.assignment"):
+        with _auth(admin_user, "tasks.assign"):
             resp = client.post(
                 f"/api/v1/tasks/{uuid.uuid4()}/assign",
                 json={"assigned_to": str(uuid.uuid4())},
@@ -410,7 +410,7 @@ class TestAssignTask:
             _FakeResult(scalar_one_or_none=new_assignee),  # validate assigned user
             _FakeResult(scalar_one_or_none=new_assignee),  # load_task_details' assignee lookup
         )
-        with _auth(admin_user, "tasks.assignment"):
+        with _auth(admin_user, "tasks.assign"):
             resp = client.post(
                 f"/api/v1/tasks/{task.id}/assign",
                 json={"assigned_to": str(new_assignee.id)},
@@ -433,7 +433,7 @@ class TestUpdateTaskStatus:
     def test_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.assignment"):
+        with _auth(admin_user, "tasks.status_update"):
             resp = client.post(
                 f"/api/v1/tasks/{uuid.uuid4()}/status",
                 json={"status": "Close"},
@@ -446,7 +446,7 @@ class TestUpdateTaskStatus:
         client = _make_client(mock_db)
         task = _mock_task(created_by=admin_user.id, message_id=None, status="Open", task_metadata=None)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=task))
-        with _auth(admin_user, "tasks.assignment"):
+        with _auth(admin_user, "tasks.status_update"):
             resp = client.post(
                 f"/api/v1/tasks/{task.id}/status",
                 json={"status": "Close"},
@@ -506,7 +506,7 @@ class TestGetThreadTask:
     def test_thread_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_detail"):
             resp = client.get(f"/api/v1/tasks/thread/{uuid.uuid4()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Thread not found"
@@ -524,7 +524,7 @@ class TestGetThreadTask:
             _FakeResult(all_=[(uuid.uuid4(),)]),
             _FakeResult(scalar_one_or_none=task),
         )
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_detail"):
             resp = client.get(f"/api/v1/tasks/thread/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["title"] == "Do the thing"
@@ -539,7 +539,7 @@ class TestGetThreadTaskStatus:
     def test_thread_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_status"):
             resp = client.get(f"/api/v1/tasks/thread/{uuid.uuid4()}/status", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -553,7 +553,7 @@ class TestGetThreadTaskStatus:
             _FakeResult(scalar_one_or_none=channel),
             _FakeResult(all_=[]),
         )
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_status"):
             resp = client.get(f"/api/v1/tasks/thread/{thread.id}/status", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
@@ -570,7 +570,7 @@ class TestCreateThreadTask:
     def test_thread_not_found_returns_404(self, mock_db, admin_user):
         client = _make_client(mock_db)
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_create"):
             resp = client.post(
                 f"/api/v1/tasks/thread/{uuid.uuid4()}/create",
                 json={"title": "T", "message_id": str(uuid.uuid4()), "assigned_to": str(uuid.uuid4())},
@@ -594,7 +594,7 @@ class TestCreateThreadTask:
             _FakeResult(scalar_one_or_none=admin_user),     # load_task_details' created_by lookup
         )
         mock_db.refresh = AsyncMock(side_effect=_simulate_task_refresh)
-        with _auth(admin_user, "tasks.thread_tasks"):
+        with _auth(admin_user, "tasks.thread_create"):
             resp = client.post(
                 f"/api/v1/tasks/thread/{thread.id}/create",
                 json={

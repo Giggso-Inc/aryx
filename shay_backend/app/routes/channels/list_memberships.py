@@ -3,29 +3,62 @@ GET /my-memberships — list_my_channel_memberships (functionally the same
 filter as `/`, kept as a distinct endpoint for the frontend).
 
 Split out of the original app/routes/channels.py (2,630 lines) — see
-docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5.
+docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5. Re-verified during
+wave B3 of the compliance pass: this endpoint's
+per-channel metrics block was previously a ~95-line inline duplicate of the
+same computation now shared via channel_metrics.compute_channel_metrics
+(collect_all=False, include_provider=False: first-match app/datasource
+info, no channel_type/provider resolution). The earlier "too tightly
+coupled to extract" exception no longer holds now the shared helper
+exists — this endpoint now calls it instead of duplicating the logic.
 """
 
 from typing import Optional
 
 from fastapi import APIRouter, Request, Depends, Query
-from sqlalchemy import select, func, and_, or_, String
-from sqlalchemy.sql.expression import literal
+from sqlalchemy import select, func, and_, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.channel import Channel
 from app.models.workspace import Workspace
-from app.models.app_account import AppAccount
-from app.models.app import App
 from app.models.channel_member import ChannelMember
-from app.models.datasource import Datasource
-from app.models.task import Task
-from app.models.approval import Approval
 from app.schemas.channel import ChannelResponse, ChannelList
+from .channel_metrics import compute_channel_metrics
 
 router = APIRouter()
+
+
+def _apply_common_filters(query, user, search, workspace_tag, is_archived, channel_type):
+    query = query.where(
+        and_(
+            Channel.company_id == user.company_id,
+            ChannelMember.user_id == user.id,
+            ChannelMember.is_active == True,
+        )
+    )
+    if search:
+        query = query.where(Channel.name.ilike(f"%{search}%"))
+    if workspace_tag:
+        query = query.where(Workspace.name == workspace_tag)
+    query = query.where(Channel.is_archived == is_archived)
+    if channel_type:
+        # Cast channel_type to string for comparison (handles both integer and string storage)
+        query = query.where(func.lower(func.cast(Channel.channel_type, String)) == channel_type.lower())
+    return query
+
+
+def _apply_sort(query, sort_by, sort_order):
+    # NOTE: unlike list_company, this endpoint's default branch always used
+    # the same fallback column (created_at) — preserved as-is.
+    asc = (sort_order or "").lower() == "asc"
+    if sort_by == "name":
+        return query.order_by(Channel.name.asc() if asc else Channel.name.desc())
+    if sort_by == "message_count":
+        return query.order_by(Channel.message_count.asc() if asc else Channel.message_count.desc())
+    col = func.coalesce(Channel.last_message_at, Channel.created_at)
+    return query.order_by(col.asc() if asc else col.desc())
 
 
 @router.get("/my-memberships", response_model=ChannelList, tags=["Channels"])
@@ -58,187 +91,24 @@ async def list_my_channel_memberships(
     ).join(
         ChannelMember, Channel.id == ChannelMember.channel_id
     )
-
-    # Filter by company and user membership
-    query = query.where(
-        and_(
-            Channel.company_id == user.company_id,
-            ChannelMember.user_id == user.id,
-            ChannelMember.is_active == True
-        )
-    )
-
-    # Add search filter
-    if search:
-        query = query.where(Channel.name.ilike(f"%{search}%"))
-
-    # Add workspace tag filter
-    if workspace_tag:
-        query = query.where(Workspace.name == workspace_tag)
-
-    # Add archived status filter
-    query = query.where(Channel.is_archived == is_archived)
-
-    # Add channel_type filter
-    if channel_type:
-        # Cast channel_type to string for comparison (handles both integer and string storage)
-        query = query.where(func.lower(func.cast(Channel.channel_type, String)) == channel_type.lower())
-
-    # Add sorting
-    if sort_by == "name":
-        if sort_order.lower() == "asc":
-            query = query.order_by(Channel.name.asc())
-        else:
-            query = query.order_by(Channel.name.desc())
-    elif sort_by == "last_message_at":
-        if sort_order.lower() == "asc":
-            query = query.order_by(func.coalesce(Channel.last_message_at, Channel.created_at).asc())
-        else:
-            query = query.order_by(func.coalesce(Channel.last_message_at, Channel.created_at).desc())
-    elif sort_by == "message_count":
-        if sort_order.lower() == "asc":
-            query = query.order_by(Channel.message_count.asc())
-        else:
-            query = query.order_by(Channel.message_count.desc())
-    else:  # Default: sort by last_message_at
-        if sort_order.lower() == "asc":
-            query = query.order_by(func.coalesce(Channel.last_message_at, Channel.created_at).asc())
-        else:
-            query = query.order_by(func.coalesce(Channel.last_message_at, Channel.created_at).desc())
-
-    # Add pagination
-    offset = (page - 1) * size
-    query = query.offset(offset).limit(size)
-
-    # Execute query
-    result = await db.execute(query)
-    channels_with_workspaces = result.all()
+    query = _apply_common_filters(query, user, search, workspace_tag, is_archived, channel_type)
+    query = _apply_sort(query, sort_by, sort_order)
+    query = query.offset((page - 1) * size).limit(size)
+    channels_with_workspaces = (await db.execute(query)).all()
 
     # Get total count (no sorting needed for count)
     count_query = select(func.count(Channel.id)).join(
         Workspace, Channel.workspace_id == Workspace.id
     ).join(
         ChannelMember, Channel.id == ChannelMember.channel_id
-    ).where(
-        and_(
-            Channel.company_id == user.company_id,
-            ChannelMember.user_id == user.id,
-            ChannelMember.is_active == True
-        )
     )
+    count_query = _apply_common_filters(count_query, user, search, workspace_tag, is_archived, channel_type)
+    total = (await db.execute(count_query)).scalar()
 
-    if search:
-        count_query = count_query.where(Channel.name.ilike(f"%{search}%"))
-    if workspace_tag:
-        count_query = count_query.where(Workspace.name == workspace_tag)
-
-    # Add archived status filter to count query
-    count_query = count_query.where(Channel.is_archived == is_archived)
-
-    # Add channel_type filter to count query
-    if channel_type:
-        count_query = count_query.where(func.lower(func.cast(Channel.channel_type, String)) == channel_type.lower())
-
-    count_result = await db.execute(count_query)
-    total = count_result.scalar()
-
-    # Build response with metrics
+    # Build response with metrics (shared with list_my / list_company)
     channels = []
     for channel, workspace_name in channels_with_workspaces:
-        # Calculate metrics for each channel
-        # Total apps connected to this channel
-        apps_count_query = select(func.count(AppAccount.id)).where(
-            and_(
-                AppAccount.channel_id == channel.id,
-                AppAccount.is_active == True,
-                or_(
-                    AppAccount.api_key.is_(None),
-                    AppAccount.api_key != 'email'
-                )
-            )
-        )
-        apps_count_query_result = await db.execute(apps_count_query)
-        total_apps_connected = apps_count_query_result.scalar() or 0
-
-        # Total users in this channel
-        users_count_query = select(func.count(ChannelMember.id)).where(
-            and_(
-                ChannelMember.channel_id == channel.id,
-                ChannelMember.is_active == True
-            )
-        )
-        users_count_result = await db.execute(users_count_query)
-        total_users = users_count_result.scalar() or 0
-
-        # Total datasources in this channel (channel-level only; exclude thread-level)
-        datasources_count_query = select(func.count(Datasource.id)).where(
-            and_(
-                Datasource.channel_id == channel.id,
-                or_(
-                    Datasource.datasource_metadata.is_(None),
-                    ~Datasource.datasource_metadata.op("?")(literal("thread_id", type_=String()))
-                )
-            )
-        )
-        datasources_count_result = await db.execute(datasources_count_query)
-        total_datasources = datasources_count_result.scalar() or 0
-
-        # Get app information (first connected app)
-        app_info = None
-        if total_apps_connected > 0:
-            app_query = select(App.app_name, App.app_image).join(
-                AppAccount, App.id == AppAccount.app_id
-            ).where(
-                and_(
-                    AppAccount.channel_id == channel.id,
-                    AppAccount.is_active == True
-                )
-            ).limit(1)
-            app_result = await db.execute(app_query)
-            app_data = app_result.first()
-            if app_data:
-                app_info = {
-                    "app_name": app_data.app_name,
-                    "icon_url": app_data.app_image
-                }
-
-        # Get datasource information (first channel-level datasource)
-        datasource_info = None
-        if total_datasources > 0:
-            datasource_query = select(Datasource.name, Datasource.filename, Datasource.file_type).where(
-                and_(
-                    Datasource.channel_id == channel.id,
-                    or_(
-                        Datasource.datasource_metadata.is_(None),
-                        ~Datasource.datasource_metadata.op("?")(literal("thread_id", type_=String()))
-                    )
-                )
-            ).limit(1)
-            datasource_result = await db.execute(datasource_query)
-            datasource_data = datasource_result.first()
-            if datasource_data:
-                datasource_info = {
-                    "datasource_name": datasource_data.name,
-                    "file_name": datasource_data.filename,
-                    "file_type": datasource_data.file_type
-                }
-
-        # Total tasks in this channel
-        tasks_count_query = select(func.count(Task.id)).where(
-            Task.channel_id == channel.id
-        )
-        tasks_count_result = await db.execute(tasks_count_query)
-        task_count = tasks_count_result.scalar() or 0
-
-        # Total approvals in this channel
-        approvals_count_query = select(func.count(Approval.id)).where(
-            and_(
-                Approval.channel_id == channel.id,
-                Approval.is_active == "Y"
-            )
-        )
-        approvals_count_result = await db.execute(approvals_count_query)
-        approval_count = approvals_count_result.scalar() or 0
+        metrics = await compute_channel_metrics(db, channel, collect_all=False, include_provider=False)
 
         channel_response = ChannelResponse(
             id=str(channel.id),
@@ -256,16 +126,16 @@ async def list_my_channel_memberships(
             channel_settings=channel.channel_settings,
             message_count=channel.message_count,
             last_message_at=channel.last_message_at,
-            total_apps_connected=total_apps_connected,
-            total_users=total_users,
-            total_datasources=total_datasources,
-            app=app_info,
-            datasource=datasource_info,
+            total_apps_connected=metrics.total_apps_connected,
+            total_users=metrics.total_users,
+            total_datasources=metrics.total_datasources,
+            app=metrics.app,
+            datasource=metrics.datasource,
             agent_count=0,
             agent_names={},
             workflow_count=0,
-            task_count=task_count,
-            approval_count=approval_count,
+            task_count=metrics.task_count,
+            approval_count=metrics.approval_count,
             created_at=channel.created_at,
             updated_at=channel.updated_at
         )

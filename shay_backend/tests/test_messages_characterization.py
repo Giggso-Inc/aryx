@@ -67,8 +67,8 @@ def _no_background():
     try to open a real DB session mid-test. Both are only ever called from
     messages_create.create_message."""
     return (
-        patch("app.routes.messages.messages_create.trigger_ai_processing", new=AsyncMock()),
-        patch("app.routes.messages.messages_create.process_mention_notifications", new=AsyncMock()),
+        patch("app.routes.messages.messages_create_dispatch.trigger_ai_processing", new=AsyncMock()),
+        patch("app.routes.messages.messages_create_dispatch.process_mention_notifications", new=AsyncMock()),
     )
 
 
@@ -262,7 +262,7 @@ class TestCreateThread:
 class TestGetOrCreateThreadByPhone:
     def test_invalid_channel_id_400(self, mock_db, admin_user):
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_create"):
+        with _auth(admin_user, "threads_by_phone"):
             resp = client.post(
                 "/api/v1/messages/threads/by-phone",
                 json={"phone_number": "+15551234567", "channel_id": "not-a-uuid"},
@@ -273,7 +273,7 @@ class TestGetOrCreateThreadByPhone:
     def test_channel_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_create"):
+        with _auth(admin_user, "threads_by_phone"):
             resp = client.post(
                 "/api/v1/messages/threads/by-phone",
                 json={"phone_number": "+15551234567", "channel_id": str(_uid())},
@@ -289,7 +289,7 @@ class TestGetOrCreateThreadByPhone:
             _FakeResult(scalar_one_or_none=thread),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_create"):
+        with _auth(admin_user, "threads_by_phone"):
             resp = client.post(
                 "/api/v1/messages/threads/by-phone",
                 json={"phone_number": "+15551234567", "channel_id": str(channel.id)},
@@ -308,7 +308,7 @@ class TestGetOrCreateThreadByPhone:
         )
         mock_db.refresh = AsyncMock(side_effect=_simulate_refresh)
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_create"), patch("app.routes.messages.threads_create.audit_log_write", new=AsyncMock()):
+        with _auth(admin_user, "threads_by_phone"), patch("app.routes.messages.threads_by_phone.audit_log_write", new=AsyncMock()):
             resp = client.post(
                 "/api/v1/messages/threads/by-phone",
                 json={"phone_number": "+15551234567", "channel_id": str(channel.id)},
@@ -376,7 +376,7 @@ class TestGetThreadDetails:
     def test_thread_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_list"):
+        with _auth(admin_user, "threads_detail"):
             resp = client.get(f"/api/v1/messages/threads/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -389,7 +389,7 @@ class TestGetThreadDetails:
             _FakeResult(scalar_one_or_none=None),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "threads_list"):
+        with _auth(admin_user, "threads_detail"):
             resp = client.get(f"/api/v1/messages/threads/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["id"] == str(thread.id)
@@ -424,8 +424,8 @@ class TestCreateMessage:
         mock_db.refresh = AsyncMock(side_effect=_simulate_refresh)
         client = _make_client(mock_db)
         p1, p2 = _no_background()
-        with _auth(admin_user, "messages_create"), patch("app.routes.messages.messages_create.audit_log_write", new=AsyncMock()), \
-                patch("app.routes.messages.messages_create.link_shortener_service.shorten", new=AsyncMock(return_value="https://short.link/x")), \
+        with _auth(admin_user, "messages_create"), patch("app.routes.messages.messages_create_persist.audit_log_write", new=AsyncMock()), \
+                patch("app.routes.messages.messages_create_dispatch.link_shortener_service.shorten", new=AsyncMock(return_value="https://short.link/x")), \
                 p1, p2:
             resp = client.post("/api/v1/messages/", json=self._payload(thread.id), headers=AUTH_HEADERS)
         assert resp.status_code == 200
@@ -462,7 +462,7 @@ class TestGetThreadMessages:
     def test_thread_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_read"):
+        with _auth(admin_user, "messages_read_thread"):
             resp = client.get(f"/api/v1/messages/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -476,7 +476,7 @@ class TestGetThreadMessages:
             _FakeResult(scalar_val=0),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_read"):
+        with _auth(admin_user, "messages_read_thread"):
             resp = client.get(f"/api/v1/messages/{thread.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"messages": [], "total": 0, "page": 1, "size": 50}
@@ -527,7 +527,7 @@ class TestGetMessageDetails:
     def test_message_not_found_404(self, mock_db, admin_user):
         mock_db.execute = _exec_seq(_FakeResult(scalar_one_or_none=None))
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_read"):
+        with _auth(admin_user, "messages_read_detail"):
             resp = client.get(f"/api/v1/messages/message/{_uid()}", headers=AUTH_HEADERS)
         assert resp.status_code == 404
 
@@ -541,7 +541,7 @@ class TestGetMessageDetails:
             _FakeResult(scalar_one_or_none=channel),
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_read"):
+        with _auth(admin_user, "messages_read_detail"):
             resp = client.get(f"/api/v1/messages/message/{message.id}", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["id"] == str(message.id)
@@ -620,7 +620,7 @@ class TestUpdateMessage:
             _FakeResult(scalar_one_or_none=None),  # user lookup for response
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_update"), patch("app.routes.messages.messages_update.audit_log_write", new=AsyncMock()):
+        with _auth(admin_user, "messages_update"), patch("app.routes.messages.messages_update_persist.audit_log_write", new=AsyncMock()):
             resp = client.post(
                 "/api/v1/messages/update",
                 json=self._payload(message.id, thread.id, content="updated content"),
@@ -692,7 +692,7 @@ class TestDeleteMessage:
             _FakeResult(scalar_one_or_none=None),  # last message in channel
         )
         client = _make_client(mock_db)
-        with _auth(admin_user, "messages_delete"), patch("app.routes.messages.messages_delete.audit_log_write", new=AsyncMock()):
+        with _auth(admin_user, "messages_delete"), patch("app.routes.messages.messages_delete_persist.audit_log_write", new=AsyncMock()):
             resp = client.request(
                 "DELETE", "/api/v1/messages/delete",
                 json=self._payload(message.id, thread.id),
@@ -961,7 +961,7 @@ class TestStoreMlMessages:
         mock_db.refresh = AsyncMock(side_effect=_simulate_refresh)
         client = _make_client(mock_db)
         p1, p2 = _no_background()
-        with _auth(admin_user, "ml_store"), patch("app.routes.messages.ml_store.audit_log_write", new=AsyncMock()), p1, p2:
+        with _auth(admin_user, "ml_store"), patch("app.routes.messages.ml_store_persist.audit_log_write", new=AsyncMock()), p1, p2:
             resp = client.post(
                 "/api/v1/messages/ml-store",
                 json=self._payload(thread.id),

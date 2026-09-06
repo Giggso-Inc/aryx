@@ -1732,33 +1732,68 @@
       "get_dev_token"
     ],
     [
+      "shay_backend/app/routes/channels/channel_metrics.py",
+      46,
+      "compute_channel_metrics"
+    ],
+    [
+      "shay_backend/app/routes/channels/channel_metrics.py",
+      134,
+      "compute_channel_metrics"
+    ],
+    [
+      "shay_backend/app/routes/channels/channel_metrics_provider.py",
+      17,
+      "resolve_channel_type_and_provider"
+    ],
+    [
+      "shay_backend/app/routes/channels/channel_metrics_provider.py",
+      22,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/channels/channel_metrics_provider.py",
+      62,
+      "resolve_channel_type_and_provider"
+    ],
+    [
       "shay_backend/app/routes/channels/create.py",
-      27,
+      31,
       "create_channel"
     ],
     [
       "shay_backend/app/routes/channels/create.py",
-      205,
+      147,
       "create_channel"
     ],
     [
+      "shay_backend/app/routes/channels/create_workspace.py",
+      23,
+      "resolve_or_create_workspace"
+    ],
+    [
+      "shay_backend/app/routes/channels/create_workspace.py",
+      78,
+      "resolve_or_create_workspace"
+    ],
+    [
       "shay_backend/app/routes/channels/detail.py",
-      32,
+      40,
       "get_channel"
     ],
     [
       "shay_backend/app/routes/channels/detail.py",
-      153,
+      111,
       "get_channel"
     ],
     [
-      "shay_backend/app/routes/channels/detail.py",
-      182,
+      "shay_backend/app/routes/channels/detail_access.py",
+      25,
       "check_user_access"
     ],
     [
-      "shay_backend/app/routes/channels/detail.py",
-      234,
+      "shay_backend/app/routes/channels/detail_access.py",
+      77,
       "check_user_access"
     ],
     [
@@ -1778,22 +1813,62 @@
     ],
     [
       "shay_backend/app/routes/channels/list_company.py",
-      32,
+      34,
+      "_apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_company.py",
+      44,
+      "_apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_company.py",
+      47,
+      "_apply_sort"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_company.py",
+      61,
+      "_apply_sort"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_company.py",
+      65,
       "list_company_channels"
     ],
     [
       "shay_backend/app/routes/channels/list_company.py",
-      300,
+      142,
       "list_company_channels"
     ],
     [
       "shay_backend/app/routes/channels/list_memberships.py",
-      32,
+      33,
+      "_apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_memberships.py",
+      49,
+      "_apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_memberships.py",
+      52,
+      "_apply_sort"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_memberships.py",
+      61,
+      "_apply_sort"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_memberships.py",
+      65,
       "list_my_channel_memberships"
     ],
     [
       "shay_backend/app/routes/channels/list_memberships.py",
-      274,
+      144,
       "list_my_channel_memberships"
     ],
     [
@@ -1808,18 +1883,43 @@
     ],
     [
       "shay_backend/app/routes/channels/list_my.py",
+      32,
+      "list_channels"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_my.py",
+      105,
+      "list_channels"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_my_filters.py",
+      13,
+      "apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_my_filters.py",
+      28,
+      "apply_common_filters"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_my_filters.py",
       31,
-      "list_channels"
+      "apply_sort"
     ],
     [
-      "shay_backend/app/routes/channels/list_my.py",
-      146,
-      "<if>"
+      "shay_backend/app/routes/channels/list_my_filters.py",
+      45,
+      "apply_sort"
     ],
     [
-      "shay_backend/app/routes/channels/list_my.py",
-      338,
-      "list_channels"
+      "shay_backend/app/routes/channels/list_my_filters.py",
+      48,
+      "has_archived_channels"
+    ],
+    [
+      "shay_backend/app/routes/channels/list_my_filters.py",
+      71,
+      "has_archived_channels"
     ],
     [
       "shay_backend/app/routes/channels/members_admin.py",
@@ -1828,102 +1928,132 @@
     ],
     [
       "shay_backend/app/routes/channels/members_admin.py",
-      100,
+      91,
       "update_channel_member"
     ],
     [
       "shay_backend/app/routes/channels/members_admin.py",
-      107,
+      98,
       "remove_channel_member"
     ],
     [
       "shay_backend/app/routes/channels/members_admin.py",
-      162,
+      144,
       "remove_channel_member"
     ],
     [
       "shay_backend/app/routes/channels/members_bulk.py",
-      42,
+      41,
       "add_channel_members_bulk_csv"
     ],
     [
       "shay_backend/app/routes/channels/members_bulk.py",
-      110,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/channels/members_bulk.py",
-      167,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/channels/members_bulk.py",
-      238,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/channels/members_bulk.py",
-      334,
+      137,
       "add_channel_members_bulk_csv"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_csv.py",
+      16,
+      "parse_bulk_csv_file"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_csv.py",
+      38,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_csv.py",
+      85,
+      "parse_bulk_csv_file"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_notify.py",
+      27,
+      "send_bulk_add_notifications"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_notify.py",
+      44,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_upsert.py",
+      23,
+      "upsert_members_from_csv"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_upsert.py",
+      41,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_bulk_upsert.py",
+      91,
+      "upsert_members_from_csv"
     ],
     [
       "shay_backend/app/routes/channels/members_single.py",
-      39,
+      32,
       "add_channel_member"
     ],
     [
-      "shay_backend/app/routes/channels/members_single.py",
-      143,
+      "shay_backend/app/routes/channels/members_single_list.py",
+      30,
+      "list_channel_members"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_single_list.py",
+      114,
+      "list_channel_members"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_single_notify.py",
+      13,
+      "notify_new_member"
+    ],
+    [
+      "shay_backend/app/routes/channels/members_single_notify.py",
+      17,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/channels/members_single.py",
-      216,
-      "list_channel_members"
-    ],
-    [
-      "shay_backend/app/routes/channels/members_single.py",
-      303,
-      "list_channel_members"
-    ],
-    [
       "shay_backend/app/routes/channels/mutate.py",
-      32,
+      29,
       "update_channel"
     ],
     [
       "shay_backend/app/routes/channels/mutate.py",
-      120,
+      117,
       "update_channel"
     ],
     [
-      "shay_backend/app/routes/channels/mutate.py",
-      144,
+      "shay_backend/app/routes/channels/mutate_delete.py",
+      27,
       "delete_channel"
     ],
     [
-      "shay_backend/app/routes/channels/mutate.py",
-      173,
-      "<try>"
+      "shay_backend/app/routes/channels/mutate_delete_cascade.py",
+      22,
+      "cascade_delete_channel_data"
     ],
     [
       "shay_backend/app/routes/channels/tags.py",
-      25,
+      28,
       "list_workspace_tags"
     ],
     [
       "shay_backend/app/routes/channels/tags.py",
-      103,
+      106,
       "list_workspace_tags"
     ],
     [
-      "shay_backend/app/routes/channels/tags.py",
-      112,
+      "shay_backend/app/routes/channels/tags_workspaces.py",
+      27,
       "list_workspaces"
     ],
     [
-      "shay_backend/app/routes/channels/tags.py",
-      196,
+      "shay_backend/app/routes/channels/tags_workspaces.py",
+      111,
       "list_workspaces"
     ],
     [
@@ -3112,44 +3242,44 @@
       "upload_files_bulk"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      36,
-      "list_workspace_app_connections"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      102,
-      "list_workspace_app_connections"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      112,
+      "shay_backend/app/routes/gg_workspaces/app_connections/connect.py",
+      30,
       "connect_workspace_app"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      187,
+      "shay_backend/app/routes/gg_workspaces/app_connections/connect.py",
+      105,
       "connect_workspace_app"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      191,
-      "update_workspace_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      230,
-      "update_workspace_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      234,
+      "shay_backend/app/routes/gg_workspaces/app_connections/disconnect.py",
+      24,
       "disconnect_workspace_app"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/app_connections.py",
-      267,
+      "shay_backend/app/routes/gg_workspaces/app_connections/disconnect.py",
+      57,
       "disconnect_workspace_app"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/app_connections/list.py",
+      31,
+      "list_workspace_app_connections"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/app_connections/list.py",
+      97,
+      "list_workspace_app_connections"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/app_connections/update.py",
+      26,
+      "update_workspace_app_connection"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/app_connections/update.py",
+      65,
+      "update_workspace_app_connection"
     ],
     [
       "shay_backend/app/routes/gg_workspaces/helpers.py",
@@ -3162,49 +3292,49 @@
       "_get_workspace_or_404"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      40,
-      "list_workspace_members"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      87,
-      "list_workspace_members"
-    ],
-    [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      97,
+      "shay_backend/app/routes/gg_workspaces/members/add.py",
+      34,
       "add_workspace_member"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      137,
+      "shay_backend/app/routes/gg_workspaces/members/add.py",
+      74,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      171,
+      "shay_backend/app/routes/gg_workspaces/members/add.py",
+      108,
       "add_workspace_member"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      175,
-      "update_workspace_member"
+      "shay_backend/app/routes/gg_workspaces/members/list.py",
+      28,
+      "list_workspace_members"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      218,
-      "update_workspace_member"
+      "shay_backend/app/routes/gg_workspaces/members/list.py",
+      75,
+      "list_workspace_members"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      222,
+      "shay_backend/app/routes/gg_workspaces/members/remove.py",
+      24,
       "remove_workspace_member"
     ],
     [
-      "shay_backend/app/routes/gg_workspaces/members.py",
-      260,
+      "shay_backend/app/routes/gg_workspaces/members/remove.py",
+      62,
       "remove_workspace_member"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/members/update.py",
+      26,
+      "update_workspace_member"
+    ],
+    [
+      "shay_backend/app/routes/gg_workspaces/members/update.py",
+      69,
+      "update_workspace_member"
     ],
     [
       "shay_backend/app/routes/gmail_connect.py",
@@ -3253,68 +3383,213 @@
     ],
     [
       "shay_backend/app/routes/messages/mentions.py",
-      59,
-      "get_users_by_mentions"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      98,
-      "get_users_by_mentions"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      101,
-      "should_send_mention_notification"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      148,
-      "should_send_mention_notification"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      151,
-      "send_mention_notification_email"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      175,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/messages/mentions.py",
-      228,
+      36,
       "process_mention_notifications"
     ],
     [
       "shay_backend/app/routes/messages/mentions.py",
-      249,
+      57,
       "<try>"
     ],
     [
+      "shay_backend/app/routes/messages/mentions_email.py",
+      16,
+      "send_mention_notification_email"
+    ],
+    [
+      "shay_backend/app/routes/messages/mentions_email.py",
+      40,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/messages/mentions_parsing.py",
+      44,
+      "get_users_by_mentions"
+    ],
+    [
+      "shay_backend/app/routes/messages/mentions_parsing.py",
+      83,
+      "get_users_by_mentions"
+    ],
+    [
+      "shay_backend/app/routes/messages/mentions_preferences.py",
+      17,
+      "should_send_mention_notification"
+    ],
+    [
+      "shay_backend/app/routes/messages/mentions_preferences.py",
+      64,
+      "should_send_mention_notification"
+    ],
+    [
       "shay_backend/app/routes/messages/messages_create.py",
+      110,
+      "create_message"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_attachments.py",
+      20,
+      "parse_attachment_uuids"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_attachments.py",
+      34,
+      "link_attachments_to_message"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_attachments.py",
+      49,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_dispatch.py",
+      39,
+      "schedule_mention_notifications"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_identity.py",
+      21,
+      "resolve_message_identity"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_identity.py",
+      66,
+      "resolve_message_identity"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      17,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      28,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      31,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
       42,
-      "create_message"
+      "get_channel_or_404"
     ],
     [
-      "shay_backend/app/routes/messages/messages_create.py",
-      162,
-      "<try>"
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      45,
+      "check_channel_access"
     ],
     [
-      "shay_backend/app/routes/messages/messages_create.py",
-      301,
-      "create_message"
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      54,
+      "get_next_sequence_number"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_lookup.py",
+      59,
+      "get_next_sequence_number"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_response.py",
+      18,
+      "_load_user_bean"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_response.py",
+      28,
+      "_load_user_bean"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_response.py",
+      37,
+      "_load_attachment_details"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_create_response.py",
+      45,
+      "_load_attachment_details"
     ],
     [
       "shay_backend/app/routes/messages/messages_delete.py",
-      36,
+      94,
       "delete_message"
     ],
     [
-      "shay_backend/app/routes/messages/messages_delete.py",
-      239,
-      "delete_message"
+      "shay_backend/app/routes/messages/messages_delete_ai_responses.py",
+      18,
+      "delete_ai_responses_for_message"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_ai_responses.py",
+      27,
+      "delete_ai_responses_for_message"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_attachments.py",
+      17,
+      "delete_and_unlink_message_attachments"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_attachments.py",
+      51,
+      "delete_and_unlink_message_attachments"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_dependents.py",
+      20,
+      "cleanup_dependent_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_dependents.py",
+      61,
+      "cleanup_dependent_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      21,
+      "parse_delete_ids"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      32,
+      "get_message_for_delete"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      50,
+      "get_message_for_delete"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      53,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      64,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      67,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      78,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_lookup.py",
+      81,
+      "check_delete_permissions"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_delete_metadata.py",
+      18,
+      "recompute_deletion_metadata"
     ],
     [
       "shay_backend/app/routes/messages/messages_hide.py",
@@ -3327,44 +3602,114 @@
       "hide_thread_messages"
     ],
     [
-      "shay_backend/app/routes/messages/messages_read.py",
-      28,
-      "get_thread_messages"
-    ],
-    [
-      "shay_backend/app/routes/messages/messages_read.py",
-      120,
-      "get_thread_messages"
-    ],
-    [
-      "shay_backend/app/routes/messages/messages_read.py",
-      159,
+      "shay_backend/app/routes/messages/messages_read_detail.py",
+      24,
       "get_message_details"
     ],
     [
-      "shay_backend/app/routes/messages/messages_read.py",
-      249,
+      "shay_backend/app/routes/messages/messages_read_detail.py",
+      111,
       "get_message_details"
     ],
     [
-      "shay_backend/app/routes/messages/messages_update.py",
-      36,
-      "update_message"
+      "shay_backend/app/routes/messages/messages_read_thread.py",
+      31,
+      "get_thread_messages"
     ],
     [
-      "shay_backend/app/routes/messages/messages_update.py",
-      265,
-      "update_message"
+      "shay_backend/app/routes/messages/messages_read_thread.py",
+      86,
+      "get_thread_messages"
     ],
     [
-      "shay_backend/app/routes/messages/ml_store.py",
-      42,
-      "store_ml_messages"
+      "shay_backend/app/routes/messages/messages_read_thread_serialize.py",
+      20,
+      "load_users_for_messages"
     ],
     [
-      "shay_backend/app/routes/messages/ml_store.py",
+      "shay_backend/app/routes/messages/messages_read_thread_serialize.py",
+      29,
+      "load_users_for_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_read_thread_serialize.py",
+      32,
+      "load_attachments_for_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_read_thread_serialize.py",
       59,
-      "<try>"
+      "load_attachments_for_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update.py",
+      90,
+      "update_message"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_attachments.py",
+      20,
+      "reconcile_message_attachments"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      21,
+      "parse_update_ids"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      32,
+      "get_message_for_update"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      50,
+      "get_message_for_update"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      53,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      64,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      67,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      78,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/messages_update_lookup.py",
+      81,
+      "check_update_permissions"
+    ],
+    [
+      "shay_backend/app/routes/messages/ml_store_lookup.py",
+      26,
+      "get_thread"
+    ],
+    [
+      "shay_backend/app/routes/messages/ml_store_lookup.py",
+      30,
+      "get_thread"
+    ],
+    [
+      "shay_backend/app/routes/messages/ml_store_lookup.py",
+      33,
+      "get_channel"
+    ],
+    [
+      "shay_backend/app/routes/messages/ml_store_lookup.py",
+      37,
+      "get_channel"
     ],
     [
       "shay_backend/app/routes/messages/system_user.py",
@@ -3377,24 +3722,24 @@
       "get_or_create_system_user"
     ],
     [
-      "shay_backend/app/routes/messages/threads_create.py",
+      "shay_backend/app/routes/messages/threads_by_phone.py",
       27,
-      "create_thread"
+      "get_or_create_thread_by_phone"
     ],
     [
-      "shay_backend/app/routes/messages/threads_create.py",
-      90,
-      "create_thread"
-    ],
-    [
-      "shay_backend/app/routes/messages/threads_create.py",
-      94,
+      "shay_backend/app/routes/messages/threads_by_phone.py",
+      100,
       "get_or_create_thread_by_phone"
     ],
     [
       "shay_backend/app/routes/messages/threads_create.py",
-      167,
-      "get_or_create_thread_by_phone"
+      28,
+      "create_thread"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_create.py",
+      91,
+      "create_thread"
     ],
     [
       "shay_backend/app/routes/messages/threads_delete.py",
@@ -3403,28 +3748,108 @@
     ],
     [
       "shay_backend/app/routes/messages/threads_delete.py",
-      164,
+      70,
       "delete_thread"
     ],
     [
-      "shay_backend/app/routes/messages/threads_list.py",
+      "shay_backend/app/routes/messages/threads_delete_cascade.py",
+      17,
+      "delete_thread_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_cascade.py",
+      27,
+      "delete_thread_messages"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_cascade.py",
       30,
+      "delete_thread_ai_responses"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_cascade.py",
+      37,
+      "delete_thread_ai_responses"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_email_cleanup.py",
+      20,
+      "is_email_channel"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_email_cleanup.py",
+      36,
+      "is_email_channel"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_lookup.py",
+      17,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_lookup.py",
+      28,
+      "get_thread_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_lookup.py",
+      31,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_lookup.py",
+      42,
+      "get_channel_or_404"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_delete_lookup.py",
+      45,
+      "check_delete_thread_permissions"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_detail.py",
+      28,
+      "get_thread_details"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_detail.py",
+      68,
+      "get_thread_details"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_first_message.py",
+      17,
+      "get_first_message_id"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_first_message.py",
+      25,
+      "get_first_message_id"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_list.py",
+      35,
       "list_threads"
     ],
     [
       "shay_backend/app/routes/messages/threads_list.py",
-      158,
+      132,
       "list_threads"
     ],
     [
-      "shay_backend/app/routes/messages/threads_list.py",
-      167,
-      "get_thread_details"
+      "shay_backend/app/routes/messages/threads_list_sort.py",
+      16,
+      "apply_thread_sort"
     ],
     [
-      "shay_backend/app/routes/messages/threads_list.py",
-      214,
-      "get_thread_details"
+      "shay_backend/app/routes/messages/threads_list_sort.py",
+      28,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_list_sort.py",
+      33,
+      "apply_thread_sort"
     ],
     [
       "shay_backend/app/routes/messages/threads_manage.py",
@@ -3447,103 +3872,123 @@
       "update_thread"
     ],
     [
-      "shay_backend/app/routes/messages/threads_move.py",
-      30,
-      "move_thread"
+      "shay_backend/app/routes/messages/threads_move_cascade.py",
+      23,
+      "apply_thread_move_cascade"
     ],
     [
-      "shay_backend/app/routes/messages/threads_move.py",
+      "shay_backend/app/routes/messages/threads_move_cascade.py",
       96,
-      "<try>"
+      "apply_thread_move_cascade"
     ],
     [
-      "shay_backend/app/routes/messages/threads_move.py",
-      165,
-      "move_thread"
+      "shay_backend/app/routes/messages/threads_move_validation.py",
+      28,
+      "load_thread_for_move"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      36,
+      "shay_backend/app/routes/messages/threads_move_validation.py",
+      37,
+      "load_thread_for_move"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_move_validation.py",
+      40,
+      "load_and_validate_move_channels"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_move_validation.py",
+      64,
+      "load_and_validate_move_channels"
+    ],
+    [
+      "shay_backend/app/routes/messages/threads_move_validation.py",
+      67,
+      "check_move_permission"
+    ],
+    [
+      "shay_backend/app/routes/notifications/email_get.py",
+      22,
+      "get_email_notify_settings"
+    ],
+    [
+      "shay_backend/app/routes/notifications/email_get.py",
+      88,
+      "get_email_notify_settings"
+    ],
+    [
+      "shay_backend/app/routes/notifications/email_save.py",
+      26,
       "save_email_notify_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      88,
+      "shay_backend/app/routes/notifications/email_save.py",
+      78,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      135,
+      "shay_backend/app/routes/notifications/email_save.py",
+      125,
       "save_email_notify_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      159,
-      "update_email_notify_settings"
-    ],
-    [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      229,
-      "update_email_notify_settings"
-    ],
-    [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      253,
-      "get_email_notify_settings"
-    ],
-    [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      319,
-      "get_email_notify_settings"
-    ],
-    [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      343,
+      "shay_backend/app/routes/notifications/email_trigger.py",
+      20,
       "trigger_daily_summary_scheduler_test"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      356,
+      "shay_backend/app/routes/notifications/email_trigger.py",
+      33,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/notifications/email_settings.py",
-      362,
+      "shay_backend/app/routes/notifications/email_trigger.py",
+      39,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      31,
+      "shay_backend/app/routes/notifications/email_update.py",
+      25,
+      "update_email_notify_settings"
+    ],
+    [
+      "shay_backend/app/routes/notifications/email_update.py",
+      95,
+      "update_email_notify_settings"
+    ],
+    [
+      "shay_backend/app/routes/notifications/get_settings.py",
+      26,
       "get_realtime_notification_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      147,
+      "shay_backend/app/routes/notifications/get_settings.py",
+      136,
       "get_realtime_notification_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      164,
+      "shay_backend/app/routes/notifications/save_settings.py",
+      28,
       "save_realtime_notification_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      238,
+      "shay_backend/app/routes/notifications/save_settings.py",
+      98,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      277,
+      "shay_backend/app/routes/notifications/save_settings.py",
+      134,
       "save_realtime_notification_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      296,
+      "shay_backend/app/routes/notifications/update_settings.py",
+      33,
       "update_realtime_notification_settings"
     ],
     [
-      "shay_backend/app/routes/notifications/realtime.py",
-      394,
+      "shay_backend/app/routes/notifications/update_settings.py",
+      131,
       "update_realtime_notification_settings"
     ],
     [
@@ -3582,68 +4027,68 @@
       "odoo_connect_verify_url"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/helpers.py",
-      51,
+      "shay_backend/app/routes/payment_gateway/helpers_invoice.py",
+      23,
       "_fetch_invoice_details_for_company"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/helpers.py",
-      128,
+      "shay_backend/app/routes/payment_gateway/helpers_invoice.py",
+      100,
       "_fetch_invoice_details_for_company"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/helpers.py",
-      355,
+      "shay_backend/app/routes/payment_gateway/helpers_storage.py",
+      19,
       "_get_channel_storage_total"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/helpers.py",
-      378,
+      "shay_backend/app/routes/payment_gateway/helpers_storage.py",
+      42,
       "_get_channel_storage_total"
     ],
     [
       "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      42,
+      37,
       "create_zoho_hosted_page"
     ],
     [
       "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      51,
+      46,
       "<try>"
     ],
     [
       "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      100,
+      95,
       "<try>"
     ],
     [
       "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      163,
+      158,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      198,
+      "shay_backend/app/routes/payment_gateway/hosted_pages_fetch.py",
+      20,
       "fetch_by_hosted_id"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      211,
+      "shay_backend/app/routes/payment_gateway/hosted_pages_fetch.py",
+      33,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      251,
+      "shay_backend/app/routes/payment_gateway/hosted_pages_update.py",
+      23,
       "update_subscription_hosted_page"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      263,
+      "shay_backend/app/routes/payment_gateway/hosted_pages_update.py",
+      35,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/hosted_pages.py",
-      293,
+      "shay_backend/app/routes/payment_gateway/hosted_pages_update.py",
+      65,
       "<try>"
     ],
     [
@@ -3658,18 +4103,28 @@
     ],
     [
       "shay_backend/app/routes/payment_gateway/invoice_download.py",
-      26,
+      36,
       "download_invoice"
     ],
     [
       "shay_backend/app/routes/payment_gateway/invoice_download.py",
-      45,
+      55,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/invoice_download.py",
-      126,
+      "shay_backend/app/routes/payment_gateway/invoice_download_verify.py",
+      29,
+      "verify_invoice_ownership"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/invoice_download_verify.py",
+      35,
       "<try>"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/invoice_download_verify.py",
+      49,
+      "download_invoice_pdf_response"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_cancel.py",
@@ -3687,44 +4142,34 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/subscription_cancel.py",
-      154,
-      "reactivate_zoho_subscription"
-    ],
-    [
-      "shay_backend/app/routes/payment_gateway/subscription_cancel.py",
-      165,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/payment_gateway/subscription_cancel.py",
-      178,
-      "<try>"
-    ],
-    [
       "shay_backend/app/routes/payment_gateway/subscription_create.py",
-      41,
+      37,
       "create_zoho_subscription"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_create.py",
-      54,
+      50,
       "<try>"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_create.py",
-      91,
+      87,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/subscription_create.py",
-      109,
-      "<if>"
+      "shay_backend/app/routes/payment_gateway/subscription_create_persist.py",
+      23,
+      "persist_subscription_and_company"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/subscription_create.py",
-      219,
-      "<if>"
+      "shay_backend/app/routes/payment_gateway/subscription_create_resolve.py",
+      30,
+      "resolve_local_plan"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_create_resolve.py",
+      55,
+      "resolve_local_plan"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_details.py",
@@ -3863,33 +4308,78 @@
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_plan_update.py",
-      25,
+      31,
       "update_company_plan"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_plan_update.py",
-      43,
+      49,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/subscription_plan_update.py",
-      115,
+      "shay_backend/app/routes/payment_gateway/subscription_plan_update_persist.py",
+      24,
       "<if>"
     ],
     [
+      "shay_backend/app/routes/payment_gateway/subscription_plan_update_persist.py",
+      28,
+      "_resolve_billing_cycle"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_plan_update_persist.py",
+      31,
+      "replace_active_subscription"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_reactivate.py",
+      30,
+      "reactivate_zoho_subscription"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_reactivate.py",
+      41,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_reactivate.py",
+      54,
+      "<try>"
+    ],
+    [
       "shay_backend/app/routes/payment_gateway/subscription_validation.py",
-      44,
+      38,
       "subscription_validation"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_validation.py",
-      72,
+      66,
       "<try>"
     ],
     [
       "shay_backend/app/routes/payment_gateway/subscription_validation.py",
-      83,
+      77,
       "<if>"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_validation_marketplace.py",
+      26,
+      "validate_marketplace_limits"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_validation_marketplace.py",
+      66,
+      "validate_marketplace_limits"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_validation_plan.py",
+      31,
+      "validate_plan_limits"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/subscription_validation_plan.py",
+      110,
+      "validate_plan_limits"
     ],
     [
       "shay_backend/app/routes/payment_gateway/validate_payment.py",
@@ -3907,28 +4397,58 @@
       "<if>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/validate_payment.py",
-      84,
+      "shay_backend/app/routes/payment_gateway/validate_payment_persist.py",
+      30,
+      "_persist_subscription_and_activate"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_persist.py",
+      37,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/validate_payment.py",
-      117,
+      "shay_backend/app/routes/payment_gateway/validate_payment_resolve.py",
+      20,
+      "_resolve_subscription_data"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_resolve.py",
+      37,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/validate_payment.py",
-      174,
+      "shay_backend/app/routes/payment_gateway/validate_payment_resolve.py",
+      70,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_resolve.py",
+      98,
+      "_resolve_subscription_data"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_status.py",
+      19,
+      "_check_payment_status"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_status.py",
+      56,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/validate_payment.py",
-      194,
-      "<try>"
+      "shay_backend/app/routes/payment_gateway/validate_payment_status.py",
+      75,
+      "_check_payment_status"
     ],
     [
-      "shay_backend/app/routes/payment_gateway/validate_payment.py",
-      288,
+      "shay_backend/app/routes/payment_gateway/validate_payment_subscription_upsert.py",
+      25,
+      "_upsert_local_subscription"
+    ],
+    [
+      "shay_backend/app/routes/payment_gateway/validate_payment_subscription_upsert.py",
+      81,
       "<if>"
     ],
     [
@@ -4632,6 +5152,41 @@
       "delete_support_request"
     ],
     [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      23,
+      "load_task_and_check_access"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      56,
+      "load_task_and_check_access"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      59,
+      "validate_assignee"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      92,
+      "validate_assignee"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      119,
+      "apply_assignment"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      122,
+      "build_reassignment_links"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_assign_helpers.py",
+      137,
+      "build_reassignment_links"
+    ],
+    [
       "shay_backend/app/routes/tasks/_create_extras.py",
       18,
       "attach_optional_message"
@@ -4673,73 +5228,73 @@
     ],
     [
       "shay_backend/app/routes/tasks/_details.py",
+      25,
+      "load_task_details"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details.py",
+      86,
+      "load_task_details"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      24,
+      "build_task_details"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      30,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      51,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      69,
+      "build_task_details"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      85,
+      "build_task_context"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      91,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      101,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      116,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      133,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_details_context.py",
+      149,
+      "build_task_context"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_history_metadata_changes.py",
       29,
-      "load_task_details"
+      "build_metadata_change_entries"
     ],
     [
-      "shay_backend/app/routes/tasks/_details.py",
-      90,
-      "load_task_details"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      153,
-      "build_task_details"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      159,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      180,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      198,
-      "build_task_details"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      214,
-      "build_task_context"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      221,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      231,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      246,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      263,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_details.py",
-      279,
-      "build_task_context"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_history.py",
-      26,
-      "build_task_history"
-    ],
-    [
-      "shay_backend/app/routes/tasks/_history.py",
-      199,
-      "build_task_history"
+      "shay_backend/app/routes/tasks/_history_metadata_changes.py",
+      105,
+      "build_metadata_change_entries"
     ],
     [
       "shay_backend/app/routes/tasks/_list_tasks_fetch.py",
@@ -4807,6 +5362,86 @@
       "<try>"
     ],
     [
+      "shay_backend/app/routes/tasks/_notifications_dispatch_assign.py",
+      23,
+      "process_task_assignment_notifications"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_dispatch_assign.py",
+      45,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_dispatch_reassign.py",
+      23,
+      "process_task_reassignment_notifications"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_dispatch_reassign.py",
+      43,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_email_assign.py",
+      19,
+      "send_task_assignment_notification_email"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_email_assign.py",
+      45,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_email_reassign.py",
+      19,
+      "send_task_reassignment_notification_email"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_email_reassign.py",
+      43,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_membership.py",
+      20,
+      "get_channel_members_with_task_notifications_enabled"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_notifications_membership.py",
+      98,
+      "get_channel_members_with_task_notifications_enabled"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_status_update_message.py",
+      22,
+      "create_status_message_and_link_attachments"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_status_update_message.py",
+      67,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_thread_tasks_shared.py",
+      21,
+      "load_thread_and_check_access"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_thread_tasks_shared.py",
+      38,
+      "load_thread_and_check_access"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_thread_tasks_shared.py",
+      41,
+      "get_thread_message_ids"
+    ],
+    [
+      "shay_backend/app/routes/tasks/_thread_tasks_shared.py",
+      45,
+      "get_thread_message_ids"
+    ],
+    [
       "shay_backend/app/routes/tasks/_update_extras.py",
       15,
       "attach_optional_update_message"
@@ -4840,36 +5475,6 @@
       "shay_backend/app/routes/tasks/_update_helpers.py",
       132,
       "apply_task_updates"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      34,
-      "assign_task"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      186,
-      "assign_task"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      190,
-      "update_task_status"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      241,
-      "<assign>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      309,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/assignment.py",
-      360,
-      "update_task_status"
     ],
     [
       "shay_backend/app/routes/tasks/count.py",
@@ -4917,56 +5522,6 @@
       "get_task"
     ],
     [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      32,
-      "get_channel_members_with_task_notifications_enabled"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      110,
-      "get_channel_members_with_task_notifications_enabled"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      113,
-      "process_task_reassignment_notifications"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      133,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      190,
-      "process_task_assignment_notifications"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_dispatch.py",
-      212,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_email.py",
-      16,
-      "send_task_assignment_notification_email"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_email.py",
-      42,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_email.py",
-      95,
-      "send_task_reassignment_notification_email"
-    ],
-    [
-      "shay_backend/app/routes/tasks/notifications_email.py",
-      119,
-      "<try>"
-    ],
-    [
       "shay_backend/app/routes/tasks/stats.py",
       26,
       "get_task_stats"
@@ -4977,29 +5532,44 @@
       "get_task_stats"
     ],
     [
-      "shay_backend/app/routes/tasks/thread_tasks.py",
-      29,
+      "shay_backend/app/routes/tasks/status_update.py",
+      32,
+      "update_task_status"
+    ],
+    [
+      "shay_backend/app/routes/tasks/status_update.py",
+      83,
+      "<assign>"
+    ],
+    [
+      "shay_backend/app/routes/tasks/status_update.py",
+      144,
+      "update_task_status"
+    ],
+    [
+      "shay_backend/app/routes/tasks/thread_create.py",
+      33,
+      "create_thread_task"
+    ],
+    [
+      "shay_backend/app/routes/tasks/thread_create.py",
+      103,
+      "create_thread_task"
+    ],
+    [
+      "shay_backend/app/routes/tasks/thread_detail.py",
+      28,
       "get_thread_task"
     ],
     [
-      "shay_backend/app/routes/tasks/thread_tasks.py",
-      85,
+      "shay_backend/app/routes/tasks/thread_detail.py",
+      62,
       "get_thread_task"
     ],
     [
-      "shay_backend/app/routes/tasks/thread_tasks.py",
-      89,
+      "shay_backend/app/routes/tasks/thread_status.py",
+      27,
       "get_thread_task_status"
-    ],
-    [
-      "shay_backend/app/routes/tasks/thread_tasks.py",
-      159,
-      "create_thread_task"
-    ],
-    [
-      "shay_backend/app/routes/tasks/thread_tasks.py",
-      251,
-      "create_thread_task"
     ],
     [
       "shay_backend/app/routes/tasks/update.py",
@@ -5102,114 +5672,114 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/threads/app_connections.py",
-      94,
+      "shay_backend/app/routes/threads/app_connections/connect.py",
+      25,
       "connect_thread_app"
     ],
     [
-      "shay_backend/app/routes/threads/app_connections.py",
-      154,
+      "shay_backend/app/routes/threads/app_connections/connect.py",
+      85,
       "connect_thread_app"
     ],
     [
-      "shay_backend/app/routes/threads/app_connections.py",
-      158,
-      "update_thread_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/threads/app_connections.py",
-      192,
-      "update_thread_app_connection"
-    ],
-    [
-      "shay_backend/app/routes/threads/app_connections.py",
-      196,
+      "shay_backend/app/routes/threads/app_connections/disconnect.py",
+      23,
       "disconnect_thread_app"
     ],
     [
-      "shay_backend/app/routes/threads/app_connections.py",
-      224,
+      "shay_backend/app/routes/threads/app_connections/disconnect.py",
+      51,
       "disconnect_thread_app"
     ],
     [
-      "shay_backend/app/routes/threads/crud.py",
-      40,
+      "shay_backend/app/routes/threads/app_connections/update.py",
+      27,
+      "update_thread_app_connection"
+    ],
+    [
+      "shay_backend/app/routes/threads/app_connections/update.py",
+      61,
+      "update_thread_app_connection"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/create.py",
+      27,
       "create_thread"
     ],
     [
-      "shay_backend/app/routes/threads/crud.py",
-      70,
+      "shay_backend/app/routes/threads/crud/create.py",
+      57,
       "create_thread"
     ],
     [
-      "shay_backend/app/routes/threads/crud.py",
-      87,
-      "list_threads"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      150,
-      "list_threads"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      154,
-      "get_thread"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      176,
-      "get_thread"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      194,
-      "update_thread"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      220,
-      "update_thread"
-    ],
-    [
-      "shay_backend/app/routes/threads/crud.py",
-      237,
+      "shay_backend/app/routes/threads/crud/delete.py",
+      21,
       "delete_thread"
     ],
     [
-      "shay_backend/app/routes/threads/crud.py",
-      264,
+      "shay_backend/app/routes/threads/crud/delete.py",
+      48,
       "delete_thread"
     ],
     [
-      "shay_backend/app/routes/threads/members.py",
-      41,
+      "shay_backend/app/routes/threads/crud/get.py",
+      24,
+      "get_thread"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/get.py",
+      46,
+      "get_thread"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/list.py",
+      26,
+      "list_threads"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/list.py",
+      77,
+      "list_threads"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/update.py",
+      26,
+      "update_thread"
+    ],
+    [
+      "shay_backend/app/routes/threads/crud/update.py",
+      52,
+      "update_thread"
+    ],
+    [
+      "shay_backend/app/routes/threads/members/list.py",
+      25,
       "list_thread_members"
     ],
     [
-      "shay_backend/app/routes/threads/members.py",
-      71,
+      "shay_backend/app/routes/threads/members/list.py",
+      55,
       "list_thread_members"
     ],
     [
-      "shay_backend/app/routes/threads/members.py",
-      124,
-      "update_thread_member"
-    ],
-    [
-      "shay_backend/app/routes/threads/members.py",
-      155,
-      "update_thread_member"
-    ],
-    [
-      "shay_backend/app/routes/threads/members.py",
-      159,
+      "shay_backend/app/routes/threads/members/remove.py",
+      23,
       "remove_thread_member"
     ],
     [
-      "shay_backend/app/routes/threads/members.py",
-      186,
+      "shay_backend/app/routes/threads/members/remove.py",
+      50,
       "remove_thread_member"
+    ],
+    [
+      "shay_backend/app/routes/threads/members/update.py",
+      26,
+      "update_thread_member"
+    ],
+    [
+      "shay_backend/app/routes/threads/members/update.py",
+      57,
+      "update_thread_member"
     ],
     [
       "shay_backend/app/routes/token_details/delete.py",
@@ -5233,37 +5803,52 @@
     ],
     [
       "shay_backend/app/routes/token_details/update.py",
-      35,
+      46,
       "update_token_details"
     ],
     [
       "shay_backend/app/routes/token_details/update.py",
-      51,
+      62,
       "<try>"
     ],
     [
       "shay_backend/app/routes/token_details/validation.py",
-      34,
+      36,
       "llm_validation"
     ],
     [
       "shay_backend/app/routes/token_details/validation.py",
-      96,
+      90,
       "<if>"
     ],
     [
-      "shay_backend/app/routes/token_details/validation.py",
-      107,
+      "shay_backend/app/routes/token_details/validation_azure.py",
+      19,
+      "_validate_azure_openai"
+    ],
+    [
+      "shay_backend/app/routes/token_details/validation_azure.py",
+      33,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/token_details/validation.py",
-      211,
+      "shay_backend/app/routes/token_details/validation_chatgpt.py",
+      19,
+      "_validate_chatgpt"
+    ],
+    [
+      "shay_backend/app/routes/token_details/validation_chatgpt.py",
+      35,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/token_details/validation.py",
-      263,
+      "shay_backend/app/routes/token_details/validation_gemini.py",
+      19,
+      "_validate_gemini_token"
+    ],
+    [
+      "shay_backend/app/routes/token_details/validation_gemini.py",
+      33,
       "<try>"
     ],
     [
@@ -5317,6 +5902,36 @@
       "_build_templated_reset_email_message"
     ],
     [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      32,
+      "_resolve_invited_by_name"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      46,
+      "_resolve_invited_by_name"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      79,
+      "_build_registration_links"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      96,
+      "_build_registration_links"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      99,
+      "_send_invitation_email"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/_invitation_helpers.py",
+      135,
+      "_send_invitation_email"
+    ],
+    [
       "shay_backend/app/routes/user_auth/_login_helpers.py",
       19,
       "_ensure_login_allowed"
@@ -5362,6 +5977,46 @@
       "<try>"
     ],
     [
+      "shay_backend/app/routes/user_auth/bulk_invite.py",
+      29,
+      "bulk_invite_users"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/bulk_invite.py",
+      37,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/bulk_invite.py",
+      52,
+      "<try>"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/bulk_invite.py",
+      112,
+      "bulk_invite_users"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/confirm_set_password.py",
+      24,
+      "confirm_set_password"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/confirm_set_password.py",
+      95,
+      "confirm_set_password"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/decrypt_registration.py",
+      18,
+      "decrypt_registration_invite"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/decrypt_registration.py",
+      41,
+      "decrypt_registration_invite"
+    ],
+    [
       "shay_backend/app/routes/user_auth/forgot_password.py",
       30,
       "forgot_password"
@@ -5377,64 +6032,24 @@
       "forgot_password"
     ],
     [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      40,
+      "shay_backend/app/routes/user_auth/invite.py",
+      35,
       "invite_user"
     ],
     [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      48,
+      "shay_backend/app/routes/user_auth/invite.py",
+      43,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      58,
+      "shay_backend/app/routes/user_auth/invite.py",
+      53,
       "<try>"
     ],
     [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      166,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      185,
+      "shay_backend/app/routes/user_auth/invite.py",
+      118,
       "invite_user"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      195,
-      "decrypt_registration_invite"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      218,
-      "decrypt_registration_invite"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      227,
-      "bulk_invite_users"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      235,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      262,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      336,
-      "<if>"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/invitations.py",
-      370,
-      "bulk_invite_users"
     ],
     [
       "shay_backend/app/routes/user_auth/login.py",
@@ -5447,36 +6062,6 @@
       "login_user"
     ],
     [
-      "shay_backend/app/routes/user_auth/profile.py",
-      107,
-      "upload_profile_image"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/profile.py",
-      147,
-      "upload_profile_image"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/profile.py",
-      154,
-      "remove_profile_photo"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/profile.py",
-      178,
-      "remove_profile_photo"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/profile.py",
-      182,
-      "update_current_user_personal_info"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/profile.py",
-      329,
-      "update_current_user_personal_info"
-    ],
-    [
       "shay_backend/app/routes/user_auth/register.py",
       37,
       "register_user"
@@ -5485,6 +6070,26 @@
       "shay_backend/app/routes/user_auth/register.py",
       95,
       "register_user"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/remove_photo.py",
+      25,
+      "remove_profile_photo"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/remove_photo.py",
+      49,
+      "remove_profile_photo"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/request_set_password.py",
+      24,
+      "request_set_password"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/request_set_password.py",
+      66,
+      "request_set_password"
     ],
     [
       "shay_backend/app/routes/user_auth/reset_password.py",
@@ -5497,26 +6102,6 @@
       "<try>"
     ],
     [
-      "shay_backend/app/routes/user_auth/sso_password.py",
-      31,
-      "request_set_password"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/sso_password.py",
-      73,
-      "request_set_password"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/sso_password.py",
-      79,
-      "confirm_set_password"
-    ],
-    [
-      "shay_backend/app/routes/user_auth/sso_password.py",
-      150,
-      "confirm_set_password"
-    ],
-    [
       "shay_backend/app/routes/user_auth/update_password.py",
       30,
       "update_current_user_password"
@@ -5525,6 +6110,26 @@
       "shay_backend/app/routes/user_auth/update_password.py",
       122,
       "update_current_user_password"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/update_profile.py",
+      26,
+      "update_current_user_personal_info"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/update_profile.py",
+      119,
+      "update_current_user_personal_info"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/upload_photo.py",
+      27,
+      "upload_profile_image"
+    ],
+    [
+      "shay_backend/app/routes/user_auth/upload_photo.py",
+      66,
+      "upload_profile_image"
     ],
     [
       "shay_backend/app/routes/users/bulk.py",
