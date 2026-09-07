@@ -2432,6 +2432,16 @@ SUMMARY_CATEGORY_NAMES = tuple(category for category, _fragments in _SUMMARY_CAT
 # genuine 20-50+ item catch-all.
 _SUMMARY_MANDATORY_CATEGORY = "Mandatory User Input"
 
+# Deferred for the same circular-import reason as the imports above:
+# `summary_display_formatting` imports this module BACK (to reach the
+# `_SUMMARY_CATEGORY_KEYS` / `_SUMMARY_FALLBACK_CATEGORY` /
+# `_SUMMARY_MANDATORY_CATEGORY` tables just above through the engine
+# MODULE object, so the original bare-global references — and any patch
+# of them — still resolve at call time). The name is only ever resolved
+# when a method runs, never at import time.
+from aryx.cpq import summary_display_formatting  # noqa: E402
+
+
 # Country -> standard sales-region abbreviation. Deliberately covers only
 # the unambiguous majority; countries not listed here fall through to the
 # normal "ask" behavior rather than guess. Two catalog-observed codes are
@@ -8293,42 +8303,15 @@ class CpqEngine:
 
     @staticmethod
     def _is_noise_var(variable_name: str) -> bool:
-        """True for underscore-prefixed or integration/system-prefixed vars.
-
-        Structural, not name-list-based (§3e): an underscore prefix, or a
-        leading `_`-delimited segment that is fully uppercase (e.g.
-        `CRM_BILL_COUNTRY`) — the same shape live data showed for
-        integration fields, derived from casing convention rather than a
-        hardcoded prefix list.
-        """
-        if variable_name.startswith("_"):
-            return True
-        head = variable_name.split("_", 1)[0]
-        return len(head) >= 2 and head.isalpha() and head.isupper()
+        return summary_display_formatting._is_noise_var(variable_name)
 
     @staticmethod
     def _attr_hidden_from_submission(attr: "ConfigAttr") -> bool:
-        """True for hide_in_trans=1 attrs — excluded from every real BOM
-        submission (the API rejects these with "cannot be modified" when
-        included; see ConfigAttr.hide_in_trans). Single source of truth
-        for this exclusion — `build_payload`'s own per-key loop and any
-        other caller needing the same answer (e.g. the pre-quote QA
-        "list the attributes" answer, `_build_catalog_attribute_listing_
-        text` in ask_api.py) both call this instead of re-deriving it,
-        so the two can never drift apart.
-        """
-        return attr.hide_in_trans
+        return summary_display_formatting._attr_hidden_from_submission(attr)
 
     @staticmethod
     def _attr_is_transient_set_type(attr: "ConfigAttr") -> bool:
-        """True for a genuinely transient set_type=="2" UI/action-layer
-        attr — excluded from every real BOM submission UNLESS auto_lock=1
-        (build_payload's own documented exception; see ConfigAttr.set_type
-        / ConfigAttr.auto_lock). Single source of truth for this
-        exclusion, shared the same way as `_attr_hidden_from_submission`
-        above.
-        """
-        return attr.set_type == "2" and not attr.auto_lock
+        return summary_display_formatting._attr_is_transient_set_type(attr)
 
     # Displayed values that carry no information on their own — a line like
     # "Opt-Out? → false" or "Ruggedized Housing → Yes" restates a toggle, it
@@ -8365,88 +8348,9 @@ class CpqEngine:
         attr: "ConfigAttr | None", source: str | None = None,
         is_mandatory: bool = False,
     ) -> bool:
-        """True when a filled attr should not get a summary line.
-
-        Boolean-shaped values (yes/no/true/false, or select_type=="boolean")
-        are excluded even when user-chosen — the ask was to only surface
-        substantive selections. Secondary-* attrs (inactive duplicates like
-        the secondary SIM) and warranty attrs are excluded by name; warranty
-        must also match the VALUE ("Service Type → 1 Year Standard
-        Warranty" carries the word only there). Product/product-line attrs
-        are excluded too — the summary header already names the product, so
-        those lines are redundant; they must match the VARIABLE NAME as
-        well (`productLineName`, `bm_prd_level_product_line`, ...) because
-        several carry labels without the word. Duration-shaped values
-        ("1 Year", "3 Years") are excluded as well — subscription terms,
-        not configuration choices.
-
-        `is_mandatory` — optional (default `False`, preserving today's
-        behavior byte-for-byte). 2026-08-19 fix (docs/CPQ_Beautify_
-        Mandatory_Section_Miscategorization_2026_08_19.md): the boolean-
-        value/select_type exclusion above was unconditionally dropping
-        genuine Mandatory User Input fields with a literal Yes/No answer
-        (e.g. isProvisioningRequiredInCloudEnv_astro) from BOTH the
-        summary and beautify's full-detail dump, since this check has no
-        caller-type gate the way the later `rule_governed_ids`-scoped
-        narrowing does. When the caller has independently confirmed this
-        attribute IS Mandatory User Input (`_is_mandatory_input_attr`),
-        skip the boolean check — a genuine Yes/No decision is exactly the
-        kind of "substantive selection" this exclusion exists to keep,
-        not drop. Non-mandatory boolean-valued attrs are unaffected.
-        """
-        if not is_mandatory:
-            if value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
-                return True
-            if attr is not None and attr.select_type == "boolean":
-                return True
-        if self._YEAR_VALUE_RE.search(value):
-            return True
-        # Issue 5 items 1/2 (docs/config_consistency_issues_2026-07-30.md):
-        # build_payload() already excludes hide_in_trans==1 attrs (the
-        # source system's own "don't submit this at transaction time"
-        # marker) and set_type=="2" (transient UI/action-layer, non-auto-
-        # lock) attrs from the submitted BOM — but the conversational
-        # summary never applied the same two checks, so a sales rep could
-        # see a line in "Associated Options" for a field that will never
-        # actually appear in what gets submitted. Same checks, same attr
-        # object already available here — mirrors build_payload exactly,
-        # no separate exclusion set needed for these two.
-        if attr is not None and attr.hide_in_trans:
-            return True
-        if attr is not None and attr.set_type == "2" and not attr.auto_lock:
-            return True
-        if attr is not None and attr.hidden and source != "user":
-            # hidden=1 in the raw XML means BigMachines' own UI renders this
-            # inline as part of a grid widget rather than as its own summary
-            # line (confirmed live: 248 hidden attrs in workspace 14, almost
-            # all genuine internal/system fields — _config_operation_context,
-            # customerUIN, subscriptionStatus_all — never customer-answered).
-            # But a grid-quantity companion (e.g.
-            # mountingTypeLockingMolleMountQuantity_viSoln) IS hidden=1 yet
-            # still gets asked and answered directly in this chat interface,
-            # which has no grid rendering to fall back on — excluding it
-            # silently dropped the one number the customer actually gave
-            # (confirmed live: "15" survived in `filled`/the real payload,
-            # just never shown back to them). Only user-sourced answers get
-            # this carve-out; rule/default-filled hidden attrs stay excluded.
-            return True
-        label_l = display_label.lower()
-        if "secondary" in label_l:
-            return True
-        if "warranty" in label_l or "warranty" in value.lower():
-            return True
-        if variable_name == "productSelectionProduct_all":
-            # Exempted from the "product" exclusion below: that rule
-            # assumes "the summary header already names the product," but
-            # the header shows the internal BOM codename (e.g. "aSTRO25_
-            # bom"), never the real, customer-facing product name — this
-            # IS that real name (confirmed live: "APX NEXT Enhanced" was
-            # silently missing from every summary despite being correctly
-            # filled). Every other product/product-line attr this
-            # exclusion targets (productLineName, bm_prd_level_product_
-            # line, ...) stays excluded.
-            return False
-        return "product" in label_l or "product" in variable_name.lower()
+        return summary_display_formatting._is_summary_excluded(
+            self, variable_name, display_label, value, attr, source=source,
+            is_mandatory=is_mandatory)
 
     def _filled_summary_triples(
         self,
@@ -8457,80 +8361,9 @@ class CpqEngine:
         display_order: dict[str, int] | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, str, str]]:
-        """Filtered (variable_name, display_label, value) triples worth
-        summarising — same filtering as filled_summary_pairs, but keeps
-        variable_name so callers (render_filled_summary's category
-        grouping) can pattern-match on it. See filled_summary_pairs for the
-        filtering rules this applies.
-
-        display_order — optional {variable_name: rank} from
-        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
-        PLAN.md §2). When supplied, restricts to exactly the attrs present
-        in the map and sorts by rank instead of `display_filled`'s
-        fill-order — the same catalog layout the real native UI shows,
-        instead of an incidental artifact of resolution order. `None`
-        (the default) keeps today's behavior unchanged.
-
-        required_vns — optional (default `None`); `mandatory_tier_c_vns`'s
-        result, forwarded into `_is_mandatory_input_attr` for the
-        `rule_governed_ids is not None` (summary-only) branch below and
-        into `_is_summary_excluded`'s `is_mandatory` gate. 2026-08-19
-        (docs/CPQ_Beautify_Mandatory_Section_Miscategorization_2026_08_19.
-        md): the summary's item list now equals EXACTLY the Mandatory
-        User Input set (`_is_mandatory_input_attr`, Tier A/B/C) instead of
-        its own separately-maintained "rule-governed and actively-sourced"
-        narrowing — one shared signal with beautify, so the two can never
-        silently drift apart on what counts as Mandatory. `rule_governed_
-        ids is None` (beautify's own call shape) is completely unaffected
-        by this — that branch never runs.
-        """
-        if not display_filled:
-            return []
-        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
-        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
-        # Disambiguate a display_label 2+ distinct attrs share (real
-        # BigMachines source-data reuse, docs/CPQ_SESSION_2_OPEN_ISSUES.md
-        # item 2) by appending variable_name — otherwise two unrelated rows
-        # render as identical, unreadable duplicate lines in the summary.
-        _label_counts: dict[str, int] = {}
-        for _lbl in label_map.values():
-            _label_counts[_lbl] = _label_counts.get(_lbl, 0) + 1
-        for vn, lbl in list(label_map.items()):
-            if _label_counts.get(lbl, 0) >= 2:
-                label_map[vn] = f"{lbl} ({vn})"
-        items = [
-            (var, label) for var, label in display_filled.items()
-            if not self._is_html_value(label)
-            and not self._is_noise_var(var)
-            and not self._is_summary_excluded(
-                var, label_map.get(var, var), label, by_vn.get(var),
-                source=(sources or {}).get(var),
-                is_mandatory=self._is_mandatory_input_attr(
-                    var, by_vn.get(var), (sources or {}).get(var),
-                    required_vns=required_vns,
-                ),
-            )
-            # "(none)" is the engine's own literal placeholder for an
-            # unfilled multi/array-typed field (e.g. Promotion, Solution
-            # Set) — confirmed live: it survives every other filter since
-            # it's a real, deliberately-set display value, not noise by any
-            # existing rule. Worth summarising nothing, so drop it here.
-            and label.strip() != "(none)"
-        ]
-        if rule_governed_ids is not None:
-            items = [
-                (var, label) for var, label in items
-                if self._is_mandatory_input_attr(
-                    var, by_vn.get(var), (sources or {}).get(var),
-                    required_vns=required_vns,
-                )
-            ]
-        if display_order is not None:
-            items = sorted(
-                (item for item in items if item[0] in display_order),
-                key=lambda item: display_order[item[0]],
-            )
-        return [(var, label_map.get(var, var), label) for var, label in items]
+        return summary_display_formatting._filled_summary_triples(
+            self, display_filled, attrs, rule_governed_ids, sources, display_order,
+            required_vns=required_vns)
 
     def filled_summary_pairs(
         self,
@@ -8541,43 +8374,13 @@ class CpqEngine:
         display_order: dict[str, int] | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, str]]:
-        """Filtered (display_label, value) pairs worth summarising.
-
-        Uses display_label (human name) as the key when attrs are supplied,
-        falling back to variable_name only when the attr is not found.
-        Skips HTML template values (layout/display fields), system/
-        integration noise (`_is_noise_var`, §3e), and low-signal lines
-        (`_is_summary_excluded`: boolean values, secondary attrs, warranty
-        attrs, product/product-line attrs, year-duration values).
-
-        rule_governed_ids — when supplied (i.e. not `None`), the summary's
-        item list is narrowed to exactly `_is_mandatory_input_attr`'s
-        Mandatory User Input set (Tier A/B/C, see `_filled_summary_
-        triples`) — the rest are silently omitted.
-
-        required_vns — forwarded to `_filled_summary_triples`; see its own
-        docstring (Tier C, `mandatory_tier_c_vns`'s result).
-        """
-        return [
-            (label, value)
-            for _var, label, value in self._filled_summary_triples(
-                display_filled, attrs, rule_governed_ids, sources, display_order,
-                required_vns=required_vns,
-            )
-        ]
+        return summary_display_formatting.filled_summary_pairs(
+            self, display_filled, attrs, rule_governed_ids, sources, display_order,
+            required_vns=required_vns)
 
     @staticmethod
     def _summary_category(variable_name: str) -> str:
-        """Classify a filled attr into one of the 5 scannable summary
-        sections, purely by variable_name fragment — never a literal
-        per-catalog field name, so it applies to any ingested XML the same
-        way. See _SUMMARY_CATEGORY_KEYS docstring for the matching order.
-        """
-        vn_flat = (variable_name or "").lower().replace("_", "")
-        for category, fragments in _SUMMARY_CATEGORY_KEYS:
-            if any(frag in vn_flat for frag in fragments):
-                return category
-        return _SUMMARY_FALLBACK_CATEGORY
+        return summary_display_formatting._summary_category(variable_name)
 
     _BEAUTIFY_MANDATORY_SECTION = "Mandatory User Input"
     _BEAUTIFY_SYSTEM_SECTION = "System-Configured / Recommended"
@@ -8590,52 +8393,9 @@ class CpqEngine:
         filled_source: dict[str, str] | None,
         required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, str, str]]:
-        """Shared (section, label, value) rows for beautify_text/beautify_rows.
-
-        When `filled_source` is supplied, splits the output into two
-        sections using the SAME `_is_mandatory_input_attr` signal
-        `build_payload`'s `scope_required_and_edited` uses to scope
-        `config_data` — one scoping key, three consumers (docs/CPQ_
-        GOVERNED_BLINDPICK_AND_CONFIGDATA_BEAUTIFY_FIX_PLAN_2026_08_14.md,
-        extended 2026-08-19 with Tier C — docs/CPQ_Beautify_Mandatory_
-        Section_Miscategorization_2026_08_19.md). This matches native
-        Oracle CPQ's own "Mandatory User Input" box vs. everything else,
-        instead of one flat, undifferentiated list.
-
-        `filled_source=None` (the default, for existing callers that don't
-        pass it) preserves the original single-section behavior exactly —
-        every row lands in the Mandatory section so the flat "Product +
-        every substantive field" list callers already depend on is
-        byte-for-byte unchanged; only callers that opt in by passing
-        `filled_source` get the two-section split.
-
-        `required_vns` — optional (default `None`); `mandatory_tier_c_vns`'s
-        result, forwarded into `_is_mandatory_input_attr` (Tier C) for the
-        split above. Also passed to `_filled_summary_triples` so the
-        underlying row set's `_is_summary_excluded` boolean-value gate
-        (via `is_mandatory`) sees the same Mandatory classification.
-        """
-        triples = self._filled_summary_triples(
-            display_filled, attrs, sources=filled_source, required_vns=required_vns,
-        )
-        attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
-        rows: list[tuple[str, str, str]] = [
-            (self._BEAUTIFY_MANDATORY_SECTION, "Product", product_name),
-        ]
-        for var, label, value in triples:
-            if filled_source is None:
-                section = self._BEAUTIFY_MANDATORY_SECTION
-            else:
-                attr = attr_by_vn.get(var)
-                section = (
-                    self._BEAUTIFY_MANDATORY_SECTION
-                    if self._is_mandatory_input_attr(
-                        var, attr, filled_source.get(var), required_vns=required_vns,
-                    )
-                    else self._BEAUTIFY_SYSTEM_SECTION
-                )
-            rows.append((section, label, value))
-        return rows
+        return summary_display_formatting._beautify_sectioned_rows(
+            self, product_name, display_filled, attrs, filled_source,
+            required_vns=required_vns)
 
     def beautify_text(
         self,
@@ -8645,43 +8405,9 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> str:
-        """Human-readable ``Label : Value`` block for the Beautify button.
-
-        Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
-        Beautify shows the same substantive fields as the conversational
-        summary — as aligned key:value lines instead of prose, no LLM call.
-        Used as-is by clients that display plain text (e.g. Streamlit's
-        st.code). Clients that render a real table use
-        beautify_rows()'s structured pairs instead of parsing this string.
-
-        filled_source — optional (default None, preserving the original
-        flat single-list output exactly). When supplied, renders TWO
-        headed sections — "Mandatory User Input" then "System-Configured
-        / Recommended" — using `_is_mandatory_input_attr`'s Tier A/B/C
-        signal, matching native Oracle CPQ's own visual grouping instead
-        of one undifferentiated list.
-
-        required_vns — optional (default `None`); forwarded to
-        `_beautify_sectioned_rows` for Tier C (see its own docstring and
-        `mandatory_tier_c_vns`).
-        """
-        rows = self._beautify_sectioned_rows(
-            product_name, display_filled, attrs, filled_source, required_vns=required_vns,
-        )
-        if filled_source is None:
-            pairs = [(label, value) for _section, label, value in rows]
-            width = max(len(label) for label, _ in pairs)
-            return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
-        width = max(len(label) for _section, label, _value in rows)
-        lines: list[str] = []
-        for section in (self._BEAUTIFY_MANDATORY_SECTION, self._BEAUTIFY_SYSTEM_SECTION):
-            section_rows = [(label, value) for sec, label, value in rows if sec == section]
-            if not section_rows:
-                continue
-            lines.append(f"**{section}:**")
-            lines.extend(f"{label.ljust(width)} : {value}" for label, value in section_rows)
-            lines.append("")
-        return "\n".join(lines).rstrip("\n")
+        return summary_display_formatting.beautify_text(
+            self, product_name, display_filled, attrs, filled_source,
+            required_vns=required_vns)
 
     def beautify_rows(
         self,
@@ -8691,34 +8417,9 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> list[dict[str, str]]:
-        """Structured [{label, value, section}, ...] pairs for clients that
-        render a real tabular UI (e.g. the Next.js Beautify panel) instead
-        of plain text — same data and filtering as beautify_text(), just
-        not flattened into a display string. No LLM call.
-
-        filled_source — optional (default None). When supplied, each row
-        carries a `"section"` key — "Mandatory User Input" or "System-
-        Configured / Recommended" — via `_is_mandatory_input_attr`'s Tier
-        A/B/C signal, the SAME one `build_payload`'s `scope_required_and_
-        edited` uses to scope `config_data` (Tier C excepted there — see
-        docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md), so
-        the views can never silently drift apart on what counts as
-        "genuinely required" within their own intended scope.
-        When `filled_source` is omitted, rows carry no `"section"` key at
-        all — output shape and row set are byte-for-byte identical to
-        before this parameter existed (same convention `beautify_text`
-        already uses for its own `filled_source is None` case).
-
-        required_vns — optional (default `None`); forwarded to
-        `_beautify_sectioned_rows` for Tier C (see its own docstring and
-        `mandatory_tier_c_vns`).
-        """
-        rows = self._beautify_sectioned_rows(
-            product_name, display_filled, attrs, filled_source, required_vns=required_vns,
-        )
-        if filled_source is None:
-            return [{"label": label, "value": value} for _section, label, value in rows]
-        return [{"section": section, "label": label, "value": value} for section, label, value in rows]
+        return summary_display_formatting.beautify_rows(
+            self, product_name, display_filled, attrs, filled_source,
+            required_vns=required_vns)
 
     def render_filled_summary(
         self,
@@ -8729,69 +8430,9 @@ class CpqEngine:
         product_quantity: int | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> str:
-        """Deterministic, categorized summary of what has been auto-filled.
-
-        Groups `filled_summary_pairs()` (which owns ALL the filtering) under
-        scannable headed sections — Product Name, Service Plan, Quantity &
-        Duration, plus either Mandatory User Input (narrowed scope,
-        rule_governed_ids supplied) or Associated Options (full-detail-dump
-        scope, rule_governed_ids=None) — instead of one flat bullet list,
-        classified purely by variable_name fragment (`_summary_category`,
-        generic across any ingested catalog, never a per-catalog literal).
-        Used directly as the fallback whenever the LLM-narrated paragraph
-        (ask_api `_cpq_summary_text`) is unavailable or fails.
-
-        Live-confirmed gap (2026-08-19): in the narrowed scope, every item
-        `categorized_summary_groups` buckets outside the first 3 categories
-        is now, by construction, part of `_is_mandatory_input_attr`'s Tier
-        A/B/C set (PR #222) — the OLD catch-all's "one vague, intention-
-        ally-partial line" treatment (still used for the full-detail-dump
-        scope's genuine, potentially 20-50+ item Associated Options
-        catch-all) is wrong for that guaranteed-mandatory, always-small
-        set, so Mandatory User Input is rendered as full bullets instead,
-        just like every other real category.
-
-        product_quantity — forwarded to `categorized_summary_groups` so
-        this deterministic fallback shows the same Product Quantity fact,
-        in the same position, as the LLM-narrated path.
-
-        required_vns — optional (default `None`); forwarded to
-        `categorized_summary_groups`/`_filled_summary_triples` for Tier C
-        (see `mandatory_tier_c_vns`).
-        """
-        groups = self.categorized_summary_groups(
-            display_filled, attrs, rule_governed_ids, sources,
+        return summary_display_formatting.render_filled_summary(
+            self, display_filled, attrs, rule_governed_ids, sources,
             product_quantity=product_quantity, required_vns=required_vns)
-        if not groups:
-            return ""
-        heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
-        lines = [heading]
-        for category, group in groups:
-            lines.append(f"\n**{category}:**")
-            if category == _SUMMARY_FALLBACK_CATEGORY:
-                # Only the full-detail-dump scope (rule_governed_ids=None)
-                # can still reach this — the narrowed scope renames this
-                # bucket to Mandatory User Input (see
-                # `categorized_summary_groups`) before it ever gets here.
-                # This category is a catch-all for everything not
-                # classified into the other 3 (confirmed live: 20-50+
-                # items on a real quote) — a bullet per item is no longer
-                # scannable at that volume, unlike Product Name/Service
-                # Plan/Quantity & Duration which stay small. Render as one
-                # short, deterministic plain-text line instead — no LLM
-                # call, so this path never depends on the narrator being
-                # reachable (see this method's own docstring constraint).
-                lines.append("; ".join(f"{label}: {value}" for label, value in group) + ".")
-            else:
-                # Mandatory User Input (like every other category) always
-                # gets a full bullet per fact — live-confirmed gap,
-                # 2026-08-19: the old catch-all's "one vague, intention-
-                # ally-partial line" treatment silently narrated or
-                # dropped genuinely mandatory fields (Software Release,
-                # Ultimate Destination Country, ...) instead of listing
-                # them.
-                lines.extend(f"- **{label}** → {value}" for label, value in group)
-        return "\n".join(lines)
 
     def categorized_summary_groups(
         self,
@@ -8803,75 +8444,6 @@ class CpqEngine:
         product_quantity: int | None = None,
         required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
-        """(category, [(label, value), ...]) groups, non-empty categories
-        only, in the fixed display order (Product Name, Service Plan,
-        Quantity & Duration, then Mandatory User Input — narrowed scope,
-        rule_governed_ids supplied — or Associated Options — full-detail-
-        dump scope, rule_governed_ids=None — see _SUMMARY_CATEGORY_KEYS /
-        _SUMMARY_MANDATORY_CATEGORY). Same filtering and classification
-        `render_filled_summary` uses for its bullet output; exposed
-        separately so callers that build their own presentation (e.g.
-        ask_api's LLM-narrated summary) can group the same facts the same
-        way instead of inventing their own grouping.
-
-        In the narrowed scope, `_filled_summary_triples` already restricts
-        its whole item list to exactly `_is_mandatory_input_attr`'s Tier
-        A/B/C set (PR #222) — an item that doesn't match Product Name/
-        Service Plan/Quantity & Duration's fragments is renamed from the
-        old catch-all name to Mandatory User Input here (live-confirmed
-        gap, 2026-08-19: it used to keep the old "Associated Options" name
-        and get narrated as one vague, intentionally-partial line instead
-        of being reliably, fully listed). The full-detail-dump scope is
-        NOT narrowed to mandatory-only and keeps the original catch-all
-        name/semantics unchanged.
-
-        display_order — see `_filled_summary_triples`; restricts to and
-        orders WITHIN each of the fixed categories above by layout rank
-        when supplied. Does not replace the 4-category grouping itself.
-
-        product_quantity — the session-level order quantity (a virtual
-        fact, not a real catalog attribute, so it can never come out of
-        `_filled_summary_triples`). Injected here as the FIRST fact under
-        Product Name, labeled "Product Quantity" — previously appended as
-        a hardcoded suffix after every category regardless of catalog
-        shape, which always put it last (live-verified gap, 2026-08-13).
-        Only injected when there's an actual configuration to attach it
-        to (`triples` non-empty) — never synthesizes a Product Name
-        section out of nothing when no product has been selected yet.
-
-        required_vns — optional (default `None`); forwarded to
-        `_filled_summary_triples` for Tier C (see `mandatory_tier_c_vns`).
-        """
-        triples = self._filled_summary_triples(
-            display_filled, attrs, rule_governed_ids, sources, display_order,
-            required_vns=required_vns,
-        )
-        if not triples:
-            return []
-        by_category: dict[str, list[tuple[str, str]]] = {}
-        for var, label, value in triples:
-            category = self._summary_category(var)
-            # Narrowed scope (rule_governed_ids supplied): `triples` above
-            # is already exactly the Mandatory User Input set (Tier A/B/C,
-            # PR #222) -- an item landing in the old catch-all here is
-            # mandatory by construction, so it's renamed rather than
-            # re-classified. Full-detail-dump scope (rule_governed_ids=
-            # None) is NOT narrowed to mandatory-only and keeps the
-            # original catch-all name/semantics unchanged.
-            if category == _SUMMARY_FALLBACK_CATEGORY and rule_governed_ids is not None:
-                category = _SUMMARY_MANDATORY_CATEGORY
-            by_category.setdefault(category, []).append((label, value))
-        if product_quantity is not None:
-            by_category.setdefault("Product Name", [])
-            by_category["Product Name"] = [
-                ("Product Quantity", str(product_quantity)),
-                *by_category["Product Name"],
-            ]
-        section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [
-            _SUMMARY_MANDATORY_CATEGORY, _SUMMARY_FALLBACK_CATEGORY,
-        ]
-        return [
-            (category, by_category[category])
-            for category in section_order
-            if by_category.get(category)
-        ]
+        return summary_display_formatting.categorized_summary_groups(
+            self, display_filled, attrs, rule_governed_ids, sources, display_order,
+            product_quantity=product_quantity, required_vns=required_vns)
