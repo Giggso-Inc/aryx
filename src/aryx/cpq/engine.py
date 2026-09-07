@@ -2213,6 +2213,8 @@ _NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
 # SCRIPT_GOVERNED, _BLIND_FILL_RISK_ACCEPTED_VNS, _OPTIONAL_EMPTY_FILL_
 # ACCEPTED_VNS, _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS, logger) — this line
 # must sit after every one of those is already defined above.
+from aryx.cpq import auto_fill_hw_order
+from aryx.cpq import auto_fill_postpass
 from aryx.cpq import auto_fill_resolve
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
@@ -5922,36 +5924,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         sources: dict[str, str],
     ) -> None:
-        """Pointer-default resolution post-pass (Issue 11): an unfilled
-        pointer attr inherits its REFERENCED attribute's value once that
-        value exists — reproducing what the source platform's own runtime
-        rule does (BM's "Set Model Name to All Product Family attribute
-        modelname" copies _bm_model_variable_name into modelname_all).
-        If the referenced attr never fills (e.g. APX Next, where the
-        model context is ambiguous), the pointer attr stays unfilled —
-        the token itself is never shipped as data.
-
-        Mutates `filled`/`display_filled`/`sources` in place (mirrors the
-        original inline post-pass in `auto_fill`, extracted mechanically
-        as Phase 4 step 3's P2, see
-        docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md).
-        """
-        all_vns = {a.variable_name for a in attrs}
-
-        def _is_pointer_default(a: "ConfigAttr") -> bool:
-            return (not a.options
-                    and a.default_value in all_vns
-                    and a.default_value != a.variable_name)
-
-        for attr in attrs:
-            vn = attr.variable_name
-            if vn in filled or not _is_pointer_default(attr):
-                continue
-            ref_value = filled.get(attr.default_value)
-            if ref_value:
-                filled[vn] = ref_value
-                display_filled[vn] = display_filled.get(attr.default_value, ref_value)
-                sources.setdefault(vn, "cascade")
+        return auto_fill_postpass.resolve_pointer_defaults(attrs, filled, display_filled, sources)
 
     @staticmethod
     def _cascade_fill_pending(
@@ -5960,104 +5933,19 @@ class CpqEngine:
         display_filled: dict[str, str],
         sources: dict[str, str],
     ) -> list["ConfigAttr"]:
-        """Cascade fill: for any pending free-text attr that shares a decision
-        key fragment with an already-filled attr (e.g. packageRegion ← region
-        from modelSelectionRegion_astro), fill it directly from the filled
-        sibling. This handles attrs whose item_value is a None sentinel (e.g.
-        "NA" = North America but also "na" in _NONE_VALUES) by trusting the
-        value that was validated via options on the sibling attr.
-
-        Mutates `filled`/`display_filled`/`sources` in place and returns the
-        new `pending` list (mirrors the original inline post-pass in
-        `auto_fill`, extracted mechanically as Phase 4 step 3's P3, see
-        docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md).
-        """
-        still_pending: list["ConfigAttr"] = []
-        for attr in pending:
-            vn_flat_p = attr.variable_name.lower().replace("_", "")
-            if attr.options:
-                still_pending.append(attr)
-                continue
-            if attr.select_type == "boolean":
-                # A boolean's absent-default state is well-defined (default
-                # to "false" — see the governed-boolean fallback above) —
-                # never let it fall into the free-text cascade below, which
-                # blindly copies ANY same-fragment sibling's raw value with
-                # no type check. Confirmed live: a boolean attr named
-                # "isUltimateDestinationCountryCA_astro" matched the
-                # "country" decision-key fragment and got contaminated with
-                # "United States" (a raw string from CRM_BILL_COUNTRY) this
-                # way — nonsensical for a true/false field and exactly the
-                # payload-shape mismatch the real CPQ API previously rejected.
-                filled[attr.variable_name] = "false"
-                display_filled[attr.variable_name] = "No"
-                sources.setdefault(attr.variable_name, "default")
-                continue
-            matched_dk = next(
-                (dk for dk in _DECISION_REQUIRED_KEYS if dk in vn_flat_p), None
-            )
-            if not matched_dk:
-                still_pending.append(attr)
-                continue
-            # Find a filled sibling that shares this key fragment
-            cascaded = next(
-                (v for k, v in filled.items()
-                 if matched_dk in k.lower().replace("_", "") and v),
-                None,
-            )
-            if cascaded:
-                filled[attr.variable_name] = cascaded
-                display_filled[attr.variable_name] = cascaded
-                sources.setdefault(attr.variable_name, "cascade")
-            else:
-                still_pending.append(attr)
-        return still_pending
+        return auto_fill_postpass.cascade_fill_pending(pending, filled, display_filled, sources)
 
     @staticmethod
     def _is_hardware_version_attr(attr: "ConfigAttr") -> bool:
-        """True for Hardware Version attrs (hWVersion_*, Hardware Version label).
-
-        Hardware is mandatory on hardware-based product catalogs — used both
-        to force always-ask and to order pending ahead of Product.
-        """
-        vn_flat = (attr.variable_name or "").lower().replace("_", "")
-        label = (attr.display_label or "").lower()
-        if "hwversion" in vn_flat or "hardwareversion" in vn_flat:
-            return True
-        if "hardware" in label and "version" in label:
-            return True
-        return False
+        return auto_fill_hw_order.is_hardware_version_attr(attr)
 
     @staticmethod
     def _is_product_line_selector(attr: "ConfigAttr") -> bool:
-        """True for the shared multi-family Product dropdown (~325 options)."""
-        vn = attr.variable_name or ""
-        if vn in _PRODUCT_LINE_SELECTOR_EXACT:
-            return True
-        vn_flat = vn.lower().replace("_", "")
-        if "productselectionproduct" in vn_flat:
-            return True
-        label = (attr.display_label or "").strip().lower()
-        if label == "product" and len(attr.options) > _MAX_ENUMERATED_OPTIONS:
-            return True
-        return False
+        return auto_fill_hw_order.is_product_line_selector(attr)
 
     @staticmethod
     def _is_svx_mounting_array_quantity_attr(attr: "ConfigAttr") -> bool:
-        """True for the SVX video-solutions catalog's per-option quantity
-        attrs unlocked by a `mountingTypeArray_viSoln` selection (e.g.
-        `mountingTypeShirtMagneticMountQuantity_viSoln`).
-
-        Narrow, catalog-specific (not a general rule — see docs/
-        CPQ_SVX_MOUNTING_TYPE_ASK_ORDER_PLAN_2026_08_24.md): live-confirmed
-        these rank far behind the unrelated `mountType_viSoln` sibling
-        attr in this catalog's own native layout order (order_number 95+
-        vs. 6), so a customer who just picked a mount option gets asked
-        about a completely different "Mounting Type" field before the
-        quantity for their own just-made selection.
-        """
-        vn = attr.variable_name or ""
-        return vn.startswith("mountingType") and vn.endswith("Quantity_viSoln")
+        return auto_fill_hw_order.is_svx_mounting_array_quantity_attr(attr)
 
     def _order_pending_hardware_before_product(
         self,
@@ -6066,80 +5954,9 @@ class CpqEngine:
         attrs: list["ConfigAttr"],
         display_order: dict[str, int] | None = None,
     ) -> list["ConfigAttr"]:
-        """Defer Product until Hardware is filled; sort pending by dependency.
-
-        Live-confirmed (2026-07-28): after country was set, next prompt was
-        Product with 325 options because productSelectionProduct_all is
-        always-ask and catalog order listed it before Hardware. On
-        hardware-based catalogs Hardware is mandatory and constrains Product
-        — never ask the unconstrained product portfolio first.
-
-        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
-        when supplied, the real native UI's own sequence wins over the
-        catalog-agnostic heuristic below (confirmed live to already agree
-        with it on APX Next: Country → Hardware Version → Product). The
-        Hardware-before-Product deferral itself is a correctness
-        constraint (Product's options are genuinely unconstrained without
-        it), not just an ordering preference, so it still applies first;
-        display_order only changes the final sort key.
-        """
-        if not pending:
-            return pending
-        if display_order is not None:
-            # Deferral still applies (see docstring); ranking is layout
-            # position, with anything absent from the map (shouldn't
-            # happen once display_order-gated §2c is active, since
-            # pending would only ever hold decision attrs/grid selectors —
-            # both real layout members) sorted after everything ranked.
-            catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
-            if catalog_has_hw:
-                hw_vns = {
-                    a.variable_name for a in attrs if self._is_hardware_version_attr(a)
-                }
-                hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
-                if not hw_filled:
-                    pending = [a for a in pending if not self._is_product_line_selector(a)]
-            return sorted(
-                pending,
-                key=lambda a: display_order.get(a.variable_name, 10**9),
-            )
-
-        catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
-        if not catalog_has_hw:
-            # Non-hardware catalog (e.g. pure software): keep country first,
-            # then original relative order.
-            countryish = [
-                a for a in pending
-                if any(
-                    dk in a.variable_name.lower().replace("_", "")
-                    for dk in _DECISION_REQUIRED_KEYS
-                )
-            ]
-            rest = [a for a in pending if a not in countryish]
-            return countryish + rest
-
-        hw_vns = {
-            a.variable_name for a in attrs if self._is_hardware_version_attr(a)
-        }
-        hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
-
-        # Drop product-line selectors from pending until hardware is known.
-        if not hw_filled:
-            pending = [
-                a for a in pending if not self._is_product_line_selector(a)
-            ]
-
-        def _rank(a: "ConfigAttr") -> tuple[int, int]:
-            vn_flat = a.variable_name.lower().replace("_", "")
-            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
-                return (0, a.order)
-            if self._is_hardware_version_attr(a):
-                return (1, a.order)
-            if self._is_product_line_selector(a):
-                return (3, a.order)
-            return (2, a.order)
-
-        return sorted(pending, key=_rank)
+        return auto_fill_hw_order.order_pending_hardware_before_product(
+            self, pending, filled, attrs, display_order,
+        )
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────
 
