@@ -2166,6 +2166,14 @@ from aryx.cpq import governance_and_sibling_exclusivity as gov_sibling  # noqa: 
 # as the original bare-global references were.
 from aryx.cpq import payload_building  # noqa: E402
 
+# Deferred for the same circular-import reason as the imports above:
+# `rule_specificity_ranking` imports this module BACK (to reach
+# `CpqEngine._rule_condition_edges` through the engine MODULE object, so
+# the original class-attribute lookup — and any patch of it — still
+# applies at call time). The name is only ever resolved when a method
+# runs, never at import time.
+from aryx.cpq import rule_specificity_ranking  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -8252,109 +8260,14 @@ class CpqEngine:
         attrs: list["ConfigAttr"],
         rules: list[Any],
     ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[int, str]]:
-        """Shared, UNFILTERED rule-condition -> target edge extraction.
-
-        Returns (predecessors, successors, id_to_vn):
-          predecessors[target_vn] = set of condition_vn that gate it
-          successors[condition_vn] = set of target_vn it gates
-          id_to_vn = BM-native id -> variable_name (ConfigAttr.source_id
-            preferred, falls back to entity_id — same dual-id convention
-            _attr_index already uses)
-
-        Edges come from every rule with a real DECLARATIVE condition
-        (`conditions`, or a nonzero `condition_attr_id`) — one edge per
-        distinct attr_id referenced. Unlike a payload-key-ordering
-        consumer (_dependency_ordered_keys), this does NOT restrict edges
-        to any subset of attrs/keys: a rule's condition attribute may be
-        currently hidden or unfilled (and so absent from a given turn's
-        output) while still being a real, structural gate that rule-
-        specificity ranking (_attribute_depth_ranks) needs to see.
-        """
-        attr_by_vn = {a.variable_name: a for a in attrs}
-        id_to_vn: dict[int, str] = {}
-        for vn, a in attr_by_vn.items():
-            id_to_vn.setdefault(a.entity_id, vn)
-        for vn, a in attr_by_vn.items():
-            if a.source_id is not None:
-                id_to_vn[a.source_id] = vn
-
-        predecessors: dict[str, set[str]] = {}
-
-        def _add_edge(cond_id: int, target_id: int) -> None:
-            cond_vn = id_to_vn.get(cond_id)
-            target_vn = id_to_vn.get(target_id)
-            if cond_vn and target_vn and cond_vn != target_vn:
-                predecessors.setdefault(target_vn, set()).add(cond_vn)
-
-        for r in rules:
-            target_id = getattr(r, "target_attr_id", None)
-            if not target_id:
-                continue
-            conditions = getattr(r, "conditions", None)
-            if conditions:
-                for cond_id, *_rest in conditions:
-                    _add_edge(cond_id, target_id)
-            else:
-                cond_id = getattr(r, "condition_attr_id", 0)
-                if cond_id:
-                    _add_edge(cond_id, target_id)
-
-        successors: dict[str, set[str]] = {}
-        for target_vn, conds in predecessors.items():
-            for c in conds:
-                successors.setdefault(c, set()).add(target_vn)
-
-        return predecessors, successors, id_to_vn
+        return rule_specificity_ranking._rule_condition_edges(attrs, rules)
 
     @staticmethod
     def _attribute_depth_ranks(
         attrs: list["ConfigAttr"],
         rules: list[Any],
     ) -> dict[str, int]:
-        """Longest-path-from-root depth per variable_name in the rule
-        condition-gating graph (see _rule_condition_edges) — a generic,
-        catalog-agnostic stand-in for "how broad vs. specific is this
-        attribute" (docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_
-        2026_08_04.md): depth 0 = nothing gates this attribute (coarsest
-        anchor); each attribute's depth = 1 + the max depth of whatever
-        gates it (e.g. the confirmed Hardware Version -> Product
-        Selection constraint means Product Selection's depth is Hardware
-        Version's depth + 1).
-
-        Cycle-safe: a genuine cycle (or anything transitively downstream
-        of one) never reaches zero remaining in-degree during the
-        Kahn's-algorithm peel below. Those nodes get max(all resolved
-        depths) + 1 rather than depth 0 — an unverifiable/cyclic
-        dependency must never be treated as "most trusted," which depth
-        0 would imply.
-        """
-        predecessors, successors, _id_to_vn = CpqEngine._rule_condition_edges(attrs, rules)
-        all_vns = {a.variable_name for a in attrs}
-
-        remaining = {vn: len(predecessors.get(vn, ())) for vn in all_vns}
-        depth: dict[str, int] = {}
-        ready = [vn for vn, n in remaining.items() if n == 0]
-        for vn in ready:
-            depth[vn] = 0
-        visited: set[str] = set(ready)
-
-        while ready:
-            vn = ready.pop(0)
-            for succ in successors.get(vn, ()):
-                if succ not in all_vns:
-                    continue
-                depth[succ] = max(depth.get(succ, 0), depth[vn] + 1)
-                remaining[succ] -= 1
-                if remaining[succ] == 0 and succ not in visited:
-                    visited.add(succ)
-                    ready.append(succ)
-
-        resolved_depths = list(depth.values())
-        fallback_depth = (max(resolved_depths) + 1) if resolved_depths else 0
-        for vn in all_vns:
-            if vn not in depth:
-                depth[vn] = fallback_depth
-        return depth
+        return rule_specificity_ranking._attribute_depth_ranks(attrs, rules)
 
     def rank_rules_by_specificity(
         self,
@@ -8364,118 +8277,8 @@ class CpqEngine:
         con_rules: list["ConstraintRule"],
         display_order: dict[str, int] | None = None,
     ) -> tuple[list["HidingRule"], list["RecommendationRule"], list["ConstraintRule"]]:
-        """Stable-sort hiding/recommendation rules coarsest-condition-first,
-        most-specific-condition-last, so the existing "last rule wins"
-        semantics in apply_hiding_rules/apply_recommendation_rules resolve
-        same-target conflicts via provable specificity instead of
-        whatever order fetch_rules()/fetch_value_rules() happened to
-        return (neither has an ORDER BY — confirmed in rdb.py). See
-        docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md.
-
-        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
-        the catalog's FULL layout document order (`_load_layout_full_
-        order` — includes layout-hidden attrs like a derived Base Model,
-        unlike `load_layout_display_order`'s visible-only map, since a
-        rule's condition attribute is very often itself hidden). When
-        supplied, tier 2 below (a real declarative condition) ranks by the
-        MAX layout position among the condition's attribute(s) instead of
-        _attribute_depth_ranks' graph depth — confirmed live to matter:
-        `hWVersion_astro` sits at a shallow depth in the dependency graph
-        but gates real downstream decisions, while depth alone doesn't
-        reflect the real native UI's own notion of "how far into the
-        configuration flow" a condition sits. A condition attribute absent
-        from the layout (shouldn't normally happen — every real condition
-        attribute is a real catalog attribute — but the layout file may
-        simply not mention it) ranks at position -1 within tier 2, i.e.
-        least specific among real declarative conditions, never treated as
-        equal-or-better than a measured position (this codebase's
-        "unknown never outranks known" convention). `None` (the default)
-        keeps today's depth-based ranking completely unchanged.
-
-        con_rules is returned UNCHANGED — apply_constraint_rules' allowed-
-        value intersection (_intersect) is commutative, so reordering it
-        can never change its result; doing so would only reorder log
-        lines/BML prefetch scheduling for zero correctness benefit.
-
-        Three specificity TIERS, least to most specific (a rule's own
-        `condition_script` — a separate gating script — is structural
-        metadata we can see without parsing script CONTENT; the graph
-        depth from _attribute_depth_ranks only ever comes from real
-        declarative conditions, since that's the only thing it can
-        extract edges from):
-
-          0. No gating condition at all — no `conditions`, no
-             `condition_attr_id`, no `condition_script` (whether or not
-             it has a value-only `script`, e.g. a hiding/recommendation
-             rule that just always returns one fixed outcome/value with
-             no separate condition). Least specific — sorts first.
-          1. Gated by a `condition_script` but no declarative condition
-             info at all — a real, live example: workspace 39004's
-             "Default to Latest Release if not NA/fed customer" is
-             condition_script-gated with condition_attr_id=0/no
-             conditions, competing against "Set default to Baseline
-             Release" (tier 0, a bare value script, no condition_script)
-             on the same target. We can't measure exactly how deep the
-             condition_script's own logic sits, but its mere presence
-             proves the rule is MORE narrowly scoped than an
-             unconditional tier-0 rule, so it ranks after tier 0 and
-             wins ties against it — without ever parsing what the
-             script actually checks.
-          2. A real declarative condition (`conditions`/
-             `condition_attr_id`) — ranked by the MAX depth
-             (_attribute_depth_ranks) among the attribute(s) it
-             references. Most specific, provably ordered within this
-             tier; always sorts after tiers 0 and 1.
-
-        Within tiers 0/1 (where exact specificity isn't measurable),
-        ties are broken by the rule's own target's ConfigAttr.order —
-        never by "last unknown wins," matching apply_hiding_rules'/
-        apply_recommendation_rules' own "unknown -> don't act/don't
-        guess" convention for script outcomes elsewhere in this file.
-
-        attrs MUST be the full, pre-loop catalog as passed into
-        evaluate_rules_loop — never a loop-local `attrs` already shrunk
-        by apply_hiding_rules, which would wrongly zero out predecessors
-        for hidden attributes.
-        """
-        id_to_vn: dict[int, str] = {}
-        for a in attrs:
-            id_to_vn.setdefault(a.entity_id, a.variable_name)
-        for a in attrs:
-            if a.source_id is not None:
-                id_to_vn[a.source_id] = a.variable_name
-        order_by_vn = {a.variable_name: a.order for a in attrs}
-
-        depth_by_vn = self._attribute_depth_ranks(attrs, [*hiding_rules, *rec_rules])
-
-        def _rule_rank(rule: Any) -> tuple[int, int, int]:
-            cond_ids: list[int] = []
-            conditions = getattr(rule, "conditions", None)
-            if conditions:
-                cond_ids = [cid for cid, *_rest in conditions]
-            else:
-                cid = getattr(rule, "condition_attr_id", 0)
-                if cid:
-                    cond_ids = [cid]
-            cond_vns = [
-                id_to_vn[cid] for cid in cond_ids
-                if cid in id_to_vn and id_to_vn[cid] in depth_by_vn
-            ]
-            if cond_vns:
-                if display_order is not None:
-                    return (2, max(display_order.get(vn, -1) for vn in cond_vns), 0)
-                return (2, max(depth_by_vn[vn] for vn in cond_vns), 0)
-
-            target_id = getattr(rule, "target_attr_id", None)
-            target_vn = id_to_vn.get(target_id) if target_id else None
-            fallback_order = order_by_vn.get(target_vn, 10**9) if target_vn else 10**9
-            if getattr(rule, "condition_script", None):
-                return (1, 0, fallback_order)
-            return (0, 0, fallback_order)
-
-        sorted_hiding = sorted(hiding_rules, key=_rule_rank)
-        sorted_rec = sorted(rec_rules, key=_rule_rank)
-        return sorted_hiding, sorted_rec, con_rules
+        return rule_specificity_ranking.rank_rules_by_specificity(
+            self, attrs, hiding_rules, rec_rules, con_rules, display_order)
 
     @staticmethod
     def _dependency_ordered_keys(
@@ -8483,70 +8286,8 @@ class CpqEngine:
         attr_by_vn: dict[str, "ConfigAttr"],
         rules: list[Any],
     ) -> list[str]:
-        """Topological sort of `keys` by rule-proven attribute dependency.
-
-        Builds a "must come before" edge condition_vn -> target_vn for
-        every rule with a real DECLARATIVE condition (conditions, or a
-        nonzero condition_attr_id) whose condition and target are both
-        present in `keys`. Kahn's algorithm, with ConfigAttr.order
-        (bm_config_attr.order_number) as the tie-break for which
-        zero-remaining-dependency key is emitted next, so output stays
-        deterministic and close to the catalog's own display order
-        whenever no dependency constrains it either way.
-
-        Rule ids reference attributes by their BM-native id — matches
-        ConfigAttr.source_id first (falls back to entity_id), the same
-        dual-id convention _attr_index already uses. Edge extraction
-        itself is shared with _attribute_depth_ranks via
-        _rule_condition_edges; this method applies its own `keys`
-        restriction on top since only-what's-being-emitted is a payload-
-        key-ordering-specific constraint.
-        """
-        attrs = list(attr_by_vn.values())
-        predecessors_all, _successors_all, _id_to_vn = CpqEngine._rule_condition_edges(
-            attrs, rules)
-
-        key_set = set(keys)
-        predecessors: dict[str, set[str]] = {
-            target_vn: {c for c in conds if c in key_set}
-            for target_vn, conds in predecessors_all.items()
-            if target_vn in key_set
-        }
-
-        successors: dict[str, set[str]] = {}
-        for target_vn, conds in predecessors.items():
-            for c in conds:
-                successors.setdefault(c, set()).add(target_vn)
-
-        def _order_key(vn: str) -> int:
-            a = attr_by_vn.get(vn)
-            return a.order if a is not None else 10**9
-
-        remaining = {vn: len(predecessors.get(vn, ())) for vn in keys}
-        ready = sorted((vn for vn, n in remaining.items() if n == 0), key=_order_key)
-        result: list[str] = []
-        visited: set[str] = set()
-        while ready:
-            vn = ready.pop(0)
-            if vn in visited:
-                continue
-            visited.add(vn)
-            result.append(vn)
-            newly_ready = []
-            for succ in successors.get(vn, ()):
-                remaining[succ] -= 1
-                if remaining[succ] == 0 and succ not in visited:
-                    newly_ready.append(succ)
-            if newly_ready:
-                ready.extend(newly_ready)
-                ready.sort(key=_order_key)
-        # A cycle in rule data (never expected, but rule authoring can be
-        # messy) leaves some keys with remaining > 0 forever — append them
-        # by order_number rather than drop or crash, same "never lose a
-        # key" contract the no-rules branch already has.
-        leftover = sorted((vn for vn in keys if vn not in visited), key=_order_key)
-        result.extend(leftover)
-        return result
+        return rule_specificity_ranking._dependency_ordered_keys(
+            keys, attr_by_vn, rules)
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
