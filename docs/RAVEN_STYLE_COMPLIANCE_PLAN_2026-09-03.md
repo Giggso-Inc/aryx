@@ -1336,7 +1336,40 @@ A prior draft of this plan proposed `auto_fill`/`evaluate_rules_loop` as a perma
 
 **Verification, every sub-step:** `ast.parse` clean at each stage; the combined 74-test characterization + `test_cpq_model_pointer.py` suite passing throughout (including the new P3 tests and the `ctx`-identity assertions). Three separate full `-k cpq` regression sweeps (~1,533 tests each, run after steps 2–3, after step 5, and after step 6) all returned the **identical** `14 failed, 1472 passed, 47 skipped, 999 deselected` — the same 14 pre-existing failures confirmed via `git stash` A/B baseline comparison earlier in this plan (data-table always-ask inheritance, multiselect overselection, rule-trace file writes, gateway regex drift, etc. — none touching the P1/P2/P3 code paths this step moved). Zero regressions introduced across the entire refactor.
 
-**Remaining for Phase 4:** the actual line-count reduction of `auto_fill`/`evaluate_rules_loop` (splitting P1's ~1,518-line `_resolve_one_attr` body itself, now that it's an addressable unit) and step 4 (`_run_cpq_turn_inner`'s stage split + the 314-mock.patch-site migration in `ask_api.py`) — neither started.
+**Remaining for Phase 4 as of the previous entry:** the actual line-count reduction of `auto_fill`/`evaluate_rules_loop` (splitting P1's ~1,518-line `_resolve_one_attr` body itself, now that it's an addressable unit) and step 4 (`_run_cpq_turn_inner`'s stage split + the 314-mock.patch-site migration in `ask_api.py`) — neither started. **Superseded by the entries below** — both items are now done for the `engine.py` side.
+
+### Phase 4 step 5 complete (2026-09-07): `_resolve_one_attr` (P1, ~1,518 lines) decomposed into `auto_fill_stages/`.
+
+The highest-risk single step in the whole plan: `_resolve_one_attr`'s body is a single continuous decision tree (tiers 0–6 of the auto-fill priority order, each `return`-ing on its own match), not an independent-stages pipeline like the other splits below — branch *order* is load-bearing (an earlier tier's match must pre-empt a later one), so this needed exact stage boundaries derived by reading the whole function first, not a mechanical per-`if` cut.
+
+Extracted into `src/aryx/cpq/auto_fill_stages/` (28 files, max 148 lines): `state.py` (shared per-attr locals), `coordinator.py` (the tier dispatch order), and one file per tier/sub-concern — `tier0_already_filled(_multi)`, `tier1_hint_match`, `tier2_satisfied_rec`, `tier3_default_value`, `governance_flags`/`region_and_base_model` (shared precomputation), `tier4_options`, `tier5_governed_(entry|multi)`, `tier6_single_(a|b)`, `governed_boolean_fallback`, `commit_value`/`commit_and_tail`, `multi_optout_and_empty`/`multi_fallback(_layout|_unconstrained)`, `noise_var_default`, `ask_or_pending`/`ask_data_gap`/`ask_rule_governed_blind`/`ask_final_pending`. `src/aryx/cpq/auto_fill_resolve.py` (the caller-facing entry point) reduced from 1,574 lines to a 30-line docstring + one delegating import.
+
+Verification: extensive personal spot-check of the highest-risk files (`state.py`, `governed_boolean_fallback.py`, `commit_and_tail.py`, `multi_optout_and_empty.py`, `tier4_options.py`, `tier5_governed_entry.py`, `coordinator.py`) read directly and cross-checked against the original tier-by-tier logic before committing, plus ~200+ related tests re-run directly (not just trusting the dispatched agent's own report). Zero regressions.
+
+### Phase 4 step 6 complete (2026-09-07): the 8 remaining oversized `CpqEngine` methods extracted.
+
+With P1 now an addressable unit (step 5) and P0/P2/P3 already externalized (step 3), the 8 methods identified as still over 150 lines were each decomposed individually, using whichever strategy matched its actual internal structure — a decision tree needs different handling than a genuine multi-stage pipeline:
+
+| Method | Original lines | New home | Commit |
+|---|---|---|---|
+| `_is_mandatory_input_attr` | 157 | `mandatory_input.py` | `61efc0f` |
+| `extract_catalog_hints` | 226 | `catalog_hints.py` + `catalog_hints_negation.py` | `e8acefb` |
+| `apply_constraint_rules` | 354 | `constraint_rules*.py` (4 files) | `d78f38f` |
+| `evaluate_rules_loop` | 474 | `rules_loop*.py` (5 files: `LoopState`/`LoopScope` + early/autofill/late pass + orchestrator) | `68f4ef3` |
+| `_load_value_rules` | 487 | `value_rules_*.py` (9 files: fetch/row/script-actions/condition/validation/bucket/ambiguous/finalize) | `b5649ea` |
+| `build_payload` | 523 | `payload_*.py` (8 files: setup/scalar/multi/array-sets/order + `PayloadContext`) | `00ffe40` |
+| `auto_fill` (P0 setup only — P1/P2/P3 already moved in step 5/3) | ~320 | `auto_fill_setup.py` + 3 helpers (recommendation-check/data-table-setup/conflict-detection) | `e5ee5b4` |
+| `load_product_config` | 558 | `product_config_*.py` (8 files: entities/menu-base/orphan-FK/override/menu-build/lookups/attrs + orchestrator) | `7479524` |
+
+**Pattern used throughout:** the caller (`CpqEngine`) keeps a one-line delegating wrapper (no docstring — the full caller-facing docstring stays on the wrapper, since every extracted orchestrator is an internal implementation detail); the callee moves to a plain function taking `engine` as an explicit first parameter only when the body needs the instance. Every new module verified `ast.parse`-clean and ≤150 lines before commit. Any name a new module needed to import back from `engine.py` was checked against `tests/` for `monkeypatch.setattr`/`patch` targeting `aryx.cpq.engine.<name>` first — where found (`IngestQuestionStore`, cache globals), the reference stayed in `engine.py`'s own wrapper rather than being imported into the new module by bare name, so no whitebox test-patch was broken. Circular-import placements (a new module needing a name defined further down in `engine.py`) were resolved by moving the `from aryx.cpq import <new_module>` import line to directly after that name's own definition, never to the top of the file.
+
+**Verification, per extraction:** the 84-test characterization suite (`test_cpq_engine_auto_fill_characterization.py` + `test_cpq_engine_zero_coverage_characterization.py` + `test_cpq_model_pointer.py`) run after every single change, then every test file directly referencing the moved method names (several hundred tests combined across the 6 extractions above). Every failure encountered was cross-checked against the already-established pre-existing baseline; every new hang or new failure not already on that list was independently confirmed as pre-existing via a checkout+copy A/B comparison (copy the modified file aside, `git checkout HEAD -- <file>` to test unmodified code, restore after) — never via `git stash`, and `git stash list` was re-checked unchanged after every such comparison. Six previously-undocumented pre-existing hangs and one previously-undocumented pre-existing 3-test failure (`test_share_config_flags.py`) were discovered and confirmed this way; zero new regressions from any of the 8 extractions.
+
+`engine.py`: **12,713 → 4,486 lines** across steps 5–6 combined (the `auto_fill_stages/` decomposition plus the 8 extractions above). Combined with the file's starting point at the top of Phase 4 (14,469 lines), this is an **~69% reduction** for the file itself.
+
+**Pragmatic floor accepted for `engine.py` as a file** (per explicit user direction): every extractable piece of logic is now out of the file, but `engine.py` itself cannot reach ≤150 lines via this wrapper-delegation pattern — Python requires every class method, even a one-line delegating wrapper, to live in the class's own file, and `CpqEngine` has ~140 methods. The file is now ~140 one-line wrappers plus their (often substantial, historically load-bearing) docstrings, module-level cache declarations, and the handful of methods genuinely too small/cohesive to extract further. Every individual function inside it is far under the 60-line threshold; only the file-length metric itself remains over 150, for a structural reason specific to Python classes rather than unaddressed complexity.
+
+**Phase 4 is now fully complete for `cpq/engine.py`.** Remaining for Phase 4 overall: `api/ask_api.py`'s step 4 (`_run_cpq_turn_inner`'s stage split + the 314-mock.patch-site migration) — not started.
 
 ### Phase 5 — `shay_backend/` remediation
 
