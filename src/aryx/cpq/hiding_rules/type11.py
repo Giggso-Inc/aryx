@@ -1,0 +1,122 @@
+"""The rule_type=11 half of ``load_hiding_rules`` -- split out of
+``loader.py`` purely to keep both files under the 150-line style limit
+(Phase 4 step 4 extraction from ``cpq/engine.py``, see
+docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md). Needs the ``CpqEngine``
+instance for the shared rule-join fetch and the rule-key/target-
+resolution helpers, so it takes an explicit ``engine`` first parameter.
+"""
+
+from __future__ import annotations
+
+import time
+
+from aryx.cpq.engine import logger
+from aryx.cpq.state import HidingRule
+
+
+def _load_type11_hiding_rules(
+    engine, workspace_id: int, catalog_prefix: str, _t0: float,
+) -> list[HidingRule]:
+    """Load and classify the native rule_type=11 hiding rules only.
+
+    Declarative rules become HidingRule objects with condition_attr_id/
+    condition_value/hide set. Script-backed rules (condition_function_id
+    != -1) ALSO become HidingRule objects, with `script` set instead —
+    confirmed live that 119 of 191 real hiding rules (62%) in this
+    catalog are script-backed (e.g. "Hide HW Version unless region=NA OR
+    country=KY OR customerType=FEDERAL"), so skipping them silently, as
+    this method previously did, meant most of the source system's real
+    show/hide dependencies never took effect here at all. Their target(s)
+    are resolved the same way as declarative rules (via
+    _resolve_targets); only the CONDITION differs, and is evaluated at
+    apply time by BmlEvaluator.should_hide (see apply_hiding_rules).
+    """
+    rules: list[HidingRule] = []
+    script_missing = 0
+    unresolved = 0
+    operator_collisions = 0
+    try:
+        rdb, inputs, actions, marked, chain = engine._load_rule_join_data(
+            workspace_id, catalog_prefix)
+        scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
+        # active_only=True (docs/config_consistency_issues_2026-07-30.md,
+        # Issue 5 follow-up): live-confirmed real harm from the
+        # previously-deliberate byte-for-byte-unaffected choice noted in
+        # fetch_rules' own docstring — a DISABLED (status=3) hiding rule,
+        # "Hide Frequency Band & Extend Range if Product is selected as
+        # APX Enhanced" (script condition reads modelSelectionFrequency
+        # BandMsl_astro's OWN just-set value and hides it right back),
+        # was still being loaded and evaluated, wiping a customer's
+        # Frequency Band answer on the very same turn it was recorded.
+        # rule_type="6" flow rules already opted into this exact filter
+        # for the identical reason (dead/superseded rules alongside live
+        # ones); hiding rules never had — this closes that gap.
+        for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
+            workspace_id, "11", catalog_prefix, active_only=True,
+        ):
+            key = engine._rule_key(eid, src_id, inputs, actions)
+            targets = engine._resolve_targets(key, actions, marked, chain)
+            if not targets:
+                unresolved += 1
+                logger.info(
+                    "cpq: hiding rule %r (id=%s) has no resolvable target "
+                    "via action/marked_attr/chain — excluded, not "
+                    "silently guessed", rule_name, key)
+                continue
+            if fn_id != -1:
+                script = scripts.get(fn_id)
+                if not script:
+                    script_missing += 1
+                    logger.warning(
+                        "cpq: hiding rule %r references function_id=%d "
+                        "but no BmFunction script was found", rule_name, fn_id)
+                    continue
+                for target_attr_id, _action_type in targets:
+                    rules.append(HidingRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=0,
+                        condition_value="",
+                        target_attr_id=target_attr_id,
+                        script=script,
+                    ))
+                continue
+            inp_list = inputs.get(key)
+            if not inp_list:
+                unresolved += 1
+                continue
+            # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+            # — a declarative condition checking the SAME attribute
+            # with 2+ different operators cannot yet be evaluated
+            # correctly by evaluate_declarative_conditions (it
+            # collapses to the first row's operator+value, silently
+            # dropping the rest). No single combining rule is
+            # confirmed safe for every such shape yet — skip rather
+            # than load with a guessed combining rule, same treatment
+            # as the value-less-hide/constraint/recommendation/
+            # validation branches in _load_value_rules.
+            if engine._condition_has_operator_collision(inp_list):
+                operator_collisions += 1
+                continue
+            cond_attr_id, cond_value, cond_operator = inp_list[-1]
+            for target_attr_id, action_type in targets:
+                rules.append(HidingRule(
+                    rule_name=rule_name or str(eid),
+                    condition_attr_id=cond_attr_id,
+                    condition_value=cond_value,
+                    condition_operator=cond_operator,
+                    target_attr_id=target_attr_id,
+                    hide=(int(action_type or 2) == 2),
+                    conditions=list(inp_list),
+                ))
+    except Exception:
+        logger.debug("cpq: hiding rule load failed", exc_info=True)
+
+    script_backed = sum(1 for r in rules if r.script is not None)
+    logger.info(
+        "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
+        "%d missing script, %d unresolved, %d skipped: same-attribute "
+        "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
+        "PLAN_2026_08_05.md) elapsed_s=%.3f",
+        len(rules), len(rules) - script_backed, script_backed,
+        script_missing, unresolved, operator_collisions, time.monotonic() - _t0)
+    return rules

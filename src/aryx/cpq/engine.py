@@ -2110,6 +2110,19 @@ _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, str] = {
 # would be a circular-import failure.
 from aryx.cpq import turn_intent  # noqa: E402
 
+# Deferred to here for the same circular-import reason as `turn_intent`
+# above: aryx.cpq.hiding_rules' submodules import names BACK from this
+# module (logger, _condition_value_matches, _ATTRSEQ_CONFIRMED_REQUIRED_
+# VNS, _DATA_TABLE_FORCED_VNS_CACHE + its TTL/marker) — the latest of
+# those being `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` just above, so this line
+# must sit after it. (`_cpq_model_candidates`/`dt_resolve_whitelist_
+# values`, defined/imported elsewhere in this file, are deliberately NOT
+# imported by name there — several tests patch them as
+# `aryx.cpq.engine.<name>`, so that submodule goes through the module
+# object instead.) A top-of-file import would be a circular-import
+# failure.
+from aryx.cpq import hiding_rules  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -5141,193 +5154,20 @@ class CpqEngine:
 
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
-        """Load hiding rules (rule_type=11) from the RDB.
-
-        Declarative rules become HidingRule objects with condition_attr_id/
-        condition_value/hide set. Script-backed rules (condition_function_id
-        != -1) ALSO become HidingRule objects, with `script` set instead —
-        confirmed live that 119 of 191 real hiding rules (62%) in this
-        catalog are script-backed (e.g. "Hide HW Version unless region=NA OR
-        country=KY OR customerType=FEDERAL"), so skipping them silently, as
-        this method previously did, meant most of the source system's real
-        show/hide dependencies never took effect here at all. Their target(s)
-        are resolved the same way as declarative rules (via
-        _resolve_targets); only the CONDITION differs, and is evaluated at
-        apply time by BmlEvaluator.should_hide (see apply_hiding_rules).
-
-        catalog_prefix — scopes to one ingested catalog (see
-        _load_rule_join_data) when the workspace holds more than one
-        product's XML export. "" preserves the original workspace-wide load.
-        """
-        _t0 = time.monotonic()
-        logger.info(
-            "cpq_step: load_hiding_rules start workspace_id=%s catalog_prefix=%r",
-            workspace_id, catalog_prefix,
-        )
-        rules: list[HidingRule] = []
-        script_missing = 0
-        unresolved = 0
-        operator_collisions = 0
-        try:
-            rdb, inputs, actions, marked, chain = self._load_rule_join_data(
-                workspace_id, catalog_prefix)
-            scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
-            # active_only=True (docs/config_consistency_issues_2026-07-30.md,
-            # Issue 5 follow-up): live-confirmed real harm from the
-            # previously-deliberate byte-for-byte-unaffected choice noted in
-            # fetch_rules' own docstring — a DISABLED (status=3) hiding rule,
-            # "Hide Frequency Band & Extend Range if Product is selected as
-            # APX Enhanced" (script condition reads modelSelectionFrequency
-            # BandMsl_astro's OWN just-set value and hides it right back),
-            # was still being loaded and evaluated, wiping a customer's
-            # Frequency Band answer on the very same turn it was recorded.
-            # rule_type="6" flow rules already opted into this exact filter
-            # for the identical reason (dead/superseded rules alongside live
-            # ones); hiding rules never had — this closes that gap.
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
-                workspace_id, "11", catalog_prefix, active_only=True,
-            ):
-                key = self._rule_key(eid, src_id, inputs, actions)
-                targets = self._resolve_targets(key, actions, marked, chain)
-                if not targets:
-                    unresolved += 1
-                    logger.info(
-                        "cpq: hiding rule %r (id=%s) has no resolvable target "
-                        "via action/marked_attr/chain — excluded, not "
-                        "silently guessed", rule_name, key)
-                    continue
-                if fn_id != -1:
-                    script = scripts.get(fn_id)
-                    if not script:
-                        script_missing += 1
-                        logger.warning(
-                            "cpq: hiding rule %r references function_id=%d "
-                            "but no BmFunction script was found", rule_name, fn_id)
-                        continue
-                    for target_attr_id, _action_type in targets:
-                        rules.append(HidingRule(
-                            rule_name=rule_name or str(eid),
-                            condition_attr_id=0,
-                            condition_value="",
-                            target_attr_id=target_attr_id,
-                            script=script,
-                        ))
-                    continue
-                inp_list = inputs.get(key)
-                if not inp_list:
-                    unresolved += 1
-                    continue
-                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
-                # — a declarative condition checking the SAME attribute
-                # with 2+ different operators cannot yet be evaluated
-                # correctly by evaluate_declarative_conditions (it
-                # collapses to the first row's operator+value, silently
-                # dropping the rest). No single combining rule is
-                # confirmed safe for every such shape yet — skip rather
-                # than load with a guessed combining rule, same treatment
-                # as the value-less-hide/constraint/recommendation/
-                # validation branches in _load_value_rules.
-                if self._condition_has_operator_collision(inp_list):
-                    operator_collisions += 1
-                    continue
-                cond_attr_id, cond_value, cond_operator = inp_list[-1]
-                for target_attr_id, action_type in targets:
-                    rules.append(HidingRule(
-                        rule_name=rule_name or str(eid),
-                        condition_attr_id=cond_attr_id,
-                        condition_value=cond_value,
-                        condition_operator=cond_operator,
-                        target_attr_id=target_attr_id,
-                        hide=(int(action_type or 2) == 2),
-                        conditions=list(inp_list),
-                    ))
-        except Exception:
-            logger.debug("cpq: hiding rule load failed", exc_info=True)
-
-        script_backed = sum(1 for r in rules if r.script is not None)
-        logger.info(
-            "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
-            "%d missing script, %d unresolved, %d skipped: same-attribute "
-            "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
-            "PLAN_2026_08_05.md) elapsed_s=%.3f",
-            len(rules), len(rules) - script_backed, script_backed,
-            script_missing, unresolved, operator_collisions, time.monotonic() - _t0)
-
-        # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
-        # real, separate class of "hide" rule authored OUTSIDE rule_type=11
-        # (a declarative action with no literal value1, e.g. "Associated rec
-        # rule to Hide Frequency Band for Single Band") that _load_value_
-        # rules already classifies correctly but the rest of the codebase
-        # only ever asked for hiding rules from THIS method. Merged in here,
-        # not by changing load_recommendation_and_constraint_rules' return
-        # arity (that method is monkeypatched with a bare (rec, con) 2-tuple
-        # across the test suite) — every existing caller of load_hiding_
-        # rules() gets the complete set automatically, with zero call-site
-        # changes anywhere.
-        try:
-            _rec, _con, _val, extra_hiding = self._load_value_rules(workspace_id, catalog_prefix)
-        except Exception:
-            logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
-            extra_hiding = []
-        if extra_hiding:
-            logger.info("cpq: loaded %d additional value-less-action hiding rules",
-                        len(extra_hiding))
-        logger.info(
-            "cpq_step: load_hiding_rules done elapsed_s=%.3f total_rules=%d",
-            time.monotonic() - _t0, len(rules) + len(extra_hiding),
-        )
-        return rules + extra_hiding
+        return hiding_rules.load_hiding_rules(self, workspace_id, catalog_prefix)
 
     @staticmethod
     def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
-        """Index attrs by BOTH ids rules may reference.
-
-        Rule inputs/actions carry BM-native attribute ids from the source
-        system (ConfigAttr.source_id); legacy data may reference the aryx
-        entity id directly. source_id wins on collision because that is what
-        BigMachines rules actually use.
-        """
-        idx: dict[int, ConfigAttr] = {}
-        for a in attrs:
-            idx.setdefault(a.entity_id, a)
-        for a in attrs:
-            if a.source_id is not None:
-                idx[a.source_id] = a
-        return idx
+        return hiding_rules._attr_index(attrs)
 
     @staticmethod
     def _rule_forced_from_active_decision_vns(
         rules: list[Any] | None, attrs: list[ConfigAttr] | None,
         filled_source: dict[str, str], active_sources: frozenset[str],
     ) -> frozenset[str]:
-        """`_is_mandatory_input_attr`'s `rule_forced_active_vns` — variable_
-        names a RecommendationRule set via a SINGLE declarative condition
-        (script/condition_script/multi-input `conditions` rules abstain --
-        no one extractable trigger attr to check) whose trigger attr is
-        itself actively sourced. Catalog-agnostic: walks `RecommendationRule.
-        condition_attr_id`/`target_attr_id` generically, no attribute or
-        rule name hardcoded -- see `_is_mandatory_input_attr`'s own
-        docstring for the live case (wirelessCarrier_astro forced by
-        "...when ATAK is enabled") this closes.
-        """
-        if not rules or not attrs:
-            return frozenset()
-        attr_idx = CpqEngine._attr_index(attrs)
-        result: set[str] = set()
-        for rule in rules:
-            if not isinstance(rule, RecommendationRule):
-                continue
-            if rule.script is not None or rule.condition_script is not None:
-                continue  # no single extractable trigger attr -- never guess
-            if rule.conditions:
-                continue  # multi-input AND/OR -- ambiguous which leg to trust
-            cond_attr = attr_idx.get(rule.condition_attr_id)
-            target_attr = attr_idx.get(rule.target_attr_id)
-            if cond_attr is None or target_attr is None:
-                continue
-            if filled_source.get(cond_attr.variable_name) in active_sources:
-                result.add(target_attr.variable_name)
-        return frozenset(result)
+        return hiding_rules._rule_forced_from_active_decision_vns(
+            rules, attrs, filled_source, active_sources,
+        )
 
     @staticmethod
     def _data_table_forced_vns(
@@ -5335,125 +5175,16 @@ class CpqEngine:
         cache: dict[tuple[int, str], tuple] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
     ) -> frozenset[str]:
-        """`_is_mandatory_input_attr`'s active-source widening for a
-        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` member whose filled value the
-        real ingested Whitelist/Defaultinattr Data Table confirms as a
-        genuine, catalog-recognized legal option for the active
-        (cpq_model, base_model, ...already-filled context) -- not a made-
-        up/impossible value. Confirmed live (workspace 93): for base model
-        H55TGT9PW8AN + Country=US, wirelessCarrier_astro has TWO real
-        legal values (ATT/FIRSTNET, VERIZON) -- deliberately NOT requiring
-        exactly one (an earlier, stricter version of this check did, and
-        live data proved that too strict: a real catalog-authored choice
-        among 2+ legitimate carriers is still a genuine answer the
-        customer needs reflected in `config_data`, same as beautify/the
-        summary already show it unconditionally for
-        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` members). Catalog-agnostic -- no
-        attribute name hardcoded, checks every `_ATTRSEQ_CONFIRMED_
-        REQUIRED_VNS` member generically via `resolve_whitelist_values`.
-
-        `filled_multi` -- optional (default `None`). A `_ATTRSEQ_CONFIRMED_
-        REQUIRED_VNS` member can be `select_type=="multi"` (e.g.
-        carrierSelectionMultiSelect_astro, the 5G-capable sibling of the
-        single-select wirelessCarrier_astro) -- its real answer lives in
-        `filled_multi`, never in `filled`, so checking `filled.get(vn)`
-        alone silently always misses it (confirmed live 2026-08-20: the
-        5G flow's carrierSelectionMultiSelect_astro never widened here
-        even though the exact same Data Table narrowing this method
-        already handled for the 4G single-select sibling applies to it
-        too). Confirms via the same `resolve_whitelist_values` legality
-        check, requiring every selected value be a real legal option
-        (not just one) -- the multi-select analogue of the single-select
-        "any real legal option" check above.
-
-        `None`/no `workspace_id`, or no base model resolved yet, is a
-        complete no-op -- same convention as every other Data-Table-driven
-        helper in this file.
-        """
-        if workspace_id is None:
-            return frozenset()
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return frozenset()
-        product = filled.get("productSelectionProduct_all", "")
-
-        _cache_key = (
-            workspace_id, catalog_prefix, base_model, product,
-            tuple(sorted(
-                (vn, filled.get(vn), tuple(sorted((filled_multi or {}).get(vn) or ())))
-                for vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS
-            )),
+        return hiding_rules._data_table_forced_vns(
+            filled, workspace_id, catalog_prefix, cache, filled_multi,
         )
-        _marker_at_read = _invalidate_on_marker_change(
-            _DATA_TABLE_FORCED_VNS_CACHE, _DATA_TABLE_FORCED_VNS_CACHE_LAST_SEEN_MARKER,
-        )
-        _hit = _DATA_TABLE_FORCED_VNS_CACHE.get(_cache_key)
-        if _hit is not None:
-            _ts, _cached_result = _hit
-            if time.monotonic() - _ts < _DATA_TABLE_FORCED_VNS_CACHE_TTL_SECONDS:
-                return _cached_result
-
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
-        )
-        if not cands:
-            return frozenset()
-        result: set[str] = set()
-        for vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS:
-            val = filled.get(vn)
-            multi_vals = (filled_multi or {}).get(vn)
-            if not val and not multi_vals:
-                continue
-            for cm in cands:
-                legal = dt_resolve_whitelist_values(
-                    cm, base_model, vn, filled, workspace_id, catalog_prefix, cache,
-                )
-                if legal is None:
-                    continue
-                if multi_vals:
-                    if all(v in legal for v in multi_vals):
-                        result.add(vn)
-                        break
-                elif val in legal:
-                    result.add(vn)
-                    break
-        _final_result = frozenset(result)
-        _cache_write_if_marker_unchanged(
-            _DATA_TABLE_FORCED_VNS_CACHE, _cache_key, (time.monotonic(), _final_result), _marker_at_read,
-        )
-        return _final_result
 
     @staticmethod
     def _filled_by_rule_id(
         attrs: list[ConfigAttr], filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, str]:
-        """Map every id a rule may reference → the attr's filled value.
-
-        select_type=="multi" attrs' current selections live in filled_multi
-        (a separate structure from the scalar filled dict — see
-        evaluate_rules_loop's docstring), not in `filled`. Joined here into
-        a single "~"-delimited string so bml._operator_hit's set-
-        intersection check (operators "7"/"8" — docs/CPQ_DECLARATIVE_
-        CONDITION_OPERATOR_PLAN_2026_08_05.md Phase 2) sees the real
-        current selection set instead of always finding the condition
-        attribute missing. An explicitly-emptied multi-select (filled_multi
-        holding []) still maps to "" here rather than being omitted — that
-        is a known, real "nothing selected" state, not an unfilled one.
-        """
-        multi = filled_multi or {}
-        out: dict[int, str] = {}
-        for a in attrs:
-            if a.variable_name in multi:
-                val = "~".join(multi[a.variable_name])
-            elif a.variable_name in filled:
-                val = filled[a.variable_name]
-            else:
-                continue
-            out[a.entity_id] = val
-            if a.source_id is not None:
-                out[a.source_id] = val
-        return out
+        return hiding_rules._filled_by_rule_id(attrs, filled, filled_multi)
 
     def apply_hiding_rules(
         self,
@@ -5463,93 +5194,9 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
-        """Apply hiding rules against current filled values.
-
-        Script-backed rules (rule.script set) derive their hide/show outcome
-        from the BML evaluator using the current filled variables (keyed by
-        variable_name — BML scripts compare variable names directly, same
-        convention as apply_constraint_rules). An unknown script outcome
-        (bml_eval is None, or the evaluator can't determine it yet) leaves
-        the target visible rather than risking hiding something the
-        customer still needs — the safe default mirrors constraints'
-        "unknown applies no constraint" rule, just inverted for hiding
-        (unknown → don't hide, not → hide everything).
-
-        filled_multi — select_type=="multi" attrs' current selections (see
-        _filled_by_rule_id); only consulted for declarative conditions
-        (operators "7"/"8"). Script-backed rules are unaffected — they
-        already read `filled` directly via bml_eval, a separate contract.
-
-        Returns:
-          filtered_attrs — attrs still visible after rules are applied
-          rule_messages  — human-readable list of rules that fired (for reporting)
-          hidden_vns     — variable_names explicitly hidden by a fired rule
-        """
-        if not rules:
-            return attrs, [], set()
-
-        by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
-
-        hidden_eids: set[int] = set()
-        messages: list[str] = []
-
-        for rule in rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if not target:
-                continue
-            if rule.script is not None:
-                if bml_eval is None:
-                    continue
-                hide = bml_eval.hide_for_script(rule.script, filled)
-                if hide is True:
-                    hidden_eids.add(target.entity_id)
-                    messages.append(
-                        f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
-                    )
-                    rule_trace.record_fire(
-                        rule_type="hiding", rule_id=rule.rule_name,
-                        attr=target.variable_name, outcome="hide", bml_tier="script",
-                    )
-                elif hide is False:
-                    hidden_eids.discard(target.entity_id)
-                    rule_trace.record_fire(
-                        rule_type="hiding", rule_id=rule.rule_name,
-                        attr=target.variable_name, outcome="show", bml_tier="script",
-                    )
-                continue
-            if rule.conditions:
-                matched, _blocked = evaluate_declarative_conditions(
-                    rule.conditions, filled_by_rule_id)
-                if matched is not True:
-                    continue  # unresolved or definitively false — doesn't fire
-            else:
-                current_val = filled_by_rule_id.get(rule.condition_attr_id)
-                if current_val is None:
-                    continue  # condition attr not filled yet — rule doesn't fire
-                if not _condition_value_matches(
-                    current_val, rule.condition_value, rule.condition_operator
-                ):
-                    continue
-            if rule.hide:
-                hidden_eids.add(target.entity_id)
-                messages.append(
-                    f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
-                )
-                rule_trace.record_fire(
-                    rule_type="hiding", rule_id=rule.rule_name,
-                    attr=target.variable_name, outcome="hide",
-                )
-            else:
-                hidden_eids.discard(target.entity_id)
-                rule_trace.record_fire(
-                    rule_type="hiding", rule_id=rule.rule_name,
-                    attr=target.variable_name, outcome="show",
-                )
-
-        hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
-        filtered = [a for a in attrs if a.entity_id not in hidden_eids]
-        return filtered, messages, hidden_vns
+        return hiding_rules.apply_hiding_rules(
+            attrs, filled, rules, bml_eval, filled_multi,
+        )
 
     # ── Recommendation rule loader ────────────────────────────────────────────
 
