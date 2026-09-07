@@ -14,12 +14,20 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from aryx import llm_runtime
-from aryx.api.ask_overview import build as build_overview
-from aryx.ask import build_grounding
-from aryx.ask.evidence import RetrievedEntity
+from aryx.api.ask_request_models import AskRequest, LlmConfigRequest, Turn
+from aryx.api.ask_standard_pipeline import (
+    _enforce_plain_answer,  # noqa: F401 — re-exported, see module docstring below
+    _enrich_with_attributes,
+    _extract_terms,
+    _recent,
+    _rewrite_plain,  # noqa: F401 — re-exported, see module docstring below
+    _standard_ask_pipeline,
+    _strip_think,
+    _synthesise,
+    _user_texts_from_history,
+)
 from aryx.config import get_settings
 from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY, SUMMARY_CATEGORY_NAMES,
@@ -114,52 +122,6 @@ def _reader(workspace_id: int = 1) -> GraphReaderPort:
     return ports().graph_reader(workspace_id)
 
 
-class Turn(BaseModel):
-    role: str
-    text: str
-
-
-class AskRequest(BaseModel):
-    question: str
-    history: list[Turn] = []
-    workspace_id: int = 1
-    session_data: dict = {}  # CPQ session state echoed back from prior turn
-
-
-def _strip_think(text: str) -> str:
-    """Drop any <think> chain-of-thought a model inlines into its answer."""
-    text = text.rsplit("</think>", 1)[-1] if "</think>" in text else text
-    return text.replace("<think>", "").strip()
-
-
-def _recent(history: list[Turn], limit: int = 4) -> str:
-    if not history:
-        return ""
-    turns = history[-limit:]
-    return "\n".join(f"{t.role}: {t.text}" for t in turns)
-
-
-_HISTORY_MINE_LIMIT = 8
-
-
-def _user_texts_from_history(
-    history: list[Turn], limit: int = _HISTORY_MINE_LIMIT,
-) -> list[str]:
-    """User-role utterances from Ask history (oldest → newest within window)."""
-    if not history:
-        return []
-    out: list[str] = []
-    for t in history[-limit:]:
-        role = (getattr(t, "role", None) or "").lower()
-        text = (getattr(t, "text", None) or "").strip()
-        if not text:
-            continue
-        # Treat empty role as user; clients sometimes omit role on user turns.
-        if role in ("", "user", "human", "h", "customer"):
-            out.append(text)
-    return out
-
-
 def _safe_detect_product_mention(question: str, reader: Any, workspace_id: int) -> str:
     """`CpqEngine.detect_product_mention`, but never lets a lookup failure
     (e.g. a test-double `reader` without the real graph methods) propagate
@@ -231,249 +193,12 @@ def _mine_history_for_cpq_context(
             return
 
 
-# Minimum 3 chars ([A-Z][A-Z0-9]{2,}) prevents matching 2-char SQL/HTTP verbs
-# (OR, IN, ID, FK, ...).  Stopword set handles common uppercase words that are
-# not product codes and would fire spurious entity lookups.
-_CAP_PHRASE = re.compile(r'\b[A-Z][A-Z0-9]{2,}(?:\s+[A-Z][A-Z0-9]+)*\b')
-_CAP_STOPWORDS: frozenset[str] = frozenset({
-    "AND", "NOT", "FOR", "THE", "ARE", "GET", "PUT", "POST", "API",
-    "SQL", "URL", "IDS", "FAQ", "LOV", "BOM", "ERP", "CPQ", "CRM",
-})
-
-
-def _extract_terms(question: str, types: list[str], history: list[Turn],
-                   workspace_id: int = 1) -> tuple[list[str], int, int, int]:
-    context = _recent(history)
-    sys = "You are a precise search-term extractor for a knowledge-graph lookup engine."
-    user = (
-        "Using the recent conversation to resolve pronouns (it, they, this), extract "
-        "1-5 specific entity names, codes, identifiers, or domain keywords from the "
-        "CURRENT question that will retrieve the most relevant graph entities. "
-        "Include multi-word product names, model codes, and requirement identifiers exactly as written. "
-        f"Do NOT include generic category words like {', '.join(types)}. "
-        'Reply ONLY as JSON {"terms": ["..."]} with no other text.\n'
-        f"{('Recent conversation:' + chr(10) + context + chr(10)) if context else ''}"
-        f"CURRENT question: {question}"
-    )
-    start = time.monotonic()
-    text, it, ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
-    ms = int((time.monotonic() - start) * 1000)
-    try:
-        s, e = text.find("{"), text.rfind("}")
-        terms = json.loads(text[s:e + 1]).get("terms", [])
-    except (ValueError, json.JSONDecodeError):
-        terms = []
-    terms = [t for t in terms if t]
-
-    # Supplement: regex-extract capitalized product codes / model names from the
-    # question text.  Small menial models miss multi-word caps phrases like
-    # "APX NEXT" or "APX N70" — this ensures they always reach the entity search.
-    type_lower = {t.lower() for t in types}
-    terms_lower = {t.lower() for t in terms}
-    for phrase in _CAP_PHRASE.findall(question):
-        if phrase in _CAP_STOPWORDS:
-            continue
-        if phrase.lower() not in type_lower and phrase.lower() not in terms_lower:
-            terms.append(phrase)
-            terms_lower.add(phrase.lower())
-
-    return (terms or [question.strip()]), it, ot, ms
-
-
-_MAX_ANSWER_LINES = 5
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
 # Segments _cpq_summary_text asks the LLM to separate its reply by — one
 # lead-in sentence + one narration segment per category, code-assembled
 # with the real "• Category" headers afterwards (see _cpq_summary_text).
 # Distinctive enough that real narration text won't produce it by accident.
 _CPQ_SEGMENT_DELIM = "@@@"
-
-
-def _line_count(text: str) -> int:
-    """Logical line count — the greater of physical newlines and sentence count.
-
-    A model asked for "N lines" can still return one dense multi-sentence
-    paragraph with no line breaks at all; counting sentences too catches that.
-    """
-    physical = len([ln for ln in text.splitlines() if ln.strip()])
-    sentences = len([s for s in _SENTENCE_SPLIT.split(text.strip()) if s.strip()])
-    return max(physical, sentences)
-
-
-def _rewrite_plain(text: str, context_hint: str, workspace_id: int) -> tuple[str, int, int]:
-    """Force a short, plain-English rewrite. Returns the original untouched on any failure.
-
-    Shared by `_enforce_plain_answer` (Q&A) and `_cpq_summary_text` (config
-    summaries) — the flow must never block on the rewrite.
-    """
-    sys = "You rewrite text in plain, everyday English for a non-technical reader."
-    user = (
-        f"Rewrite the TEXT below to at most {_MAX_ANSWER_LINES} short lines, one "
-        "idea per line, in plain jargon-free English — direct point first. Keep "
-        "every fact and proper noun (product names, codes) exactly as given; "
-        "don't invent or drop any.\n\n"
-        f"{context_hint}\n\nTEXT:\n{text}"
-    )
-    try:
-        rewritten, it, ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
-        rewritten = _strip_think(rewritten).strip()
-        if rewritten:
-            return rewritten, it, ot
-    except Exception:  # noqa: BLE001
-        logger.debug("plain-language rewrite failed — using original", exc_info=True)
-    return text, 0, 0
-
-
-def _enforce_plain_answer(
-    text: str, question: str, workspace_id: int,
-) -> tuple[str, int, int, int]:
-    """Second pass: force a short, plain-English rewrite if the model overran."""
-    if _line_count(text) <= _MAX_ANSWER_LINES:
-        return text, 0, 0, 0
-    start = time.monotonic()
-    rewritten, it, ot = _rewrite_plain(text, f"QUESTION: {question}", workspace_id)
-    ms = int((time.monotonic() - start) * 1000) if (it or ot) else 0
-    return rewritten, it, ot, ms
-
-
-def _synthesise(question: str, context: str, overview: str = "",
-                history: list[Turn] | None = None,
-                workspace_id: int = 1, session_values: str = "") -> tuple[str, int, int, int]:
-    sys = (
-        "You are Aryx, a knowledge-graph assistant. You explain product "
-        "configuration, requirements, and enterprise data in plain, everyday "
-        "English — the way you'd explain it to a colleague who isn't technical. "
-        "Always answer from the GRAPH FACTS provided. "
-        "Name the specific things you're talking about (products, values, "
-        "relationships) but describe them in plain words, never technical or "
-        "internal terminology. Be direct and specific — never hedge when facts "
-        "are in front of you."
-    )
-    has_context = bool(context.strip())
-    facts = context if has_context else "(none — no specific entity matched)"
-    conv = _recent(history or [], limit=6)
-    conv_block = f"\nCONVERSATION SO FAR:\n{conv}\n" if conv else ""
-
-    # Grounded scope check (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 2, extended
-    # 2026-07-28): originally only spent when GRAPH FACTS was empty. Confirmed
-    # live this codepath previously fabricated plausible-sounding catalog
-    # details (SVX Video RSM, currency options) for a genuinely unrelated
-    # astrology question ("astra in astrological sense") — but that fabricated
-    # answer came from a WEAK/SPURIOUS entity match the graph search DID
-    # return (has_context was True), not from an empty result, so the
-    # original has_context-gated check never even ran. The catalog-relevance
-    # question ("is this question actually about product config/quoting at
-    # all?") is independent of whether SOME entity happened to fuzzy-match —
-    # always classify, and let a genuinely irrelevant question override
-    # whatever facts were found.
-    # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — pass the
-    # recent conversation (already computed above as `conv`) so a mid-
-    # session follow-up like "what is the error" can be recognized as
-    # relevant when the prior turn was the engine's own gate error. The
-    # OTHER call site (run_ask's fresh-turn router) intentionally does not
-    # pass this — it has no session context to give. Ported onto
-    # _llm_classify_is_ask_in_scope (not _llm_classify_is_cpq_question) —
-    # this call site needs the BROADER scope gate (general enterprise/
-    # catalog questions, not just quote/order intent); see that function's
-    # own docstring for why reusing the narrow classifier here caused Ask
-    # to refuse almost every question.
-    is_cpq_relevant = _llm_classify_is_ask_in_scope(
-        question, workspace_id, prior_context=conv,
-    )
-    logger.info(
-        "cpq_qa_scope: has_context=%s for %r -> is_ask_in_scope=%s",
-        has_context, question, is_cpq_relevant,
-    )
-
-    if not is_cpq_relevant:
-        empty_rule = (
-            "- The question is not about product configuration, quoting, or "
-            "enterprise data at all → say plainly that this is outside what "
-            "you track (product configuration and quoting), in one short "
-            "sentence, EVEN IF something below happens to loosely match a "
-            "word in the question. Do NOT invent or connect unrelated "
-            "catalog details to answer it anyway.\n"
-        )
-    elif has_context:
-        empty_rule = (
-            "- GRAPH FACTS present → answer specifically, naming the entities, "
-            "values, and relationships shown, in plain language.\n"
-        )
-    else:
-        empty_rule = (
-            "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
-            "and suggest a concrete follow-up question. "
-            "Do NOT say 'no matching entities' or 'not stored'.\n"
-        )
-
-    # Session-value rule (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 3): only
-    # added when the caller found a real filled value for an entity the
-    # graph search resolved. Confirmed live this path previously answered
-    # "the data doesn't show a specific frequency value being set" for a
-    # question about an attr that WAS genuinely filled in this exact
-    # session — GRAPH FACTS alone is the static catalog schema, never the
-    # per-turn answered values, so this couldn't be told apart from
-    # genuinely unfilled without this.
-    session_values_block = ""
-    session_value_rule = ""
-    if session_values.strip():
-        session_values_block = f"\nSESSION VALUES:\n{session_values}\n"
-        session_value_rule = (
-            "- If the question asks what something is currently SET TO, "
-            "answer from SESSION VALUES when present — it reflects this "
-            "customer's real selection for THIS quote, which the static "
-            "GRAPH FACTS alone cannot show.\n"
-        )
-
-    user = (
-        "Answer the QUESTION using the evidence below.\n\n"
-        "Rules:\n"
-        f"{session_value_rule}"
-        f"{empty_rule}"
-        "- Do NOT invent facts not shown in GRAPH FACTS.\n"
-        "- Use CONVERSATION SO FAR to resolve pronouns and give continuity.\n"
-        f"- Format: maximum {_MAX_ANSWER_LINES} lines. Lead with a direct "
-        "one-line answer, then supporting detail in the order a person would "
-        "naturally explain it. Use a short list only when multiple distinct "
-        "items are being enumerated. Plain, everyday English — no technical "
-        "or internal terms.\n\n"
-        f"{overview}{conv_block}{session_values_block}\nGRAPH FACTS:\n"
-        f"{facts if is_cpq_relevant else '(withheld — question is off-topic, see rule above)'}"
-        f"\n\nQUESTION: {question}"
-    )
-    start = time.monotonic()
-    text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
-    ms = int((time.monotonic() - start) * 1000)
-    text = _strip_think(text)
-    text, r_it, r_ot, r_ms = _enforce_plain_answer(text, question, workspace_id)
-    return text, it + r_it, ot + r_ot, ms + r_ms
-
-
-def _enrich_with_attributes(
-    entities: list[RetrievedEntity], workspace_id: int,
-) -> list[RetrievedEntity]:
-    """Fetch full entity attributes from PostgreSQL and attach to each entity.
-
-    FalkorDB only stores id/type/name; the complete attribute bag lives in the
-    relational store. Enriching here gives the synthesise LLM the actual field
-    values (descriptions, codes, requirement text, etc.) rather than just names.
-    """
-    if not entities:
-        return entities
-    try:
-        with get_pool(get_settings().effective_dsn()).connection() as conn:
-            with conn.cursor() as cur:
-                for ent in entities:
-                    cur.execute(load("select_entity_by_id"), (ent.id, workspace_id))
-                    row = cur.fetchone()
-                    if row:
-                        _, _, attributes = row
-                        if isinstance(attributes, str):
-                            attributes = json.loads(attributes)
-                        ent.attributes = attributes or {}
-    except Exception:  # noqa: BLE001
-        logger.debug("attribute enrichment skipped", exc_info=True)
-    return entities
 
 
 
@@ -12418,14 +12143,6 @@ def _run_cpq_turn_inner(
     }
 
 
-class LlmConfigRequest(BaseModel):
-    provider: str = ""
-    menial_model: str = ""
-    answer_model: str = ""
-    endpoint: str = ""
-    api_key: str = ""
-
-
 # Readiness gate for the JSON/Beautify/Share buttons: don't expose them
 # until there's enough substance to be worth showing (3 answered attrs),
 # or the session has already reached review/approval regardless of count.
@@ -12691,46 +12408,6 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
         if _mandatory_block is not None:
             result["answer"] = _splice_mandatory_block_into_summary(
                 result["answer"], _mandatory_block)
-
-
-def _standard_ask_pipeline(req: AskRequest, reader: Any) -> dict[str, Any]:
-    """Non-CPQ Ask: term extraction → graph retrieval → synthesis."""
-    types = all_types(reader)
-    overview = build_overview(reader, req.workspace_id)
-    try:
-        terms, p_in, p_out, p_ms = _extract_terms(
-            req.question, types, req.history, workspace_id=req.workspace_id)
-        entities, calls = gather(reader, terms)
-        entities = _enrich_with_attributes(entities, req.workspace_id)
-        context = render_context(entities)
-        answer, s_in, s_out, s_ms = _synthesise(
-            req.question, context, overview,
-            history=req.history, workspace_id=req.workspace_id)
-        grounding = build_grounding(answer or "", entities)
-    except Exception as exc:  # noqa: BLE001 — surface model/runtime errors to UI
-        logger.warning("ask failed: %s", exc)
-        return {"answer": f"LLM unavailable: {exc}", "terms": [],
-                "tools_called": [], "usage": {}, "grounding": None}
-    cfg = llm_runtime.status()
-    usage = {
-        "prompt_tokens": p_in + s_in,
-        "completion_tokens": p_out + s_out,
-        "latency_ms": p_ms + s_ms,
-        "menial_model": cfg["menial_model"],
-        "answer_model": cfg["answer_model"],
-    }
-    try:
-        hstore = AskHistoryStore(get_settings().effective_dsn())
-        try:
-            hstore.append(req.workspace_id, req.question,
-                          answer or "", calls, [], usage)
-        finally:
-            hstore.close()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("ask history persist failed: %s", exc)
-    return {"answer": answer or "No answer produced.", "terms": terms,
-            "tools_called": calls, "usage": usage,
-            "grounding": grounding.to_dict()}
 
 
 def _finish_cpq_result(

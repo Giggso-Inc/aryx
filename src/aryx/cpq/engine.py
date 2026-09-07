@@ -2089,6 +2089,15 @@ _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, str] = {
     "applicationServicesIntroBundle_astro": "5 YEARS",
 }
 
+# Deferred to here (not the top-of-file import block, and not right after
+# _DECISION_REQUIRED_KEYS either — turn_intent's submodules collectively
+# need several module-level names defined at various points throughout
+# this file, the latest being _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE
+# right above): aryx.cpq.turn_intent imports names from this module that
+# must already be defined by the time it loads — a top-of-file import
+# would be a circular-import failure.
+from aryx.cpq import turn_intent  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -10887,141 +10896,52 @@ class CpqEngine:
         re.IGNORECASE,
     )
 
-    def detect_response_mode_request(self, question: str) -> str | None:
-        """Return "json" | "batch" | None for an explicit presentation request.
-
-        CPQ_CASCADE_CONVERSATION_PLAN.md §6: the client gets the rich default
-        (verbose narrative, one question at a time) unless they explicitly
-        ask for the JSON payload or the full batch of pending questions.
-        """
-        if self._JSON_REQUEST_RE.search(question):
-            return "json"
-        if self._BATCH_REQUEST_RE.search(question):
-            return "batch"
-        return None
-
-    # Approval keywords — user is confirming the configuration (Step 8 trigger)
-    _APPROVAL_RE = re.compile(
-        r"^(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
-        r"(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
-        r"looks?\s+good|that'?s?\s+(correct|right|good|it)|go\s+ahead|"
-        r"proceed|ok(?:ay)?|all\s+good|send\s+it|let'?s?\s+go)\b|"
-        r"^(?:great|perfect)\b[\s,!.]*(?:let'?s?\s+go|that'?s?\s+(?:works|good|right))?$",
-        re.IGNORECASE,
-    )
-
-    # Q&A intent signals — user is asking a question, not answering a config prompt
+    # The 28 methods below were originally defined directly on this class;
+    # the real implementations now live in `aryx.cpq.turn_intent` (Phase 4
+    # step 2, docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md). 7 of them --
+    # detect_attr_activation, detect_attr_clear, detect_bulk_quantity_change,
+    # _change_request_matches, find_cascade_dependents, build_review_prompt,
+    # next_question_prompt -- genuinely need to call back into other
+    # CpqEngine instance methods (apply_hiding_rules, apply_constraint_rules,
+    # apply_recommendation_rules, resolve_array_grid_links, extract_hints,
+    # _attr_index, _is_html_value), so they stay plain instance methods that
+    # pass `self` through as the module function's leading `engine` argument.
+    # The other 21 need nothing from the instance and are `@staticmethod`
+    # wrappers, same convention as the data_table_bridge cluster above. Every
+    # existing call site (`self.foo(...)`, `CpqEngine.foo(...)`,
+    # `CpqEngine().foo(...)`, and every `mock.patch("aryx.cpq.engine.foo")` in
+    # the test suite) keeps working unchanged.
     #
-    # "list the/all/available"/"show me the/all/available" added
-    # 2026-08-31 — live-confirmed gap: "list the attributes in APX Next"
-    # starts with neither a "?" nor any of the original leading words, so
-    # detect_qa_question returned False both during active configuration
-    # (strict=True) and awaiting_approval review (strict=False), falling
-    # through to change-request detection instead of ever reaching
-    # _handle_cpq_qa's whole-catalog enumeration matcher (docs/
-    # CPQ_QA_Catalog_Attribute_Listing_Fix_2026_08_31.md).
-    #
-    # Deliberately NOT a bare `list\b`/`show\s+me\b` (Raven Review
-    # finding, 2026-08-31): unlike the pre-quote enumeration matcher in
-    # ask_api.py, which double-checks a keyword match against an LLM
-    # classification call before treating anything as a whole-catalog
-    # request, THIS regex is the sole gate for QA-vs-change-request
-    # routing turn-wide — a bare `list` would wrongly route a genuine
-    # imperative change request like "list Hardware Version as APX NEXT"
-    # into Q&A instead of change-request handling (the mirror-image of
-    # the bug this fix closes). Requiring an article after the verb
-    # ("the"/"all"/"available") keeps it matching only genuine
-    # enumeration phrasing, which a "set this to that" change command
-    # does not naturally produce.
-    _QA_INTENT_RE = re.compile(
-        r"^(what|why|how|explain|tell\s+me|describe|what'?s?\s*(is|are)?|"
-        r"difference\s+between|compare|which\s+is\s+(better|best)|"
-        r"can\s+you\s+explain|why\s+can'?t|how\s+does|how\s+do|"
-        r"list\s+(the|all|available)|show\s+me\s+(the|all|available))\b",
-        re.IGNORECASE,
-    )
+    # These 14 class-level constants moved the same way — kept as class
+    # attributes here (not just inside turn_intent) since external code
+    # (e.g. ask_api.py's `_cpq_engine._CHANGE_VERB_RE`) accesses them as
+    # attributes of the CpqEngine instance/class, not via a module import.
+    _APPROVAL_RE = turn_intent._APPROVAL_RE
+    _QA_INTENT_RE = turn_intent._QA_INTENT_RE
+    _CHANGE_VERB_RE = turn_intent._CHANGE_VERB_RE
+    _ARROW_RE = turn_intent._ARROW_RE
+    _REMOVE_VERB_RE = turn_intent._REMOVE_VERB_RE
+    _ADD_VERB_RE = turn_intent._ADD_VERB_RE
+    _CLEAR_VERB_RE = turn_intent._CLEAR_VERB_RE
+    _BULK_QTY_RE = turn_intent._BULK_QTY_RE
+    _DECLINE_RE = turn_intent._DECLINE_RE
+    _SHOW_SUMMARY_RE = turn_intent._SHOW_SUMMARY_RE
+    _MAX_MULTI_CHANGE_REQUESTS = turn_intent._MAX_MULTI_CHANGE_REQUESTS
+    _GENERIC_CLAUSE_STOPWORDS = turn_intent._GENERIC_CLAUSE_STOPWORDS
+    _OPTIONS_KEYWORDS = turn_intent._OPTIONS_KEYWORDS
+    _ALLOWED_CHARS_RE = turn_intent._ALLOWED_CHARS_RE
 
-    # Change-request verbs — user wants to modify a filled attr (Step 6 cascade).
-    # Conjugated forms ("-ing", "-e") are included so "i am changing" / "switching"
-    # / "replacing" all fire has_change_verb=True and activate the attr-name guard.
-    _CHANGE_VERB_RE = re.compile(
-        r"\b(choos(?:e|ing)|select(?:ing)?|pick(?:ing)?|"
-        r"swapp?(?:ing)?|chang(?:e|ing)|switch(?:ing)?|replac(?:e|ing)|"
-        r"updat(?:e|ing)|modif(?:y|ying)|actually|instead|"
-        r"make\s+it|i\s+want|use\s+.+\s+instead)\b",
-        re.IGNORECASE,
-    )
-    # An arrow ("→" or "->") is unambiguous "set this to that" notation on
-    # its own — confirmed live: "chnage mounting type Jacket Magnetic Mount
-    # Quantity → 89" has NO word _CHANGE_VERB_RE recognizes (the typo
-    # "chnage" doesn't contain "chang"), so has_change_verb was False and
-    # the entire free-text number-extraction branch below never ran at all.
-    # Rather than attempt general typo-tolerance (fuzzy, risky — this
-    # engine's "never guess" discipline), the arrow itself is treated as an
-    # equally strong, unambiguous change signal — same tier as a real verb.
-    _ARROW_RE = re.compile(r"->|→")
+    @staticmethod
+    def detect_response_mode_request(question: str) -> str | None:
+        return turn_intent.detect_response_mode_request(question)
 
-    # Removal verbs — user wants to DESELECT an already-chosen multi-select
-    # option, not add a new one (docs: Ask page needs to let a customer
-    # deselect a mount type, not just add more). Deliberately distinct from
-    # _CHANGE_VERB_RE: "change X to Y" replaces a single-select's value,
-    # while "remove X" subtracts one option from an existing multi-select
-    # selection — different verbs, different target data structure
-    # (filled_multi, never filled).
-    _REMOVE_VERB_RE = re.compile(
-        r"\b(remove|deselect|de-select|delete|drop|uncheck|take\s+out|"
-        r"get\s+rid\s+of|don'?t\s+need)\b",
-        re.IGNORECASE,
-    )
-
+    @staticmethod
     def detect_multi_select_removal(
-        self,
         question: str,
         attrs: list[ConfigAttr],
         filled_multi: dict[str, list[str]],
-    ) -> "tuple[ConfigAttr, list[str]] | None":
-        """Detect "remove X"/"deselect X" against an already-selected
-        multi-select option (e.g. "remove Jacket Magnetic Mount" after
-        selecting both Shirt and Jacket).
-
-        Confirmed live this was a real gap: apply_multi_answer/
-        _handle_cascade's multi-select branch only ever UNIONS mentioned
-        options with the current selection (by design, for the "also
-        include X" add case) — there was no removal path at all, so
-        "remove Jacket Magnetic Mount" fell straight through to "I didn't
-        quite catch that" with both mounts still selected.
-
-        Returns (attr, item_values_to_remove) or None. Only fires when a
-        removal verb is present AND at least one mentioned option is
-        genuinely already in the current selection — naming an option
-        that isn't currently selected is not a removal request (falls
-        through to the normal change-request/collision paths instead, same
-        "never guess" discipline as everywhere else in this file).
-        """
-        if not self._REMOVE_VERB_RE.search(question):
-            return None
-        for attr in attrs:
-            if attr.select_type != "multi":
-                continue
-            current = filled_multi.get(attr.variable_name)
-            if not current:
-                continue
-            mentioned = self.apply_multi_answer(attr, question)
-            to_remove = [iv for iv, _dn in mentioned if iv in current]
-            if to_remove:
-                return attr, to_remove
-        return None
-
-    # "add/activate/include/bring back/turn on X" — re-activating a real,
-    # currently-excluded, optional catalog attr post-quote-generation
-    # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2). Deliberately distinct
-    # from _CHANGE_VERB_RE: "change X to Y" replaces an already-visible
-    # attr's value, while "add X" re-activates something not currently
-    # part of the quote at all.
-    _ADD_VERB_RE = re.compile(
-        r"\b(add|activate|include|bring\s+back|re-?add|reactivate|turn\s+on)\b",
-        re.IGNORECASE,
-    )
+    ) -> 'tuple[ConfigAttr, list[str]] | None':
+        return turn_intent.detect_multi_select_removal(question, attrs, filled_multi)
 
     def detect_attr_activation(
         self,
@@ -11034,49 +10954,17 @@ class CpqEngine:
         catalog_prefix: str,
         bml_eval: BmlEvaluator | None = None,
     ) -> ConfigAttr | None:
-        """Detect "add X"/"activate X" re-activating a real, currently-
-        excluded, optional attribute (D2). Never an invented field, never
-        a required one, never a bypass of a currently-active hiding rule.
-
-        A single unified eligibility check covers all 3 of D2's source
-        pools at once: `required == False`, not `attr.hidden` (BM-native
-        permanent hidden — a different concept from rule-conditional
-        hiding, never surfaced regardless of rule state), not already
-        filled/selected, and NOT currently hidden by an active hiding
-        rule (re-checked live against the CURRENT filled state via
-        `apply_hiding_rules`, never a cached/stale exclusion set — an
-        attr whose hiding condition is still true is never a candidate,
-        full stop). This naturally covers a declined multi-select (empty
-        `filled_multi`), a flow-exclusion-dropped attr
-        (`payload_flow_exclusions`), and a hiding-rule-excluded attr
-        whose condition lapsed — all three reduce to the same "real,
-        optional, currently invisible, not rule-blocked" predicate.
-        """
-        if not self._ADD_VERB_RE.search(question):
-            return None
-        _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
-            attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi)
-        q_lower = question.lower()
-        for attr in attrs:
-            vn = attr.variable_name
-            if attr.required or attr.hidden:
-                continue
-            if vn in filled or filled_multi.get(vn):
-                continue
-            if vn in hidden_now:
-                continue  # still genuinely hidden by an active rule
-            if _label_mentioned_strict(attr.display_label.lower(), q_lower):
-                return attr
-        return None
-
-    # "clear/unset/blank X" — nullifying an optional SINGLE-select attr's
-    # current value back to empty (D4). Distinct from _REMOVE_VERB_RE
-    # (multi-select deselection, a different data structure entirely) and
-    # from _CHANGE_VERB_RE (replacing with a different concrete value).
-    _CLEAR_VERB_RE = re.compile(
-        r"\b(clear|unset|blank|leave\s+(?:it\s+)?(?:blank|empty|unset))\b",
-        re.IGNORECASE,
-    )
+        return turn_intent.detect_attr_activation(
+            self,
+            question,
+            attrs,
+            filled,
+            filled_multi,
+            hiding_rules,
+            workspace_id,
+            catalog_prefix,
+            bml_eval,
+        )
 
     def detect_attr_clear(
         self,
@@ -11089,214 +10977,45 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
     ) -> ConfigAttr | None:
-        """Detect "clear X"/"unset X" nullifying an optional single-select
-        attribute's CURRENT value back to blank (D4) — never a required
-        attr, and never one a still-active rule would immediately refill.
-
-        Live-checked, not a static flag: simulates removing each
-        candidate from `filled` and re-runs
-        apply_recommendation_rules/apply_constraint_rules against that
-        trial state — if a recommendation would refire, or a constraint
-        narrows the attr to exactly one remaining valid option, clearing
-        is refused (the very next rule pass would just put the same value
-        straight back, silently, making the "clear" a no-op at best).
-        """
-        if not self._CLEAR_VERB_RE.search(question):
-            return None
-        q_lower = question.lower()
-        for attr in attrs:
-            vn = attr.variable_name
-            if attr.required or attr.select_type == "multi":
-                continue
-            if not filled.get(vn):
-                continue
-            if not _label_mentioned_strict(attr.display_label.lower(), q_lower):
-                continue
-            trial_filled = dict(filled)
-            trial_filled.pop(vn, None)
-            rec_fires = self.apply_recommendation_rules(
-                attrs, trial_filled, rec_rules, bml_eval=bml_eval)
-            if vn in rec_fires:
-                continue  # a recommendation would immediately refill it
-            constrained = self.apply_constraint_rules(
-                attrs, con_rules, trial_filled, bml_eval=bml_eval,
-                workspace_id=workspace_id, catalog_prefix=catalog_prefix)
-            allowed = constrained.get(attr.entity_id)
-            if allowed is not None:
-                valid_opts = [o for o in attr.options if o.item_value in allowed]
-                if len(valid_opts) == 1:
-                    continue  # constraint narrows to one — would refill immediately
-            return attr
-        return None
-
-    # "change/set/update/make ... quantit(y|ies) ... to <number>" OR
-    # "change/set/... both/all/every ... to <number>" — a bulk per-row
-    # quantity update, distinct from _CHANGE_VERB_RE's single-attribute
-    # value change. Live-verified gap (2026-07-22): "change both the
-    # mounting type to 25" — no "quantity" word at all, just "both" —
-    # missed the original quantity-only regex and fell into
-    # detect_change_request_collision instead, where 25 (never a real
-    # mount option) couldn't resolve either. The "both/all/every" branch
-    # is intentionally broader; detect_bulk_quantity_change's own
-    # restriction to resolve_array_grid_links' selectors with actually
-    # resolvable selected rows is the real safety net, not this regex.
-    _BULK_QTY_RE = re.compile(
-        r"\b(?:change|set|update|make)\b.{0,80}"
-        r"\b(?:quantit(?:y|ies)|both|all|every)\b.{0,60}"
-        r"\bto\b\s*(\d+(?:\.\d+)?)",
-        re.IGNORECASE | re.DOTALL,
-    )
+        return turn_intent.detect_attr_clear(
+            self,
+            question,
+            attrs,
+            filled,
+            rec_rules,
+            con_rules,
+            bml_eval,
+            workspace_id,
+            catalog_prefix,
+        )
 
     def detect_bulk_quantity_change(
         self,
         question: str,
         attrs: list[ConfigAttr],
         filled_multi: dict[str, list[str]],
-    ) -> "tuple[str, list[str], str] | None":
-        """Detect "change both/all the mounting types quantity to 67" — set
-        every currently-selected grid-row's quantity to one value at once.
+    ) -> 'tuple[str, list[str], str] | None':
+        return turn_intent.detect_bulk_quantity_change(self, question, attrs, filled_multi)
 
-        Live-verified gap: this phrasing was previously misread as a
-        single-attribute value change ("change Mounting Type to 67"),
-        which either mis-set the grid selector's own value or, on a
-        catalog with two identically-labeled "Mounting Type" attrs (one
-        single-select, one the real multi-select grid), forced an
-        unresolvable disambiguation prompt — 67 was never going to be a
-        valid answer for either one, since the real target is each row's
-        quantity attr, not the selector's own value.
+    @staticmethod
+    def detect_approval(question: str) -> bool:
+        return turn_intent.detect_approval(question)
 
-        Restricting candidates to `resolve_array_grid_links`' selectors
-        sidesteps that label collision entirely: a plain single-select
-        sibling (e.g. mountType_viSoln) never has grid links and so is
-        never a candidate here, regardless of a shared display_label.
+    @staticmethod
+    def detect_decline(question: str) -> bool:
+        return turn_intent.detect_decline(question)
 
-        Returns (selector_variable_name, item_values_to_update, new_qty)
-        or None. Only matches selectors with at least one already-selected,
-        quantity-resolvable row — never guesses at an unfilled selector.
-        """
-        m = self._BULK_QTY_RE.search(question)
-        if not m:
-            return None
-        new_qty = m.group(1)
-        grid_links = self.resolve_array_grid_links(attrs)
-        if not grid_links:
-            return None
-        by_vn = {a.variable_name: a for a in attrs}
-        candidates: list[tuple[str, list[str]]] = []
-        for selector_vn, item_map in grid_links.items():
-            selected = filled_multi.get(selector_vn) or []
-            resolvable = [iv for iv in selected if iv.strip().lower() in item_map]
-            if resolvable:
-                candidates.append((selector_vn, resolvable))
-        if not candidates:
-            return None
-        if len(candidates) == 1:
-            return candidates[0][0], candidates[0][1], new_qty
-        # Multiple grid selectors are in play — narrow by word overlap
-        # against each selector's own display_label rather than guess.
-        q_words = set(_variable_words(question.replace("_", " ")))
-        scored = []
-        for selector_vn, resolvable in candidates:
-            attr = by_vn.get(selector_vn)
-            label_words = set(_variable_words(attr.display_label)) if attr else set()
-            if q_words & label_words:
-                scored.append((selector_vn, resolvable))
-        if len(scored) == 1:
-            return scored[0][0], scored[0][1], new_qty
-        return None
+    @staticmethod
+    def detect_show_summary_request(question: str) -> bool:
+        return turn_intent.detect_show_summary_request(question)
 
-    def detect_approval(self, question: str) -> bool:
-        """True when the user is approving/confirming the configuration (Step 8)."""
-        return bool(self._APPROVAL_RE.search(question.strip()))
-
-    # Decline keywords — user is explicitly rejecting the awaiting-approval
-    # configuration (ISSUE-002, docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_
-    # PLAN_2026_08_17.md). Anchored at the start of the message exactly like
-    # _APPROVAL_RE above, deliberately NOT a bare substring search — a
-    # substring match on "no" would false-positive on ordinary attribute
-    # answers that happen to start with a negative word (e.g. "no carry
-    # solution" as a value), which this detector must never be consulted
-    # for anyway (callers only invoke it in awaiting-approval-adjacent
-    # dispatch), but the anchored shape keeps the regex itself conservative
-    # regardless of call site.
-    _DECLINE_RE = re.compile(
-        r"^no+\b[\s,!.]*$|"  # bare "no"/"noo" (optionally with trailing punctuation) alone
-        r"^(?:no+\b[\s,!.]*)?"
-        r"(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
-        r"(nope|declin(?:e|ed|ing)|reject(?:ed|ing)?|cancel(?:led|ing)?|"
-        r"don'?t\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
-        r"do\s+not\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
-        r"not\s+(?:yet|now|ready)|hold\s+on|wait|"
-        r"that'?s?\s+(?:wrong|not\s+(?:right|correct))|go\s+back)\b",
-        re.IGNORECASE,
-    )
-
-    def detect_decline(self, question: str) -> bool:
-        """True when the user is explicitly rejecting the awaiting-approval
-        configuration (Step 8 rejection). See ISSUE-002 fix plan for the
-        production bug this closes: an explicit "no, decline that" was being
-        misdispatched as an approval because no deterministic decline
-        detector existed at all.
-        """
-        return bool(self._DECLINE_RE.search(question.strip()))
-
-    # "give/show me the (final) summary/configuration", "recap", "what do
-    # I have so far" — a request to RE-SHOW the current configuration, not
-    # a question about a specific attribute and not an approval. Live-
-    # verified gap, 2026-08-13: with no dedicated category for this, "give
-    # the final summary now" was classified OUT_OF_SCOPE by the LLM
-    # classifier (none of its fixed categories represent "show it again"),
-    # and a shorter phrasing like "give the configuration" could
-    # coincidentally word-match a real catalog attribute whose own label
-    # contains "configuration" (e.g. "Configuration Type"), silently
-    # hijacking the turn into a change-target prompt for that unrelated
-    # attribute instead. Checked deterministically, ahead of both paths.
-    _SHOW_SUMMARY_RE = re.compile(
-        r"(?i:"
-        r"\b(?:show|give|send|display)\s+(?:me\s+)?(?:the\s+)?"
-        r"(?:final\s+|current\s+|full\s+)?(?:summary|configuration|config)\b"
-        r"|\brecap\b"
-        r"|\breview\s+(?:the\s+|my\s+)?(?:configuration|config|summary|order)\b"
-        r"|\bwhat\s+(?:do\s+i\s+have|have\s+i\s+(?:chosen|selected|picked))\s+so\s+far\b"
-        r"|\bwhat'?s?\s+my\s+(?:current\s+)?(?:configuration|config)\b"
-        r")"
-    )
-
-    def detect_show_summary_request(self, question: str) -> bool:
-        """True when the customer is asking to see the configuration
-        summary again, not naming a specific attribute or approving.
-        """
-        return bool(self._SHOW_SUMMARY_RE.search(question.strip()))
-
+    @staticmethod
     def detect_qa_question(
-        self,
         question: str,
-        pending_attr: "ConfigAttr | None" = None,
+        pending_attr: 'ConfigAttr | None' = None,
         strict: bool = False,
     ) -> bool:
-        """True when the user is asking a Q&A question rather than answering a config prompt.
-
-        strict=True — only fires on explicit `?` or Q&A intent keywords. Use during
-        active configuration to avoid intercepting free-text config answers.
-        strict=False (default) — also fires when a long message doesn't match any
-        option for the pending attr. Use during awaiting_approval review.
-        """
-        q = question.strip()
-        if "?" in q:
-            return True
-        if self._QA_INTENT_RE.search(q):
-            return True
-        if strict:
-            return False
-        # Awaiting-approval heuristic: long message that matches no visible option → Q&A
-        if pending_attr and pending_attr.options and len(q.split()) > 5:
-            q_lower = q.lower()
-            if not any(
-                o.item_value.lower() in q_lower or o.display_name.lower() in q_lower
-                for o in pending_attr.options
-            ):
-                return True
-        return False
+        return turn_intent.detect_qa_question(question, pending_attr, strict)
 
     def detect_change_request(
         self,
@@ -11304,32 +11023,11 @@ class CpqEngine:
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
-    ) -> "tuple[ConfigAttr, str] | None":
-        """Detect if the user wants to change an already-filled attribute (Step 6).
+    ) -> 'tuple[ConfigAttr, str] | None':
+        return turn_intent.detect_change_request(self, question, attrs, filled, filled_multi)
 
-        Returns (attr_to_change, new_value_hint) or None if no change detected.
-        Strategy: look for change-verb vocabulary first; then fall back to
-        checking if the raw message maps to a different value for any filled attr.
-
-        filled_multi — multi-select selections (variable_name → item_values).
-        Without it, multi-selects were INVISIBLE to change detection (the
-        loop only consulted the scalar `filled` dict), so no multi-select
-        could ever be changed after completion — confirmed live: "I wanted
-        to include the mounting type: Locking Molle Mount" against a
-        declined (empty, user-confirmed) mount grid fell through to the
-        review nudge. A key present in filled_multi counts as filled —
-        including the explicitly-declined empty selection; for multi attrs
-        a "different value" means the mentioned option isn't already in
-        the selected rows.
-
-        Just the first match from `_change_request_matches` — see
-        `detect_change_requests_multi` for a message naming several
-        attrs at once.
-        """
-        return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
-
+    @staticmethod
     def detect_all_change_targets_without_value(
-        self,
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
@@ -11338,101 +11036,22 @@ class CpqEngine:
         exclude_vns: set[str] | None = None,
         cap: int = 10,
     ) -> list[ConfigAttr]:
-        """All already-filled attrs named in a valueless change utterance.
-
-        Ordered by first appearance of the label/vn in the question so
-        "change hardware version, service type and activation delay"
-        yields a stable FIFO for pending_intent_queue. ``exclude_vns``
-        skips already-handled targets; ``cap`` bounds the scan (default
-        matches INTENT_QUEUE_CAP).
-        """
-        if not self._CHANGE_VERB_RE.search(question or ""):
-            return []
-        exclude = exclude_vns or set()
-        multi = filled_multi or {}
-        q_flat = (question or "").lower().replace("_", " ")
-        matches: list[ConfigAttr] = []
-        for a in attrs:
-            if a.variable_name in exclude:
-                continue
-            if not (filled.get(a.variable_name) or multi.get(a.variable_name)):
-                continue
-            label_l = (a.display_label or "").lower()
-            vn_flat = a.variable_name.lower().replace("_", " ")
-            # Full label, variable_name, or a trailing multi-word slice of
-            # the label (e.g. "service type" matching "Primary Service Type").
-            hit = False
-            if label_l and label_l in q_flat:
-                hit = True
-            elif vn_flat and vn_flat in q_flat:
-                hit = True
-            else:
-                words = [w for w in label_l.split() if len(w) > 1]
-                for n in range(min(len(words), 3), 1, -1):
-                    tail = " ".join(words[-n:])
-                    if tail in q_flat:
-                        hit = True
-                        break
-            if hit:
-                matches.append(a)
-        # Prefer longer labels when one subsumes another (same as singular
-        # detector's max-by-len), but keep appearance order among peers.
-        # First drop subsumed shorter labels that share the same span.
-        def _pos(a: ConfigAttr) -> int:
-            label_l = (a.display_label or "").lower()
-            vn_flat = a.variable_name.lower().replace("_", " ")
-            positions = [i for i in (
-                q_flat.find(label_l) if label_l else -1,
-                q_flat.find(vn_flat) if vn_flat else -1,
-            ) if i >= 0]
-            return min(positions) if positions else 9999
-
-        # Drop attrs whose label is a strict substring of another match's
-        # label at the same region (e.g. "Type" inside "Service Type") —
-        # keep the longest label at each position cluster.
-        matches.sort(key=lambda a: (-len(a.display_label or ""), _pos(a), a.variable_name))
-        kept: list[ConfigAttr] = []
-        kept_labels: list[str] = []
-        for a in matches:
-            lab = (a.display_label or "").lower()
-            if any(lab and lab != k and lab in k for k in kept_labels):
-                continue
-            kept.append(a)
-            kept_labels.append(lab)
-        # Stable user-facing order: appearance in the utterance.
-        kept.sort(key=_pos)
-        return kept[: max(0, cap)]
-
-    def detect_change_target_without_value(
-        self, question: str, attrs: list[ConfigAttr], filled: dict[str, str],
-    ) -> ConfigAttr | None:
-        """A change-verb naming an already-filled attr, but with no
-        resolvable new value ("change hardware version", "change product")
-        — distinct from detect_change_request, which requires BOTH a verb
-        AND a value and returns None otherwise. Confirmed live
-        (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 1): a
-        valueless change message fell through every detector, regex and
-        LLM, straight to the generic "I didn't quite catch that" nudge —
-        this lets the caller instead ask which value, the same way
-        detect_attr_query's "what values are available" answer already
-        does. Only ever called AFTER detect_change_request/
-        detect_change_requests_multi have already returned nothing, so a
-        message with a resolvable value never reaches here.
-
-        Returns the first of ``detect_all_change_targets_without_value``
-        (appearance order) so multi-target callers can still use the
-        singular form for "active" while enqueuing the rest.
-        """
-        all_targets = self.detect_all_change_targets_without_value(
-            question, attrs, filled,
+        return turn_intent.detect_all_change_targets_without_value(
+            question,
+            attrs,
+            filled,
+            filled_multi=filled_multi,
+            exclude_vns=exclude_vns,
+            cap=cap,
         )
-        return all_targets[0] if all_targets else None
 
-    # Cap on detect_change_requests_multi's result — a message naming more
-    # than this is unusual enough that blindly trusting every match risks
-    # silently misapplying something the user didn't actually intend
-    # (product decision: cap 3, apply whichever parse, report the rest).
-    _MAX_MULTI_CHANGE_REQUESTS = 3
+    @staticmethod
+    def detect_change_target_without_value(
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+    ) -> ConfigAttr | None:
+        return turn_intent.detect_change_target_without_value(question, attrs, filled)
 
     def detect_change_requests_multi(
         self,
@@ -11441,104 +11060,15 @@ class CpqEngine:
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> list[tuple[ConfigAttr, str]]:
-        """Up to `_MAX_MULTI_CHANGE_REQUESTS` (attr, new_value_hint) matches
-        from a SINGLE message naming several attrs at once — e.g. "change
-        the Shirt Magnetic Mount Quantity to 25 and the Jacket Magnetic
-        Mount Quantity to 25". `detect_change_request` only ever returns
-        the first match (`_change_request_matches` is a generator; each
-        `for attr in _try_order` iteration yields independently, so
-        collecting more than one is exactly this: keep scanning instead of
-        stopping at the first).
+        return turn_intent.detect_change_requests_multi(self, question, attrs, filled, filled_multi)
 
-        Returns [] when no match is found, mirroring the "no change
-        detected" contract callers already expect from the singular form.
-        """
-        out: list[tuple[ConfigAttr, str]] = []
-        for match in self._change_request_matches(question, attrs, filled, filled_multi):
-            out.append(match)
-            if len(out) >= self._MAX_MULTI_CHANGE_REQUESTS:
-                break
-        return out
-
-    # Generic connector/control words a leftover clause commonly contains
-    # that are never themselves part of a real catalog label — excluded so
-    # e.g. "...and confirm" doesn't count "confirm" as catalog-word overlap
-    # just because some unrelated attr's label happens to share it.
-    _GENERIC_CLAUSE_STOPWORDS = frozenset({
-        "to", "the", "a", "an", "then", "please", "also", "and", "or",
-        "change", "set", "update", "make", "it", "that", "this", "for",
-        "with", "of", "in", "on", "confirm", "submit", "thanks", "thank",
-        "yes", "no", "ok", "okay", "done",
-    })
-
+    @staticmethod
     def detect_unmatched_change_targets(
-        self,
         question: str,
         attrs: list[ConfigAttr],
-        matched_vns: "set[str]",
+        matched_vns: 'set[str]',
     ) -> list[str]:
-        """Live-verified gap (2026-07-28): "change solution type and
-        hardware type" — where "hardware type" names nothing real in this
-        catalog (it's "Hardware Version", not "Hardware Type") — silently
-        dropped "hardware type" entirely once "solution type" was
-        successfully matched. The customer explicitly asked for two
-        things and only saw one addressed, with no indication the second
-        wasn't understood — indistinguishable from the system just
-        forgetting it.
-
-        Returns plain-language leftover phrases from the message that
-        (a) weren't accounted for by any attr already in `matched_vns`,
-        (b) don't match ANY real attr's label either (a genuine second
-        VALID target — just one this caller hasn't resolved yet — is not
-        "unmatched", it's simply not this function's problem), and
-        (c) share at least one content word with SOME real catalog
-        label, the signal that this was a plausible-but-failed naming
-        attempt rather than an unrelated trailing clause ("...and
-        confirm") that happens to split on the same connective.
-
-        Deliberately conservative: only runs when the message has an
-        actual change-verb AND a connective ("and"/","/"&") joining
-        multiple clauses — a single-clause message has nothing "left
-        over" to flag by construction.
-        """
-        verb_match = self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)
-        if not verb_match:
-            return []
-        if not re.search(r"\band\b|,|&", question, re.IGNORECASE):
-            return []
-        catalog_words: set[str] = set()
-        for a in attrs:
-            catalog_words |= set(re.findall(r"[a-z0-9]+", a.display_label.lower()))
-        clauses = re.split(r"\band\b|,|&", question, flags=re.IGNORECASE)
-        unmatched: list[str] = []
-        for clause in clauses:
-            clause = clause.strip()
-            if not clause:
-                continue
-            clause_lower = clause.lower()
-            # Already accounted for by an attr this caller DID match.
-            if any(
-                a.variable_name in matched_vns
-                and _label_mentioned_strict(a.display_label.lower(), clause_lower)
-                for a in attrs
-            ):
-                continue
-            # Names a REAL attr — just not (yet) one in matched_vns. Not
-            # this function's concern; a genuine second valid target is
-            # not the same failure as naming nothing at all.
-            if any(_label_mentioned_strict(a.display_label.lower(), clause_lower) for a in attrs):
-                continue
-            stripped = self._CHANGE_VERB_RE.sub("", clause, count=1).strip()
-            stripped = self._ARROW_RE.sub("", stripped, count=1).strip()
-            if not stripped or len(stripped.split()) > 6:
-                continue
-            clause_words = (
-                set(re.findall(r"[a-z0-9]+", stripped.lower()))
-                - self._GENERIC_CLAUSE_STOPWORDS
-            )
-            if clause_words & catalog_words:
-                unmatched.append(stripped)
-        return unmatched
+        return turn_intent.detect_unmatched_change_targets(question, attrs, matched_vns)
 
     def _change_request_matches(
         self,
@@ -11547,267 +11077,24 @@ class CpqEngine:
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> Iterator[tuple[ConfigAttr, str]]:
-        """Generator yielding every (attr, new_value_hint) match — shared by
-        `detect_change_request` (first match only) and
-        `detect_change_requests_multi` (up to `_MAX_MULTI_CHANGE_REQUESTS`).
-        See `detect_change_request`'s docstring for the matching contract;
-        this is the same body with `return` turned into `yield` + `continue`
-        so the `for attr in _try_order` loop keeps scanning afterward
-        instead of exiting the whole function.
-        """
-        q_lower = question.lower()
-        has_change_verb = bool(self._CHANGE_VERB_RE.search(question)) or bool(self._ARROW_RE.search(question))
-        multi = filled_multi or {}
-
-        # Each candidate attr's own label-mention span (start, end) in the
-        # lowercased message, when found — used below to scope free-text
-        # numeric extraction to the text near THIS attr's own mention
-        # rather than the whole message. A message naming two sibling
-        # quantity attrs (confirmed live: SVX's per-mount-type quantity
-        # attrs are all named "mounting type {Mount Name} Quantity", one
-        # per mount option) — e.g. "change the jacket magnetic mount
-        # quantity to 15 and the pouch mount quantity to 8" — would
-        # otherwise have BOTH attrs' searches independently grab the SAME
-        # first number in the sentence, since neither search was scoped to
-        # its own attr's mention; whichever attr `attrs` iteration reached
-        # first won, regardless of which number was actually meant for it
-        # (catalog order, not textual order — confirmed live by reversing
-        # iteration order and getting "15" for the pouch attr instead of 8).
-        label_spans: dict[str, tuple[int, int]] = {}
-        for _attr in attrs:
-            if _attr.variable_name not in filled and _attr.variable_name not in multi:
-                continue
-            span = _label_mention_span(_attr.display_label.lower(), q_lower)
-            if span:
-                label_spans[_attr.variable_name] = span
-
-        # A candidate whose label is a literal SUBSTRING of another matching
-        # candidate's label (e.g. "Quantity" inside "mounting type Locking
-        # Molle Mount Quantity") is deprioritized — tried only as a fallback
-        # if no more-specific candidate produces a result. This is narrower
-        # than "shorter label loses": two independent sibling labels that
-        # don't subsume each other (e.g. "Jacket Magnetic Mount Quantity" vs
-        # "Pouch Mount Quantity") are NOT affected, preserving the existing
-        # iteration-order contract for genuine siblings — only a real
-        # substring/subsumption relationship reorders anything (confirmed
-        # live: "Change the mounting type Locking Molle Mount Quantity to
-        # 10" matched the generic accecsssoriesQuantityArray_viSoln — label
-        # "Quantity" — instead of mountingTypeLockingMolleMountQuantity_
-        # viSoln, whose real label IS "mounting type Locking Molle Mount
-        # Quantity" — same principle detect_attr_query's own longest-match
-        # tiebreak already applies, docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2).
-        _candidates = [a for a in attrs if a.variable_name in filled or a.variable_name in multi]
-        _superseded: set[str] = set()
-        for _a in _candidates:
-            _a_label = _a.display_label.lower()
-            for _b in _candidates:
-                if _b is _a or _b.variable_name in _superseded:
-                    continue
-                _b_label = _b.display_label.lower()
-                if _a_label != _b_label and _a_label in _b_label:
-                    _superseded.add(_a.variable_name)
-                    break
-        _try_order = (
-            [a for a in attrs if a.variable_name not in _superseded]
-            + [a for a in attrs if a.variable_name in _superseded]
-        )
-
-        # Try each filled attr — find one where the user's message implies a different value
-        for attr in _try_order:
-            if attr.variable_name not in filled and attr.variable_name not in multi:
-                continue
-            vn_flat = attr.variable_name.lower().replace("_", "")
-            label_lower = attr.display_label.lower()
-
-            # Require the attr to be mentioned by name/label REGARDLESS of
-            # change-verb presence (2026-07-28 fix) — the original gate
-            # only skipped an unmentioned attr when has_change_verb was
-            # True, which backwards-guarded exactly the wrong case: a bare
-            # reply with NO change verb (e.g. a plain "77" meant to answer
-            # a totally different pending free-text quantity attr) let
-            # EVERY filled attr through unfiltered, since the whole
-            # condition short-circuits False when has_change_verb is
-            # False. Live-verified: with no verb and no mention, "77" got
-            # tried against ultimateDestinationCountry's own apply_answer,
-            # which treats a bare number as a 1-based option INDEX — and
-            # position 77 in that catalog's 251-country list happens to be
-            # United Kingdom — silently overwriting the country and
-            # cascading a dozen dependent attrs, while the customer's
-            # actual answer (a quantity) was never even attempted here.
-            # Naming still isn't required through the SEPARATE hint-path
-            # fallback further below (extract_hints's own token-to-vn
-            # match is its own, narrower signal) — this only closes the
-            # "nothing at all ties this attr to the message" hole.
-            #
-            # A multi-select attr's own OPTION VALUE mentioned in the text
-            # counts too, not just its label/variable_name — "add the
-            # Jacket Clip Mount too" legitimately names the value being
-            # added, never the generic "Mounting Type" label itself
-            # (pre-existing, tested behavior — test_cpq_grid_decline.py).
-            _multi_option_mentioned = attr.select_type == "multi" and any(
-                o.display_name.lower() in q_lower for o in attr.options
-            )
-            if (
-                vn_flat not in q_lower.replace("_", "")
-                and not _label_mentioned(label_lower, q_lower)
-                and not _multi_option_mentioned
-            ):
-                continue
-
-            # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up
-            # — a multi-select the customer never touched still gets a `[]`
-            # entry in filled_multi from auto_fill/hiding-rule evaluation
-            # (confirmed live: nearly every multi-select in a real catalog
-            # carries this, touched or not), so the gate above alone lets a
-            # BARE VALUE mention — with no explicit label/variable_name
-            # naming at all — match an untouched, empty multi-select purely
-            # because that value happens to also be one of ITS real
-            # options. Live-confirmed: with Frequency Bands (single-select)
-            # correctly the sole pending attribute, a bare "VHF" reply
-            # still matched an unrelated, never-touched
-            # modelSelectionFrequencyBandMsl_astro this way, writing the
-            # reply into the wrong attribute and leaving the real pending
-            # one stale (bom_gate re-detects it as invalid every confirm,
-            # looping forever). An EMPTY multi-select stays eligible when
-            # explicitly named by label/variable_name (test_cpq_grid_
-            # decline.py's declined-grid-reconsidered case: "I wanted to
-            # include the mounting type: X" must still work) — only a
-            # bare, unnamed value-only mention requires the multi-select to
-            # already hold a real selection.
-            if (
-                attr.select_type == "multi"
-                and not multi.get(attr.variable_name)
-                and vn_flat not in q_lower.replace("_", "")
-                and not _label_mentioned(label_lower, q_lower)
-            ):
-                continue
-
-            # Direct apply_answer match — checked FIRST so the full NL question
-            # (with verbatim display-name substring matching) wins over the coarse
-            # hint token. Without this ordering, "4G LTE Only" collapsed to "LTE"
-            # by _HINT_PATTERNS can't be distinguished from "4G LTE+5G".
-            # Guard: skip option-less (free-text) attrs — apply_answer's free-text
-            # fallback would accept ANY string as a spurious "value".
-            if attr.options and attr.variable_name in multi:
-                mentioned = self.apply_multi_answer(attr, question)
-                current_rows = set(multi.get(attr.variable_name, []))
-                if any(iv not in current_rows for iv, _dn in mentioned):
-                    yield attr, question
-                continue
-            if attr.options:
-                result = self.apply_answer(attr, question)
-                if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                    yield attr, question
-                    continue
-            elif has_change_verb:
-                # Free-text attr (e.g. a per-mount quantity field) with an
-                # explicit change verb — the label-mention gate above has
-                # already confirmed THIS attr is the one being talked about,
-                # but unlike options-backed attrs there's no menu list to
-                # fuzzy-match a value against, and extract_hints() only knows
-                # fixed concepts (country/region/hwversion) — never numbers
-                # (confirmed live: "change the jacket magnetic mount quantity
-                # to 15" fell through to "I didn't quite catch that" even
-                # after the label-mention fix above, because nothing ever
-                # extracted "15" out of the sentence). Anchor to the "to/from
-                # N" phrasing FIRST — this catalog's own product names embed
-                # digits (V200 Body Worn Camera, APX6500, both confirmed live
-                # elsewhere in this file), so "change the V200 Body Worn
-                # Camera quantity to 2" would otherwise match "200" before
-                # the intended "2". Only fall back to the first standalone
-                # number in the sentence when no directional verb is present.
-                # Scoped to the text after THIS attr's own label mention (see
-                # label_spans above) and before the next sibling attr's own
-                # mention, if any — never the whole message, or a second
-                # quantity attr named later in the same sentence would steal
-                # this one's number (or vice versa).
-                own_span = label_spans.get(attr.variable_name)
-                if own_span:
-                    window_start = own_span[1]
-                    later_starts = [
-                        s for vn2, (s, _e) in label_spans.items()
-                        if vn2 != attr.variable_name and s >= window_start
-                    ]
-                    window_end = min(later_starts) if later_starts else len(question)
-                    search_text = question[window_start:window_end]
-                else:
-                    # This attr matched only via vn_flat (the raw variable
-                    # name literally in the message), not its display label
-                    # — no span to scope by, so fall back to the whole
-                    # message like before (rare: natural phrasing almost
-                    # never types the internal snake_case variable name).
-                    search_text = question
-                m = (re.search(r"\bto\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE)
-                     or re.search(r"(?:->|→)\s*(-?\d+(?:\.\d+)?)", search_text)
-                     or re.search(r"\bfrom\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE))
-                value = m.group(1) if m else None
-                if value is None:
-                    m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
-                    value = m2.group(0) if m2 else None
-                if value is not None and value != filled.get(attr.variable_name, ""):
-                    yield attr, value
-                    continue
-
-            # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
-            # the attr is mentioned but may not identify the exact option. Only reached
-            # when apply_answer found no specific match (e.g. "make it LTE" with no
-            # full option name in the message). Returns full question so _handle_cascade
-            # can try apply_answer again with more context.
-            hints_dcr = self.extract_hints(question)
-            for hk, hv in hints_dcr.items():
-                hk_flat = hk.lower().replace("_", "")
-                if hk_flat in vn_flat or vn_flat in hk_flat:
-                    if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        yield attr, question
-                        break
+        return turn_intent._change_request_matches(self, question, attrs, filled, filled_multi)
 
     def find_cascade_dependents(
         self,
-        changed_attr: "ConfigAttr",
+        changed_attr: 'ConfigAttr',
         all_attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
     ) -> list[int]:
-        """Return entity_ids of attrs that may be invalidated when changed_attr is re-valued.
-
-        Covers:
-          - Attrs targeted by hiding/recommendation/constraint rules conditioned on changed_attr.
-          - Free-text cascade siblings (attrs sharing a decision key fragment with changed_attr).
-        """
-        dependents: set[int] = set()
-        changed_ids = {changed_attr.entity_id}
-        if changed_attr.source_id is not None:
-            changed_ids.add(changed_attr.source_id)
-        by_rule_id = self._attr_index(all_attrs)
-
-        def _target_eid(target_attr_id: int) -> int:
-            target = by_rule_id.get(target_attr_id)
-            return target.entity_id if target else target_attr_id
-
-        for rule in hiding_rules:
-            if rule.condition_attr_id in changed_ids:
-                dependents.add(_target_eid(rule.target_attr_id))
-        for rule in rec_rules:
-            if rule.condition_attr_id in changed_ids:
-                dependents.add(_target_eid(rule.target_attr_id))
-        for rule in con_rules:
-            if rule.condition_attr_id in changed_ids:
-                dependents.add(_target_eid(rule.target_attr_id))
-
-        # Cascade-fill siblings (free-text attrs that mirror this attr's value)
-        changed_vn_flat = changed_attr.variable_name.lower().replace("_", "")
-        matched_dk = next(
-            (dk for dk in _DECISION_REQUIRED_KEYS if dk in changed_vn_flat), None
+        return turn_intent.find_cascade_dependents(
+            self,
+            changed_attr,
+            all_attrs,
+            hiding_rules,
+            rec_rules,
+            con_rules,
         )
-        if matched_dk:
-            for attr in all_attrs:
-                if attr.entity_id == changed_attr.entity_id or attr.options:
-                    continue
-                if matched_dk in attr.variable_name.lower().replace("_", ""):
-                    dependents.add(attr.entity_id)
-
-        return list(dependents)
 
     def build_review_prompt(
         self,
@@ -11815,825 +11102,91 @@ class CpqEngine:
         attrs: list[ConfigAttr],
         display_filled: dict[str, str],
     ) -> str:
-        """Build the Step 6 review message for user approval.
+        return turn_intent.build_review_prompt(self, product_name, attrs, display_filled)
 
-        Shows decision-required attrs (the choices the user made) prominently,
-        and summarises auto-configured attrs as a count so the review is scannable.
-        """
-        by_vn: dict[str, ConfigAttr] = {a.variable_name: a for a in attrs}
-        decision_lines: list[str] = []
-        auto_count = 0
+    @staticmethod
+    def detect_label_collision(question: str, attrs: list[ConfigAttr]) -> list[ConfigAttr] | None:
+        return turn_intent.detect_label_collision(question, attrs)
 
-        for vn, disp_val in display_filled.items():
-            if self._is_html_value(disp_val):
-                continue
-            attr = by_vn.get(vn)
-            label = attr.display_label if attr else vn
-            vn_flat = vn.lower().replace("_", "")
-            is_decision = any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
-            if is_decision:
-                decision_lines.append(f"- **{label}**: {disp_val}")
-            else:
-                auto_count += 1
-
-        parts = [f"✅ **{product_name}** is configured. Review your choices:"]
-        if decision_lines:
-            parts.extend(decision_lines)
-        if auto_count:
-            parts.append(f"\n*{auto_count} additional attributes auto-configured from graph defaults.*")
-        parts.append(
-            "\nSay **confirm** to generate the BOM, or describe what you'd like to change."
-        )
-        return "\n".join(parts)
-
-    # ── Attribute option query detection ─────────────────────────────────────
-
-    _OPTIONS_KEYWORDS: frozenset[str] = frozenset({
-        "values", "options", "available", "what are", "list", "choices",
-        "show me", "which", "can i choose", "what can",
-    })
-
-    def detect_label_collision(
-        self, question: str, attrs: list[ConfigAttr],
-    ) -> list[ConfigAttr] | None:
-        """Detect an options-query naming a display_label 2+ distinct attrs
-        share (BigMachines source-data reuse — confirmed real, not an
-        ingestion artifact; see docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2).
-
-        Only fires for the label-matching tier — a variable_name match is
-        already unambiguous by construction (variable_name is unique), so
-        this must run BEFORE detect_attr_query's own label fallback tier
-        silently resolves the tie via `max(..., key=len)`. Returns the tied
-        candidates so the caller can ask the user to disambiguate instead of
-        guessing, or None when there's no collision to report.
-
-        docs/config_consistency_issues_2026-07-30.md — live-confirmed bug: a
-        genuine COLLISION (one shared label, 2+ attrs) was being conflated
-        with a compound question naming several DIFFERENT, unambiguous
-        attrs by their own distinct labels in one sentence ("what are the
-        Frequency Bands and Wireless Carrier available?" wrongly pulled
-        wirelessCarrier_astro — label "Wireless Carrier", zero shared
-        tokens with "Frequency Bands" — into the SAME disambiguation
-        prompt, because the old check only counted `len(distinct_vns) >= 2`
-        across ALL label matches combined, never checking whether they
-        actually shared ONE label. Now groups matches by their OWN exact
-        label text first — only a group where 2+ DISTINCT variable_names
-        share the SAME label text is a real collision. Every `_narrow_label_
-        collision` caller already assumes this invariant (its own docstring:
-        "every candidate here has the IDENTICAL label by construction") —
-        this fix makes that actually true instead of assumed.
-        """
-        q_lower = question.lower()
-        if not any(kw in q_lower for kw in self._OPTIONS_KEYWORDS):
-            return None
-        q_flat = q_lower.replace("_", "")
-        vn_matches = [
-            attr for attr in attrs
-            if attr.variable_name.lower().replace("_", "") in q_flat
-            or attr.variable_name.lower() in q_lower
-        ]
-        if vn_matches:
-            return None
-        label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
-        by_label: dict[str, list[ConfigAttr]] = {}
-        for a in label_matches:
-            by_label.setdefault(a.display_label.lower(), []).append(a)
-        for group in by_label.values():
-            if len({a.variable_name for a in group}) >= 2:
-                return group
-        return None
-
+    @staticmethod
     def detect_change_request_collision(
-        self,
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> list[ConfigAttr] | None:
-        """Same identical-label ambiguity as detect_label_collision, but for
-        change requests rather than options-queries (docs/CPQ_SESSION_2_
-        OPEN_ISSUES.md item 2 — that doc claimed this closed the gap for
-        "the whole conversational flow", but detect_change_request only
-        ever had the separate, narrower substring-subsumption fix, which
-        does nothing when two candidates' labels are IDENTICAL rather than
-        one subsuming the other — confirmed: "change service type to
-        Premier" against 3 identically-labeled "Service Type" attrs
-        resolved silently to whichever was first in catalog order).
+        return turn_intent.detect_change_request_collision(question, attrs, filled, filled_multi)
 
-        detect_label_collision itself isn't reused directly — it gates on
-        _OPTIONS_KEYWORDS ("what options...", never present in a change
-        request) and considers every attr, not just already-filled ones.
-        Here the gate is a change-verb/arrow (mirrors detect_change_
-        request's own has_change_verb check) and candidates are restricted
-        to attrs actually in `filled`/`filled_multi` — an unfilled attr
-        can't be the target of a "change X" request in the first place.
-
-        Returns the tied candidates (so the caller can ask which one was
-        meant), or None when there's no collision to report.
-        """
-        if not (self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)):
-            return None
-        q_lower = question.lower()
-        multi = filled_multi or {}
-        # _label_mentioned_strict (2026-07-28 fix), NOT the loose
-        # _label_mentioned — live-confirmed bug: "change solution type and
-        # hardware type" (neither phrase contains "service type" anywhere)
-        # still reported a "Service Type" collision, because the loose
-        # matcher's leading-word-drop tier let "Service Type" degrade to
-        # the single generic shared word "Type", which then substring-
-        # matched "type" inside BOTH "solution type" and "hardware type".
-        # _label_mentioned's own docstring says this loose tier is "safe
-        # only as a coarse pre-filter" specifically because its OTHER
-        # caller (detect_change_request) always requires a separate real
-        # value-match before resolving anything — this function has no
-        # such second check; it hands loose matches straight to the user
-        # as a real collision, so it needs the strict variant instead,
-        # which explicitly never degrades to a single generic shared word
-        # (see _label_mentioned_strict's own docstring). Multi-word
-        # dropped-prefix matches (e.g. "mounting type Shirt Magnetic Mount
-        # Quantity" naming just "Shirt Magnetic Mount Quantity") still work
-        # under the strict variant — only the single-generic-word
-        # degradation is excluded.
-        candidates = [
-            a for a in attrs
-            if (a.variable_name in filled or a.variable_name in multi)
-            and _label_mentioned_strict(a.display_label.lower(), q_lower)
-        ]
-        # Group by the EXACT label text, not just "2+ candidates matched at
-        # all" — a substring containment match (e.g. "Quantity" inside
-        # "...Locking Molle Mount Quantity to 10") can pull in candidates
-        # with genuinely DIFFERENT labels, which is detect_change_request's
-        # own _superseded subsumption case, not an identical-label collision.
-        by_label: dict[str, list[ConfigAttr]] = {}
-        for a in candidates:
-            by_label.setdefault(a.display_label.lower(), []).append(a)
-        all_labels = set(by_label.keys())
-        for label, group in by_label.items():
-            if len({a.variable_name for a in group}) < 2:
-                continue
-            # A more specific match already present (e.g. "mounting type
-            # Shirt Magnetic Mount Quantity" contains this group's generic
-            # "mounting type" as its own prefix) resolves the request on its
-            # own — the generic label's collision is superseded, not real
-            # (confirmed live: "change mounting type Shirt Magnetic Mount
-            # Quantity to 88" false-positived a "Mounting Type" collision
-            # between mountType_viSoln/mountingTypeArray_viSoln even though
-            # neither was meant — same principle as detect_change_request's
-            # own _superseded mechanism, just not yet applied here).
-            if any(other != label and label in other for other in all_labels):
-                continue
-            return group
-        return None
-
+    @staticmethod
     def count_turn_intents(
-        self,
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> list[str]:
-        """Read-only diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4,
-        incremental step): runs every existing intent detector against one
-        message and returns a plain-string label for each one that fired,
-        WITHOUT changing what the turn actually does with the result —
-        purely observational, logged by the caller.
+        return turn_intent.count_turn_intents(question, attrs, filled, filled_multi)
 
-        Confirmed live this session: "change solution type and primary
-        service type" only ever got ONE of its two targets addressed,
-        because `detect_change_request_collision` (and every other
-        detector in the real turn-processing flow) stops at its own first
-        match and the caller returns immediately. This counts how many
-        DISTINCT intents a single message actually contains, so that gap
-        can be measured against real traffic before any routing behavior
-        changes — reuses every detector as-is, adds no new detection
-        logic, and never influences the response.
-        """
-        hits: list[str] = []
-        try:
-            if self.detect_qa_question(question, None, strict=True):
-                hits.append("qa_question")
-        except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
-            logger.debug("count_turn_intents: detect_qa_question failed", exc_info=True)
-        try:
-            mode = self.detect_response_mode_request(question)
-            if mode:
-                hits.append(f"mode_request:{mode}")
-        except Exception:  # noqa: BLE001
-            logger.debug("count_turn_intents: detect_response_mode_request failed", exc_info=True)
-        try:
-            collision = self.detect_change_request_collision(question, attrs, filled, filled_multi)
-            if collision:
-                hits.append(f"change_collision:{collision[0].display_label}")
-        except Exception:  # noqa: BLE001
-            logger.debug("count_turn_intents: detect_change_request_collision failed", exc_info=True)
-        try:
-            multi = self.detect_change_requests_multi(question, attrs, filled, filled_multi)
-            for attr, _hint in multi:
-                hits.append(f"change:{attr.variable_name}")
-        except Exception:  # noqa: BLE001
-            logger.debug("count_turn_intents: detect_change_requests_multi failed", exc_info=True)
-        if not any(h.startswith("change:") for h in hits):
-            try:
-                single = self.detect_change_request(question, attrs, filled, filled_multi)
-                if single:
-                    hits.append(f"change:{single[0].variable_name}")
-            except Exception:  # noqa: BLE001
-                logger.debug("count_turn_intents: detect_change_request failed", exc_info=True)
-        try:
-            no_value = self.detect_change_target_without_value(question, attrs, filled)
-            if no_value:
-                hits.append(f"change_no_value:{no_value.variable_name}")
-        except Exception:  # noqa: BLE001
-            logger.debug("count_turn_intents: detect_change_target_without_value failed", exc_info=True)
-        try:
-            attr_q = self.detect_attr_query(question, attrs)
-            if attr_q:
-                hits.append(f"attr_query:{attr_q.variable_name}")
-        except Exception:  # noqa: BLE001
-            logger.debug("count_turn_intents: detect_attr_query failed", exc_info=True)
-        return hits
+    @staticmethod
+    def detect_attr_query(question: str, attrs: list[ConfigAttr]) -> ConfigAttr | None:
+        return turn_intent.detect_attr_query(question, attrs)
 
-    def detect_attr_query(
-        self, question: str, attrs: list[ConfigAttr],
-    ) -> ConfigAttr | None:
-        """If the question asks about options for a specific attribute, return it.
+    @staticmethod
+    def _describe_char_allowlist(script: str | None) -> str | None:
+        return turn_intent._describe_char_allowlist(script)
 
-        Detection: question contains an attribute's variable_name AND any
-        option-query keyword. Reads options from already-loaded attrs — no DB
-        call, no hardcoding.
-
-        When more than one attr matches (e.g. "Hardware" and "Hardware
-        Version" both appear in the same attribute list — confirmed live
-        once two catalogs share a workspace), the LONGEST/most specific
-        match wins rather than whichever happens to come first in list
-        order, so a shorter, coincidentally-matching label can't shadow the
-        attribute the user actually meant.
-
-        Word-overlap fallback: BigMachines attributes are frequently exported
-        with a near-useless leaf display_label (e.g. "Type") while the actual
-        UI grouping the customer names ("Carry Solutions") only lives inside
-        the variable_name itself ("carrySolutionsType_apcr"). When neither the
-        exact-substring nor display_label check matches, fall back to scoring
-        attrs by how many of their significant camelCase-split variable_name
-        words appear in the question — requires at least 2 matching words (a
-        single generic word must never hijack an unrelated question) and
-        picks the attr with the most matched words.
-        """
-        q_lower = question.lower()
-        has_options_keyword = any(kw in q_lower for kw in self._OPTIONS_KEYWORDS)
-        if not has_options_keyword:
-            return None
-        q_flat = q_lower.replace("_", "")
-        # Match by variable_name (case-insensitive, underscore-tolerant)
-        vn_matches = [
-            attr for attr in attrs
-            if attr.variable_name.lower().replace("_", "") in q_flat
-            or attr.variable_name.lower() in q_lower
-        ]
-        if vn_matches:
-            return max(vn_matches, key=lambda a: len(a.variable_name))
-        # Fallback: match by display_label
-        label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
-        if label_matches:
-            return max(label_matches, key=lambda a: len(a.display_label))
-        # Fallback: word-overlap against the camelCase-split variable_name.
-        # Trailing tokens shared by many attrs in this list (e.g. "_apcr",
-        # "_astro") are catalog/product-line codes, not customer-facing
-        # words — computed here from the actual attrs rather than
-        # hardcoded, so a future catalog's own suffix convention is picked
-        # up automatically instead of needing a new hardcoded name.
-        suffix_counts: dict[str, int] = {}
-        for a in attrs:
-            _, _, tail = a.variable_name.rpartition("_")
-            if tail and tail.isalpha() and tail.islower() and len(tail) <= 8:
-                suffix_counts[tail] = suffix_counts.get(tail, 0) + 1
-        catalog_suffixes = {s for s, c in suffix_counts.items() if c >= 5}
-
-        q_words = set(q_lower.replace("_", " ").split())
-        best_attr: ConfigAttr | None = None
-        best_score = 1  # require > 1 matched word
-        for attr in attrs:
-            vn = attr.variable_name
-            base, _, tail = vn.rpartition("_")
-            if base and tail in catalog_suffixes:
-                vn = base
-            words = _variable_words(vn)
-            if len(words) < 2:
-                continue
-            score = sum(1 for w in words if w in q_words)
-            if score == len(words) and score > best_score:
-                best_score = score
-                best_attr = attr
-        return best_attr
-
-    # Recognizes the recurring `allowedChars = "..."` character-allowlist
-    # idiom in ValidationRule condition_scripts (confirmed live in both the
-    # CC Aware 2026 and CC Aware "Allow only specific characters on PD
-    # AGDOMAIN" rules) — the only script shape this describes; anything else
-    # returns None rather than guessing at a description.
-    _ALLOWED_CHARS_RE = re.compile(r'allowedChars\s*=\s*"([^"]*)"')
-
-    @classmethod
-    def _describe_char_allowlist(cls, script: str | None) -> str | None:
-        # Raven review, 2026-07-28: this previously did a blind first-match
-        # search with no guard against conditional branching or
-        # reassignment — the established sibling pattern for exactly this
-        # ambiguity class is bml.py's evaluate_constant_return, which bails
-        # to None on any `if (` in the script and walks multiple
-        # assignments in source order so the LAST one wins (never describes
-        # a stale/conditionally-overridden value as if it were the real
-        # constraint). Matched here for the same reason.
-        if not script:
-            return None
-        if re.search(r'\bif\s*\(', script, re.IGNORECASE):
-            return None
-        matches = list(cls._ALLOWED_CHARS_RE.finditer(script))
-        if not matches:
-            return None
-        chars = matches[-1].group(1)
-        if not chars:
-            return None
-        has_upper = any(c.isupper() for c in chars)
-        has_lower = any(c.islower() for c in chars)
-        has_digit = any(c.isdigit() for c in chars)
-        specials = sorted({c for c in chars if not c.isalnum()})
-        parts: list[str] = []
-        if has_upper and has_lower:
-            parts.append("letters")
-        elif has_upper:
-            parts.append("uppercase letters")
-        elif has_lower:
-            parts.append("lowercase letters")
-        if has_digit:
-            parts.append("digits")
-        if specials:
-            parts.append("the characters " + " ".join(specials))
-        if not parts:
-            return None
-        if len(parts) == 1:
-            return parts[0]
-        return ", ".join(parts[:-1]) + ", and " + parts[-1]
-
+    @staticmethod
     def describe_free_text_constraint(
-        self, attr: ConfigAttr, validation_rules: list["ValidationRule"] | None,
-    ) -> str | None:
-        """Plain-language description of a no-option attr's real constraint,
-        for a Q&A "what values are allowed" question the attr has no
-        options to answer with (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
-        Amendment 20 follow-up — confirmed live: agencyDomainName_ID_swSoln
-        is free text with zero options, so the existing options-listing
-        fast path has nothing to show, and its own ValidationRule's
-        human-authored `message` ("Invalid selection") isn't descriptive
-        either). Only describes the one script idiom confirmed above;
-        returns None (never guesses) for any other rule shape.
-        """
-        target_ids = {attr.entity_id, attr.source_id}
-        for rule in validation_rules or []:
-            if rule.target_attr_id not in target_ids:
-                continue
-            desc = self._describe_char_allowlist(rule.condition_script)
-            if desc:
-                return desc
-        return None
-
-    def should_ask_free_text_attr(
-        self,
         attr: ConfigAttr,
-        validation_rules: list["ValidationRule"] | None,
-        bml_eval: "BmlEvaluator | None",
-    ) -> bool:
-        """Generic (not catalog-specific) replacement for Amendment 19's
-        reverted blanket "has a ValidationRule -> ask" heuristic (Amendment
-        20, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Every deterministic
-        signal available in this data (required flag, default_value, script
-        shape, hiding-rule visibility) was confirmed identical between a
-        genuine case and Amendment 20's false-positive case — so this
-        escalates to a Tier-2 LLM judgment (Amendment 22), same discipline
-        as every other "no cheaper signal exists" case in this codebase.
-        Returns False (never asks) when there's no governing ValidationRule
-        at all, or when bml_eval wasn't supplied — same opt-out convention
-        every other bml_eval=None caller already gets elsewhere.
-        """
-        if bml_eval is None:
-            return False
-        target_ids = {attr.entity_id, attr.source_id}
-        rule = next(
-            (r for r in (validation_rules or []) if r.target_attr_id in target_ids),
-            None,
-        )
-        if rule is None:
-            return False
-        return bml_eval.classify_ask_worthy(
-            attr.display_label, rule.message, rule.condition_script, attr.entity_id,
-        )
+        validation_rules: list['ValidationRule'] | None,
+    ) -> str | None:
+        return turn_intent.describe_free_text_constraint(attr, validation_rules)
 
-    # ── Announcement label disambiguation ──────────────────────────────────────
+    @staticmethod
+    def should_ask_free_text_attr(
+        attr: ConfigAttr,
+        validation_rules: list['ValidationRule'] | None,
+        bml_eval: 'BmlEvaluator | None',
+    ) -> bool:
+        return turn_intent.should_ask_free_text_attr(attr, validation_rules, bml_eval)
 
     @staticmethod
     def disambiguated_label(attr: ConfigAttr, attrs: list[ConfigAttr]) -> str:
-        """`attr.display_label`, suffixed to stay unique when 2+ attrs in
-        `attrs` share the same raw catalog label.
-
-        Live-confirmed gap (2026-07-28): `serviceType_astro`,
-        `serviceTypeRSM_astro`, and `serviceTypeAdditionalDMSCoverage_astro`
-        all carry the literal display_label "Service Type" — when a cascade
-        turn changes more than one of them (the user's own change plus an
-        independently-firing recommendation rule), the customer sees
-        multiple identical "Updated **Service Type** → ..." lines that read
-        as duplicates/contradictions instead of distinct facts. This is the
-        same root cause `_label_collision_for` already disambiguates at
-        QUESTION time — this is the ANNOUNCEMENT-time equivalent.
-
-        No catalog field carries a friendly, human grouping name for an
-        attr (checked live: the raw ingested JSON has only structural/UI
-        codes — "category": "2", not a label) — so the fallback is the
-        attr's own variable_name, camelCase/acronym-split into words, with
-        the words already present in the shared label removed. E.g.
-        "serviceTypeRSM_astro" vs. shared label "Service Type" -> "RSM";
-        "serviceTypeAdditionalDMSCoverage_astro" -> "Additional DMS
-        Coverage". The catalog suffix (e.g. "_astro") is stripped first —
-        it's shared by every attr, never a distinguishing fact. Returns the
-        bare label unchanged when a sibling's variable_name has no fragment
-        left to distinguish it (e.g. the "plainest" one, whose variable_name
-        collapses to the label itself) rather than surface a raw,
-        customer-meaningless variable_name.
-        """
-        label = attr.display_label
-        siblings = [a for a in attrs if a.display_label == label]
-        if len(siblings) < 2:
-            return label
-        label_words = {w.lower() for w in re.split(r"[^A-Za-z0-9]+", label) if w}
-        # `attr.catalog_prefix` is a different, BM-type-level field (e.g.
-        # "ApxNextConfig") — NOT the "_astro"-style suffix variable_names
-        # actually carry, so it can't be used to strip that suffix (live-
-        # verified: checking it left "astro" un-stripped, leaking as a
-        # meaningless "Service Type (astro)"). Instead, derive it: any
-        # underscore-part shared by EVERY sibling's variable_name is by
-        # definition not a distinguishing fact for one of them — exclude
-        # those words the same way label_words are excluded.
-        _sibling_parts = [
-            {p.lower() for p in s.variable_name.split("_") if p} for s in siblings
-        ]
-        _shared_parts = set.intersection(*_sibling_parts) if _sibling_parts else set()
-        _excluded = label_words | _shared_parts
-        for part in attr.variable_name.split("_"):
-            if not part or part.lower() in _shared_parts:
-                continue
-            spaced = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", part)
-            spaced = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", spaced)
-            words = [w for w in spaced.split() if w.lower() not in _excluded]
-            if words:
-                return f"{label} ({' '.join(words)})"
-        # No distinguishing fragment left after stripping shared label
-        # words and the catalog suffix (this attr's variable_name IS the
-        # label, e.g. the plainest sibling among several sharing it) —
-        # better to leave it as the bare label than surface a raw,
-        # customer-meaningless variable_name fragment.
-        return label
-
-    # ── Next question ─────────────────────────────────────────────────────────
+        return turn_intent.disambiguated_label(attr, attrs)
 
     def next_question_prompt(
         self,
         attr: ConfigAttr,
         context_sentence: str = "",
         constrained_item_values: list[str] | None = None,
-        validation_rules: list["ValidationRule"] | None = None,
+        validation_rules: list['ValidationRule'] | None = None,
         attrs: list[ConfigAttr] | None = None,
-        already_selected: "list[str] | set[str] | None" = None,
+        already_selected: 'list[str] | set[str] | None' = None,
     ) -> str:
-        """Build the hybrid question shown to the sales rep for one pending attr.
-
-        already_selected — optional (default `None`, no-op for every
-        existing caller). item_values the customer already picked for a
-        select_type=="multi" grid-selector attr being asked AGAIN for
-        more rows (docs/CPQ_SVX_MOUNTING_TYPE_ARRAY_GRID_MULTI_SELECT_
-        PLAN_2026_08_25.md) — excluded from the numbered list so a re-ask
-        only ever offers options genuinely still open, never re-lists one
-        already answered. Generic: applies to any select_type=="multi"
-        attr, no attribute or catalog name involved.
-
-        context_sentence — explains WHY this attr is being asked based on rules
-          (e.g. "Since 5G was selected, we now need a compatible antenna.").
-        constrained_item_values — when active constraint rules apply, only these
-          item_values are presented in the numbered list.
-        validation_rules — when given, a free-text attr (no options) proactively
-          shows its format constraint up front (e.g. "must only contain letters,
-          digits, and the characters - . _") instead of a bare "Please provide a
-          value." — confirmed live a rep has no way to know the expected format
-          otherwise, since BigMachines' own source data has no help-text field
-          for these attrs at all (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
-          Amendment 21's describe_free_text_constraint, previously only reachable
-          reactively via a Q&A question — now shown proactively too). None when
-          not supplied (default), same opt-out convention as bml_eval=None
-          elsewhere — never guesses a constraint that can't be described.
-
-        attrs — optional (default `None`, preserving the bare `attr.display_
-          label` every existing caller already showed). When given, the
-          question header uses `disambiguated_label(attr, attrs)` instead —
-          live-confirmed gap (2026-08-21): `mountType_viSoln` and
-          `mountingTypeArray_viSoln` both carry the literal label "Mounting
-          Type"; `_label_collision_for` (ask_api.py) deliberately excludes
-          an already-ANSWERED sibling from its "which one did you mean"
-          re-ask (correct — nothing left to disambiguate BETWEEN), but that
-          left the remaining single pending attr's raw, still-colliding
-          label on screen with zero indication it's a DIFFERENT attribute
-          from the one just answered under the identical text. Catalog-
-          agnostic — no attribute name hardcoded, same generic mechanism
-          `disambiguated_label` already uses for cascade-announcement text.
-        """
-        # A constraint is a source of truth for VALIDITY, not catalog
-        # spelling. If it names a legal value with no literal item_value
-        # match in the real catalog (live-confirmed: productSelectionProduct
-        # _all's constraint returns 'APX NEXT XE 4G LTE PLUS 5G', which no
-        # real option equals), discarding the WHOLE constrained set back to
-        # unconstrained (first attempt at this fix) throws away the
-        # legitimate, real-matching values too -- live-confirmed regression:
-        # Product went from a flip-flopping 1-2 option menu to showing all
-        # 325 raw options. Drop only the phantom entries instead, same as
-        # auto_fill's valid_opts computation -- keep whichever real values
-        # the constraint did correctly narrow to. Falls back to fully
-        # unconstrained only if EVERY value was phantom.
-        if constrained_item_values is not None:
-            real_item_values = {o.item_value for o in attr.options}
-            narrowed = set(constrained_item_values) & real_item_values
-            constrained_item_values = sorted(narrowed) if narrowed else None
-
-        # Use _presentable (not _valid) so codes like "NA" (North America) appear
-        # in the numbered list even though _valid("NA")=False prevents auto-fill.
-        _already_selected = set(already_selected) if already_selected else None
-        effective_opts = [
-            o for o in attr.options
-            if _presentable(o.item_value)
-            and (constrained_item_values is None or o.item_value in constrained_item_values)
-            and (_already_selected is None or o.item_value not in _already_selected)
-        ]
-        ctx_prefix = f"{context_sentence}\n\n" if context_sentence else ""
-        _label = self.disambiguated_label(attr, attrs) if attrs else attr.display_label
-        if effective_opts:
-            if len(effective_opts) > _MAX_ENUMERATED_OPTIONS:
-                # An unconstrained master list (confirmed live: the product
-                # selector carries the full ~325-model portfolio in every
-                # catalog, and the country attr ~250 entries) is unusable as
-                # a numbered menu — ask for the exact name instead of
-                # dumping it. Threshold-based and generic: applies to ANY
-                # oversized attr, no attribute-specific hardcoding. The
-                # typed reply flows through apply_answer's existing
-                # exact/display/word-boundary matching unchanged, and the
-                # explicit "what are the options for X" Q&A path still
-                # enumerates in full for clients who really want the list.
-                # "Please provide" (not "type") — the batched-mode e2e test
-                # counts question blocks by the "choose one"/"Please provide"
-                # phrases, and this prompt must stay countable as one block.
-                examples = ", ".join(f"*{o.display_name}*" for o in effective_opts[:3])
-                return (
-                    f"{ctx_prefix}**{_label}** has "
-                    f"{len(effective_opts)} available options — too many to "
-                    f"list here. Please provide the exact name "
-                    f"(e.g. {examples}), or ask *\"what are the options for "
-                    f"{_label}\"* to see the full list."
-                )
-            numbered = "\n".join(
-                f"{i + 1}. {opt.display_name}"
-                for i, opt in enumerate(effective_opts)
-            )
-            # An optional multi-select reaching this prompt at all is, by
-            # construction, a grid selector (resolve_array_grid_links) —
-            # every OTHER optional multi-select is auto-filled empty
-            # without ever being asked (auto_fill's own optional-tier
-            # branch). ask_api.py already recognizes "skip"/"none"/"no...
-            # needed" as a valid decline for exactly this case (confirmed
-            # live: mountingTypeArray_viSoln correctly resolves to an
-            # empty selection), but the prompt never told the user that —
-            # confirmed live: nobody would think to type "skip" without
-            # being told it's an option.
-            skip_hint = (
-                "\n\n*(Optional — say \"skip\" or \"none needed\" if you "
-                "don't need any.)*"
-                if attr.select_type == "multi" and not attr.required else ""
-            )
-            # Raven review, PR #277 (medium): the comment above ("the only
-            # multi-selects that reach this far") is true for the common
-            # optional-and-auto-filled-empty case, but isn't a structural
-            # guarantee — a REQUIRED multi-select with no picks yet, or any
-            # future caller shape, could reach here without being a real
-            # grid selector. Check the actual structural signal
-            # (resolve_array_grid_links, the same one auto_fill/
-            # grid_selector_vns already key off) instead of inferring it
-            # from select_type alone, so an ordinary multi-select always
-            # keeps the plain "choose one:" text. `attrs` is None for a
-            # handful of older callers that never passed the full catalog —
-            # those fall back to the plain text too, never guessing.
-            _is_grid_selector = (
-                attr.select_type == "multi" and attrs is not None
-                and attr.variable_name in self.resolve_array_grid_links(attrs)
-            )
-            if _is_grid_selector:
-                # Grid selectors let the customer fill several rows: one at
-                # a time across turns (apply_answer), or several at once in
-                # one reply (apply_multi_answer already scans a reply for
-                # every option named). "choose one" undersold that —
-                # confirmed live: a customer picking exactly one narrowed
-                # option (of 5-6 legal ones) was never invited to add more,
-                # even though every other still-valid option remained
-                # perfectly legal.
-                already_note = (
-                    f" You've already added {len(_already_selected)} — "
-                    if _already_selected else " "
-                )
-                return (
-                    f"{ctx_prefix}**{_label}** —{already_note}choose one or "
-                    f"more of what's left "
-                    f"(you can name several at once):\n\n{numbered}{skip_hint}"
-                )
-            return f"{ctx_prefix}**{_label}** — choose one:\n\n{numbered}{skip_hint}"
-        constraint_desc = self.describe_free_text_constraint(attr, validation_rules)
-        constraint_hint = (
-            f"\n\n*Must only contain {constraint_desc}.*" if constraint_desc else ""
+        return turn_intent.next_question_prompt(
+            self,
+            attr,
+            context_sentence,
+            constrained_item_values,
+            validation_rules,
+            attrs,
+            already_selected,
         )
-        return f"{ctx_prefix}**{_label}**\n\nPlease provide a value.{constraint_hint}"
 
+    @staticmethod
     def apply_answer(
-        self,
         attr: ConfigAttr,
         user_answer: str,
         constrained_item_values: list[str] | None = None,
     ) -> tuple[str, str] | None:
-        """Match the user's natural-language answer to a valid option.
+        return turn_intent.apply_answer(attr, user_answer, constrained_item_values)
 
-        constrained_item_values — when active constraint rules apply (same
-        set passed to `next_question_prompt`), only these item_values may
-        match — an answer for an option outside the currently-allowed set
-        is rejected rather than silently accepted (Phase I).
-
-        Returns (item_value, display_name) or None if no match found.
-        """
-        ua = user_answer.strip().lower()
-        # docs/CPQ_AMBIGUOUS_CLARIFY_DISCARDS_RESOLVED_EVIDENCE_PLAN_2026_08_
-        # 21.md -- live-confirmed: "2Yrs" (no space, abbreviated unit) fails
-        # every tier below against a real "2 Year" option, since "2yrs"
-        # tokenizes as one alphanumeric run sharing zero words with "2"+
-        # "year". Narrow, scoped normalization -- only a digit directly
-        # followed by "yr"/"yrs" -- not a general NLP rewrite; deliberately
-        # excludes a bare "y" abbreviation (too collision-prone against
-        # real catalog codes like a "Y"/"N" yes/no option).
-        ua = re.sub(r"(\d+)\s*yrs?\b", r"\1 year", ua)
-        allowed = set(constrained_item_values) if constrained_item_values is not None else None
-        options = (
-            [o for o in attr.options if o.item_value in allowed]
-            if allowed is not None else attr.options
-        )
-
-        # Numeric selection: user typed "1", "2", etc. → pick by position in the
-        # presented option list (only _presentable options, matching next_question_prompt).
-        if ua.isdigit():
-            presentable = [o for o in options if _presentable(o.item_value)]
-            idx = int(ua) - 1
-            if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
-                return presentable[idx].item_value, presentable[idx].display_name
-
-        # Known catalog duplicates -- two menu options share the same
-        # display_name (a real BigMachines authoring duplicate, see
-        # _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE) so a plain-text
-        # reply like "5 year" can coincidentally exact-match one
-        # duplicate's item_value ("5 YEAR") while the OTHER duplicate is
-        # the one governing rules actually key off ("5 YEARS"). Checked
-        # ahead of both the item_value and display-name exact-match
-        # tiers below so the coincidental item_value hit can't win first.
-        canonical_value = _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
-            attr.variable_name)
-        if canonical_value is not None:
-            for opt in options:
-                if opt.item_value == canonical_value and (
-                    opt.item_value.lower() == ua or opt.display_name.lower() == ua
-                ):
-                    return opt.item_value, opt.display_name
-
-        # Exact item_value match
-        for opt in options:
-            if opt.item_value.lower() == ua:
-                return opt.item_value, opt.display_name
-
-        # Exact display-name match
-        for opt in options:
-            if opt.display_name.lower() == ua:
-                if _valid(opt.item_value):
-                    return opt.item_value, opt.display_name
-
-        # User answer contained in option's display name (user typed a prefix)
-        for opt in options:
-            if ua in opt.display_name.lower():
-                if _valid(opt.item_value):
-                    return opt.item_value, opt.display_name
-
-        # Option display name found in user answer with word boundaries on both sides.
-        # Uses (?<!\w)…(?!\w) rather than \b because standard \b fails at the end
-        # of names like "APX NEXT (4G LTE Only)" where the trailing ")" is a
-        # non-word char with no \b transition. Sorted longest-first so
-        # "APX NEXT (4G LTE Only)" wins over "APX NEXT" when both could match.
-        # The right-side (?!\w) also blocks short codes like "AP" from matching
-        # inside "APX" — "ap" followed by "x" fails (?!\w).
-        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
-            dn = opt.display_name.lower()
-            if re.search(r"(?<!\w)" + re.escape(dn) + r"(?!\w)", ua):
-                if _valid(opt.item_value):
-                    return opt.item_value, opt.display_name
-
-        # Option display name found as a whole WORD in user answer — word-boundary
-        # prevents "me" (Middle East code) from matching in "north a*me*rica".
-        for opt in options:
-            dn_lower = opt.display_name.lower()
-            if re.search(r"\b" + re.escape(dn_lower) + r"\b", ua):
-                if _valid(opt.item_value):
-                    return opt.item_value, opt.display_name
-
-        # Unit/pluralization-tolerant match — "2 Yrs" or "2 Years" against
-        # a catalog option displayed as "2 Year" (confirmed live: neither
-        # form ever matched, so the value was silently dropped and the
-        # session kept reporting the old one as still current). See
-        # _option_matches_with_unit_normalization for the generic
-        # token-comparison this relies on — no per-unit synonym table.
-        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
-            if _option_matches_with_unit_normalization(opt.display_name, ua):
-                if _valid(opt.item_value):
-                    return opt.item_value, opt.display_name
-
-        # Country alias fallback — a direct reply naming a country by a
-        # DIFFERENT alias than the option's own item_value/display_name
-        # (e.g. "USA" replying to an attr whose real option is
-        # item_value="US", display_name="United States") previously fell
-        # through every check above to a hard miss with no logging at all
-        # (confirmed live 2026-08-14: Ultimate Destination Country accepted
-        # "US" via the exact item_value check above but rejected "USA").
-        # Uses _country_alias_group -- the same 249-real-country,
-        # bidirectional alias table auto_fill's hint-priority path uses
-        # (Priority 4 above) -- so a fix to the underlying data closes the
-        # gap in both places at once. Narrow and safe — only fires when
-        # `ua` (the whole trimmed reply) exactly equals a known alias,
-        # never a substring/fuzzy guess.
-        alias_group = _country_alias_group(ua)
-        if alias_group:
-            for opt in options:
-                if (opt.item_value.lower() in alias_group
-                        or opt.display_name.lower() in alias_group):
-                    if _valid(opt.item_value):
-                        logger.info(
-                            "cpq_apply_answer_alias_match attr=%s reply=%r "
-                            "resolved_to=%r",
-                            attr.variable_name, user_answer, opt.item_value,
-                        )
-                        return opt.item_value, opt.display_name
-
-        # Free-text field
-        if not attr.options and allowed is None and _valid(user_answer):
-            return user_answer.strip(), user_answer.strip()
-
-        return None
-
+    @staticmethod
     def apply_multi_answer(
-        self,
         attr: ConfigAttr,
         user_answer: str,
         constrained_item_values: list[str] | None = None,
     ) -> list[tuple[str, str]]:
-        """Match ALL option names mentioned in a multi-select answer.
-
-        apply_answer() deliberately returns only the single best match — the
-        right behavior for a single-select question. A multi-select answer
-        like "Shirt Magnetic Mount, Jacket Magnetic Mount, ..." names several
-        options at once; using apply_answer() alone silently keeps only one
-        (confirmed live: naming all 6 real mounting-type options in one
-        answer captured just 1). This scans for every option whose display
-        name appears in the answer, consuming matched text so a shorter
-        option name already covered by a longer one isn't double-counted
-        (e.g. "TEK-LOK Belt Mount" vs "Belt Mount").
-
-        Returns a list of (item_value, display_name) pairs, in the order
-        their names appear in the answer text — empty if none matched.
-        """
-        allowed = set(constrained_item_values) if constrained_item_values is not None else None
-        options = (
-            [o for o in attr.options if o.item_value in allowed]
-            if allowed is not None else attr.options
-        )
-        ua = user_answer.lower()
-        remaining = ua
-        matches: list[tuple[int, str, str]] = []  # (position, item_value, display_name)
-        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
-            if not _valid(opt.item_value):
-                continue
-            dn = opt.display_name.lower()
-            if not dn:
-                continue
-            pattern = re.compile(r"(?<!\w)" + re.escape(dn) + r"(?!\w)")
-            m = pattern.search(remaining)
-            if m:
-                matches.append((m.start(), opt.item_value, opt.display_name))
-                # Blank out the matched span so a shorter, overlapping option
-                # name (already covered by this longer match) can't also match.
-                remaining = remaining[:m.start()] + " " * (m.end() - m.start()) + remaining[m.end():]
-        matches.sort(key=lambda t: t[0])
-        return [(iv, dn) for _pos, iv, dn in matches]
+        return turn_intent.apply_multi_answer(attr, user_answer, constrained_item_values)
 
     # ── Payload builder ───────────────────────────────────────────────────────
 
