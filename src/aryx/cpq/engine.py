@@ -2635,6 +2635,11 @@ class FillScope:
     dt_never_governed_anywhere: "Any"
 
 
+# Deferred: auto_fill_setup imports FillContext/FillScope BACK from this
+# module, so it must be placed after both class definitions above.
+from aryx.cpq import auto_fill_setup  # noqa: E402
+
+
 class CpqEngine:
     """Drives guided CPQ configuration within the Ask conversation."""
 
@@ -4198,326 +4203,28 @@ class CpqEngine:
         APX Next, 2 active flows) keeps today's unchanged always-ask
         behavior.
         """
-        dt_cache: dict[tuple[int, str], tuple] = _dt_cache if _dt_cache is not None else {}
-        filled: dict[str, str] = dict(already_filled or {})
-        filled_multi = already_filled_multi if already_filled_multi is not None else {}
-        display_filled: dict[str, str] = {}
-        pending: list[ConfigAttr] = []
-        sources = filled_source if filled_source is not None else {}
-        governed = governed_ids or set()
-        rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
-        dropped = dropped_multi if dropped_multi is not None else {}
-        # Cascade-invalidated attrs whose CLEARED value was a real user
-        # decision (filled_source == "user"), not an auto-fill — these must
-        # be re-asked (added to `pending`) rather than silently re-guessed
-        # by the blind-fallback branch below (docs/CPQ_SESSION_2_OPEN_ISSUES.md
-        # item 4). Mirrors the same "never silently guess a real decision"
-        # principle already applied to product-identifier attrs.
-        user_answered_dropped_ids: set[int] = set()
-
-        # Pointer-defaults (Issue 11, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a
-        # default_value that exactly equals ANOTHER attribute's variable
-        # name is a REFERENCE the source platform resolves at runtime, not
-        # a literal (confirmed live: modelname_all's XML default is the
-        # string "_bm_model_variable_name" — BM's own "Set Model Name..."
-        # rule copies that runtime model-context attr into it; the export
-        # carries only the pointer token). Shipping the token as data put
-        # '"modelname_all": "_bm_model_variable_name"' in real payloads.
-        # Structural check, no attribute names in code — an exhaustive
-        # survey of every ingested catalog found exactly this ONE pattern
-        # (modelname_all -> _bm_model_variable_name in both exports) and
-        # zero coincidental literal defaults matching an attr name.
-        _all_vns = {a.variable_name for a in attrs}
-
-        def _is_pointer_default(a: "ConfigAttr") -> bool:
-            return (not a.options
-                    and a.default_value in _all_vns
-                    and a.default_value != a.variable_name)
-
-        # target attr id -> recommendation rules targeting it, so step 4 can
-        # check for an already-satisfied recommendation before blindly
-        # picking first-by-order (see docstring — the ordering bug this closes).
-        rec_by_target: dict[int, list[RecommendationRule]] = {}
-        if rec_rules:
-            for _r in rec_rules:
-                rec_by_target.setdefault(_r.target_attr_id, []).append(_r)
-        attr_by_rule_id = self._attr_index(attrs) if rec_by_target else {}
-
-        def _satisfied_recommendation(
-            attr: "ConfigAttr", candidate_opts: list["MenuOption"],
-        ) -> tuple[str, str, str] | None:
-            """A targeted recommendation whose condition is ALREADY true
-            in the current `filled` state — more specific than a generic
-            XML default_value and must win over it (confirmed live:
-            solutionTypeDevices_astro's own default_value silently beat
-            the "Set CLOUD RC as default value" rule because the old step
-            3 ran unconditionally before any rule got a chance to apply,
-            since apply_recommendation_rules() never revisits an attr
-            already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
-
-            Also handles script/condition_script-backed rules (via
-            bml_eval), not just the plain condition_attr_id/condition_value
-            pair — same Tier-1/Tier-2 machinery apply_recommendation_rules
-            uses. Purely additive: a script that resolves is always a
-            correct answer, never a wrong guess, and never asks a
-            question that wasn't already going to be asked (it can only
-            resolve an attr that would otherwise stay unfilled/pending).
-            bml_eval=None (caller opted out) falls back to skipping script
-            rules entirely, same as apply_recommendation_rules.
-
-            Returns (item_value, display_name, rule_name) — the rule_name
-            (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2e) is the
-            specific rule that fired, for the rule-trace attribution call
-            sites use it for instead of the old generic "auto_fill:rule"
-            tag. Every return path below already has `rrule` in scope, so
-            this is free — no separate lookup.
-            """
-            for aid_key in (attr.entity_id, attr.source_id):
-                if aid_key is None:
-                    continue
-                for rrule in rec_by_target.get(aid_key, []):
-                    if rrule.script is not None:
-                        if bml_eval is None:
-                            continue
-                        allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
-                        if not allowed or len(allowed) != 1:
-                            continue  # unknown, or ambiguous — never guess
-                        recommended_value = allowed[0]
-                    elif rrule.condition_script is not None:
-                        if bml_eval is None:
-                            continue
-                        fires = bml_eval.condition_holds(rrule.condition_script, filled)
-                        if fires is not True:
-                            continue  # False or unknown — never guess, doesn't fire
-                        recommended_value = rrule.recommended_value
-                    else:
-                        cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                        if not cond_attr:
-                            continue
-                        cond_val = filled.get(cond_attr.variable_name)
-                        if cond_val is None or not _condition_value_matches(
-                            cond_val, rrule.condition_value, rrule.condition_operator
-                        ):
-                            continue
-                        recommended_value = rrule.recommended_value
-                    match = next(
-                        (o for o in candidate_opts
-                         if o.item_value.lower() == recommended_value.lower()),
-                        None,
-                    )
-                    if match:
-                        return match.item_value, match.display_name, rrule.rule_name
-            return None
-
-        # Selectors resolve_array_grid_links() confirmed drive a real
-        # quantity attr (e.g. mountingTypeArray_viSoln -> the 6 mounting-
-        # type quantities) are NOT cosmetic optional checkboxes even though
-        # required="0" — silently defaulting them to empty would silently
-        # skip a real BOM decision (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_
-        # GRID_PLAN.md §5). Excluded from the optional-multi-select
-        # auto-empty branch below so they're asked like any other real
-        # question instead; every other optional multi-select is unaffected.
-        grid_selector_vns = set(self.resolve_array_grid_links(attrs).keys())
-
-        # Attrs a real ingested attrSequence Data Table confirms govern the
-        # CURRENT base model (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_
-        # PROOF_2026_08_07.md §1-§3, §9): must be treated as askable by §2c's
-        # display-order gate below the same way `grid_selector_vns` already
-        # is. Without this, an attr that legitimately survives
-        # `_suppress_ungoverned_attrs` (confirmed governed, or never
-        # governed anywhere so left visible) could still be silently
-        # dropped by §2c's blanket "not a decision attr → skip" rule,
-        # exactly reproducing the original bug (a real question the
-        # customer should see just never appears) one layer further down.
-        # Also mirrors `_suppress_ungoverned_attrs`'s OTHER carve-out here:
-        # an attr no attrSequence row anywhere (any base model, any
-        # candidate CPQModel) ever mentions is silence, not a confident
-        # exclusion, so it survives suppression -- but §2c's gate below
-        # would otherwise still silently drop it as "not a decision attr".
-        # `_dt_never_governed_anywhere` memoizes that per-vn check (real
-        # rows can be up to tens of thousands; only compute once per attr
-        # actually reaching this branch, not for every attr up front).
-        # Base models are sometimes shared across unrelated regional/federal
-        # CPQModel siblings (confirmed live 2026-08-09: H55TGT9RW8AN has ZERO
-        # real coverage under APXNEXTSINGLE -- the primary, product-derived
-        # candidate for "APX NEXT Single Band" -- but 120 attrs' worth of
-        # coverage under APXNEXTINTL/APXNEXTINTLFED, discovered only via the
-        # base_model= widening below). Using the full widened candidate set
-        # to decide "must always ask, never blind-guess" inherited that
-        # unrelated sibling's entire governance scope onto a domestic order,
-        # forcing 120 real questions (Configuration Type, System Key,
-        # Wireless Carrier, ...) that the actual Single Band data would
-        # never require. `_dt_primary_candidates` (product-derived only, no
-        # base_model widening) is what should gate always-ask; the full,
-        # base-model-widened `_dt_candidates` is kept for VALUE RESOLUTION
-        # only (_resolve_via_data_tables, _dt_never_governed_anywhere) --
-        # that's the mechanism the keypad-type XN-variant fix depends on and
-        # must stay unchanged.
-        # Base Model region-allow resolution (confirmed live, 2026-08-10):
-        # NewCountryRegMapping-shaped ("region_rule") Data Table rows carry
-        # a real per-(CPQModel, region[, country]) ALLOW default for
-        # modelSelectionbaseModel_astro -- the same answer Oracle CPQ's own
-        # "Set Base Model" recommendation rules compute at runtime against
-        # `Oracle_BomItemMap` (a live table never present in any export
-        # seen so far). Computed here, BEFORE base model is filled, using
-        # only the PRIMARY (product-derived) CPQModel candidates -- unlike
-        # `_dt_candidates` below (which also widens by base_model once one
-        # is chosen), there is no base model yet to widen from. Only ever
-        # used when it resolves to exactly one value (see
-        # `resolve_region_allow_value`'s tie-safe contract); otherwise
-        # falls through to the unconditional always-ask anchor unchanged.
-        _bm_region_allow_value: str | None = None
-        if workspace_id is not None and not filled.get("modelSelectionbaseModel_astro"):
-            _bm_product = filled.get("productSelectionProduct_all", "")
-            if _bm_product:
-                _bm_country = filled.get("ultimateDestinationCountry") or country or ""
-                _bm_region = filled.get("modelSelectionRegion_astro") or (
-                    _COUNTRY_TO_REGION.get(_bm_country.strip().lower(), "") if _bm_country else ""
-                )
-                if _bm_region:
-                    _bm_primary_candidates = _cpq_model_candidates(
-                        _bm_product, workspace_id, catalog_prefix, _dt_cache,
-                    )
-                    for _bm_cm in _bm_primary_candidates:
-                        _bm_v = dt_resolve_region_allow_value(
-                            "modelSelectionbaseModel_astro", _bm_cm, _bm_region,
-                            workspace_id, catalog_prefix, _dt_cache, country=_bm_country,
-                        )
-                        if _bm_v:
-                            _bm_region_allow_value = _bm_v
-                            break
-
-        _dt_governed_vns: set[str] = set()
-        _dt_candidates: tuple[str, ...] = ()
-        if workspace_id is not None:
-            _dt_base_model = filled.get("modelSelectionbaseModel_astro", "")
-            if _dt_base_model:
-                _dt_product = filled.get("productSelectionProduct_all", "")
-                _dt_primary_candidates = _cpq_model_candidates(
-                    _dt_product, workspace_id, catalog_prefix, _dt_cache,
-                )
-                _dt_candidates = _cpq_model_candidates(
-                    _dt_product, workspace_id, catalog_prefix, _dt_cache, base_model=_dt_base_model,
-                )
-                for _dt_cm in _dt_primary_candidates:
-                    _dt_scoped = dt_governed_attr_names_for_base_model(
-                        _dt_cm, _dt_base_model, workspace_id, catalog_prefix, _dt_cache,
-                    )
-                    if _dt_scoped:
-                        _dt_governed_vns |= _dt_scoped
-
-        def _dt_never_governed_anywhere(vn: str) -> bool:
-            if not _dt_candidates:
-                return False
-            return not any(
-                dt_attr_ever_governed_for_cpq_model(
-                    cm, vn, workspace_id, catalog_prefix, _dt_cache,
-                )
-                for cm in _dt_candidates
-            )
-
-        # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_
-        # 10.md -- attrs whose ONLY hiding rule structurally depends on a
-        # confirmed-absent data table (_KNOWN_MISSING_DATA_TABLES) can never
-        # have that rule resolve. Precomputed once, same pattern as
-        # _dt_governed_vns above. hiding_rules=None (no caller passes it)
-        # keeps this empty -- a complete no-op, identical to today's
-        # behavior for every existing call site.
-        _missing_data_target_ids: set[int] = {
-            rule.target_attr_id for rule in (hiding_rules or [])
-            if _hiding_rule_needs_missing_data_table(rule, workspace_id)
-        }
-
-        # Two "optional"-tier attrs (no rule, no default — eligible only via
-        # the widened Phase N fallback) that share a real option value are
-        # very likely the same underlying hardware/accessory concept exported
-        # as separate BM attributes (confirmed live: spSurveillancePackagesType_astro
-        # and spSurveillancePackagesTypes_astro both offer "Impress 3-Wire
-        # Surveillance Kit - Black" — picking first-by-order for each
-        # independently produced Beige AND Black in the same quote). Rule-governed
-        # attrs (a real rule already backs the value) are excluded — this is
-        # purely a same-slot-detector for otherwise-independent fields.
-        _option_value_owners: dict[str, set[int]] = {}
-        for a in attrs:
-            if (a.hidden or a.entity_id not in governed or a.entity_id in rule_governed
-                    or a.select_type == "multi"):
-                continue
-            for opt in a.options:
-                iv_norm = opt.item_value.strip().upper()
-                # Generic yes/no-shaped values are shared by dozens of
-                # unrelated boolean-ish attrs (quickStartGuide, dualBand,
-                # etc.) — real signal only comes from specific values a
-                # coincidence wouldn't produce (e.g. a shared SKU/kit name).
-                if _valid(opt.item_value) and iv_norm.lower() not in self._BOOLEAN_DISPLAY_VALUES:
-                    _option_value_owners.setdefault(iv_norm, set()).add(a.entity_id)
-        conflicted_optional_ids: set[int] = set()
-        for owners in _option_value_owners.values():
-            if len(owners) > 1:
-                conflicted_optional_ids.update(owners)
-
-        # `is` (not `==`) proves each field is literally the SAME dict/
-        # set/list object as its bare-local counterpart, so a mutation
-        # through either name is guaranteed visible through the other.
-        ctx = FillContext(
-            filled=filled, filled_multi=filled_multi, sources=sources,
-            dropped=dropped, dt_cache=dt_cache,
-            default_fill_signatures=_default_fill_signatures,
-            display_filled=display_filled, pending=pending,
-            user_answered_dropped_ids=user_answered_dropped_ids,
+        ctx, scope = auto_fill_setup.build_fill_context_and_scope(
+            self, attrs, hints, already_filled, constrained_opts, filled_source,
+            governed_ids, already_filled_multi, dropped_multi, rule_governed_ids,
+            country, rec_rules, negated_vns, skip_always_ask, bml_eval,
+            validation_rules, display_order, workspace_id, catalog_prefix,
+            _dt_cache, hiding_rules, _default_fill_signatures, _signature_exclude_vns,
+            grid_declined_vns,
         )
-        assert ctx.filled is filled
-        assert ctx.filled_multi is filled_multi
-        assert ctx.sources is sources
-        assert ctx.dropped is dropped
-        assert ctx.dt_cache is dt_cache
-        assert ctx.default_fill_signatures is _default_fill_signatures
-        assert ctx.display_filled is display_filled
-        assert ctx.pending is pending
-        assert ctx.user_answered_dropped_ids is user_answered_dropped_ids
-
-        scope = FillScope(
-            hints=hints, attrs=attrs, constrained_opts=constrained_opts,
-            country=country, negated_vns=negated_vns,
-            skip_always_ask=skip_always_ask, bml_eval=bml_eval,
-            validation_rules=validation_rules, display_order=display_order,
-            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-            signature_exclude_vns=_signature_exclude_vns,
-            grid_declined_vns=grid_declined_vns, governed=governed,
-            rule_governed=rule_governed, rec_by_target=rec_by_target,
-            grid_selector_vns=grid_selector_vns,
-            bm_region_allow_value=_bm_region_allow_value,
-            dt_governed_vns=_dt_governed_vns,
-            missing_data_target_ids=_missing_data_target_ids,
-            conflicted_optional_ids=conflicted_optional_ids,
-            is_pointer_default=_is_pointer_default,
-            satisfied_recommendation=_satisfied_recommendation,
-            dt_never_governed_anywhere=_dt_never_governed_anywhere,
-        )
-        assert scope.hints is hints
-        assert scope.attrs is attrs
-        assert scope.rec_by_target is rec_by_target
-        assert scope.grid_selector_vns is grid_selector_vns
-        assert scope.dt_governed_vns is _dt_governed_vns
-        assert scope.missing_data_target_ids is _missing_data_target_ids
-        assert scope.conflicted_optional_ids is conflicted_optional_ids
-        assert scope.is_pointer_default is _is_pointer_default
-        assert scope.satisfied_recommendation is _satisfied_recommendation
-        assert scope.dt_never_governed_anywhere is _dt_never_governed_anywhere
-
 
         for attr in attrs:
             auto_fill_resolve.resolve_one_attr(self, attr, ctx, scope)
 
-        self._resolve_pointer_defaults(attrs, filled, display_filled, sources)
-        pending = self._cascade_fill_pending(pending, filled, display_filled, sources)
+        self._resolve_pointer_defaults(attrs, ctx.filled, ctx.display_filled, ctx.sources)
+        pending = self._cascade_fill_pending(ctx.pending, ctx.filled, ctx.display_filled, ctx.sources)
 
-        # Hardware-based catalogs: country/region → Hardware (mandatory) →
-        # other attrs → Product last; Product deferred until Hardware filled.
+        # Hardware-based catalogs: country/region -> Hardware (mandatory) ->
+        # other attrs -> Product last; Product deferred until Hardware filled.
         pending = self._order_pending_hardware_before_product(
-            pending, filled, attrs, display_order=display_order,
+            pending, ctx.filled, attrs, display_order=display_order,
         )
 
-        return filled, display_filled, pending
+        return ctx.filled, ctx.display_filled, pending
 
     @staticmethod
     def _resolve_pointer_defaults(
