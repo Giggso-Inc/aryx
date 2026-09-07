@@ -2214,6 +2214,7 @@ _NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
 # ACCEPTED_VNS, _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS, logger) — this line
 # must sit after every one of those is already defined above.
 from aryx.cpq import auto_fill_hw_order
+from aryx.cpq import mandatory_input
 from aryx.cpq import auto_fill_postpass
 from aryx.cpq import auto_fill_resolve
 
@@ -6374,154 +6375,12 @@ class CpqEngine:
         rule_forced_active_vns: frozenset[str] | None = None,
         data_table_forced_vns: frozenset[str] | None = None,
     ) -> bool:
-        """Tier A/B/C scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
-        BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
-        Mandatory/System split, further extended 2026-08-19 with Tier C —
-        docs/CPQ_Beautify_Mandatory_Section_Miscategorization_2026_08_19.md)
-        — True for structurally-required decision anchors (Hardware
-        Version, exact productSelectionProduct_all match, "basemodel"/
-        "selectmodel"-named attrs), the small named set of attrs
-        individually live-verified Required via the real per-base-model
-        Attrsequence Data Table (`_ATTRSEQ_CONFIRMED_REQUIRED_VNS`),
-        attributes the customer directly answered (source=="user"), and
-        (Tier C, opt-in via `required_vns`) AttrSequence-Required attrs
-        genuinely unresolved by any Whitelist/Defaultinattr row. Shared by
-        `build_payload` (scopes `config_data` to this set — Tier C is
-        NEVER passed there, see docs/CPQ_ConfigData_Payload_Mandatory_
-        Fix_Scope_2026_08_19.md), `beautify_rows`/`beautify_text` (splits
-        their output into a "Mandatory User Input" section vs. "System-
-        Configured / Recommended"), and the conversational summary
-        (`_filled_summary_triples`) — one scoping key, three consumers, so
-        none can silently drift apart on what counts as "genuinely
-        required" within their own intended scope.
-
-        Deliberately does NOT read `ConfigAttr.required` (sourced from
-        bm_config_attr.required). Raven review on PR #220 caught that
-        this exact field is already documented elsewhere in this file
-        (`_BLIND_FILL_RISK_ACCEPTED_VNS`'s comment block, 2026-08-19) as
-        "confirmed live to be 0/unreliable for essentially every
-        attribute in this catalog" — a flat, catalog-wide column, not the
-        real per-base-model requiredness. An earlier version of this fix
-        keyed off `attr.required` directly and would have silently no-
-        opped for exactly the attrs it was meant to fix (e.g.
-        baselineReleaseSW_astro / "Software Release", confirmed 448/449
-        Attrsequence rows Required despite bm_config_attr.required==0).
-
-        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` only covers the subset of attrs
-        someone has actually live-verified against the real Attrsequence
-        table so far (see that set's docstring) -- a hand-verified,
-        stopgap allowlist. `required_vns` (Tier C) is the same idea
-        GENERALIZED via a live per-(cpq_model, base_model) AttrSequence
-        query instead of a hand-maintained set, so it automatically
-        covers the fields `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` explicitly
-        says are "NOT yet covered" (Configuration Type, Solution Type,
-        Duration, Battery Type, Include a Spare, per-item Application
-        Services checkboxes) without requiring one-by-one manual
-        verification -- see `mandatory_tier_c_vns`. Both checks are kept:
-        the named set is cheap and needs no DB round-trip; Tier C is the
-        generic superset for everything else, and (unlike the named set)
-        is deliberately never passed to `build_payload`.
-
-        `attr` may be `None` (no ConfigAttr resolved for this key) — such a
-        key can never be a structural anchor, so only the `source=="user"`
-        fallback (or Tier C, which needs no `attr`) can include it.
-
-        `active_sources` — optional (default `None`, preserving every
-        existing caller's literal `source == "user"` check byte-for-byte).
-        `build_payload` passes `_CONFIG_DATA_ACTIVE_SOURCES` here (see the
-        docstring above it) so a genuine decision tagged "hint"/"cascade"/
-        "cascade-dependent"/"country_derived"/"product_anchor" also
-        qualifies for `config_data` specifically, without changing
-        beautify's/the summary's own behavior at all.
-
-        `required_vns` — optional (default `None`, so no existing caller's
-        behavior changes unless it opts in with `mandatory_tier_c_vns`'s
-        result). Beautify and the summary pass this; `build_payload` never
-        does.
-
-        `exclude_anchor_vns` — optional (default `None`, preserving Tier
-        A's "basemodel"/"selectmodel" fragment match unconditionally for
-        every existing caller byte-for-byte). `build_payload` passes
-        `_data_table_resolved_anchor_vns`'s result here so a
-        `config_data`-only exception — an anchor-named attribute that is
-        actually 100% data-table-resolved (e.g. modelSelectionbaseModel_
-        astro via NewCountryRegMapping) rather than a genuine customer
-        decision — is excluded from `config_data` specifically, without
-        changing beautify's/the summary's own Tier A behavior at all
-        (docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md).
-
-        `gate_attrseq_confirmed_to_active_source` — optional (default
-        `False`, preserving `_ATTRSEQ_CONFIRMED_REQUIRED_VNS`'s
-        unconditional Tier A inclusion for beautify/the summary
-        byte-for-byte). PR #220's named set has no per-consumer gate the
-        way `exclude_anchor_vns`/`required_vns` do -- membership alone
-        (e.g. baselineReleaseSW_astro, applicationServicesSelection_astro)
-        was leaking genuinely catalog-defaulted (never customer-decided)
-        values into `config_data`, contradicting `scope_required_and_
-        edited`'s own contract ("blind-picked defaults" excluded).
-        `build_payload` passes `True` here so a named-set member only
-        counts toward Tier A for `config_data` when it's ALSO actively
-        sourced (`is_active_source`, i.e. `_CONFIG_DATA_ACTIVE_SOURCES`)
-        -- beautify's/the summary's own calls (default `False`) are
-        completely unaffected; these attrs still land in beautify's
-        Mandatory section and the summary regardless of source, matching
-        PR #220's original intent for those two consumers.
-
-        `rule_forced_active_vns` — optional (default `None`, no-op for
-        every existing caller). A `source=="rule"` value isn't always a
-        "blind-picked default" `gate_attrseq_confirmed_to_active_source`
-        was built to exclude — confirmed live (workspace 93,
-        wirelessCarrier_astro forced to "LTE CAPABILITY NO SERVICE" by the
-        real rule "Force Set Wireless Carrier... when ATAK is enabled")
-        a RecommendationRule can deterministically force a value as the
-        direct, causal consequence of a decision the CUSTOMER already
-        made (ATAK enabled) -- no less genuine than a "cascade" copy.
-        `build_payload` passes `_rule_forced_from_active_decision_vns`'s
-        result here: variable_names whose single declarative-condition
-        RecommendationRule was triggered by an attr that itself is
-        actively sourced. When `vn` is a member, it counts as actively
-        sourced here too, on top of (never instead of) the plain
-        `active_sources` check -- catalog-agnostic, no attribute or rule
-        name hardcoded.
-
-        `data_table_forced_vns` — optional (default `None`, no-op for
-        every existing caller). Same spirit as `rule_forced_active_vns`
-        but for a different resolution path: a `_ATTRSEQ_CONFIRMED_
-        REQUIRED_VNS` member whose value the real ingested Whitelist/
-        Defaultinattr Data Table confirms as ANY genuine legal option —
-        deliberately NOT requiring it be the only one (see
-        `_data_table_forced_vns`'s own docstring: live data proved an
-        "exactly one" version too strict — wirelessCarrier_astro
-        genuinely has 2 legal values, "ATT/FIRSTNET" and "VERIZON", for
-        base model H55TGT9PW8AN + Country=US). A
-        catalog-PROVEN answer is not a blind-picked default —
-        `build_payload` passes `_data_table_forced_vns`'s result here so
-        it counts as actively sourced too, same as `rule_forced_active_vns`.
-        """
-        vn_flat = vn.lower().replace("_", "")
-        _excluded_anchors = exclude_anchor_vns or frozenset()
-        is_active_source = (
-            source in active_sources if active_sources is not None
-            else source == "user"
-        ) or (rule_forced_active_vns is not None and vn in rule_forced_active_vns) or (
-            data_table_forced_vns is not None and vn in data_table_forced_vns
+        return mandatory_input.is_mandatory_input_attr(
+            self, vn, attr, source, active_sources, required_vns,
+            exclude_anchor_vns, gate_attrseq_confirmed_to_active_source,
+            rule_forced_active_vns, data_table_forced_vns,
         )
-        attrseq_confirmed = vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS
-        if gate_attrseq_confirmed_to_active_source:
-            attrseq_confirmed = attrseq_confirmed and is_active_source
-        tier_a = attr is not None and (
-            vn == "productSelectionProduct_all"
-            or self._is_hardware_version_attr(attr)
-            or ("basemodel" in vn_flat and vn not in _excluded_anchors)
-            or ("selectmodel" in vn_flat and vn not in _excluded_anchors)
-            or attrseq_confirmed
-        )
-        tier_b = (
-            any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
-            and is_active_source
-        )
-        tier_c = required_vns is not None and vn in required_vns
-        return tier_a or tier_b or tier_c or is_active_source
+
 
     def build_payload(
         self,
