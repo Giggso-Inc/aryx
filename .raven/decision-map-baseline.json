@@ -9167,9 +9167,74 @@
       "cascade_fill_pending"
     ],
     [
-      "src/aryx/cpq/auto_fill_resolve.py",
-      54,
-      "resolve_one_attr"
+      "src/aryx/cpq/auto_fill_stages/ask_data_gap.py",
+      26,
+      "try_missing_data_skip"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/ask_data_gap.py",
+      68,
+      "try_missing_data_skip"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/ask_or_pending.py",
+      27,
+      "resolve_ask_or_pending"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/ask_or_pending.py",
+      136,
+      "resolve_ask_or_pending"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/commit_and_tail.py",
+      38,
+      "stage_commit_and_tail"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/commit_value.py",
+      20,
+      "commit_value"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/multi_fallback.py",
+      28,
+      "try_multi_fallback"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/multi_fallback.py",
+      146,
+      "try_multi_fallback"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/multi_fallback_layout.py",
+      21,
+      "select_all_constrained"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/tier0_already_filled.py",
+      28,
+      "stage_already_filled"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/tier0_already_filled_multi.py",
+      28,
+      "stage_already_filled_multi"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/tier4_options.py",
+      27,
+      "stage_options"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/tier5_governed_entry.py",
+      24,
+      "governed_entry"
+    ],
+    [
+      "src/aryx/cpq/auto_fill_stages/tier5_governed_multi.py",
+      22,
+      "governed_multi"
     ],
     [
       "src/aryx/cpq/bml.py",

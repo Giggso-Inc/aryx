@@ -1,0 +1,54 @@
+"""Region-from-country and Base-Model region-allow derivations.
+
+Lifted verbatim from the pre-split ``auto_fill_resolve.py``
+(docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md,
+the resolve_one_attr stage split) -- logic unchanged; the function's
+shared locals now live on ``AttrResolution``.
+"""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from aryx.cpq.auto_fill_stages.state import AttrResolution
+
+if TYPE_CHECKING:
+    from aryx.cpq.engine import CpqEngine, FillContext, FillScope
+    from aryx.cpq.state import ConfigAttr
+
+
+def stage_region_and_base_model(
+    engine: "CpqEngine",
+    attr: "ConfigAttr",
+    ctx: "FillContext",
+    scope: "FillScope",
+    state: AttrResolution,
+) -> None:
+    """Derive region from the confirmed country / base model from a
+    real per-region ALLOW value."""
+    if state.done:
+        return
+    # Region-from-country derivation: region is a decision-required
+    # key (always ask, D2/§Phase M-adjacent) UNLESS the confirmed
+    # country resolves to one of this attr's real options — country
+    # itself is untouched, still always asked (D1).
+    if not state.value and "region" in state.vn_flat and scope.country and attr.options:
+        derived = engine.derive_region(scope.country, attr)
+        if derived:
+            state.value, state.display = derived
+            state.source = "country_derived"
+
+    # Base Model region-allow default (see the precompute above) --
+    # a real, confirmed per-region ALLOW value from an ingested
+    # region-rule-shaped Data Table, not a blind guess. Checked
+    # BEFORE the unconditional "basemodel" always-ask anchor above
+    # gets to force this to `pending` -- only ever applies when
+    # exactly one such value resolved.
+    if not state.value and "basemodel" in state.vn_flat and scope.bm_region_allow_value and attr.options:
+        match = next(
+            (o for o in attr.options if o.item_value == scope.bm_region_allow_value),
+            None,
+        )
+        if match:
+            state.value = match.item_value
+            state.display = match.display_name
+            state.source = "region_allow_default"
