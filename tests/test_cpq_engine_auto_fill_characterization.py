@@ -754,3 +754,318 @@ def test_cascade_fill_defaults_a_pending_boolean_to_false_never_via_the_generic_
     assert filled_out["isRegionLockedCA_astro"] == "false"
     assert display_out["isRegionLockedCA_astro"] == "No"
     assert not any(a.variable_name == "isRegionLockedCA_astro" for a in pending)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Priority-cascade ORDER (auto_fill's own docstring, "Priority order
+# (first match wins)", steps 1-6). Nothing previously pinned the ORDER
+# itself -- individual tiers were each covered in isolation, so a
+# mis-cut of the ladder during the upcoming `_resolve_one_attr`
+# relocation/split could silently reorder two tiers with every existing
+# test still green. Each test below sets up an attr for which TWO tiers
+# would both produce a value, and asserts which one actually wins.
+#
+# Existing-coverage survey done before writing these (so none is a
+# duplicate): tier 3-beats-tier-4 with options is already pinned by
+# `test_auto_fill_own_recommendation_check_fires_when_condition_already_
+# holds` above (rec_rules + default_value on the same attr -> "rule"),
+# and tier 6's "exactly one remaining option" / "two remaining ->
+# pending" pair is already pinned by `test_constraint_narrowed_to_a_
+# single_legal_value_is_auto_filled_as_auto_source` /
+# `test_constraint_narrowed_to_two_or_more_legal_values_stays_pending`.
+# The two tests below covering those areas therefore pin the
+# NOT-yet-covered halves of the same tiers (tier 3's `attr.options`
+# gate; tier 6's is_decision_attr exclusion) instead of restating them.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_matching_nl_hint_beats_a_valid_xml_default_value():
+    """Tier 2 (NL hint) beats tier 4 (XML default_value). The hint block
+    (engine.py ~9030) runs before the default_value branch (~9182) and the
+    latter is gated on `not value`, so a hint whose key FRAGMENT-matches the
+    variable_name (underscores/case stripped, containment either way) and
+    whose value exactly matches a real option wins outright -- the attr's
+    own different default_value never gets a chance. Pins the real-world
+    case of a customer explicitly naming a value the catalog's generic
+    default disagrees with."""
+    attr = _attr(1, "flavorChoice_astro", "Flavor Choice",
+                 options=_menu("VANILLA", "CHOCOLATE"), default="VANILLA")
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, display_out, pending = eng.auto_fill(
+        [attr], hints={"flavor": "CHOCOLATE"}, filled_source=filled_source,
+    )
+    assert filled_out["flavorChoice_astro"] == "CHOCOLATE"
+    assert display_out["flavorChoice_astro"] == "CHOCOLATE"
+    assert filled_source["flavorChoice_astro"] == "hint"
+    assert pending == []
+
+
+def test_satisfied_recommendation_loses_to_default_when_the_attr_has_no_options():
+    """Tier 3's own gate, the not-yet-pinned half of the tier-3-beats-tier-4
+    ordering (`test_auto_fill_own_recommendation_check_fires_when_condition_
+    already_holds` above already pins the WITH-options case): the step-2
+    recommendation check is guarded by `and attr.options` (engine.py ~9144),
+    and `_satisfied_recommendation` can only ever return an option it MATCHED
+    in `candidate_opts`. So for a free-text attr (no menu at all) a fully
+    satisfied recommendation rule is silently skipped and the generic XML
+    default_value claims the attr instead -- the exact inversion of the
+    documented "targeted rule beats catalog-wide default" priority, observed
+    and pinned here as-is, not fixed."""
+    condition_attr = _attr(1, "conditionAttr", "Condition", options=_menu("A", "B"))
+    free_text_target = _attr(2, "freeTextTarget_astro", "Free Text Target",
+                             default="CATALOG_DEFAULT")
+    rec = RecommendationRule(
+        rule_name="recommend REC_OPT when A", condition_attr_id=1,
+        condition_value="A", target_attr_id=2, recommended_value="REC_OPT",
+    )
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, _display, _pending = eng.auto_fill(
+        [condition_attr, free_text_target], hints={},
+        already_filled={"conditionAttr": "A"},
+        rec_rules=[rec], filled_source=filled_source,
+    )
+    assert filled_out["freeTextTarget_astro"] == "CATALOG_DEFAULT"
+    assert filled_source["freeTextTarget_astro"] == "default"
+
+
+def test_xml_default_value_beats_the_rule_governed_first_by_order_pick():
+    """Tier 4 (XML default_value) beats tier 5 (rule-governed default-or-
+    first). The whole tier-5/tier-6 block is entered only `if not value and
+    attr.options` (engine.py ~9367), so once tier 4 has set a value from
+    `default_value` the governed fallback is never reached at all -- pinned
+    with a default_value that is deliberately NOT the first option by order,
+    so a mis-cut ladder that ran tier 5 first would be caught by the value
+    itself ("THIRD" vs "FIRST"), not just by the source tag."""
+    governed_with_default = _attr(1, "governedWithDefault_astro", "Governed",
+                                  options=_menu("FIRST", "SECOND", "THIRD"),
+                                  default="THIRD")
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, display_out, pending = eng.auto_fill(
+        [governed_with_default], hints={},
+        governed_ids={1}, rule_governed_ids={1}, filled_source=filled_source,
+    )
+    assert filled_out["governedWithDefault_astro"] == "THIRD"
+    assert display_out["governedWithDefault_astro"] == "THIRD"
+    assert filled_source["governedWithDefault_astro"] == "default"
+    assert pending == []
+
+
+def test_governed_attr_is_filled_where_an_identically_shaped_ungoverned_attr_stays_pending():
+    """Governance is what separates "fill it" from "ask it" for two attrs
+    with an IDENTICAL shape (single-select, 3 real options, no default, not
+    required, no constraint narrowing anything). Both are far from tier 6's
+    "exactly one remaining option" bar, so only `governed_ids` membership
+    can resolve them -- and it does, first-by-menu-order.
+
+    Observed subtlety worth pinning before the split: the value does NOT
+    come from tier 5's own first-by-order line (source == governed_source ==
+    "rule"). For a NON-required attr with no default_value and no
+    recommendation rule, `_no_real_fill_justification` is True, which shuts
+    tier 5's blind pick off entirely; the attr falls all the way through to
+    the LATE Group-2 rule-governed blind pick in the final ask-branch
+    (engine.py ~10233-10305), tagged "blind_pick_rule_governed". So the
+    governed/ungoverned split really lives in TWO places in this ladder, not
+    one -- exactly the kind of detail a mis-cut file split could drop."""
+    governed = _attr(1, "governedChoice_astro", "Governed Choice",
+                     options=_menu("FIRST", "SECOND", "THIRD"))
+    ungoverned = _attr(2, "plainChoice_astro", "Plain Choice",
+                       options=_menu("FIRST", "SECOND", "THIRD"))
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, display_out, pending = eng.auto_fill(
+        [governed, ungoverned], hints={},
+        governed_ids={1}, rule_governed_ids={1}, filled_source=filled_source,
+    )
+    assert filled_out["governedChoice_astro"] == "FIRST"
+    assert display_out["governedChoice_astro"] == "FIRST"
+    assert filled_source["governedChoice_astro"] == "blind_pick_rule_governed"
+    assert "plainChoice_astro" not in filled_out
+    assert [a.variable_name for a in pending] == ["plainChoice_astro"]
+
+
+def test_tier_five_first_by_order_fires_for_a_required_governed_attr_as_rule_source():
+    """The other half of the test above -- the ONE shape that actually
+    reaches tier 5's own first-by-order line (engine.py ~9695-9705): a
+    governed attr that is `required`, which makes
+    `_no_real_fill_justification` False and so unlocks the branch. Same
+    inputs otherwise, but the fill is tagged with `governed_source`
+    ("rule", since it's in rule_governed_ids) instead of the late
+    "blind_pick_rule_governed" tag -- proof the two blind-pick sites are
+    genuinely distinct code paths with distinct observable output, not
+    interchangeable."""
+    required_governed = _attr(1, "requiredGovernedChoice_astro", "Required Governed",
+                              options=_menu("FIRST", "SECOND", "THIRD"), required=True)
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, _display, pending = eng.auto_fill(
+        [required_governed], hints={},
+        governed_ids={1}, rule_governed_ids={1}, filled_source=filled_source,
+    )
+    assert filled_out["requiredGovernedChoice_astro"] == "FIRST"
+    assert filled_source["requiredGovernedChoice_astro"] == "rule"
+    assert pending == []
+
+
+def test_sole_remaining_option_shortcut_is_skipped_for_a_decision_attr():
+    """Tier 6's not-yet-pinned exclusion (the fires/does-not-fire pair on
+    option COUNT is already pinned by the two `test_constraint_narrowed_
+    to_*` tests above): the `len(valid_opts) == 1` shortcut carries `and not
+    is_decision_attr` (engine.py ~9399), so a decision-required attr
+    (country/region fragment, hardware version, product, "selectmodel",
+    "basemodel") narrowed by a real constraint to EXACTLY ONE legal option is
+    still asked rather than auto-filled -- a constraint script can resolve a
+    value with no literal menu match, making "exactly 1" a false positive.
+    An otherwise identical non-decision attr in the same call, narrowed the
+    same way, IS auto-filled -- the contrast is the point."""
+    decision_attr = _attr(1, "modelSelectionRegion_astro", "Region",
+                          options=_menu("NA", "EMEA"))
+    plain_attr = _attr(2, "someChoice_astro", "Some Choice",
+                       options=_menu("NA", "EMEA"))
+    eng = CpqEngine()
+    filled_out, _display, pending = eng.auto_fill(
+        [decision_attr, plain_attr], hints={},
+        constrained_opts={1: ["EMEA"], 2: ["EMEA"]},
+    )
+    assert "modelSelectionRegion_astro" not in filled_out
+    assert [a.variable_name for a in pending] == ["modelSelectionRegion_astro"]
+    assert filled_out["someChoice_astro"] == "EMEA"
+
+
+def test_hidden_attr_takes_its_default_and_never_consults_a_matching_nl_hint():
+    """The `attr.hidden` early-return (engine.py ~9009) sits ABOVE the
+    entire cascade, including tier 2's hint block -- so a hidden attr gets
+    ONLY its own XML default_value even when an NL hint fragment-matches its
+    variable_name and names a different real option. Verified against the
+    code, not assumed: the hidden branch's own comment says "never asked,
+    never NL-hint-matched, never blind-first-picked", and it `return`s
+    before `vn_flat`/the hints loop is ever reached. A hidden attr with a
+    matching hint and NO default is left out of `filled` entirely, and
+    neither hidden attr ever reaches `pending`. Complements
+    `test_auto_fill_takes_the_hidden_flag_as_a_fixed_input_never_re_derives_
+    it` above, which pins the same branch without any hints in play."""
+    hidden_with_default = ConfigAttr(
+        entity_id=1, variable_name="hiddenFlavorChoice", display_label="Hidden Flavor",
+        required=False, default_value="VANILLA",
+        options=_menu("VANILLA", "CHOCOLATE"), hidden=True,
+    )
+    hidden_without_default = ConfigAttr(
+        entity_id=2, variable_name="hiddenFlavorOther", display_label="Hidden Flavor 2",
+        required=False, default_value="",
+        options=_menu("VANILLA", "CHOCOLATE"), hidden=True,
+    )
+    eng = CpqEngine()
+    filled_source: dict[str, str] = {}
+    filled_out, display_out, pending = eng.auto_fill(
+        [hidden_with_default, hidden_without_default],
+        hints={"flavor": "CHOCOLATE"}, filled_source=filled_source,
+    )
+    assert filled_out["hiddenFlavorChoice"] == "VANILLA"
+    assert display_out["hiddenFlavorChoice"] == "VANILLA"
+    assert filled_source["hiddenFlavorChoice"] == "default"
+    assert "hiddenFlavorOther" not in filled_out
+    assert pending == []
+
+
+def test_constrained_ambiguous_optional_multi_select_defaults_to_empty_not_all():
+    """The multi-select overselection guard (engine.py ~9815-10053) through
+    the tier-precedence lens: an optional multi-select narrowed by a real
+    constraint to SEVERAL (2 of 3) remaining options, with no satisfied
+    recommendation and no default_value among them, resolves to an EMPTY
+    list -- never to "all currently-legal options" (the original live bug:
+    a near-universally-true constraint narrowing a menu to 9 of 11 is a
+    MENU, not a recommendation to select all 9).
+
+    Two observed preconditions this pins alongside the guard itself, both
+    load-bearing for the branch to be reached at all: (a) the attr needs
+    SOME fill justification (`_no_real_fill_justification` False -- here a
+    real RecommendationRule targets it, whose condition never holds), else
+    it skips every multi branch and simply lands in `pending`; (b) the
+    empty list is written to the caller's `already_filled_multi` dict IN
+    PLACE, tagged source "default", and the attr does NOT appear in
+    `pending` -- the empty selection is treated as a settled answer.
+    Distinct from `test_shared_default_fill_signature_cache_can_serve_a_
+    stale_re_derivation` above, which reaches the same outcome only via
+    re-validation of an ALREADY-filled guess; this one starts from nothing
+    filled."""
+    ambiguous_multi = _attr(10, "multiChoice_astro", "Multi Choice",
+                            select_type="multi",
+                            options=_menu("FIRST", "SECOND", "THIRD"))
+    never_fires_rec = RecommendationRule(
+        rule_name="never fires", condition_attr_id=999,
+        condition_value="NEVER", target_attr_id=10, recommended_value="SECOND",
+    )
+    eng = CpqEngine()
+    filled_multi: dict[str, list[str]] = {}
+    filled_source: dict[str, str] = {}
+    _filled, display_out, pending = eng.auto_fill(
+        [ambiguous_multi], hints={},
+        constrained_opts={10: ["SECOND", "THIRD"]},
+        already_filled_multi=filled_multi, filled_source=filled_source,
+        rec_rules=[never_fires_rec],
+    )
+    assert filled_multi == {"multiChoice_astro": []}
+    assert display_out["multiChoice_astro"] == "(none)"
+    assert filled_source["multiChoice_astro"] == "default"
+    assert pending == []
+
+
+def test_rule_governed_attr_whose_every_option_is_a_none_sentinel_lands_in_pending():
+    """One of the two `pending.append(attr)` sites inside `_resolve_one_attr`
+    that no existing test in this file exercised: the Group-2 rule-governed
+    blind pick's own `else` (engine.py ~10304-10305). A rule-governed
+    single-select attr with no default_value normally gets first-by-order
+    blind-picked there, but when EVERY menu option is a `_NONE_VALUES`
+    sentinel ("NONE", "N/A") `_valid` filters them all out, `_rg_opts` is
+    empty, and the attr falls to `pending` rather than being silently
+    dropped ("never silently drop the attr", per that branch's own comment)
+    -- note it is asked even though there is nothing real to offer."""
+    sentinel_only = _attr(1, "sentinelGovernedChoice_astro", "Sentinel Governed",
+                          options=_menu("NONE", "N/A"))
+    eng = CpqEngine()
+    filled_out, _display, pending = eng.auto_fill(
+        [sentinel_only], hints={}, governed_ids={1}, rule_governed_ids={1},
+    )
+    assert "sentinelGovernedChoice_astro" not in filled_out
+    assert [a.variable_name for a in pending] == ["sentinelGovernedChoice_astro"]
+
+
+def test_dt_governed_attr_whose_every_option_is_a_none_sentinel_lands_in_pending(
+    monkeypatch,
+):
+    """The other previously-unexercised `pending.append(attr)` site: the
+    `_dt_governed_vns` blind-pick's own `else` (engine.py ~10231-10232),
+    checked BEFORE the rule-governed Group-2 branch above. Same setup as
+    `test_dt_governed_attr_blind_picks_first_option_vs_never_governed_attr_
+    stays_pending` (a real ingested attrSequence row confirming this attr
+    governs the current base model), but every menu option is a
+    `_NONE_VALUES` sentinel, so `_blind_opts` is empty and the attr is asked
+    instead of blind-picked. Pins that the data-table branch's empty-options
+    escape hatch exists and behaves like the rule-governed one -- both must
+    survive the split as separate sites, since they tag their successful
+    fills differently ("blind_pick_governed" vs
+    "blind_pick_rule_governed")."""
+    monkeypatch.setattr(
+        data_table_loader, "get_cpq_rdb",
+        lambda: _FakeSequenceRdb([
+            {"CPQModel": "APXNEXT", "BaseModel": "BM1",
+             "AttrName": "dtGovernedSentinel_astro", "Seq": "1"},
+        ]),
+    )
+    base_model_attr = _attr(1, "modelSelectionbaseModel_astro", "Base Model")
+    product_attr = _attr(2, "productSelectionProduct_all", "Product")
+    dt_governed_sentinel = _attr(3, "dtGovernedSentinel_astro", "DT Governed Sentinel",
+                                 options=_menu("NONE", "N/A"))
+    eng = CpqEngine()
+    filled_out, _display, pending = eng.auto_fill(
+        [base_model_attr, product_attr, dt_governed_sentinel], hints={},
+        already_filled={
+            "modelSelectionbaseModel_astro": "BM1",
+            "productSelectionProduct_all": "SOME UNMAPPED PRODUCT",
+        },
+        workspace_id=7,
+    )
+    assert "dtGovernedSentinel_astro" not in filled_out
+    assert "dtGovernedSentinel_astro" in [a.variable_name for a in pending]
