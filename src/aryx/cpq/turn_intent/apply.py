@@ -10,13 +10,12 @@ import re
 
 from aryx.cpq.engine import (
     _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE,
-    _country_alias_group,
     _option_matches_with_unit_normalization,
     _presentable,
     _valid,
-    logger,
 )
 from aryx.cpq.state import ConfigAttr
+from aryx.cpq.turn_intent.apply_country_alias import country_alias_fallback
 
 
 def apply_answer(
@@ -123,31 +122,11 @@ def apply_answer(
             if _valid(opt.item_value):
                 return opt.item_value, opt.display_name
 
-    # Country alias fallback — a direct reply naming a country by a
-    # DIFFERENT alias than the option's own item_value/display_name
-    # (e.g. "USA" replying to an attr whose real option is
-    # item_value="US", display_name="United States") previously fell
-    # through every check above to a hard miss with no logging at all
-    # (confirmed live 2026-08-14: Ultimate Destination Country accepted
-    # "US" via the exact item_value check above but rejected "USA").
-    # Uses _country_alias_group -- the same 249-real-country,
-    # bidirectional alias table auto_fill's hint-priority path uses
-    # (Priority 4 above) -- so a fix to the underlying data closes the
-    # gap in both places at once. Narrow and safe — only fires when
-    # `ua` (the whole trimmed reply) exactly equals a known alias,
-    # never a substring/fuzzy guess.
-    alias_group = _country_alias_group(ua)
-    if alias_group:
-        for opt in options:
-            if (opt.item_value.lower() in alias_group
-                    or opt.display_name.lower() in alias_group):
-                if _valid(opt.item_value):
-                    logger.info(
-                        "cpq_apply_answer_alias_match attr=%s reply=%r "
-                        "resolved_to=%r",
-                        attr.variable_name, user_answer, opt.item_value,
-                    )
-                    return opt.item_value, opt.display_name
+    # See apply_country_alias.py — split out purely to keep this file
+    # under the file-size cap.
+    alias_match = country_alias_fallback(attr, user_answer, ua, options)
+    if alias_match:
+        return alias_match
 
     # Free-text field
     if not attr.options and allowed is None and _valid(user_answer):
