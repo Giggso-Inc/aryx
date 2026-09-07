@@ -144,6 +144,13 @@ def _parse_grid_quantity_dozen_phrase(text: str) -> int | None:
 # after it. A top-of-file import would be a circular-import failure.
 from aryx.cpq import grid_quantity  # noqa: E402
 
+# aryx.cpq.nl_hint_extraction's submodules only ever do
+# `from aryx.cpq import engine as _engine_module` (whole-module reference,
+# attributes read at call time) -- never `from aryx.cpq.engine import
+# <name>` -- so this import has no ordering constraint relative to any
+# module-level name defined later in this file.
+from aryx.cpq import nl_hint_extraction  # noqa: E402
+
 
 # ── Unit/pluralization-tolerant option matching ─────────────────────────
 # Live bug: a customer reply of "2 Yrs" (or "2 Years") never matched a
@@ -2624,112 +2631,10 @@ class CpqEngine:
     # ── Intent detection ──────────────────────────────────────────────────────
 
     def is_cpq_question(self, question: str, reader: Any = None, workspace_id: int = 1) -> bool:
-        """True when the question is a CPQ configuration / quote request.
-
-        Two independent signals: the generic CPQ-vocabulary regex (fixed
-        English words, not ingested data), OR a mention of any product
-        actually ingested in this workspace (dynamic — same live-graph
-        source as detect_product_mention). A question naming a product
-        with no other CPQ-domain word (e.g. just "MOTOTRBO?") still routes
-        to CPQ without needing that product's name hardcoded here.
-
-        Live-confirmed gap (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
-        PLAN.md): the dynamic fallback used to check ONLY
-        _ingested_product_names — internal BOM family codes
-        ("aSTRO25_bom", "softwareSolutions_BOM"), never the real,
-        customer-facing product name ("APX Next") a customer actually
-        types. "I want to order APX Next radios..." named a real,
-        ingested product by its real name and STILL fell through
-        entirely to the generic non-CPQ pipeline. Switched to
-        ingested_product_alias_map — the same catalog-tree-derived alias
-        source detect_product_mention already relies on successfully,
-        which carries both the family code AND every real product/line
-        name from each catalog's own bm_catalog tree.
-        """
-        if _CPQ_TRIGGER.search(question):
-            return True
-        if reader is None:
-            return False
-        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
-        if not q_norm:
-            return False
-        alias_map = self.ingested_product_alias_map(reader, workspace_id)
-        candidates = set(alias_map) | set(alias_map.values()) | set(
-            self._ingested_product_names(reader, workspace_id)
-        )
-        return any(
-            len(norm) >= _HINT_MIN_PHRASE_LEN and norm in q_norm
-            for name in candidates
-            if name
-            for norm in (re.sub(r"[^a-z0-9]", "", name.lower()),)
-        )
+        return nl_hint_extraction.question_hints.is_cpq_question(self, question, reader, workspace_id)
 
     def extract_hints(self, question: str) -> dict[str, str]:
-        """Extract attribute value hints from natural language.
-
-        Returns {attr_key_fragment: hint_value} where hint_value is matched
-        word-boundary against DB option display names — no hardcoded country list.
-
-        Contract callers must honor for `hints["country"]` specifically
-        (review finding, docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md):
-        this is a raw, UNVALIDATED regex candidate, not a confirmed country.
-        When no `_COUNTRY_PREP` match in the sentence is a real, recognized
-        country, this still returns the leftmost match anyway (so a caller
-        that wants to reject explicitly has something to reject, rather than
-        a silent absence indistinguishable from "no country mentioned at
-        all"). Every caller MUST re-validate via `is_recognized_country`
-        before trusting this value for anything — never assign it to
-        `session.country` (or equivalent) directly. Both current callers
-        (`ask_api.py`'s turn-1 hint block and `_mine_history_for_cpq_
-        context`) already do this; a new caller that reads `hints.get(
-        "country")` without the same check would silently reintroduce the
-        exact bug class this whole plan closes.
-        """
-        hints: dict[str, str] = {}
-
-        # Specific shortcut patterns — first match wins per key; more specific
-        # patterns must be listed first in _HINT_PATTERNS (see ordering comment there).
-        for key, pattern, value in _HINT_PATTERNS:
-            if key not in hints and re.search(pattern, question, re.IGNORECASE):
-                hints[key] = value
-
-        # Generic country extraction: "customer in Australia", "located in New Zealand"
-        # Captures the proper-noun after a preposition and matches it against DB display names.
-        #
-        # Tries every match in the sentence, not just the first -- fallback-
-        # path hardening, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_
-        # 08_13.md review finding). `re.search` only ever returns the
-        # LEFTMOST match; a bogus earlier trigger ("for APX Next" -> "AP")
-        # used to shadow a real, later, correctly-stated country in the
-        # same sentence ("...in the United States") because nothing ever
-        # looked past the first hit. Prefers the first candidate that's a
-        # real, recognized country; falls back to the plain leftmost match
-        # (this method's original behavior) only when NONE of them
-        # validate, so callers that intend to validate downstream
-        # themselves still get a candidate to reject, not a silent None.
-        if "country" not in hints:
-            valid_match = None
-            first_match = None
-            for m in _COUNTRY_PREP.finditer(question):
-                candidate = m.group(1).strip().title()
-                if first_match is None:
-                    first_match = candidate
-                if self.is_recognized_country(candidate):
-                    valid_match = candidate
-                    break
-            if valid_match is not None:
-                hints["country"] = valid_match
-            elif first_match is not None:
-                hints["country"] = first_match
-
-        # Region hints (abbreviations)
-        if "region" not in hints:
-            for pattern, value in _REGION_PATTERNS:
-                if re.search(pattern, question, re.IGNORECASE):
-                    hints["region"] = value
-                    break
-
-        return hints
+        return nl_hint_extraction.question_hints.extract_hints(self, question)
 
     def extract_catalog_hints(
         self, question: str, attrs: list["ConfigAttr"],
@@ -2961,105 +2866,13 @@ class CpqEngine:
     def _build_flag_keyword_index(
         self, attrs: list["ConfigAttr"], workspace_id: int, catalog_prefix: str,
     ) -> dict[str, tuple[str, str]]:
-        """{normalized_keyword: (variable_name, literal_value)} for
-        option-less attrs whose value a real BML script actually checks.
-
-        Confirmed live this closes a real gap extract_catalog_hints cannot:
-        attrs like customerType have no menu options at all, so there is no
-        curated option text to match a phrase like "federal customer"
-        against — yet a real hiding rule's script literally checks
-        customerType=="FEDERAL". The keyword itself is read directly off
-        the script's own comparison (via extract_literal_comparisons), not
-        derived from the attribute's name — customerType's own name
-        ("customer", "type") contains nothing resembling "federal", so
-        camelCase-splitting the attribute name would find nothing useful
-        here; the useful signal only exists in the script body.
-
-        Never guesses (D2), two ways:
-          - A candidate value is dropped if 2+ different option-less
-            fields' scripts compare against the same normalized text —
-            same "ambiguous → don't guess" principle as extract_catalog_hints.
-          - A candidate value is ALSO dropped if it collides with any real,
-            curated menu option's text anywhere in the catalog (confirmed
-            live: "FEDERAL" is itself a real option on
-            systemEnhancementFeatureType_astro, plus a substring of several
-            others) — this fuzzy, script-derived mechanism must never
-            disagree with extract_catalog_hints about which attribute a
-            word belongs to.
-
-        Cached per (workspace_id, catalog_prefix) — this depends only on
-        the catalog's own static rules/attrs, not on conversation state, so
-        it is built once per catalog per process lifetime rather than
-        re-scanning every script on every turn.
-        """
-        cache_key = (workspace_id, catalog_prefix)
-        cached = _FLAG_KEYWORD_INDEX_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
-
-        by_vn = {a.variable_name: a for a in attrs}
-        option_less = {
-            vn for vn, a in by_vn.items() if not a.options and not a.hidden
-        }
-
-        scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
-        candidates: dict[str, set[str]] = {}
-        literal_by_norm_and_var: dict[tuple[str, str], str] = {}
-        for script in scripts.values():
-            if not script:
-                continue
-            for var, value in extract_literal_comparisons(script):
-                if var not in option_less:
-                    continue
-                norm = _normalize_for_hint(value)
-                if len(norm) < _HINT_MIN_PHRASE_LEN:
-                    continue
-                candidates.setdefault(norm, set()).add(var)
-                literal_by_norm_and_var[(norm, var)] = value
-
-        index: dict[str, tuple[str, str]] = {
-            norm: (next(iter(vns)), literal_by_norm_and_var[(norm, next(iter(vns)))])
-            for norm, vns in candidates.items() if len(vns) == 1
-        }
-
-        for a in attrs:
-            if a.hidden or a.select_type == "multi":
-                continue
-            for opt in a.options:
-                for text in (opt.item_value, opt.display_name):
-                    index.pop(_normalize_for_hint(text), None)
-
-        _FLAG_KEYWORD_INDEX_CACHE[cache_key] = index
-        return index
+        return nl_hint_extraction.flag_hints._build_flag_keyword_index(self, attrs, workspace_id, catalog_prefix)
 
     def extract_flag_hints(
         self, question: str, attrs: list["ConfigAttr"],
         workspace_id: int, catalog_prefix: str,
     ) -> dict[str, str]:
-        """{variable_name: literal_value} for option-less, BML-referenced
-        fields whose expected literal value appears (un-negated) in the
-        question. See _build_flag_keyword_index for the safety guards.
-
-        Negation drops the match entirely rather than inventing an
-        "opposite" literal — unlike a real YES/NO option pair, there is no
-        second value the script defines for "not federal", so the safe
-        behavior is to leave the field unfilled (same as any other
-        genuinely unresolvable case), not guess one.
-        """
-        index = self._build_flag_keyword_index(attrs, workspace_id, catalog_prefix)
-        if not index:
-            return {}
-        q_norm, q_index_map = _normalize_for_hint_with_map(question)
-        q_lower = question.lower()
-        hints: dict[str, str] = {}
-        for norm_value, (vn, literal_value) in index.items():
-            idx = _find_plural_tolerant(q_norm, norm_value)
-            if idx == -1:
-                continue
-            if _is_negated_before(q_lower, q_index_map[idx]):
-                continue
-            hints[vn] = literal_value
-        return hints
+        return nl_hint_extraction.flag_hints.extract_flag_hints(self, question, attrs, workspace_id, catalog_prefix)
 
     def find_unresolvable_context_attrs(
         self,
@@ -3070,267 +2883,23 @@ class CpqEngine:
         rec_rules: list["RecommendationRule"],
         con_rules: list["ConstraintRule"],
     ) -> list[dict[str, Any]]:
-        """Surface every option-less, script-referenced, still-unfilled attr
-        that NO rule in this catalog can ever set (the customerType-class
-        gap — generalized from a single confirmed instance, docs/
-        APX_Next_RootCause_And_Fix_Report).
-
-        Never guesses a value (D2) — this only reports WHICH attrs are
-        structurally unresolvable and what literal values scripts elsewhere
-        compare them to, so a caller (a standalone payload-construction
-        workflow, or a live turn) can decide what to do, instead of the
-        gap being invisible the way it was for customerType. Distinct from
-        an attr a recommendation rule targets but simply hasn't been run
-        yet — call evaluate_recommendation_rules/evaluate_rules_loop
-        first; only what remains missing after that pass is a genuine gap
-        this method is meant to catch.
-
-        Catalog-agnostic: uses only the same generic option-less/script-
-        literal-comparison scan _build_flag_keyword_index already performs,
-        and the same rule-target check any catalog's rec/con rules go
-        through — no attribute or rule name is hardcoded.
-
-        Returns a list of {variable_name, literal_values_referenced,
-        num_referencing_scripts}, one entry per genuinely unresolvable,
-        still-missing attr — empty when nothing needs attention.
-        """
-        by_vn = {a.variable_name: a for a in attrs}
-        option_less = {
-            vn for vn, a in by_vn.items() if not a.options and not a.hidden
-        }
-        if not option_less:
-            return []
-
-        settable_by_rule: set[int] = set()
-        for r in (*rec_rules, *con_rules):
-            target_id = getattr(r, "target_attr_id", None)
-            if target_id:
-                settable_by_rule.add(target_id)
-
-        scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
-        referenced: dict[str, set[str]] = {}
-        referencing_count: dict[str, int] = {}
-        for script in scripts.values():
-            if not script:
-                continue
-            seen_this_script: set[str] = set()
-            for var, value in extract_literal_comparisons(script):
-                if var not in option_less:
-                    continue
-                referenced.setdefault(var, set()).add(value)
-                seen_this_script.add(var)
-            for var in seen_this_script:
-                referencing_count[var] = referencing_count.get(var, 0) + 1
-
-        result: list[dict[str, Any]] = []
-        for vn, values in referenced.items():
-            if filled.get(vn):
-                continue
-            attr = by_vn.get(vn)
-            eid = attr.entity_id if attr else None
-            sid = attr.source_id if attr else None
-            if eid in settable_by_rule or (sid is not None and sid in settable_by_rule):
-                continue  # a rule CAN fill this — not this method's concern
-            result.append({
-                "variable_name": vn,
-                "literal_values_referenced": sorted(v for v in values if v.strip()),
-                "num_referencing_scripts": referencing_count.get(vn, 0),
-            })
-        result.sort(key=lambda r: -r["num_referencing_scripts"])
-        return result
+        return nl_hint_extraction.unresolvable_context.find_unresolvable_context_attrs(self, attrs, filled, workspace_id, catalog_prefix, rec_rules, con_rules)
 
     def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
-        """Real product/family display names for every catalog currently
-        ingested in this workspace — read live from the graph, no hardcoded
-        product list.
-
-        Mirrors the BmPrdFamily/BmCatalog lookup _scope_to_catalog already
-        does to resolve a hint back to one catalog (see its docstring); here
-        we go the other direction — enumerate every ingested catalog's own
-        name so a mention of ANY currently-ingested product can be
-        recognised, not just ones anticipated when this code was written.
-        Returns [] (never raises) when the reader can't answer distinct_types
-        or no family/catalog entity is found — callers must treat that as
-        "no dynamic candidates available", not an error.
-        """
-        try:
-            all_type_names = reader.distinct_types()
-        except AttributeError:
-            return []
-        # "" (no source-stem prefix) is a legitimate catalog scope too — a
-        # workspace with only one ingested catalog may have unprefixed type
-        # names (_scope_to_catalog treats this the same way: len(prefixes)<=1
-        # returns that one prefix, even when it's ""). Excluding "" here
-        # would silently skip the single-catalog case entirely.
-        prefixes = sorted({_catalog_prefix(t) for t in all_type_names})
-        names: list[str] = []
-        for prefix in prefixes:
-            family_ents: list[dict] = []
-            for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
-                family_ents.extend(
-                    reader.find_entities(ontology_type=family_type, limit=50))
-                if family_ents:
-                    break
-            if not family_ents:
-                continue
-            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
-            for fent in family_ents:
-                fname = str(
-                    family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
-                ).strip()
-                if fname:
-                    names.append(fname)
-        return names
+        return nl_hint_extraction.ingested_products._ingested_product_names(self, reader, workspace_id)
 
     def ingested_product_alias_map(self, reader: Any, workspace_id: int) -> dict[str, str]:
-        """{alias → owning family name} for every catalog in this workspace.
-
-        _ingested_product_names only surfaces the BmPrdFamily names (e.g.
-        "aSTRO25_bom", "videoSolutions_BOM") — internal BOM identifiers a
-        client rarely says. But each export also carries its OWN bm_catalog
-        tree (family → product line → product), and those names ARE what
-        clients say: "APX™ NEXT"/"aPXNext_BOM" lives only in the APX
-        export, "SVX Video Remote Speaker Microphone"/"vX650_BOM" only in
-        the SVX one (confirmed live, workspace 14). Unlike the flat
-        productSelectionProduct_all menu — the identical full-portfolio
-        list in every catalog, useless for discrimination — the tree is
-        catalog-scoped, so a product/line name maps unambiguously to its
-        family.
-
-        Every alias (the family name itself, plus each bm_catalog entity's
-        variable name and display name) maps to the family name detection
-        should resolve to — the same value _scope_to_catalog matches back
-        to one catalog when the config loads. An alias appearing under
-        MORE THAN ONE family (a shared tree entry) is dropped entirely:
-        ambiguous, never guess. Returns {} (never raises) when the reader
-        can't answer — same contract as _ingested_product_names.
-        """
-        try:
-            all_type_names = reader.distinct_types()
-        except AttributeError:
-            return {}
-        prefixes = sorted({_catalog_prefix(t) for t in all_type_names})
-        alias_map: dict[str, str] = {}
-        ambiguous: set[str] = set()
-        for prefix in prefixes:
-            fam_ents = reader.find_entities(
-                ontology_type=f"{prefix}BmPrdFamily", limit=50)
-            cat_ents = reader.find_entities(
-                ontology_type=f"{prefix}BmCatalog", limit=200)
-            if not fam_ents and not cat_ents:
-                continue
-            pg = self._batch_fetch(
-                [e["id"] for e in fam_ents + cat_ents], workspace_id)
-            family_name = ""
-            for fent in fam_ents:
-                family_name = str(
-                    pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
-                ).strip()
-                if family_name:
-                    break
-            if not family_name:
-                # No family entity in this export — the tree's root catalog
-                # node (parent_id=-1) is the closest thing to a family name.
-                for cent in cat_ents:
-                    a = pg.get(cent["id"], {})
-                    if str(a.get("parent_id") or "").strip() == "-1":
-                        family_name = str(
-                            a.get("name") or cent.get("name") or "").strip()
-                        if family_name:
-                            break
-            if not family_name:
-                continue
-            aliases = {family_name}
-            for cent in cat_ents:
-                a = pg.get(cent["id"], {})
-                for key in ("name", "bm_name"):
-                    nm = str(a.get(key) or "").strip()
-                    if nm:
-                        aliases.add(nm)
-            for nm in aliases:
-                existing = alias_map.get(nm)
-                if existing is not None and existing != family_name:
-                    ambiguous.add(nm)
-                else:
-                    alias_map[nm] = family_name
-        for nm in ambiguous:
-            alias_map.pop(nm, None)
-        return alias_map
+        return nl_hint_extraction.ingested_products.ingested_product_alias_map(self, reader, workspace_id)
 
     def single_model_variable_name(
         self, reader: Any, workspace_id: int, catalog_prefix: str,
     ) -> str:
-        """The catalog's model variable name — ONLY when its own bm_catalog
-        tree has exactly one model leaf; "" otherwise (never guess).
-
-        Recreates the punch-in model context BigMachines injects at runtime
-        (the `_bm_model_*` attrs a user enters the configurator through) —
-        data that never exists in an XML export. When the tree makes the
-        model unambiguous (SVX: family videoSolutions_BOM → line mobile_BOM
-        → single leaf vX650_BOM), Aryx can seed it; when several leaves
-        exist (APX Next: aPXNext_BOM AND aPXN70_BOM), returns "" and the
-        model context stays unfilled — the quote's identity travels in the
-        product selection there instead (Issue 11,
-        docs/CPQ_PRODUCT_SWITCH_ISSUE.md). A leaf = a bm_catalog node whose
-        native id is never another node's parent_id.
-        """
-        if not catalog_prefix:
-            return ""
-        cat_ents = reader.find_entities(
-            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
-        if not cat_ents:
-            return ""
-        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
-        nodes: list[tuple[str, str, str]] = []  # (native_id, parent_id, name)
-        for cent in cat_ents:
-            a = pg.get(cent["id"], {})
-            native = str(a.get("id") or "").strip()
-            parent = str(a.get("parent_id") or "").strip()
-            name = str(a.get("name") or cent.get("name") or "").strip()
-            if native and name:
-                nodes.append((native, parent, name))
-        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
-        leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
-        return leaves[0] if len(leaves) == 1 else ""
+        return nl_hint_extraction.model_leaves.single_model_variable_name(self, reader, workspace_id, catalog_prefix)
 
     def model_variable_candidates(
         self, reader: Any, workspace_id: int, catalog_prefix: str,
     ) -> list[str]:
-        """Companion to single_model_variable_name: the full list of leaf
-        model variable names when the tree has 2+ (the ambiguous case that
-        function deliberately returns "" for, rather than guessing).
-
-        Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
-        catalog like CommandCentral Aware has several model leaves
-        (commandCentralAware2024_BOM, commandCentralAware2026_BOM,
-        commandCentralDEMS_BOM, ...) under one family — with no single
-        unambiguous leaf, _bm_model_variable_name was never seeded at
-        all, and no question ever asked which one was meant; the turn
-        fell through to unrelated "Product" attrs instead, which don't
-        represent this identity in this catalog's data at all.
-
-        Returns [] when there are 0 or exactly 1 leaves (that case is
-        single_model_variable_name's job), else the distinct, sorted leaf
-        names for the caller to present as a disambiguation choice.
-        """
-        if not catalog_prefix:
-            return []
-        cat_ents = reader.find_entities(
-            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
-        if not cat_ents:
-            return []
-        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
-        nodes: list[tuple[str, str, str]] = []
-        for cent in cat_ents:
-            a = pg.get(cent["id"], {})
-            native = str(a.get("id") or "").strip()
-            parent = str(a.get("parent_id") or "").strip()
-            name = str(a.get("name") or cent.get("name") or "").strip()
-            if native and name:
-                nodes.append((native, parent, name))
-        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
-        leaves = sorted({nm for native, _p, nm in nodes if native not in parent_ids})
-        return leaves if len(leaves) >= 2 else []
+        return nl_hint_extraction.model_leaves.model_variable_candidates(self, reader, workspace_id, catalog_prefix)
 
     def model_catalog_path(
         self,
@@ -3340,260 +2909,32 @@ class CpqEngine:
         model: str,
         product_family: str = "",
     ) -> dict[str, str]:
-        """Return the validated family, line, and leaf model for MSI.
-
-        The route uses the same BmCatalog tree as
-        :meth:`single_model_variable_name` and
-        :meth:`model_variable_candidates`; it never derives identity from a
-        generic Product attribute.
-
-        ``catalog_prefix`` (e.g. "ApxNextConfig") is the ontology-type
-        namespace used to find this catalog's entities in the graph — it is
-        NOT the catalog's own root node name (e.g. "aSTRO25_bom"), which is
-        what resolve_catalog_path's family-membership check validates
-        against. Conflating the two here previously made the family check
-        impossible to pass (catalog_prefix never equals a root node's
-        name) — this was unreachable until the sales-cpq confirm flow
-        first actually exercised it live. When the caller doesn't have the
-        product_family name available, falls back to catalog_prefix (the
-        old, always-failing behavior) rather than skipping validation
-        silently.
-        """
-        from sales_streamlit.product_context import resolve_catalog_path
-
-        if not catalog_prefix or not model:
-            raise ValueError("Product family and resolved model are required")
-        entities = reader.find_entities(
-            ontology_type=f"{catalog_prefix}BmCatalog",
-            limit=200,
-        )
-        if not entities:
-            raise ValueError(
-                f"BmCatalog tree for family {catalog_prefix!r} was not found"
-            )
-        properties = self._batch_fetch(
-            [entity["id"] for entity in entities],
-            workspace_id,
-        )
-        nodes = []
-        for entity in entities:
-            attrs = properties.get(entity["id"], {})
-            nodes.append(
-                {
-                    "native_id": str(attrs.get("id") or "").strip(),
-                    "parent_id": str(attrs.get("parent_id") or "").strip(),
-                    "name": str(
-                        attrs.get("name") or entity.get("name") or ""
-                    ).strip(),
-                }
-            )
-        return resolve_catalog_path(
-            nodes,
-            product_family=product_family or catalog_prefix,
-            model=model,
-        )
+        return nl_hint_extraction.model_path.model_catalog_path(self, reader, workspace_id, catalog_prefix, model, product_family)
 
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
         alias_map: dict[str, str] | None = None,
     ) -> str:
-        """Best-effort product display label from NL text, or "" if none found.
-
-        Dynamic — no hardcoded product list. Matches against the REAL
-        product/family names of every catalog actually ingested into this
-        workspace (via _ingested_product_names), so a newly-ingested product
-        line is recognised immediately without a code change. Falls back to
-        the NL-hint-derived "product" key, then "" (Step 1's normal
-        anchor-prompt path takes over when nothing resolves).
-
-        D1 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): the anchor gate is now
-        sequential (product, then country) rather than a single-shot block
-        requiring product+line+country together — hwVersion (formerly the
-        "product line" anchor) resolves through the normal rule cascade
-        instead, like any other dependent variable.
-
-        Candidates are tried LONGEST-first (mirrors extract_catalog_hints'
-        "longer/more specific option text is tried first so a short phrase
-        can't shadow a longer, more specific one"): a workspace can ingest
-        both a generic family name ("APX NEXT") and a specific variant
-        ("APX NEXT XE") as separate catalog entities, in no guaranteed
-        order from the graph — without this ordering, a customer asking
-        about "APX NEXT XE" could silently anchor to the generic "APX NEXT"
-        depending on which entity the graph happened to return first
-        (regression caught in review: this is the same "variant must win
-        over generic" guarantee the old hardcoded _PRODUCT_PATTERNS table
-        enforced via explicit list ordering).
-
-        Falls back to a FUZZY substring match (deterministic, no LLM) when
-        no candidate is an exact substring of the question — catches a
-        partial/incomplete mention ("SL 3500" missing the trailing "e") or
-        a typo, cases the exact check silently misses, which previously
-        left a mid-session product switch undetected with no signal
-        anything was wrong. Reuses aryx.resolution.classical.string_score
-        (SequenceMatcher-based), the same deterministic scoring already
-        used for entity-resolution matching elsewhere in this codebase —
-        no new dependency, no network call, no non-determinism. Slides a
-        window the length of each candidate's normalized name across the
-        normalized question and keeps the best score seen; only a name at
-        least _HINT_MIN_PHRASE_LEN chars long is ever considered, same
-        guard used elsewhere in this module to stop short names from
-        spuriously matching unrelated text. This is purely a widened
-        DETECTION signal — the caller (ask_api.py's confirm_switch gate)
-        still requires explicit confirmation before anything is reset, so
-        a fuzzy false positive costs one extra yes/no turn, never a silent
-        wrong-product answer or data loss.
-
-        Matching runs over ingested_product_alias_map's ALIASES (family
-        names PLUS each catalog's own bm_catalog tree names — "APX™ NEXT",
-        "vX650_BOM", ...) and resolves the matched alias to its owning
-        FAMILY name (see that method's docstring for why the tree, not the
-        flat product menu, is the only catalog-discriminating signal).
-        Both XMLs carry the identical flat product list, so a raw product
-        mention can never pick a catalog — the tree names can (confirmed
-        live: "Quote APX Next Enhanced radios" matched nothing when only
-        the two family identifiers were candidates).
-
-        alias_map — pre-fetched ingested_product_alias_map result. Pass it
-        when the caller also needs it for suggest_product_candidates in
-        the same turn (review finding P2: the common no-match path loaded
-        the same inventory twice through graph+RDB queries). When None,
-        self-fetches as before.
-        """
-        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
-        if alias_map is None and reader is not None and q_norm:
-            alias_map = self.ingested_product_alias_map(reader, workspace_id)
-        if alias_map and q_norm:
-            ordered = sorted(
-                ((name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in alias_map),
-                key=lambda t: len(t[1]), reverse=True,
-            )
-            for name, name_norm in ordered:
-                if name_norm and name_norm in q_norm:
-                    return alias_map[name]
-            scored = self._fuzzy_score_candidates(
-                q_norm, ordered, question_tokens=self._question_tokens(question),
-            )
-            if scored and scored[0][1] >= _PRODUCT_FUZZY_MATCH_THRESHOLD:
-                return alias_map[scored[0][0]]
-        return next((v for k, v in hints.items() if "product" in k), "")
+        return nl_hint_extraction.product_mention.detect_product_mention(self, question, hints, reader, workspace_id, alias_map)
 
     @staticmethod
     def _question_tokens(question: str) -> frozenset[str]:
-        """Individual normalized word tokens from `question`, filtered to
-        those long enough to carry brand-abbreviation signal (see
-        `_ABBR_PREFIX_MIN_LEN`). Distinct from q_norm, which glues the
-        whole question into one string for substring/sliding-window
-        checks — this stays word-separated so a short mention ("APX")
-        isn't diluted by neighboring filler ("quote", "qty", "10").
-        """
-        return frozenset(
-            t for t in re.findall(r"[a-z0-9]+", (question or "").lower())
-            if len(t) >= _ABBR_PREFIX_MIN_LEN
-        )
+        return nl_hint_extraction.fuzzy_scoring._question_tokens(question)
 
     @staticmethod
     def _fuzzy_score_candidates(
         q_norm: str, ordered: list[tuple[str, str]],
         question_tokens: frozenset[str] | None = None,
     ) -> list[tuple[str, float]]:
-        """Best deterministic fuzzy score of each (name, name_norm) pair
-        against q_norm — a sliding window the length of the candidate's
-        normalized name, scored via aryx.resolution.classical.string_score.
-        Shared by detect_product_mention's confirm-worthy match and
-        suggest_product_candidates' lower "maybe" band, so both use the
-        exact same scoring, just different thresholds. Sorted descending;
-        names shorter than _HINT_MIN_PHRASE_LEN are never scored (same
-        guard used elsewhere to stop short names from spuriously matching
-        unrelated text).
-
-        `question_tokens` (see `_question_tokens`) adds a second, word-level
-        signal on top of the whole-string sliding window: any token that is
-        a genuine prefix of a candidate's normalized name bumps that
-        candidate's score into the "suggest" band via `_ABBR_PREFIX_SCORE`,
-        even when the whole-sentence window carries no useful signal for a
-        short/vague mention. Purely additive (`max`) — never lowers a score
-        the sliding window already found on its own.
-        """
-        scored: list[tuple[str, float]] = []
-        for name, name_norm in ordered:
-            if len(name_norm) < _HINT_MIN_PHRASE_LEN:
-                continue
-            window = len(name_norm)
-            span = max(1, len(q_norm) - window + 1)
-            best = 0.0
-            for i in range(span):
-                best = max(best, string_score(name_norm, q_norm[i:i + window]))
-            if question_tokens and any(
-                name_norm.startswith(tok) for tok in question_tokens
-            ):
-                best = max(best, _ABBR_PREFIX_SCORE)
-            scored.append((name, best))
-        scored.sort(key=lambda t: t[1], reverse=True)
-        return scored
+        return nl_hint_extraction.fuzzy_scoring._fuzzy_score_candidates(q_norm, ordered, question_tokens)
 
     def suggest_product_candidates(
         self, question: str, reader: Any, workspace_id: int,
         exclude: str = "", limit: int = 5,
         alias_map: dict[str, str] | None = None,
     ) -> list[str]:
-        """Up to `limit` real ingested product names whose fuzzy similarity
-        to `question` falls in the "maybe, not confident" band — at or
-        above _PRODUCT_FUZZY_SUGGEST_THRESHOLD but below
-        detect_product_mention's own confirm-worthy _PRODUCT_FUZZY_MATCH_THRESHOLD.
-
-        Used when a mid-conversation message seems to be attempting to
-        name a product but doesn't clearly match anything — instead of
-        silently ignoring it (today's behavior when detect_product_mention
-        returns ""), the caller can offer these as "did you mean one of
-        these?" candidates rather than leaving the customer's real intent
-        unrecognised with no signal anything was ambiguous.
-
-        Returns [] when nothing scores in that band — either
-        detect_product_mention already found a confident match, or the
-        message truly has no product-name signal at all (the common case
-        for an ordinary configuration answer).
-
-        Scores the same alias inventory detect_product_mention matches
-        against (family names + catalog-tree names), then maps each
-        in-band alias back to its owning FAMILY name — suggestions are
-        always family names, because that's the value a confirmed switch
-        anchors the session to. Aliases whose family is `exclude` (the
-        session's current product) are skipped; duplicate families from
-        multiple in-band aliases are collapsed keeping best-score order.
-
-        alias_map — pre-fetched ingested_product_alias_map result; see
-        detect_product_mention. This method runs on EVERY ordinary answer
-        turn (the no-match path), so re-fetching here doubled the
-        graph+RDB round-trips per turn (review finding P2). When None,
-        self-fetches as before.
-        """
-        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
-        if not q_norm:
-            return []
-        if alias_map is None:
-            if reader is None:
-                return []
-            alias_map = self.ingested_product_alias_map(reader, workspace_id)
-        exclude_norm = exclude.strip().lower()
-        ordered = [
-            (name, re.sub(r"[^a-z0-9]", "", name.lower()))
-            for name, family in alias_map.items()
-            if family.strip().lower() != exclude_norm
-        ]
-        scored = self._fuzzy_score_candidates(
-            q_norm, ordered, question_tokens=self._question_tokens(question),
-        )
-        suggestions: list[str] = []
-        for name, score in scored:
-            if not (_PRODUCT_FUZZY_SUGGEST_THRESHOLD <= score < _PRODUCT_FUZZY_MATCH_THRESHOLD):
-                continue
-            family = alias_map[name]
-            if family not in suggestions:
-                suggestions.append(family)
-            if len(suggestions) >= limit:
-                break
-        return suggestions
+        return nl_hint_extraction.product_suggestions.suggest_product_candidates(self, question, reader, workspace_id, exclude, limit, alias_map)
 
     def check_country_availability(
         self,
@@ -3604,216 +2945,29 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
     ) -> bool:
-        """Is the country in `filled` compatible with this catalog's
-        product line (variable_name "productSelectionProduct_all" —
-        confirmed via real data to be a shared, tenant-wide convention
-        present under the IDENTICAL native id in every ingested catalog
-        checked so far, same category as ultimateDestinationCountry
-        itself, not specific to any one product)?
-
-        Reuses apply_constraint_rules — the SAME machinery already used
-        for every other constraint in this engine, handling declarative
-        AND script-backed rules identically — rather than reading rule
-        conditions directly. Confirmed against real data that the actual
-        constraint on the product-selector conditioned on country/region
-        is BML-script-based (referencing region/customerType internally),
-        not a simple declarative country -> allowed-list lookup; 5 of the
-        6 constraint rules targeting this attribute in APX Next are
-        script-form. A hand-rolled declarative-only check would silently
-        miss all of them and always report "available."
-
-        Returns True whenever there's no active constraint on the
-        product-selector at all — no rule means no stated restriction,
-        the same default used throughout this engine. Returns False only
-        when a constraint actually fires and narrows the product-selector
-        down to zero allowed values.
-
-        Deliberately does NOT attempt to enumerate which OTHER countries
-        would be valid — doing so would mean re-running this same
-        constraint (script evaluation, possibly LLM-backed) once per
-        candidate country, up to ~249 times for a single check. Not
-        computable cheaply; the caller asks the client for a different
-        country instead of listing alternatives.
-        """
-        selector = next(
-            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
-        )
-        if selector is None:
-            return True
-        constrained = self.apply_constraint_rules(
-            attrs, con_rules, filled, bml_eval,
-            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-        )
-        allowed = constrained.get(selector.entity_id)
-        if allowed is None:
-            return True
-        return bool(allowed)
+        return nl_hint_extraction.country_availability.check_country_availability(self, attrs, con_rules, filled, bml_eval, workspace_id, catalog_prefix)
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 
     def _batch_fetch(
         self, entity_ids: list[int], workspace_id: int,
     ) -> dict[int, dict[str, Any]]:
-        """Batch-fetch entity attribute JSON from the RDB (dialect-agnostic)."""
-        return get_cpq_rdb().fetch_entity_attributes(entity_ids, workspace_id)
+        return nl_hint_extraction.entity_fetch._batch_fetch(self, entity_ids, workspace_id)
 
     # ── Graph loading ─────────────────────────────────────────────────────────
 
     def _is_layout_noise(self, ontology_type: str) -> bool:
-        t = (ontology_type or "").lower()
-        return any(frag in t for frag in _LAYOUT_TYPE_FRAGMENTS)
+        return nl_hint_extraction.entity_fetch._is_layout_noise(self, ontology_type)
 
     def _match_family_name(
         self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
     ) -> str | None:
-        """The real BmPrdFamily/BmCatalog entity name under `prefix` whose
-        normalized text substring-matches hint_norm, or None. Shared by
-        _scope_to_catalog (family-only scoping) and resolve_product_hint
-        (family + product-option scoping) — the family/catalog-name check
-        is identical in both; only what else gets checked afterward differs.
-
-        Requires the SHORTER side of the containment check to be at least
-        _HINT_MIN_PHRASE_LEN chars — confirmed live that without this, a
-        bare 2-char anchor reply like "US" (a country, not a product)
-        spuriously matched inside "pCRBusinessLightDevices_bom" (the "us"
-        in "business"), resolving a country name to a random catalog.
-        """
-        family_ents: list[dict] = []
-        for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
-            # High limit, not a handful: a single product family can carry
-            # dozens of BmCatalog entities (e.g. a MOTOTRBO/PCR family
-            # spanning 70+ individual radio-model catalogs) — the model
-            # actually matching product_hint (e.g. "autoSL3500E_BOM") can
-            # sort anywhere in an unordered graph result, so a small limit
-            # risks silently missing it and falling back to "ambiguous".
-            family_ents.extend(
-                reader.find_entities(ontology_type=family_type, limit=2000))
-        if not family_ents:
-            return None
-        family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
-        for fent in family_ents:
-            fname = str(
-                family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
-            )
-            fname_norm = _strip_catalog_name_noise(
-                re.sub(r"[^a-z0-9]", "", fname.lower())
-            )
-            if not fname_norm:
-                continue
-            shorter_len = min(len(fname_norm), len(hint_norm))
-            if shorter_len < _HINT_MIN_PHRASE_LEN:
-                continue
-            if fname_norm in hint_norm or hint_norm in fname_norm:
-                return fname
-        return None
+        return nl_hint_extraction.entity_fetch._match_family_name(self, reader, workspace_id, prefix, hint_norm)
 
     def _scope_to_catalog(
         self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
     ) -> tuple[list[str], str]:
-        """Restrict attr_types to the single catalog the requested product belongs to.
-
-        A workspace can hold more than one ingested XML source at once (e.g. an
-        APX Next export and an SL3500e export side by side) — without this,
-        every product request pulls attributes/rules from ALL of them, producing
-        a hybrid config that mixes incompatible product lines (confirmed live:
-        asking for "APX Next" returned attrs from both '_astro' and '_apcr'
-        catalogs simultaneously).
-
-        Resolution: group attr_types by their source-derived _catalog_prefix,
-        look up each prefix's BmPrdFamily/BmCatalog entity name (via
-        _match_family_name), and match product_hint against those names.
-        Falls back to returning ALL types unscoped (the pre-fix behavior)
-        whenever there's only one catalog to begin with, or the hint can't
-        be uniquely matched to one — this must never silently return zero
-        attrs for an unresolved hint.
-
-        Returns (scoped_attr_types, resolved_catalog_prefix) — the prefix is
-        "" when scoping did not narrow to exactly one catalog, and callers
-        (rule loaders) must treat that the same as "no catalog filter".
-        """
-        prefixes = {_catalog_prefix(t) for t in attr_types}
-        if "" in prefixes:
-            # "" means _catalog_prefix found no PascalCase marker — either a
-            # genuinely unprefixed catalog (confirmed live: CommandCentral
-            # Aware, ingested via the generic doc_discovery pipeline, emits
-            # bare 'BmConfigAttr'/'BmPrdFamily' with no distinguishing
-            # prefix at all) or unrecognized noise. Keep "" as a real,
-            # matchable catalog only when it resolves to an actual
-            # BmPrdFamily/BmCatalog entity; otherwise it's noise and must
-            # still be discarded, never treated as a valid scope.
-            has_real_family = bool(
-                reader.find_entities(ontology_type="BmPrdFamily", limit=1)
-                or reader.find_entities(ontology_type="BmCatalog", limit=1)
-            )
-            if not has_real_family:
-                prefixes.discard("")
-        if len(prefixes) <= 1:
-            return attr_types, (next(iter(prefixes)) if prefixes else "")
-
-        hint_norm = re.sub(r"[^a-z0-9]", "", (product_hint or "").lower())
-        if not hint_norm:
-            return attr_types, ""
-
-        matched_prefixes = {
-            prefix for prefix in prefixes
-            if self._match_family_name(reader, workspace_id, prefix, hint_norm)
-        }
-
-        if len(matched_prefixes) == 1:
-            chosen = next(iter(matched_prefixes))
-            scoped = [t for t in attr_types if _catalog_prefix(t) == chosen]
-            if scoped:
-                return scoped, chosen
-
-        # Family-name matching failed (or was ambiguous) — customers name the
-        # real product/model ("SVX Video Remote Speaker Microphone"), not the
-        # internal BOM export codename ("videoSolutions_BOM"), which never
-        # substring-matches. productSelectionProduct_all's option list (the
-        # OTHER fallback used elsewhere) doesn't help either — it's a flat,
-        # identical-across-every-catalog portfolio list, not catalog-scoped
-        # data. ingested_product_alias_map's bm_catalog TREE names ARE
-        # catalog-scoped (confirmed live: "SVX Video Remote Speaker
-        # Microphone"/"vX650_BOM" only exist in the SVX export) — reuse that
-        # same signal detect_product_mention already relies on successfully,
-        # instead of re-deriving a weaker one here (confirmed live this was
-        # the actual reason catalog_prefix resolution — and everything
-        # downstream that depends on it, e.g. resolve_always_ask_skips —
-        # behaved inconsistently for SVX).
-        if not matched_prefixes:
-            alias_map = self.ingested_product_alias_map(reader, workspace_id)
-            ordered = sorted(
-                ((name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in alias_map),
-                key=lambda t: len(t[1]), reverse=True,
-            )
-            matched_family: str | None = None
-            for name, name_norm in ordered:
-                if name_norm and min(len(name_norm), len(hint_norm)) >= _HINT_MIN_PHRASE_LEN \
-                        and name_norm in hint_norm:
-                    matched_family = alias_map[name]
-                    break
-            if matched_family:
-                # matched_family is the owning FAMILY name (e.g.
-                # "videoSolutions_BOM") — resolve it back to a prefix by
-                # exact equality against each candidate's own BmPrdFamily
-                # entity name, not another substring search.
-                for prefix in prefixes:
-                    fam_ents = reader.find_entities(
-                        ontology_type=f"{prefix}BmPrdFamily", limit=5)
-                    fam_pg = self._batch_fetch([e["id"] for e in fam_ents], workspace_id)
-                    fname = next(
-                        (str(fam_pg.get(e["id"], {}).get("name") or e.get("name") or "").strip()
-                         for e in fam_ents), "")
-                    if fname == matched_family:
-                        scoped = [t for t in attr_types if _catalog_prefix(t) == prefix]
-                        if scoped:
-                            return scoped, prefix
-
-        logger.warning(
-            "cpq: could not uniquely scope product_hint=%r to one catalog among "
-            "prefixes=%s — loading ALL catalogs (cross-catalog mixing risk)",
-            product_hint, sorted(prefixes),
-        )
-        return attr_types, ""
+        return nl_hint_extraction.catalog_scoping._scope_to_catalog(self, reader, workspace_id, attr_types, product_hint)
 
     # Fallback structural signal for _fetch_product_option_list when no attr
     # is literally named "productSelectionProduct_all" — see that method's
@@ -3825,206 +2979,17 @@ class CpqEngine:
     def _fetch_product_option_list(
         self, reader: Any, workspace_id: int, prefix: str,
     ) -> list[tuple[str, str]]:
-        """(item_value, display_name) options for one catalog's customer-
-        facing product-name field.
-
-        Confirmed live: both currently-ingested catalogs (ApxNextConfig,
-        Sl3500EConfig) name this field productSelectionProduct_all — this is
-        the field product-LINE VARIANTS (e.g. "APX NEXT Enhanced", "DGM
-        8500e") actually live in, never in BmPrdFamily/BmCatalog names
-        (confirmed: "APX NEXT Enhanced" matches no real family/catalog name
-        in this catalog at all).
-
-        A THIRD catalog using a different field name for the same concept
-        is not hardcoded around: when no attr is literally named
-        productSelectionProduct_all, falls back to a structural signal —
-        any attr whose variable_name matches both "product" and
-        ("select"|"line") (case-insensitive), same naming convention as
-        both known catalogs' own field. Multiple candidates pick the one
-        with the MOST real menu options (product-variant selectors are
-        high-cardinality dropdowns by nature — confirmed 325 real options
-        on this catalog's own field), a deterministic tie-break within an
-        already-narrowed, name-matched candidate set rather than a blind
-        guess across the whole catalog.
-
-        Only called for infrequent product-hint resolution (first message,
-        anchor-answer validation) — not the hot per-turn path — so a full
-        per-catalog attr scan here (mirroring load_product_config's own
-        entity+Postgres fetch) is an acceptable, one-off cost.
-        """
-        try:
-            attr_ents = reader.find_entities(
-                ontology_type=f"{prefix}BmConfigAttr", limit=500)
-        except Exception:
-            return []
-        if not attr_ents:
-            return []
-        attr_pg = self._batch_fetch([e["id"] for e in attr_ents], workspace_id)
-        target_id = None
-        fallback_ids: list[int] = []
-        for ent in attr_ents:
-            pg = attr_pg.get(ent["id"], {})
-            vn = str(
-                pg.get("variable_name") or pg.get("name") or ent.get("name") or ""
-            ).strip()
-            if vn == "productSelectionProduct_all":
-                target_id = ent["id"]
-                break
-            if (self._PRODUCT_FIELD_FALLBACK_RE.search(vn)
-                    and self._PRODUCT_FIELD_FALLBACK_HINT_RE.search(vn)):
-                fallback_ids.append(ent["id"])
-        if target_id is None and fallback_ids:
-            # One batched call instead of one reader.neighbors() per
-            # candidate — was up to hundreds of round-trips on catalogs with
-            # many attrs matching the fallback regex (mirrors the
-            # neighbors_batch() fix already applied to load_product_config's
-            # own attribute-neighbor loop a few hundred lines below).
-            try:
-                neighbors_by_id = reader.neighbors_batch(fallback_ids)
-            except Exception:
-                neighbors_by_id = {}
-            target_id = max(
-                fallback_ids, key=lambda eid: len(neighbors_by_id.get(eid, []))
-            )
-        if target_id is None:
-            return []
-        try:
-            neighbors = reader.neighbors(target_id)
-        except Exception:
-            return []
-        menu_ids = [
-            n["id"] for n in neighbors
-            if "menuitem" in (n.get("type") or "").lower().replace("_", "")
-        ]
-        if not menu_ids:
-            return []
-        menu_pg = self._batch_fetch(menu_ids, workspace_id)
-        options: list[tuple[str, str]] = []
-        for mid in menu_ids:
-            ma = menu_pg.get(mid, {})
-            iv = str(ma.get("item_value") or "").strip()
-            dt = str(ma.get("item_text") or ma.get("name") or iv).strip()
-            if iv:
-                options.append((iv, dt))
-        return options
+        return nl_hint_extraction.product_option_fetch.fetch_product_option_list(self, reader, workspace_id, prefix)
 
     def resolve_product_hint(
         self, reader: Any, workspace_id: int, hint_text: str,
     ) -> tuple[str, str] | None:
-        """Resolve free-text to (catalog_prefix, canonical_display_name)
-        using only real ingested data — no hardcoded product-name list.
-
-        Replaces reliance on _PRODUCT_PATTERNS' fixed regex list, which
-        confirmed-live never recognizes products outside its hardcoded set
-        (e.g. "DGM 8500e" — a real, ingested product this method resolves
-        correctly with zero code changes, since DGM/MOTOTRBO models are
-        genuinely present as BmCatalog entities and productSelectionProduct_all
-        options inside the Sl3500EConfig ingestion).
-
-        Two passes, in priority order — NOT merged into one combined check:
-          1. BmPrdFamily/BmCatalog entity names (_match_family_name), across
-             ALL catalogs. This is genuinely catalog-specific data (an
-             internal BOM export code), so a unique match here is trusted
-             immediately without even looking at pass 2.
-          2. Only if pass 1 matched nothing anywhere: each catalog's
-             productSelectionProduct_all option list. Confirmed live this
-             field is a SHARED master list duplicated near-identically
-             across every ingested catalog (not real per-catalog data), so
-             it is deliberately the lower-priority, fallback signal — if
-             pass 1 had been checked per-catalog and merged with pass 2
-             additively instead, a real match in pass 1 (e.g. "DGM 8500e"
-             uniquely matching Sl3500EConfig's BmCatalog entity) would get
-             incorrectly reported as ambiguous the moment pass 2 also
-             matched the same shared list entry in a second, unrelated
-             catalog — confirmed live this exact false ambiguity happened
-             before this two-pass ordering was added.
-
-        Returns None if neither pass uniquely resolves to exactly one
-        catalog — callers must ask rather than guess (D2), same principle
-        as _scope_to_catalog's own "ambiguous → don't pick" behavior.
-        """
-        hint_norm = _normalize_for_hint(hint_text)
-        if not hint_norm:
-            return None
-
-        try:
-            all_type_names = reader.distinct_types()
-        except AttributeError:
-            all_type_names = sorted({
-                e.get("type") or "" for e in reader.find_entities(limit=1000)
-            })
-        prefixes = sorted({
-            _catalog_prefix(t) for t in all_type_names if _catalog_prefix(t)
-        })
-        if not prefixes:
-            return None
-
-        family_matches: dict[str, str] = {}
-        for prefix in prefixes:
-            fname = self._match_family_name(reader, workspace_id, prefix, hint_norm)
-            if fname:
-                family_matches[prefix] = fname
-        if len(family_matches) == 1:
-            prefix, name = next(iter(family_matches.items()))
-            return prefix, name
-        if family_matches:
-            return None  # ambiguous at the trustworthy signal — never fall through
-
-        option_matches: dict[str, str] = {}
-        for prefix in prefixes:
-            for item_value, display_name in self._fetch_product_option_list(
-                reader, workspace_id, prefix,
-            ):
-                for text in (item_value, display_name):
-                    stripped = text.strip()
-                    is_code = any(c.isdigit() for c in stripped) or "/" in stripped
-                    if len(stripped.split()) < 2 and not is_code:
-                        continue  # same single-word guard as extract_catalog_hints
-                    norm = _normalize_for_hint(text)
-                    if (
-                        min(len(norm), len(hint_norm)) >= _HINT_MIN_PHRASE_LEN
-                        and (norm in hint_norm or hint_norm in norm)
-                    ):
-                        option_matches[prefix] = display_name or item_value
-                        break
-                if prefix in option_matches:
-                    break
-
-        if len(option_matches) == 1:
-            prefix, name = next(iter(option_matches.items()))
-            return prefix, name
-        return None
+        return nl_hint_extraction.product_hint_resolve.resolve_product_hint(self, reader, workspace_id, hint_text)
 
     def list_ingested_families(
         self, reader: Any, workspace_id: int,
     ) -> list[str]:
-        """Real family/catalog display names, one per ingested catalog
-        prefix — for building a dynamic "what product family?" prompt
-        instead of a hardcoded example string that goes stale the moment a
-        new catalog is ingested."""
-        try:
-            all_type_names = reader.distinct_types()
-        except AttributeError:
-            all_type_names = sorted({
-                e.get("type") or "" for e in reader.find_entities(limit=1000)
-            })
-        prefixes = sorted({
-            _catalog_prefix(t) for t in all_type_names if _catalog_prefix(t)
-        })
-        names: list[str] = []
-        for prefix in prefixes:
-            family_ents = reader.find_entities(
-                ontology_type=f"{prefix}BmPrdFamily", limit=5)
-            if not family_ents:
-                continue
-            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
-            fname = str(
-                family_pg.get(family_ents[0]["id"], {}).get("name")
-                or family_ents[0].get("name") or ""
-            ).strip()
-            if fname:
-                names.append(fname)
-        return names
+        return nl_hint_extraction.families.list_ingested_families(self, reader, workspace_id)
 
     def load_product_config(
         self,
