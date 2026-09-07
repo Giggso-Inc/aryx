@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq import data_table_bridge
 from aryx.cpq.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
     _operator_hit,
@@ -2129,66 +2130,9 @@ def _cpq_model_candidates(
     product_name: str, workspace_id: int | None = None, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None, base_model: str = "",
 ) -> tuple[str, ...]:
-    """CPQModel code(s) to try for `product_name`, in priority order:
-    1. The real, ingested constraint-shaped Data Table rows' own
-       productSelectionProduct_all attr/val pairs
-       (data_table_resolver.resolve_product_cpq_models_from_rows) --
-       catalog-agnostic and fully data-driven, no per-catalog hardcoding.
-       Explicit instruction (2026-08-10): a hand-authored per-catalog
-       override map (formerly `_PRODUCT_TO_CPQ_MODEL` here) is not an
-       acceptable substitute for real ingested data, even for a single
-       catalog -- any catalog needing this fine-grained split must get it
-       from its own rows, the same way every other catalog does.
-    2. Otherwise, the ingested CPQModelHierarchy-shaped Data Table's real
-       Product -> cpqModelName mapping, when `workspace_id` is available --
-       real, catalog-wide reference data, though only family-level, not
-       per-product (e.g. "APXNEXT" for both "APX NEXT MULTI" and "APX NEXT
-       ENHANCED", where tier 1 above would have found the finer
-       "APXNEXTENHANCED" for the latter). Both the bare family code and its
-       "_BOM" variant are tried, since every real export seen so far
-       ingests both under the same family.
-    3. The static APXNEXT/APXNEXT_BOM fallback, unchanged, when none of the
-       above applies (no workspace_id, or the product is in no ingested
-       source at all) -- identical to this function's original behavior.
-       A product landing here with zero real coverage is a genuine data
-       gap, to be documented and flagged, never papered over with a new
-       hardcoded entry for that one catalog.
-
-    `base_model`, when supplied, appends every CPQModel code the real
-    ingested Data Tables actually use for that EXACT base model (see
-    data_table_resolver.discover_cpq_models_for_base_model) AFTER whichever
-    of 1-3 above already matched -- never replacing the primary,
-    product-derived candidates, only supplementing them. Confirmed live
-    (2026-08-08): a base model can appear under a more specific variant
-    code than its product name maps to (H45TGU9PW8AN's real whitelist/
-    attrSequence rows are keyed to "APXNEXTXNSINGLE" even though "APX NEXT
-    Single Band" maps to "APXNEXTSINGLE") -- a genuine cross-SKU
-    base-model-sharing case in the source catalog. Omitting `base_model`
-    (the default) keeps this function's behavior identical to before this
-    parameter existed.
-    """
-    primary = None
-    if workspace_id is not None:
-        from_rows = dt_resolve_product_cpq_models_from_rows(
-            product_name, workspace_id, catalog_prefix, cache,
-        )
-        if from_rows:
-            primary = from_rows
-    if primary is None and workspace_id is not None:
-        family = dt_resolve_product_cpq_model_family(
-            product_name, workspace_id, catalog_prefix, cache,
-        )
-        if family:
-            primary = (family, f"{family}_BOM")
-    if primary is None:
-        primary = _DEFAULT_CPQ_MODEL_CANDIDATES
-    if not (base_model and workspace_id is not None):
-        return primary
-    discovered = dt_discover_cpq_models_for_base_model(
-        base_model, workspace_id, catalog_prefix, cache,
+    return data_table_bridge._cpq_model_candidates(
+        product_name, workspace_id, catalog_prefix, cache, base_model,
     )
-    extra = tuple(cm for cm in discovered if cm not in primary)
-    return primary + extra if extra else primary
 
 
 # Matches `put(<dictVar>,"Attribute Variable Name","<attrName>")` -- the
@@ -8288,46 +8232,9 @@ class CpqEngine:
         filled: dict[str, str], workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> None:
-        """Real Oracle CPQ Seriesmodelsmapping Data Table narrowing for
-        productSelectionProduct_all -- mutates `constrained_opts` IN PLACE.
-
-        Confirmed live (2026-08-08): with country=US, "APX NEXT
-        International (Federal)" still appeared in the Product menu even
-        though it isn't a real, orderable model for the US market (see
-        data_table_resolver.resolve_invalid_product_variant's own
-        docstring for the full evidence chain). `None`/no workspace_id
-        (default) is a complete no-op, identical to before this existed.
-        Only ever REMOVES options a real ingested row explicitly says
-        aren't valid here -- never adds a constraint where none of this
-        data applies (never guess).
-        """
-        if workspace_id is None:
-            return
-        target = next(
-            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        data_table_bridge._apply_series_mapping_exclusions(
+            attrs, constrained_opts, filled, workspace_id, catalog_prefix, cache,
         )
-        if target is None:
-            return
-        existing = constrained_opts.get(target.entity_id)
-        candidates = (
-            [o for o in target.options if o.item_value in existing]
-            if existing is not None else target.options
-        )
-        excluded: set[str] = set()
-        for opt in candidates:
-            override = dt_resolve_invalid_product_variant(
-                opt.display_name, opt.item_value, filled, workspace_id, catalog_prefix, cache,
-            )
-            if override is not None:
-                excluded.add(opt.item_value)
-        if not excluded:
-            return
-        if existing is not None:
-            constrained_opts[target.entity_id] = [v for v in existing if v not in excluded]
-        else:
-            constrained_opts[target.entity_id] = [
-                o.item_value for o in target.options if o.item_value not in excluded
-            ]
 
     @staticmethod
     def _suppress_ungoverned_attrs(
@@ -8335,97 +8242,9 @@ class CpqEngine:
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> tuple[list[ConfigAttr], set[str]]:
-        """Drop attrs the real ingested attrSequence Data Table confidently
-        says do NOT belong to the active base model -- returns (visible,
-        suppressed_variable_names).
-
-        `data_table_resolver.attribute_applies()` already answers this
-        generically for any attribute name; the gap was never the data, it
-        was that nothing called it. Confirmed live (2026-08-08): with a
-        base model whose real attrSequence rows list wirelessCarrier_astro
-        as required and carry ZERO rows for carrierSelectionMultiSelect_
-        astro, auto_fill still filled BOTH (they're independently governed
-        by unrelated rules) -- a structurally-invalid payload (two mutually
-        exclusive carrier mechanisms both populated) that no rule in the
-        static export catches, because the exclusivity lives in this Data
-        Table, not in any rule script.
-
-        Only ever REMOVES an attr when at least one CPQModel candidate has
-        attrSequence coverage for this exact base model (some OTHER attr
-        showed up) AND none of them say this one applies AND at least one
-        candidate's attrSequence table mentions this attr name for SOME
-        base model (i.e. the catalog actively tracks its applicability,
-        just not here) -- a confident "not part of this base model", never
-        a guess from missing data.
-
-        An attr that is absent from the base-model-scoped governed set
-        purely because NO attrSequence row anywhere (any base model, any
-        candidate) ever mentions it at all (confirmed live 2026-08-09:
-        carrierSelectionMultiSelect_astro has real sequence coverage for
-        exactly one (CPQModel, BaseModel) pair in the whole catalog) is
-        left visible instead -- there is no real "excluded" signal, only
-        silence, and silently dropping a real, catalog-defined question is
-        worse than asking it (same reasoning as bom_gate.
-        find_missing_required_fields and the always-ask decision-key
-        carve-outs elsewhere in this method).
-
-        `None` (no attrSequence coverage at all for any candidate) leaves
-        the attr untouched, identical to before this method existed.
-        `None`/no `workspace_id` is a complete no-op.
-        """
-        if workspace_id is None:
-            return attrs, set()
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return attrs, set()
-        product = filled.get("productSelectionProduct_all", "")
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        return data_table_bridge._suppress_ungoverned_attrs(
+            attrs, filled, workspace_id, catalog_prefix, cache,
         )
-        if not cands:
-            return attrs, set()
-
-        # Precomputed ONCE per candidate CPQModel here, not once per attr
-        # -- see governed_attr_names_for_base_model's own docstring for
-        # the live-measured O(attrs x candidates x rows) cost of the
-        # naive per-attr version this replaced.
-        scoped_name_sets = [
-            dt_governed_attr_names_for_base_model(
-                cm, base_model, workspace_id, catalog_prefix, cache,
-            )
-            for cm in cands
-        ]
-        if not any(s is not None for s in scoped_name_sets):
-            return attrs, set()
-        governed_names: set[str] = set()
-        for s in scoped_name_sets:
-            if s:
-                governed_names |= s
-
-        visible: list[ConfigAttr] = []
-        suppressed: set[str] = set()
-        for attr in attrs:
-            vn = attr.variable_name
-            vn_flat = vn.lower().replace("_", "")
-            if any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
-                visible.append(attr)
-            elif vn in governed_names:
-                visible.append(attr)
-            elif vn in _CONFIRMED_DEAD_ATTRS:
-                # Verified-dead override -- skip the "total silence" carve-
-                # out below for these specific, cross-checked attrs.
-                suppressed.add(vn)
-            elif not any(
-                dt_attr_ever_governed_for_cpq_model(cm, vn, workspace_id, catalog_prefix, cache)
-                for cm in cands
-            ):
-                # No attrSequence row anywhere (any base model, any
-                # candidate CPQModel) ever mentions this attr -- silence,
-                # not a confident exclusion. Leave it visible/askable.
-                visible.append(attr)
-            else:
-                suppressed.add(vn)
-        return visible, suppressed
 
     @staticmethod
     def _compute_hidden_master_string(
@@ -8437,81 +8256,9 @@ class CpqEngine:
         var_name: str = "hiddenMasterStringForAstroPortable_astro",
         separator_var_name: str = "hidddenRecordSeparator_allFamilly",
     ) -> str | None:
-        """Real, generic replacement for a real BM script this catalog can't
-        execute ("Set Hidden Master String For Astro Portable" and its
-        siblings): the delimited list of attribute names the ingested
-        attrSequence Data Table says apply to the current product's
-        CPQModel/BaseModel pair -- exactly what dozens of "hide if no
-        values available" hiding-rule scripts check membership in via
-        SPLIT()/findinarray() (docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_
-        GAP_PLAN_2026_08_10.md). Reuses the SAME governed-name computation
-        `_suppress_ungoverned_attrs` already runs -- the gap here was
-        never the data, it was that nothing exposed this specific
-        variable to the hiding-rule evaluator.
-
-        `var_name` is accepted (not hardcoded into the body) so a sibling
-        master-string variable following the identical attrSequence-
-        lookup shape could reuse this same method later -- but the
-        result is only ever written into `filled` under this parameter's
-        actual value by the caller, never assumed here.
-
-        Returns `None` (leave the caller's `filled` untouched) when:
-          - `workspace_id` is `None`, or Product/Base Model aren't filled
-            yet -- the real script needs both too, same guard as
-            `_suppress_ungoverned_attrs`.
-          - no CPQModel candidate has ANY attrSequence coverage at all for
-            this base model -- an unresolvable "unknown", never
-            fabricated as an empty string. An empty string would make
-            every downstream script's `findinarray(...) == -1` branch
-            fire and hide everything, which is worse than leaving the
-            script "unknown" (matches `apply_hiding_rules`' own
-            "unknown -> don't hide" default for every OTHER unresolvable
-            script).
-
-        The join separator is read from `filled` first (in case a real
-        turn already resolved it the same way BigMachines' own runtime
-        would), else from the separator attribute's own real, ingested
-        `default_value` when `attrs` is supplied -- never a bare
-        hardcoded literal, so this stays correct for any catalog whose
-        export uses a different separator string.
-        """
-        if workspace_id is None:
-            return None
-        product = filled.get("productSelectionProduct_all", "")
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not product or not base_model:
-            return None
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        return data_table_bridge._compute_hidden_master_string(
+            filled, workspace_id, catalog_prefix, cache, attrs, var_name, separator_var_name,
         )
-        if not cands:
-            return None
-        scoped_name_sets = [
-            dt_governed_attr_names_for_base_model(
-                cm, base_model, workspace_id, catalog_prefix, cache,
-            )
-            for cm in cands
-        ]
-        if not any(s is not None for s in scoped_name_sets):
-            return None
-        governed_names: set[str] = set()
-        for s in scoped_name_sets:
-            if s:
-                governed_names |= s
-
-        sep = filled.get(separator_var_name, "")
-        if not sep and attrs:
-            sep_attr = next(
-                (a for a in attrs if a.variable_name == separator_var_name), None,
-            )
-            if sep_attr and sep_attr.default_value:
-                sep = sep_attr.default_value
-        if not sep:
-            sep = "@@@"
-
-        if not governed_names:
-            return ""
-        return "".join(f"{name}{sep}" for name in sorted(governed_names))
 
     @staticmethod
     def _invalidate_inconsistent_paired_values(
@@ -8519,58 +8266,9 @@ class CpqEngine:
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> set[str]:
-        """Variable names to clear because their currently-filled value
-        contradicts a linked attribute's currently-filled value, per real
-        ingested Data Table rows (data_table_resolver.
-        find_inconsistent_filled_pairs -- see its own docstring for the
-        live-confirmed Bands/BandPlus example). Clearing both lets the
-        next evaluate_rules_loop pass re-resolve them together instead of
-        leaving a structurally-invalid combination locked in.
-
-        Never clears a variable whose value traces back to something the
-        customer said or confirmed -- filled_source in
-        `CpqEngine._CONFIRMED_SOURCES` ("user", "hint", "cascade"), the same
-        boundary `apply_recommendation_rules`' `_NEVER_OVERRIDE` and
-        `build_standalone_payload`'s own none-sentinel handling already use
-        -- this check second-guesses two independent auto-fill guesses,
-        never a real answer. Live-confirmed bug (2026-08-10): this
-        previously only excluded "user", so a "hint"-sourced value (e.g.
-        `ultimateDestinationCountry` mined from turn 1's free-text order)
-        got silently cleared and re-asked mid-conversation the moment a
-        LATER, unrelated cascade (Hardware Version) changed `base_model`/
-        `productSelectionProduct_all` enough for this pass's Data-Table-
-        scoped pairing to flag it -- even though the customer had already
-        given it.
-        `None`/no workspace_id is a complete no-op.
-        """
-        if workspace_id is None:
-            return set()
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return set()
-        product = filled.get("productSelectionProduct_all", "")
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        return data_table_bridge._invalidate_inconsistent_paired_values(
+            filled, sources, workspace_id, catalog_prefix, cache,
         )
-        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC3,
-        # 2026-08-24): intersection, not union. `base_model` can legitimately
-        # map to multiple real CPQModel candidates (a genuine cross-SKU
-        # base-model-sharing case -- see _cpq_model_candidates' own
-        # docstring). Live-confirmed bug: 'ICE KIT' and 'SINGLE PACK
-        # CLAMSHELL' are valid under APXNEXTENHANCED (the actual confirmed
-        # product) but don't exist under APXNEXTXN5G's rows at all --
-        # union logic vetoed them anyway. A combo is only a real
-        # contradiction if NO candidate model accepts it, matching the
-        # "try each candidate, only fail if all fail" fallback philosophy
-        # _cpq_model_candidates already documents for itself.
-        per_model_invalid = [
-            dt_find_inconsistent_filled_pairs(
-                cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
-            )
-            for cpq_model in cands
-        ]
-        invalid = set.intersection(*per_model_invalid) if per_model_invalid else set()
-        return {vn for vn in invalid if sources.get(vn) not in CpqEngine._CONFIRMED_SOURCES}
 
     @staticmethod
     def find_confirmed_data_table_conflicts(
@@ -8578,40 +8276,9 @@ class CpqEngine:
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> set[tuple[str, str]]:
-        """The specific edge case `_invalidate_inconsistent_paired_values`
-        deliberately leaves untouched: a real, data-proven-invalid pair
-        where BOTH sides are customer-confirmed (`CpqEngine.
-        _CONFIRMED_SOURCES` -- "user", "hint", "cascade"). Neither side can
-        be silently self-corrected (both are real facts the customer gave),
-        so this is surfaced for an explicit re-ask instead -- same
-        discipline `_reask_stale_constraint_violations` already applies to
-        constraint-rule violations
-        (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1), extended to
-        Data-Table-proven conflicts
-        (docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md).
-
-        `None`/no workspace_id, or no base model resolved yet, is a
-        complete no-op -- same convention as
-        `_invalidate_inconsistent_paired_values`.
-        """
-        if workspace_id is None:
-            return set()
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return set()
-        product = filled.get("productSelectionProduct_all", "")
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        return data_table_bridge.find_confirmed_data_table_conflicts(
+            filled, sources, workspace_id, catalog_prefix, cache,
         )
-        confirmed_conflicts: set[tuple[str, str]] = set()
-        for cpq_model in cands:
-            for attr_a, attr_b in dt_find_inconsistent_filled_pairs_detailed(
-                cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
-            ):
-                if (sources.get(attr_a) in CpqEngine._CONFIRMED_SOURCES
-                        and sources.get(attr_b) in CpqEngine._CONFIRMED_SOURCES):
-                    confirmed_conflicts.add((attr_a, attr_b))
-        return confirmed_conflicts
 
     @staticmethod
     def _resolve_via_data_tables(
@@ -8619,77 +8286,18 @@ class CpqEngine:
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> MenuOption | None:
-        """Real ingested Oracle CPQ Data Table lookup
-        (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_2026_08_07.md
-        §11-§12), tried only when script-based governance already failed to
-        resolve `vn`. Returns a menu option ONLY when the table resolves to
-        exactly one legal value that is also a real option on this attr --
-        2+ legal values, 0 legal values, no table data at all, or no
-        `workspace_id` (caller didn't opt in) all return None (never guess),
-        matching every other never-guess branch in this method.
-        """
-        if workspace_id is None:
-            return None
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return None
-        product = filled.get("productSelectionProduct_all", "")
-        for cpq_model in _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
-        ):
-            values = dt_resolve_whitelist_values(
-                cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
-            )
-            if values is None:
-                continue
-            if len(values) != 1:
-                # This candidate is ambiguous -- try the REST of the
-                # candidate tuple before giving up. `_cpq_model_candidates`
-                # appends base-model-specific candidates after the
-                # product-derived primary one(s) (confirmed live:
-                # H45TGU9PW8AN's real whitelist rows are keyed to
-                # APXNEXTXNSINGLE, only reachable via that appended tail,
-                # even though the product resolves primary to
-                # APXNEXTSINGLE/APXNEXTSINGLE_BOM). Returning None here
-                # would end the search the moment the FIRST candidate
-                # happens to be ambiguous, even when a later candidate
-                # would have resolved to exactly one confirmed value --
-                # the same "continue past ambiguous, don't abort" contract
-                # `_resolve_narrowed_legal_values` already uses below.
-                continue
-            return next((o for o in valid_opts if o.item_value == values[0]), None)
-        return None
+        return data_table_bridge._resolve_via_data_tables(
+            vn, filled, valid_opts, workspace_id, catalog_prefix, cache,
+        )
 
     @staticmethod
     def _resolve_narrowed_legal_values(
         vn: str, filled: dict[str, str], workspace_id: int, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[str] | None:
-        """Real ingested Data Table whitelist for `vn`, however many values
-        it narrows to -- unlike `_resolve_via_data_tables` (which only ever
-        returns when exactly one value is confidently correct), this
-        returns the full narrowed set so a blind-pick fallback can choose
-        from real, data-proven-legal options instead of the unfiltered raw
-        catalog menu (docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_
-        PLAN_2026_08_10.md). `None` -- no ingested table has any row for
-        this attr in this context (genuinely unknown, not zero); `[]` --
-        real rows exist but none match the current filled state (a
-        confirmed, real "nothing is legal right now" answer); `[v1, v2,
-        ...]` -- the real, catalog-sourced legal set, however many members.
-        """
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return None
-        product = filled.get("productSelectionProduct_all", "")
-        for cpq_model in _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
-        ):
-            values = dt_resolve_whitelist_values(
-                cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
-            )
-            if values is not None:
-                return values
-        return None
+        return data_table_bridge._resolve_narrowed_legal_values(
+            vn, filled, workspace_id, catalog_prefix, cache,
+        )
 
     def auto_fill(
         self,

@@ -1310,6 +1310,16 @@ Per the revised sequencing above, step 2 (write tests before touching anything) 
 
 **Known incompleteness, not a bug:** `data_table_bridge`'s 8 functions are still full duplicate implementations inside `engine.py`'s `CpqEngine` class — the new package exists and is correct, but nothing in `engine.py` was converted to actually *delegate* to it (unlike `turn_intent`, which does). Both copies are currently identical and correct, so this causes no behavioral risk, but it means `engine.py` didn't actually shrink for this cluster and the duplication defeats the point of the extraction. Converting these 8 to real thin wrappers (same pattern as `turn_intent`) is queued as the next piece of finishing step 1 properly, before moving on to steps 3/4.
 
+### Phase 4 step 1 fully complete (2026-09-07): `data_table_bridge` now genuinely delegates.
+
+Closed the incompleteness noted above. Confirmed first that `data_table_bridge`'s submodules have zero dependency back on `engine.py` (unlike `turn_intent`), so its import could go at the top of `engine.py` with no circular-import risk — added `from aryx.cpq import data_table_bridge` alongside the other top-of-file imports. All 8 functions' full bodies (7 `@staticmethod`s on `CpqEngine` plus the module-level `_cpq_model_candidates`) replaced with one-line delegating calls, each signature checked against `data_table_bridge`'s own copy first to confirm an exact parameter-order/default match before touching anything. Two constants the removed bodies referenced (`CpqEngine._CONFIRMED_SOURCES`, used by `find_confirmed_data_table_conflicts`/`_invalidate_inconsistent_paired_values`) remain defined directly on `CpqEngine` elsewhere in the file (untouched, still used by other methods) — confirmed `data_table_bridge/conflicts.py` carries its own deliberately-duplicated copy of the same frozenset value (documented in that file's own comment as intentional, to avoid a circular import), so behavior is identical either way.
+
+`engine.py`: **13,363 → 12,630 lines** (733-line reduction — the actual point of this extraction, unlike the duplicate-but-not-delegating state before this fix).
+
+Verification: both golden-master suites still 59/59 + 70/70 (combined with the other 8 covered dependent test files, 171/171 total in one combined run). A dedicated sweep of every test file directly exercising these 8 functions (11 files, 124 tests) found exactly the same 4 pre-existing failures already confirmed via `git stash` earlier in this plan (`test_cpq_auto_fill_data_table_tier.py` ×3, `test_cpq_hidden_master_string_cascade_staleness.py` ×1) — zero new regressions from converting duplication into real delegation.
+
+**Step 1 of the revised Phase 4 plan is now fully done** for both files. Remaining: steps 3 (the `FillContext` refactor for `auto_fill`/`evaluate_rules_loop`) and 4 (the `_run_cpq_turn_inner` stage split + 314-patch-site migration) — neither started.
+
 ### Phase 5 — `shay_backend/` remediation
 
 ### Phase 5 progress log (started 2026-09-04)
