@@ -2123,6 +2123,17 @@ from aryx.cpq import turn_intent  # noqa: E402
 # failure.
 from aryx.cpq import hiding_rules  # noqa: E402
 
+# Deferred to here for the same circular-import reason as `hiding_rules`
+# above: aryx.cpq.layout_and_join_data's submodules import `logger` BACK
+# from this module by name, so this line must sit after it. (Everything
+# else they need — `get_cpq_rdb`, `_RULE_JOIN_DATA_CACHE` + its TTL/marker,
+# `_LAYOUT_*_CACHE`, `_DEFAULT_LAYOUT_FILE_SOURCE` — is deliberately NOT
+# imported by name there: tests patch `aryx.cpq.engine.get_cpq_rdb` and
+# reassign `aryx.cpq.engine._LAYOUT_TIER_CACHE`/`_LAYOUT_SCOPE_CACHE` by
+# dotted path, and a frozen import-time reference would silently bypass
+# those patches, so that package goes through the module object instead.)
+from aryx.cpq import layout_and_join_data  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -4526,6 +4537,19 @@ class CpqEngine:
 
     # ── Rule loaders (dialect-agnostic via cpq.rdb) ──────────────────────────
 
+    # ── Rule-join fetch / target resolution + native-UI layout cluster ───
+    # The sixteen methods below are one-line delegating wrappers; the real
+    # implementations now live in `aryx.cpq.layout_and_join_data` (Phase 4
+    # step 5, docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md), which also
+    # carries their full docstrings. Only the ones that genuinely need the
+    # live instance (or, for the classmethod, the class) pass it through as
+    # the module function's leading `engine`/`cls` argument; the rest need
+    # nothing from it. Signatures, method order, and staticmethod/
+    # classmethod-ness are unchanged, so every existing call site
+    # (`self.foo(...)`, `_cpq_engine.foo(...)`, `engine.foo(...)` from
+    # hiding_rules) keeps working unchanged, and so does every
+    # `monkeypatch.setattr(eng, "foo", ...)` / `patch.object` in tests.
+
     def _load_rule_join_data(
         self, workspace_id: int, catalog_prefix: str = ""
     ) -> tuple[
@@ -4535,74 +4559,7 @@ class CpqEngine:
         dict[int, list[int]],
         dict[int, int],
     ]:
-        """Shared fetch for the rule loaders.
-
-        BmConfigRuleInput/Action rows reference their rule by the BM-native
-        rule id (``bm_config_rule_id`` from the source XML), NOT by the aryx
-        entity id — the join key is the rule entity's own attrs ``id``.
-        Returns (rdb, inputs_by_rule, actions_by_rule, marked_by_rule,
-        chain_by_rule).
-
-        catalog_prefix — restricts every join table to one ingested catalog.
-        Required whenever a workspace holds more than one product's XML
-        export: BM-native rule ids are only unique WITHIN one source, so two
-        catalogs sharing a workspace can and do collide on the same native
-        id (confirmed live — e.g. id 213876892 exists in both an APX Next
-        and an SL3500e export). Without this, inputs_by_rule/actions_by_rule
-        etc. silently merge rows from both catalogs under the same key, and
-        whichever catalog's row is read last wins — corrupting rule
-        evaluation even after fetch_rules() itself is correctly scoped.
-
-        inputs_by_rule holds ALL of a rule's bm_config_rule_input rows, not
-        just one — confirmed live 445/688 real rules in one catalog carry
-        2+ input rows; keeping only the last (the previous behavior) meant
-        63% of declarative rules with any condition were either dead
-        (last-kept row's value blank) or silently over-firing (a real
-        second condition dropped). See docs/CPQ_APX_NEXT_RULE_CATALOG.md
-        "Gap Deep-Dive & Impact Analysis" and bml.evaluate_declarative_conditions
-        for the AND/OR-grouping semantics applied to this list.
-
-        docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md —
-        module-level, short-TTL cached (see _RULE_JOIN_DATA_CACHE above):
-        this is the shared fetch every rule loader (load_hiding_rules,
-        _load_value_rules, and everything built on top of them) calls
-        independently, with zero caching previously — confirmed live 3+
-        redundant full re-fetches of the same join data from one turn's
-        single top-level rule-loading block.
-        """
-        _key = (workspace_id, catalog_prefix)
-        _marker_at_read = _invalidate_on_marker_change(_RULE_JOIN_DATA_CACHE, _RULE_JOIN_DATA_CACHE_LAST_SEEN_MARKER)
-        _hit = _RULE_JOIN_DATA_CACHE.get(_key)
-        if _hit is not None:
-            _ts, _result = _hit
-            if time.monotonic() - _ts < _RULE_JOIN_DATA_CACHE_TTL_SECONDS:
-                return _result
-
-        rdb = get_cpq_rdb()
-        # (attr_id, value, operator) — operator is the raw BM-native
-        # comparison code ("1"/"2"/.../"8"); see docs/CPQ_DECLARATIVE_
-        # CONDITION_OPERATOR_PLAN_2026_08_05.md for what each means and
-        # bml.evaluate_declarative_conditions for where it's interpreted.
-        inputs_by_rule: dict[int, list[tuple[int, str, str]]] = {}
-        for rid, aid, val, op in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
-            inputs_by_rule.setdefault(rid, []).append((aid, val, op))
-        actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
-        for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
-            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))
-        # bm_config_marked_attr: the real target linkage for many declarative
-        # hiding rules — verified against real data where BmConfigRuleAction
-        # and the rule's own attr_id both carry no target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
-        marked_by_rule: dict[int, list[int]] = {}
-        for rid, aid in rdb.fetch_marked_attrs(workspace_id, catalog_prefix):
-            marked_by_rule.setdefault(rid, []).append(aid)
-        # bm_config_rule_assoc: some rules chain to a child rule rather than
-        # declaring their own target; the terminal rule holds the real one.
-        chain_by_rule: dict[int, int] = {}
-        for rid, cid in rdb.fetch_rule_chain_links(workspace_id, catalog_prefix):
-            chain_by_rule[rid] = cid
-        _result = (rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule)
-        _cache_write_if_marker_unchanged(_RULE_JOIN_DATA_CACHE, _key, (time.monotonic(), _result), _marker_at_read)
-        return _result
+        return layout_and_join_data._load_rule_join_data(workspace_id, catalog_prefix)
 
     @staticmethod
     def _resolve_targets(
@@ -4612,471 +4569,92 @@ class CpqEngine:
         chain_by_rule: dict[int, int],
         max_hops: int = 3,
     ) -> list[tuple[int, int]]:
-        """Resolve a rule's target attribute(s), following the real linkage.
-
-        Priority: (1) BmConfigRuleAction (still correct for exports that use
-        it), (2) BmConfigMarkedAttr — may yield multiple targets, one per
-        marked attribute, (3) BmConfigRuleAssoc chaining to a child rule,
-        re-resolved through (1)-(2) at the terminal rule (bounded depth).
-        Returns [(target_attr_id, action_type)] — action_type defaults to 2
-        (hide) for marked-attr-sourced targets since no hide/show signal has
-        ever been observed to vary in real data (see §6a).
-        """
-        acts = actions_by_rule.get(rule_key, [])
-        if acts:
-            return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
-        marked = marked_by_rule.get(rule_key)
-        if marked:
-            return [(aid, 2) for aid in marked]
-        seen: set[int] = {rule_key}
-        current = chain_by_rule.get(rule_key)
-        hops = 0
-        while current is not None and current not in seen and hops < max_hops:
-            acts = actions_by_rule.get(current, [])
-            if acts:
-                return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
-            marked = marked_by_rule.get(current)
-            if marked:
-                return [(aid, 2) for aid in marked]
-            seen.add(current)
-            current = chain_by_rule.get(current)
-            hops += 1
-        return []
+        return layout_and_join_data._resolve_targets(
+            rule_key, actions_by_rule, marked_by_rule, chain_by_rule, max_hops,
+        )
 
     @staticmethod
     def _rule_key(entity_id: int, source_id: int | None,
                   inputs: dict, actions: dict) -> int:
-        """Pick the id that BmConfigRuleInput/Action rows actually reference."""
-        if source_id is not None and (source_id in inputs or source_id in actions):
-            return source_id
-        return entity_id
+        return layout_and_join_data._rule_key(entity_id, source_id, inputs, actions)
 
     @staticmethod
     def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) -> bool:
-        """True if any single attribute in `conditions` is checked with 2+
-        DISTINCT operators — docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_
-        PLAN_2026_08_05.md.
-
-        evaluate_declarative_conditions groups same-attribute rows under a
-        single shared operator (the first row's); for rows that genuinely
-        share one operator (an OR-list of acceptable/excluded values) this
-        is correct, but for rows with DIFFERENT operators on the same
-        attribute it silently drops every row after the first — confirmed
-        live via "Restrict Number Of Seats between 1 and 12" (`< 1` and
-        `> 12` on the same attribute; only `< 1` would ever be checked).
-
-        Confirmed catalog-wide (80 real rules across 4 catalogs) that no
-        single combining rule fixes this correctly for every shape yet —
-        two patterns are confirmed for 76% of cases, but forcing them in
-        now would silently mis-evaluate the remaining ~24% (see the plan
-        doc). Used as a purely structural, never-guessed exclusion: a rule
-        hitting this collision is skipped entirely (same as if it were
-        never confirmed) rather than loaded with a guessed combining rule.
-        """
-        by_attr: dict[int, set[str]] = {}
-        for attr_id, _value, operator in conditions:
-            by_attr.setdefault(attr_id, set()).add(operator)
-        return any(len(ops) > 1 for ops in by_attr.values())
+        return layout_and_join_data._condition_has_operator_collision(conditions)
 
     def _detect_layout_tier(self, workspace_id: int, catalog_prefix: str = "") -> int:
-        """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §2 — one cheap existence
-        check per catalog, cached process-wide (same lifetime/reasoning as
-        bml.py's _SHARED_SCRIPT_CACHE / _FLAG_KEYWORD_INDEX_CACHE above):
-        1 = rule_type=6 "Configuration Flow" rules exist AND are referenced
-            by BmConfigLayoutAttrAssoc (verified on 3 independent catalogs).
-        2 = no rule_type=6 flow rule, but layout placement data exists
-            anyway — still real UI-truth, just unscoped to one flow.
-        3 = no layout data at all — callers must fall back to today's
-            existing hidden/required + rule-based behavior unchanged; free,
-            no new code needed for this tier.
-        """
-        key = (workspace_id, catalog_prefix)
-        if key in _LAYOUT_TIER_CACHE:
-            return _LAYOUT_TIER_CACHE[key]
-        rdb = get_cpq_rdb()
-        assoc = rdb.fetch_layout_attr_assoc(workspace_id, catalog_prefix)
-        if not assoc:
-            tier = 3
-        else:
-            flow_ids = {
-                src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
-                if src_id is not None
-            }
-            tier = 1 if any(rid in flow_ids for rid, _a, _l in assoc) else 2
-        _LAYOUT_TIER_CACHE[key] = tier
-        return tier
+        return layout_and_join_data._detect_layout_tier(workspace_id, catalog_prefix)
 
     def _is_country_anchor_var(self, variable_name: str) -> bool:
-        """The D1 country anchor specifically — NOT any "country"-fragment
-        match. A plain substring check collides with real, distinct attrs
-        confirmed live in this catalog: CRM_BILL_COUNTRY/CRM_SHIP_COUNTRY
-        (noise-shaped integration fields) and isUltimateDestinationCountryCA_astro
-        (a genuine but DIFFERENT boolean attr, "country" mid-name not at the
-        end). Requiring BOTH "ends with country" (excludes the CA-suffixed
-        boolean) AND not noise-shaped (excludes the two CRM_* fields)
-        isolates exactly ultimateDestinationCountry in this catalog — same
-        two-guard pattern auto_fill already uses elsewhere for fragment
-        matches that would otherwise over-collide.
-        """
-        vn_flat = variable_name.lower().replace("_", "")
-        return vn_flat.endswith("country") and not self._is_noise_var(variable_name)
+        return layout_and_join_data._is_country_anchor_var(self, variable_name)
 
     def _find_country_anchor_attr_id(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> int | None:
-        """Native id of this catalog's country-anchor ConfigAttr, or None."""
-        rdb = get_cpq_rdb()
-        for _eid, attrs in rdb.fetch_entities_by_type(workspace_id, "bmconfigattr", catalog_prefix):
-            vn = attrs.get("variable_name") or ""
-            if self._is_country_anchor_var(vn):
-                try:
-                    return int(str(attrs.get("id")).strip())
-                except (TypeError, ValueError):
-                    continue
-        return None
+        return layout_and_join_data._find_country_anchor_attr_id(
+            self, workspace_id, catalog_prefix,
+        )
 
     def resolve_ui_layout_scope(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> dict[str, Any] | None:
-        """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §1-§5 — which attributes
-        the real native UI shows on screen, and in what order.
-
-        Returns None for tier 3 (no layout data — caller keeps today's
-        existing behavior unchanged, zero new code needed).
-
-        Otherwise returns {"tier": 1|2, "flows": {flow_id: entry, ...}}.
-        flow_id is 0 for tier 2 (no flow-rule scoping, one catalog-wide
-        entry). Each entry is {"all": {attr_id: order_number},
-        "section": {attr_id: order_number} | None} — "all" is every attr
-        with layout placement (grouped/ordered, §4); "section" is the
-        country-anchor's own parent_id group (§5) when exactly one such
-        group exists for that flow, else None.
-
-        Multiple rule_type=6 flows in one catalog (confirmed live: APX
-        Next has 3) are a genuine, unresolved ambiguity — every
-        disambiguation heuristic tried (biggest total flow, biggest
-        immediate group) picked a DIFFERENT, WRONG flow when checked
-        against the real ground-truth screenshot. This method deliberately
-        does not guess: it returns one entry per flow and leaves picking
-        one to the caller (e.g. a future curated per-catalog choice),
-        rather than silently resolving to an unverified answer.
-        """
-        key = (workspace_id, catalog_prefix)
-        if key in _LAYOUT_SCOPE_CACHE:
-            return _LAYOUT_SCOPE_CACHE[key]
-        tier = self._detect_layout_tier(workspace_id, catalog_prefix)
-        if tier == 3:
-            _LAYOUT_SCOPE_CACHE[key] = None
-            return None
-        rdb = get_cpq_rdb()
-        assoc = rdb.fetch_layout_attr_assoc(workspace_id, catalog_prefix)
-        nodes = rdb.fetch_layout_model_nodes(workspace_id, catalog_prefix)
-        country_attr_id = self._find_country_anchor_attr_id(workspace_id, catalog_prefix)
-
-        if tier == 1:
-            flow_ids = {
-                src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
-                if src_id is not None
-            }
-            by_flow: dict[int, list[tuple[int, int]]] = {}
-            for rid, attr_id, lmid in assoc:
-                if rid not in flow_ids:
-                    continue
-                by_flow.setdefault(rid, []).append((attr_id, lmid))
-        else:
-            by_flow = {0: [(attr_id, lmid) for _rid, attr_id, lmid in assoc]}
-
-        flows: dict[int, dict[str, Any]] = {}
-        for flow_id, attr_lmids in by_flow.items():
-            attr_group: dict[int, tuple[int, int]] = {}
-            for attr_id, lmid in attr_lmids:
-                node = nodes.get(lmid)
-                if node is None:
-                    continue
-                parent_id, _label, order_number = node
-                if attr_id not in attr_group:
-                    attr_group[attr_id] = (parent_id, order_number)
-            all_attrs = {aid: order for aid, (_p, order) in attr_group.items()}
-            section: dict[int, int] | None = None
-            if country_attr_id is not None and country_attr_id in attr_group:
-                target_parent, _own_order = attr_group[country_attr_id]
-                section = {
-                    aid: order for aid, (parent_id, order) in attr_group.items()
-                    if parent_id == target_parent
-                }
-            flows[flow_id] = {"all": all_attrs, "section": section}
-
-        result = {"tier": tier, "flows": flows}
-        _LAYOUT_SCOPE_CACHE[key] = result
-        return result
+        return layout_and_join_data.resolve_ui_layout_scope(
+            self, workspace_id, catalog_prefix,
+        )
 
     @staticmethod
     def _walk_layout_components(node: Any) -> list[dict[str, Any]]:
-        """Depth-first, document-order list of every leaf component object
-        carrying a `resourceAttributeVarName` — the exact flattened order
-        the native UI renders in, no `parent_id`/`order_number` tree walk
-        needed (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §1: the raw
-        relational `order_number` is sibling-scoped, not a flat rank; this
-        nested JSON's own array order already is one)."""
-        out: list[dict[str, Any]] = []
-
-        def _walk(n: Any) -> None:
-            if isinstance(n, dict):
-                if "resourceAttributeVarName" in n:
-                    out.append(n)
-                for v in n.values():
-                    _walk(v)
-            elif isinstance(n, list):
-                for item in n:
-                    _walk(item)
-
-        _walk(node)
-        return out
+        return layout_and_join_data._walk_layout_components(node)
 
     @classmethod
     def _load_layout_components(
         cls, workspace_id: int, catalog_prefix: str,
         layout_source: LayoutFileSource | None,
     ) -> list[dict[str, Any]] | None:
-        """Parsed, `status=="Active"`-validated, flattened (document-order)
-        component list for a catalog's layout export, or None if no
-        currently-Active file exists. Cached process-lifetime — the shared
-        parse step both `load_layout_display_order` (§2, visible-only) and
-        `_load_layout_full_order` (§2b, ALL entries — rule conditions are
-        frequently layout-*hidden*, e.g. a derived attr like Base Model,
-        so the ranking those need can't come from the visible-only map)
-        build on."""
-        key = (workspace_id, catalog_prefix)
-        if key in _LAYOUT_COMPONENTS_CACHE:
-            return _LAYOUT_COMPONENTS_CACHE[key]
-        source = layout_source or _DEFAULT_LAYOUT_FILE_SOURCE
-        text = source.get(catalog_prefix)
-        if not text:
-            _LAYOUT_COMPONENTS_CACHE[key] = None
-            return None
-        try:
-            data = json.loads(text)
-        except (ValueError, TypeError):
-            logger.warning(
-                "cpq layout: malformed layout JSON for catalog_prefix=%r",
-                catalog_prefix, exc_info=True,
-            )
-            _LAYOUT_COMPONENTS_CACHE[key] = None
-            return None
-        if not isinstance(data, dict) or data.get("status") != "Active":
-            logger.info(
-                "cpq layout: layout file for %r has status=%r, not "
-                "'Active' — ignoring (stale/deprecated export guard)",
-                catalog_prefix,
-                data.get("status") if isinstance(data, dict) else None,
-            )
-            _LAYOUT_COMPONENTS_CACHE[key] = None
-            return None
-        components = cls._walk_layout_components(data)
-        _LAYOUT_COMPONENTS_CACHE[key] = components
-        return components
+        return layout_and_join_data._load_layout_components(
+            cls, workspace_id, catalog_prefix, layout_source,
+        )
 
     def load_layout_display_order(
         self, workspace_id: int, catalog_prefix: str = "",
         layout_source: LayoutFileSource | None = None,
     ) -> dict[str, int] | None:
-        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2 — {variable_name:
-        rank} for exactly the attributes a catalog's decoded native-UI
-        layout export marks `hide: false` and non-`HTML`-typed, ranked by
-        the file's own document order (§1: the authoritative flat order —
-        `bm_layout_model.order_number` is only sibling-scoped).
-
-        Returns None when no matching, currently-Active layout file exists
-        for this catalog — callers must treat that as "no layout signal",
-        never as "empty visible set" (every §2/§2b/§2c mechanism built on
-        this falls back to today's unchanged behavior in that case).
-
-        layout_source — injected for tests / a future non-local backend
-        (see LayoutFileSource); defaults to the process-wide local
-        directory source (`ARYX_CPQ_LAYOUT_DIR`, else cwd).
-        """
-        key = (workspace_id, catalog_prefix)
-        if key in _LAYOUT_DISPLAY_ORDER_CACHE:
-            return _LAYOUT_DISPLAY_ORDER_CACHE[key]
-        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
-        if components is None:
-            _LAYOUT_DISPLAY_ORDER_CACHE[key] = None
-            return None
-        order: dict[str, int] = {}
-        for comp in components:
-            vn = comp.get("resourceAttributeVarName")
-            if (
-                vn and comp.get("hide") is False
-                and comp.get("resourceAttrType") != "HTML"
-                and vn not in order
-            ):
-                order[vn] = len(order)
-        result = order or None
-        _LAYOUT_DISPLAY_ORDER_CACHE[key] = result
-        return result
+        return layout_and_join_data.load_layout_display_order(
+            self, workspace_id, catalog_prefix, layout_source,
+        )
 
     def _load_layout_full_order(
         self, workspace_id: int, catalog_prefix: str = "",
         layout_source: LayoutFileSource | None = None,
     ) -> dict[str, int] | None:
-        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b — {variable_name:
-        rank} over EVERY component in the layout file's document order,
-        regardless of `hide`/`resourceAttrType` — used for rule-conflict
-        ranking, where a rule's condition attribute is very often itself
-        layout-hidden (a derived/computed attr, e.g. Base Model, is never
-        shown to the customer but still gates other rules). Distinct from
-        `load_layout_display_order`, which intentionally excludes exactly
-        those hidden attrs for the summary/payload visible-set use case.
-        """
-        key = (workspace_id, catalog_prefix)
-        if key in _LAYOUT_FULL_ORDER_CACHE:
-            return _LAYOUT_FULL_ORDER_CACHE[key]
-        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
-        if components is None:
-            _LAYOUT_FULL_ORDER_CACHE[key] = None
-            return None
-        order: dict[str, int] = {}
-        for comp in components:
-            vn = comp.get("resourceAttributeVarName")
-            if vn and vn not in order:
-                order[vn] = len(order)
-        result = order or None
-        _LAYOUT_FULL_ORDER_CACHE[key] = result
-        return result
+        return layout_and_join_data._load_layout_full_order(
+            self, workspace_id, catalog_prefix, layout_source,
+        )
 
     def resolve_always_ask_skips(
         self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
     ) -> set[str]:
-        """Variable names whose is_decision_attr always-ask override
-        (auto_fill's skip_always_ask param, §3c) should be SKIPPED because
-        the real native UI never shows them for this catalog's active
-        configuration flow.
-
-        Deliberately conservative — only acts when resolve_ui_layout_scope
-        resolves to EXACTLY ONE active flow (tier 1, len(flows) == 1).
-        Ambiguous catalogs (e.g. APX Next's 2 simultaneously-active flows)
-        return an empty set, leaving today's unconditional always-ask
-        behavior completely unchanged — see
-        docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5/§6.
-        """
-        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
-        if not scope or scope["tier"] != 1 or len(scope["flows"]) != 1:
-            return set()
-        the_flow = next(iter(scope["flows"].values()))
-        in_flow_ids = the_flow["all"]
-        skips: set[str] = set()
-        for attr in attrs:
-            if attr.variable_name != "productSelectionProduct_all":
-                continue
-            if attr.entity_id not in in_flow_ids:
-                skips.add(attr.variable_name)
-        return skips
+        return layout_and_join_data.resolve_always_ask_skips(
+            self, workspace_id, catalog_prefix, attrs,
+        )
 
     def resolve_primary_layout_section_vns(
         self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
     ) -> set[str] | None:
-        """Variable names genuinely shown on the native UI's own configuration
-        screen(s) — the country-anchor's own layout "section" (see
-        resolve_ui_layout_scope), scoped to a single, deterministically-
-        chosen flow when 2+ active flows exist.
-
-        docs/config_consistency_issues_2026-07-30.md items 1/2: a real
-        staging screenshot showed the native UI's Model Configuration panel
-        surfacing ~10 fields for one screen, while Aryx's payload/summary
-        carried 80-90 attributes total. This catalog's own ingested layout
-        data doesn't resolve to per-SCREEN granularity (the finest grouping
-        available is a ~35-attr "section" spanning several screens) — this
-        is the ceiling of what's derivable without guessing a finer split
-        the data doesn't contain.
-
-        Flow disambiguation (APX Next ships 2 simultaneously-active
-        rule_type=6 flows — resolve_ui_layout_scope's own docstring already
-        flags this as unresolved): prefers the flow whose name does NOT end
-        in "_sysConfig" (confirmed live: the two flows here are named
-        "Configuration Flow For Astro Devices (Portable)" and
-        "...Astro Devices (Portable)_sysConfig" — the suffixed one reads as
-        a secondary/system-config variant, not the primary customer-facing
-        flow). Falls back to the lowest flow_id for a stable, deterministic
-        choice when no name is unsuffixed either way — never a random pick.
-
-        Returns None (no narrowing — caller keeps existing full behavior)
-        when: no layout data at all (tier 3), or the chosen flow has no
-        resolvable country-anchor section. Never guesses a subset when the
-        catalog's own data doesn't support one.
-        """
-        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
-        if not scope or not scope["flows"]:
-            return None
-        flow_ids = list(scope["flows"].keys())
-        if len(flow_ids) == 1:
-            chosen_id = flow_ids[0]
-        else:
-            rdb = get_cpq_rdb()
-            names = {
-                src_id: (name or "")
-                for _eid, src_id, name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
-                if src_id is not None
-            }
-            unsuffixed = [
-                fid for fid in flow_ids
-                if not names.get(fid, "").strip().lower().endswith("_sysconfig")
-            ]
-            chosen_id = min(unsuffixed) if unsuffixed else min(flow_ids)
-        section = scope["flows"][chosen_id].get("section")
-        if not section:
-            return None
-        by_entity_id = {a.entity_id: a.variable_name for a in attrs}
-        return {
-            by_entity_id[aid] for aid in section if aid in by_entity_id
-        }
+        return layout_and_join_data.resolve_primary_layout_section_vns(
+            self, workspace_id, catalog_prefix, attrs,
+        )
 
     @staticmethod
     def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
-        """Variable names of model-context MIRROR attrs — pointer-default
-        attrs whose referenced attribute is an underscore-prefixed runtime
-        context field (the platform's own `_bm_model_*`-style punch-in
-        family). Fully structural: an attr qualifies when its
-        default_value equals ANOTHER attr's variable name AND that name
-        starts with "_" — no attribute names in code (matches
-        modelname_all -> _bm_model_variable_name in both ingested
-        exports, and nothing else, per the Issue 11 survey).
-        """
-        vns = {a.variable_name for a in attrs}
-        return {
-            a.variable_name for a in attrs
-            if not a.options
-            and a.default_value in vns
-            and a.default_value != a.variable_name
-            and a.default_value.startswith("_")
-        }
+        return layout_and_join_data.model_context_mirror_vns(attrs)
 
     def payload_flow_exclusions(
         self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
     ) -> set[str]:
-        """Product/model flow mutual exclusivity for the payload
-        (Issue 11 follow-up, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a quote is
-        identified by its product selection OR its model context — never
-        both.
-
-        The flow signal is the catalog's own layout data
-        (resolve_always_ask_skips): non-empty means the single active
-        native-UI flow HIDES the product selector (model flow — e.g. SVX),
-        so the product selector is excluded and model mirrors ship.
-        Empty means the product selector is genuinely part of this
-        catalog's flow, or the flow is ambiguous/unresolvable (e.g. APX
-        Next's two active flows) — product flow: the product identifies
-        the quote and the model-context mirrors are excluded instead
-        (confirmed live: APX shipped modelname_all="aPXNext" alongside
-        productSelectionProduct_all, violating the integration's
-        one-or-the-other contract).
-        """
-        skips = self.resolve_always_ask_skips(workspace_id, catalog_prefix, attrs)
-        if skips:
-            return skips  # model flow — product excluded, mirrors ship
-        return self.model_context_mirror_vns(attrs)  # product flow
+        return layout_and_join_data.payload_flow_exclusions(
+            self, workspace_id, catalog_prefix, attrs,
+        )
 
     # ── Array-grid / per-option-quantity cluster ─────────────────────────
     # The nine methods below are one-line delegating wrappers; the real
