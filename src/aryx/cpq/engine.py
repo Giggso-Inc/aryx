@@ -23,6 +23,7 @@ import logging
 import re
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from aryx.config import get_settings
@@ -2447,6 +2448,31 @@ def classify_select_type(attrs: dict[str, Any]) -> str:
     if data_type == "2":
         return "float"
     return "single"
+
+
+@dataclass
+class FillContext:
+    """Bundles `auto_fill`'s truly-shared, cross-attribute mutable state
+    (Phase 4 step 3, docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md's
+    "FillContext Decomposition Design") — the six objects every per-attr
+    resolution (P1) and post-pass (P2/P3) reads and writes, replacing the
+    bare-local/closure-captured wiring the still-inline P1 loop uses today.
+
+    Pure additive scaffolding for now: constructed once per `auto_fill`
+    call (right before the P1 loop) but not yet consumed by anything —
+    P1 itself still reads/writes the original bare locals it always has.
+    Each field below is the SAME object as its same-named `auto_fill`
+    local (dicts/sets are mutable, so a write through either name is
+    visible through the other) — the next step wires P1 to read/write
+    exclusively through `ctx.*`, at which point these bare locals go away.
+    """
+
+    filled: dict[str, str]
+    filled_multi: dict[str, list[str]]
+    sources: dict[str, str]
+    dropped: dict[str, list[str]]
+    dt_cache: dict[tuple[int, str], tuple]
+    default_fill_signatures: dict[str, tuple] | None
 
 
 class CpqEngine:
@@ -8764,7 +8790,25 @@ class CpqEngine:
             if len(owners) > 1:
                 conflicted_optional_ids.update(owners)
 
-        for attr in attrs:
+        # Additive scaffolding only (Phase 4 step 3) — not yet consumed by
+        # the loop below. `is` (not `==`) proves each field is literally
+        # the SAME dict/set object as its bare-local counterpart, so a
+        # mutation through either name is guaranteed visible through the
+        # other — the precondition for safely switching the loop below to
+        # read/write exclusively through `ctx.*` in the next step.
+        ctx = FillContext(
+            filled=filled, filled_multi=filled_multi, sources=sources,
+            dropped=dropped, dt_cache=dt_cache,
+            default_fill_signatures=_default_fill_signatures,
+        )
+        assert ctx.filled is filled
+        assert ctx.filled_multi is filled_multi
+        assert ctx.sources is sources
+        assert ctx.dropped is dropped
+        assert ctx.dt_cache is dt_cache
+        assert ctx.default_fill_signatures is _default_fill_signatures
+
+        def _resolve_one_attr(attr: "ConfigAttr") -> None:
             vn = attr.variable_name
             # §2e (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): set by
             # _satisfied_recommendation's call sites below when it returns
@@ -8772,7 +8816,7 @@ class CpqEngine:
             # to the specific rule that fired instead of a generic tag.
             fired_rule_name: str | None = None
 
-            if vn in filled:
+            if vn in ctx.filled:
                 # Deliberately cleared by the user (D4,
                 # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md) — an empty
                 # value tagged filled_source="user" is a standing "leave
@@ -8783,9 +8827,9 @@ class CpqEngine:
                 # rule re-assertion (apply_recommendation_rules' truthy
                 # check, not `in filled`) overrides it, exactly like it
                 # would override any other stale value.
-                if filled[vn] == "" and sources.get(vn) == "user":
+                if ctx.filled[vn] == "" and ctx.sources.get(vn) == "user":
                     display_filled[vn] = "(none)"
-                    continue
+                    return
                 # Already answered in a prior turn — but a cascade may have
                 # narrowed this attr's allowed set since then (single-select
                 # counterpart of the multi-select re-validation below, §5/
@@ -8795,15 +8839,15 @@ class CpqEngine:
                 allowed_single = (
                     constrained_opts.get(attr.entity_id) if constrained_opts else None
                 )
-                if allowed_single is not None and filled[vn] not in allowed_single:
-                    stale_display = display_filled.get(vn, filled[vn])
-                    dropped[vn] = [stale_display]
-                    if sources.get(vn) == "user":
+                if allowed_single is not None and ctx.filled[vn] not in allowed_single:
+                    stale_display = display_filled.get(vn, ctx.filled[vn])
+                    ctx.dropped[vn] = [stale_display]
+                    if ctx.sources.get(vn) == "user":
                         user_answered_dropped_ids.add(attr.entity_id)
-                    filled.pop(vn, None)
+                    ctx.filled.pop(vn, None)
                     display_filled.pop(vn, None)
-                    sources.pop(vn, None)
-                elif sources.get(vn) == "default_first_available":
+                    ctx.sources.pop(vn, None)
+                elif ctx.sources.get(vn) == "default_first_available":
                     # Live bug (2026-08-09): this value was picked with
                     # NOTHING to justify it (§2f's blind first-by-order
                     # fallback, when neither a satisfied recommendation nor
@@ -8833,42 +8877,42 @@ class CpqEngine:
                     # last (re)derived. Skipped entirely when the caller
                     # doesn't opt in (`_default_fill_signatures is None`),
                     # identical to every pre-existing call site.
-                    if _default_fill_signatures is not None:
+                    if ctx.default_fill_signatures is not None:
                         _sig_filled = (
-                            filled if not _signature_exclude_vns else
-                            {k: v for k, v in filled.items() if k not in _signature_exclude_vns}
+                            ctx.filled if not _signature_exclude_vns else
+                            {k: v for k, v in ctx.filled.items() if k not in _signature_exclude_vns}
                         )
                         _sig_filled_multi = (
-                            filled_multi if not _signature_exclude_vns else
-                            {k: v for k, v in filled_multi.items() if k not in _signature_exclude_vns}
+                            ctx.filled_multi if not _signature_exclude_vns else
+                            {k: v for k, v in ctx.filled_multi.items() if k not in _signature_exclude_vns}
                         )
                         _cur_sig = _fill_signature(
                             _sig_filled, _sig_filled_multi, {a.entity_id for a in attrs},
                         )
-                        if _default_fill_signatures.get(vn) == _cur_sig:
+                        if ctx.default_fill_signatures.get(vn) == _cur_sig:
                             matched_display = next(
                                 (o.display_name for o in attr.options
-                                 if o.item_value == filled[vn]),
-                                filled[vn],
+                                 if o.item_value == ctx.filled[vn]),
+                                ctx.filled[vn],
                             )
                             display_filled[vn] = matched_display
-                            continue
-                        _default_fill_signatures[vn] = _cur_sig
-                    filled.pop(vn, None)
+                            return
+                        ctx.default_fill_signatures[vn] = _cur_sig
+                    ctx.filled.pop(vn, None)
                     display_filled.pop(vn, None)
-                    sources.pop(vn, None)
+                    ctx.sources.pop(vn, None)
                 else:
                     matched_display = next(
                         (o.display_name for o in attr.options
-                         if o.item_value == filled[vn]),
-                        filled[vn],
+                         if o.item_value == ctx.filled[vn]),
+                        ctx.filled[vn],
                     )
                     display_filled[vn] = matched_display
-                    continue
-            if vn in filled_multi:
+                    return
+            if vn in ctx.filled_multi:
                 allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
                 if allowed_now is not None:
-                    if sources.get(vn) == "default_first_available":
+                    if ctx.sources.get(vn) == "default_first_available":
                         # This value was picked with NOTHING to justify it
                         # (no active constraint, no default_value) on some
                         # earlier pass — a real constraint now exists for
@@ -8887,40 +8931,40 @@ class CpqEngine:
                         # — same gate as the single-select branch above: only
                         # actually re-derive when something relevant changed
                         # since last time.
-                        if _default_fill_signatures is not None:
+                        if ctx.default_fill_signatures is not None:
                             _sig_filled = (
-                                filled if not _signature_exclude_vns else
-                                {k: v for k, v in filled.items() if k not in _signature_exclude_vns}
+                                ctx.filled if not _signature_exclude_vns else
+                                {k: v for k, v in ctx.filled.items() if k not in _signature_exclude_vns}
                             )
                             _sig_filled_multi = (
-                                filled_multi if not _signature_exclude_vns else
-                                {k: v for k, v in filled_multi.items() if k not in _signature_exclude_vns}
+                                ctx.filled_multi if not _signature_exclude_vns else
+                                {k: v for k, v in ctx.filled_multi.items() if k not in _signature_exclude_vns}
                             )
                             _cur_sig = _fill_signature(
                                 _sig_filled, _sig_filled_multi, {a.entity_id for a in attrs},
                             )
-                            if _default_fill_signatures.get(vn) == _cur_sig:
+                            if ctx.default_fill_signatures.get(vn) == _cur_sig:
                                 display_filled[vn] = ", ".join(
                                     next(
                                         (o.display_name for o in attr.options
                                          if o.item_value == v),
                                         v,
                                     )
-                                    for v in filled_multi[vn]
+                                    for v in ctx.filled_multi[vn]
                                 )
-                                continue
-                            _default_fill_signatures[vn] = _cur_sig
-                        filled_multi.pop(vn, None)
-                        sources.pop(vn, None)
+                                return
+                            ctx.default_fill_signatures[vn] = _cur_sig
+                        ctx.filled_multi.pop(vn, None)
+                        ctx.sources.pop(vn, None)
                     else:
                         allowed_set = set(allowed_now)
-                        kept = [v for v in filled_multi[vn] if v in allowed_set]
-                        lost = [v for v in filled_multi[vn] if v not in allowed_set]
+                        kept = [v for v in ctx.filled_multi[vn] if v in allowed_set]
+                        lost = [v for v in ctx.filled_multi[vn] if v not in allowed_set]
                         if lost:
-                            dropped[vn] = lost
-                            filled_multi[vn] = kept
-                if not filled_multi.get(vn):
-                    if sources.get(vn) == "user":
+                            ctx.dropped[vn] = lost
+                            ctx.filled_multi[vn] = kept
+                if not ctx.filled_multi.get(vn):
+                    if ctx.sources.get(vn) == "user":
                         # An EMPTY selection the user explicitly confirmed
                         # ("no mounts needed" declining an optional grid) is
                         # a settled answer, not an unresolved attr — keep it
@@ -8928,15 +8972,15 @@ class CpqEngine:
                         # simply carries no rows. Only constraint-drops
                         # (non-user sources) fall through to re-resolution.
                         display_filled[vn] = "(none)"
-                        continue
-                    filled_multi.pop(vn, None)
-                    sources.pop(vn, None)
+                        return
+                    ctx.filled_multi.pop(vn, None)
+                    ctx.sources.pop(vn, None)
                     # Falls through to normal resolution below — the drop may
                     # have emptied the selection entirely.
                 else:
                     display_filled[vn] = ", ".join(
                         next((o.display_name for o in attr.options if o.item_value == v), v)
-                        for v in filled_multi[vn]
+                        for v in ctx.filled_multi[vn]
                     )
                     # Grid-selector re-ask (docs/CPQ_SVX_MOUNTING_TYPE_
                     # ARRAY_GRID_MULTI_SELECT_PLAN_2026_08_25.md): live-
@@ -8957,10 +9001,10 @@ class CpqEngine:
                         vn in grid_selector_vns
                         and vn not in (grid_declined_vns or ())
                         and self.grid_selector_remaining_options(
-                            attr, filled_multi, constrained_opts)
+                            attr, ctx.filled_multi, constrained_opts)
                     ):
                         pending.append(attr)
-                    continue
+                    return
 
             if attr.hidden:
                 # Never asked, never NL-hint-matched, never blind-first-picked
@@ -8970,14 +9014,14 @@ class CpqEngine:
                 # Pointer-defaults are NOT literals — resolved (or left
                 # unfilled) by the post-pass below, never written verbatim.
                 if _valid(attr.default_value) and not _is_pointer_default(attr):
-                    filled[vn] = attr.default_value
+                    ctx.filled[vn] = attr.default_value
                     display_filled[vn] = next(
                         (o.display_name for o in attr.options
                          if o.item_value == attr.default_value),
                         attr.default_value,
                     )
-                    sources.setdefault(vn, "default")
-                continue
+                    ctx.sources.setdefault(vn, "default")
+                return
 
             value: str | None = None
             display: str | None = None
@@ -9445,9 +9489,9 @@ class CpqEngine:
                         # narrowed this attr → leave unselected, ask the
                         # user (unchanged).
                         if allowed_for_attr is not None and len(valid_opts) == 1:
-                            filled_multi[vn] = [o.item_value for o in valid_opts]
+                            ctx.filled_multi[vn] = [o.item_value for o in valid_opts]
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
-                            sources.setdefault(vn, governed_source)
+                            ctx.sources.setdefault(vn, governed_source)
                             filled_multi_now = True
                             if governed_source == "rule":
                                 rule_trace.record_fire(
@@ -9466,12 +9510,12 @@ class CpqEngine:
                             # ever fills confidently when exactly one real
                             # value resolves.
                             dt_match = self._resolve_via_data_tables(
-                                vn, filled, valid_opts, workspace_id, catalog_prefix, dt_cache,
+                                vn, ctx.filled, valid_opts, workspace_id, catalog_prefix, ctx.dt_cache,
                             )
                             if dt_match:
-                                filled_multi[vn] = [dt_match.item_value]
+                                ctx.filled_multi[vn] = [dt_match.item_value]
                                 display_filled[vn] = dt_match.display_name
-                                sources.setdefault(vn, "data_table")
+                                ctx.sources.setdefault(vn, "data_table")
                                 filled_multi_now = True
                             # No confident single match (2+ legal values,
                             # or none): NOT handled here -- falls through
@@ -9520,7 +9564,7 @@ class CpqEngine:
                             source = "rule"
                         elif (
                             dt_match := self._resolve_via_data_tables(
-                                vn, filled, valid_opts, workspace_id, catalog_prefix, dt_cache,
+                                vn, ctx.filled, valid_opts, workspace_id, catalog_prefix, ctx.dt_cache,
                             )
                         ):
                             # This attr is governed (some rule targets it)
@@ -9679,7 +9723,7 @@ class CpqEngine:
                 source = governed_source
 
             if filled_multi_now:
-                continue
+                return
             if value:
                 # A value can reach here from several upstream paths (hint
                 # match, default_value, region-derivation, single-remaining-
@@ -9693,11 +9737,11 @@ class CpqEngine:
                 # two attrs that got their value via hint-matching rather
                 # than the dedicated multi/constrained-options branch).
                 if attr.select_type == "multi":
-                    filled_multi[vn] = [value]
+                    ctx.filled_multi[vn] = [value]
                 else:
-                    filled[vn] = value
+                    ctx.filled[vn] = value
                 display_filled[vn] = display or value
-                sources.setdefault(vn, source)
+                ctx.sources.setdefault(vn, source)
                 # Trace step 3 ("already-satisfied recommendation", source
                 # == "rule") and step 5 ("rule-governed default-or-first",
                 # source == governed_source == "rule") -- the two auto_fill
@@ -9740,9 +9784,9 @@ class CpqEngine:
                 # the single-select branch above, just for multi-select's
                 # separate fallback (valid_opts isn't reliably in scope
                 # here -- see the sibling elif's own comment on that).
-                filled_multi[vn] = [opt_out_match.item_value]
+                ctx.filled_multi[vn] = [opt_out_match.item_value]
                 display_filled[vn] = opt_out_match.display_name
-                sources.setdefault(vn, "opt_out_default")
+                ctx.sources.setdefault(vn, "opt_out_default")
                 filled_multi_now = True
             elif (
                 attr.select_type == "multi" and not attr.required
@@ -9764,9 +9808,9 @@ class CpqEngine:
                 # in this allowlist (confirmed live: without this guard,
                 # this branch wrongly intercepted promoApplicationServices_
                 # astro's own constrained-and-ambiguous regression test).
-                filled_multi[vn] = []
+                ctx.filled_multi[vn] = []
                 display_filled[vn] = "(none)"
-                sources.setdefault(vn, "optional_empty")
+                ctx.sources.setdefault(vn, "optional_empty")
                 filled_multi_now = True
             elif (
                 attr.select_type == "multi" and not attr.required
@@ -9850,9 +9894,9 @@ class CpqEngine:
                 ) if attr.default_value else None
                 if rec_match:
                     rec_value, rec_display, fired_rule_name = rec_match
-                    filled_multi[vn] = [rec_value]
+                    ctx.filled_multi[vn] = [rec_value]
                     display_filled[vn] = rec_display
-                    sources.setdefault(vn, "rule")
+                    ctx.sources.setdefault(vn, "rule")
                     # §2e: this multi-select path never traced its fill at
                     # all before — a real, separate gap from the
                     # single-select trace call above, closed the same way.
@@ -9905,10 +9949,10 @@ class CpqEngine:
                     # constraint's narrowed set) a few lines up, so this
                     # never selects an option the active rule has excluded.
                     if candidate_opts:
-                        filled_multi[vn] = [o.item_value for o in candidate_opts]
+                        ctx.filled_multi[vn] = [o.item_value for o in candidate_opts]
                         display_filled[vn] = ", ".join(
                             o.display_name for o in candidate_opts)
-                        sources.setdefault(vn, "auto_all_constrained")
+                        ctx.sources.setdefault(vn, "auto_all_constrained")
                         logger.info(
                             "cpq: multi-select %r constrained to %d option(s) "
                             "with no rule/default resolving a subset -- "
@@ -9917,9 +9961,9 @@ class CpqEngine:
                             "leave-empty default)", vn, len(candidate_opts),
                         )
                 elif default_opt:
-                    filled_multi[vn] = [default_opt.item_value]
+                    ctx.filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
-                    sources.setdefault(vn, "default")
+                    ctx.sources.setdefault(vn, "default")
                 elif is_unconstrained and candidate_opts:
                     # Tagged with a DISTINCT source (not "default") so the
                     # re-validation step above (`if vn in filled_multi:`)
@@ -9955,7 +9999,7 @@ class CpqEngine:
                     # today's original raw-order pick, unchanged.
                     _dt_legal = (
                         self._resolve_narrowed_legal_values(
-                            vn, filled, workspace_id, catalog_prefix, dt_cache,
+                            vn, ctx.filled, workspace_id, catalog_prefix, ctx.dt_cache,
                         )
                         if workspace_id is not None else None
                     )
@@ -9983,15 +10027,15 @@ class CpqEngine:
                             # auto-checking every legal carrier), so
                             # defaulting to "select all" here for every
                             # attr would be a regression, not a fix.
-                            filled_multi[vn] = [o.item_value for o in _narrowed_opts]
+                            ctx.filled_multi[vn] = [o.item_value for o in _narrowed_opts]
                             display_filled[vn] = ", ".join(
                                 o.display_name for o in _narrowed_opts)
-                            sources.setdefault(vn, "default_first_available")
+                            ctx.sources.setdefault(vn, "default_first_available")
                         else:
                             first_opt = _narrowed_opts[0]
-                            filled_multi[vn] = [first_opt.item_value]
+                            ctx.filled_multi[vn] = [first_opt.item_value]
                             display_filled[vn] = first_opt.display_name
-                            sources.setdefault(vn, "default_first_available")
+                            ctx.sources.setdefault(vn, "default_first_available")
                     else:
                         # Real Data Table confirms ZERO legal values for
                         # this exact context (`_dt_legal == []`) -- a
@@ -10000,13 +10044,13 @@ class CpqEngine:
                         # `else` below, reached here instead since
                         # `is_unconstrained and candidate_opts` already
                         # matched on the raw (pre-whitelist) option list.
-                        filled_multi[vn] = []
+                        ctx.filled_multi[vn] = []
                         display_filled[vn] = "(none)"
-                        sources.setdefault(vn, "default")
+                        ctx.sources.setdefault(vn, "default")
                 else:
-                    filled_multi[vn] = []
+                    ctx.filled_multi[vn] = []
                     display_filled[vn] = "(none)"
-                    sources.setdefault(vn, "default")
+                    ctx.sources.setdefault(vn, "default")
             elif self._is_noise_var(vn) and attr.options:
                 # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_
                 # LANGUAGE, _BM_USER_NUMBER_FORMAT, ...) are already excluded
@@ -10023,9 +10067,9 @@ class CpqEngine:
                     valid_opts[0] if valid_opts else None,
                 )
                 if fallback:
-                    filled[vn] = fallback.item_value
+                    ctx.filled[vn] = fallback.item_value
                     display_filled[vn] = fallback.display_name
-                    sources.setdefault(vn, "default")
+                    ctx.sources.setdefault(vn, "default")
             elif (
                 (attr.options or is_decision_attr
                  or self.should_ask_free_text_attr(attr, validation_rules, bml_eval))
@@ -10181,9 +10225,9 @@ class CpqEngine:
                     ]
                     if _blind_opts:
                         _blind_first = _blind_opts[0]
-                        filled[vn] = _blind_first.item_value
+                        ctx.filled[vn] = _blind_first.item_value
                         display_filled[vn] = _blind_first.display_name
-                        sources.setdefault(vn, "blind_pick_governed")
+                        ctx.sources.setdefault(vn, "blind_pick_governed")
                     else:
                         pending.append(attr)
                 elif (
@@ -10254,9 +10298,9 @@ class CpqEngine:
                     ]
                     if _rg_opts:
                         _rg_first = _rg_opts[0]
-                        filled[vn] = _rg_first.item_value
+                        ctx.filled[vn] = _rg_first.item_value
                         display_filled[vn] = _rg_first.display_name
-                        sources.setdefault(vn, "blind_pick_rule_governed")
+                        ctx.sources.setdefault(vn, "blind_pick_rule_governed")
                     else:
                         pending.append(attr)
                 elif (
@@ -10283,14 +10327,48 @@ class CpqEngine:
                 ):
                     pending.append(attr)
 
-        # Pointer-default resolution post-pass (Issue 11): an unfilled
-        # pointer attr inherits its REFERENCED attribute's value once that
-        # value exists — reproducing what the source platform's own runtime
-        # rule does (BM's "Set Model Name to All Product Family attribute
-        # modelname" copies _bm_model_variable_name into modelname_all).
-        # If the referenced attr never fills (e.g. APX Next, where the
-        # model context is ambiguous), the pointer attr stays unfilled —
-        # the token itself is never shipped as data.
+        for attr in attrs:
+            _resolve_one_attr(attr)
+
+        self._resolve_pointer_defaults(attrs, filled, display_filled, sources)
+        pending = self._cascade_fill_pending(pending, filled, display_filled, sources)
+
+        # Hardware-based catalogs: country/region → Hardware (mandatory) →
+        # other attrs → Product last; Product deferred until Hardware filled.
+        pending = self._order_pending_hardware_before_product(
+            pending, filled, attrs, display_order=display_order,
+        )
+
+        return filled, display_filled, pending
+
+    @staticmethod
+    def _resolve_pointer_defaults(
+        attrs: list["ConfigAttr"],
+        filled: dict[str, str],
+        display_filled: dict[str, str],
+        sources: dict[str, str],
+    ) -> None:
+        """Pointer-default resolution post-pass (Issue 11): an unfilled
+        pointer attr inherits its REFERENCED attribute's value once that
+        value exists — reproducing what the source platform's own runtime
+        rule does (BM's "Set Model Name to All Product Family attribute
+        modelname" copies _bm_model_variable_name into modelname_all).
+        If the referenced attr never fills (e.g. APX Next, where the
+        model context is ambiguous), the pointer attr stays unfilled —
+        the token itself is never shipped as data.
+
+        Mutates `filled`/`display_filled`/`sources` in place (mirrors the
+        original inline post-pass in `auto_fill`, extracted mechanically
+        as Phase 4 step 3's P2, see
+        docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md).
+        """
+        all_vns = {a.variable_name for a in attrs}
+
+        def _is_pointer_default(a: "ConfigAttr") -> bool:
+            return (not a.options
+                    and a.default_value in all_vns
+                    and a.default_value != a.variable_name)
+
         for attr in attrs:
             vn = attr.variable_name
             if vn in filled or not _is_pointer_default(attr):
@@ -10301,13 +10379,26 @@ class CpqEngine:
                 display_filled[vn] = display_filled.get(attr.default_value, ref_value)
                 sources.setdefault(vn, "cascade")
 
-        # Cascade fill: for any pending free-text attr that shares a decision
-        # key fragment with an already-filled attr (e.g. packageRegion ← region
-        # from modelSelectionRegion_astro), fill it directly from the filled
-        # sibling. This handles attrs whose item_value is a None sentinel (e.g.
-        # "NA" = North America but also "na" in _NONE_VALUES) by trusting the
-        # value that was validated via options on the sibling attr.
-        still_pending: list[ConfigAttr] = []
+    @staticmethod
+    def _cascade_fill_pending(
+        pending: list["ConfigAttr"],
+        filled: dict[str, str],
+        display_filled: dict[str, str],
+        sources: dict[str, str],
+    ) -> list["ConfigAttr"]:
+        """Cascade fill: for any pending free-text attr that shares a decision
+        key fragment with an already-filled attr (e.g. packageRegion ← region
+        from modelSelectionRegion_astro), fill it directly from the filled
+        sibling. This handles attrs whose item_value is a None sentinel (e.g.
+        "NA" = North America but also "na" in _NONE_VALUES) by trusting the
+        value that was validated via options on the sibling attr.
+
+        Mutates `filled`/`display_filled`/`sources` in place and returns the
+        new `pending` list (mirrors the original inline post-pass in
+        `auto_fill`, extracted mechanically as Phase 4 step 3's P3, see
+        docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md).
+        """
+        still_pending: list["ConfigAttr"] = []
         for attr in pending:
             vn_flat_p = attr.variable_name.lower().replace("_", "")
             if attr.options:
@@ -10346,15 +10437,7 @@ class CpqEngine:
                 sources.setdefault(attr.variable_name, "cascade")
             else:
                 still_pending.append(attr)
-        pending = still_pending
-
-        # Hardware-based catalogs: country/region → Hardware (mandatory) →
-        # other attrs → Product last; Product deferred until Hardware filled.
-        pending = self._order_pending_hardware_before_product(
-            pending, filled, attrs, display_order=display_order,
-        )
-
-        return filled, display_filled, pending
+        return still_pending
 
     @staticmethod
     def _is_hardware_version_attr(attr: "ConfigAttr") -> bool:

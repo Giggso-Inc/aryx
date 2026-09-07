@@ -1,11 +1,14 @@
 """Phase-level golden-master characterization for `CpqEngine.auto_fill`
-(8,685-10,740, ~2,056 lines, the largest method in engine.py) and
-`CpqEngine.evaluate_rules_loop` (7,256-7,729, ~474 lines) -- step 1, part 2
-of Phase 4 (docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md "Phase 4
-planning analysis"). These two are explicitly documented in the plan as a
-permanent stated exception to splitting (bidirectionally coupled, branch
-order load-bearing) -- this file is the safety net that would let a future
-engineer verify behavior is preserved if that decision is ever revisited.
+and `CpqEngine.evaluate_rules_loop` -- step 1, part 2 of Phase 4
+(docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md "Phase 4 planning
+analysis"). An earlier draft of that plan proposed these two as a
+permanent stated exception to the 150-line rule; the user explicitly
+overrode that ("in phase 4 these two files ... should be split in 150
+lines there is no exception in this") and step 3 (the `FillContext`
+refactor: P2/P3 extraction, the `FillContext` dataclass, the P1 loop
+body rewired to read/write through `ctx.*` and renamed to
+`_resolve_one_attr`) is the resulting decomposition work. This file
+remains the safety net proving each move preserved behavior exactly.
 
 Existing coverage survey done before writing anything here (per this
 task's own instructions): auto_fill already has 32 test-file references,
@@ -661,3 +664,93 @@ def test_shared_default_fill_signature_cache_can_serve_a_stale_re_derivation():
         rec_rules=[_never_fires_rec],
     )
     assert state_c["cachedAttr"] == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# "Cascade fill" post-pass (engine.py ~10304-10349, right after the
+# pointer-default post-pass, run once after the main per-attribute loop):
+# for any still-pending free-text (no-options) attr sharing a
+# `_DECISION_REQUIRED_KEYS` fragment ("country"/"region") with an
+# already-filled sibling, copy the sibling's value across directly. This
+# is Phase 4 step 3's P3 (docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md,
+# "FillContext Decomposition Design") -- no dedicated test previously
+# pinned this specific post-pass in isolation (existing coverage of
+# `auto_fill` as a whole doesn't specifically target it), added here
+# before any code moves.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_cascade_fill_copies_value_from_filled_sibling_sharing_decision_key_fragment():
+    """A free-text (no options), required, pending attr whose variable_name
+    contains "region" cascades directly from an already-filled sibling
+    whose variable_name also contains "region" -- exact value, exact
+    display, source tagged "cascade"."""
+    region_selector = _attr(1, "modelSelectionRegion_astro", "Region",
+                             options=_menu("NA", "EMEA"), required=True)
+    package_region = _attr(2, "packageRegion_astro", "Package Region", required=True)
+    eng = CpqEngine()
+    filled_out, display_out, pending = eng.auto_fill(
+        [region_selector, package_region], hints={},
+        already_filled={"modelSelectionRegion_astro": "NA"},
+        filled_source={"modelSelectionRegion_astro": "user"},
+    )
+    assert filled_out["packageRegion_astro"] == "NA"
+    assert display_out["packageRegion_astro"] == "NA"
+    assert not any(a.variable_name == "packageRegion_astro" for a in pending)
+
+
+def test_cascade_fill_leaves_attr_pending_when_no_matching_sibling_is_filled():
+    """Same shape, but no sibling sharing the decision-key fragment is
+    filled at all -- the pending free-text attr survives the post-pass
+    untouched, still in `pending`, never defaulted or guessed."""
+    package_region = _attr(1, "packageRegion_astro", "Package Region", required=True)
+    eng = CpqEngine()
+    filled_out, _display, pending = eng.auto_fill(
+        [package_region], hints={}, already_filled={},
+    )
+    assert "packageRegion_astro" not in filled_out
+    assert any(a.variable_name == "packageRegion_astro" for a in pending)
+
+
+def test_cascade_fill_never_touches_a_pending_attr_that_has_real_options():
+    """The post-pass's own first check (`if attr.options: still_pending;
+    continue`) means an attr WITH options is never a cascade-fill
+    candidate at all, even if its name matches a decision-key fragment
+    and a same-fragment sibling is filled -- this pass is exclusively for
+    free-text (no-options) attrs; menu-driven attrs stay exactly as the
+    earlier per-attribute loop left them."""
+    region_selector = _attr(1, "modelSelectionRegion_astro", "Region",
+                             options=_menu("NA", "EMEA"), required=True)
+    other_region_menu = _attr(2, "otherRegionChoice_astro", "Other Region Choice",
+                               options=_menu("X", "Y", "Z"), required=True)
+    eng = CpqEngine()
+    filled_out, _display, pending = eng.auto_fill(
+        [region_selector, other_region_menu], hints={},
+        already_filled={"modelSelectionRegion_astro": "NA"},
+        filled_source={"modelSelectionRegion_astro": "user"},
+    )
+    assert "otherRegionChoice_astro" not in filled_out
+    assert any(a.variable_name == "otherRegionChoice_astro" for a in pending)
+
+
+def test_cascade_fill_defaults_a_pending_boolean_to_false_never_via_the_generic_cascade():
+    """A pending attr with `select_type == "boolean"` is special-cased
+    BEFORE the decision-key-fragment match: it's always defaulted to
+    "false"/"No" (source "default"), even when its own variable_name
+    would otherwise match a decision-key fragment shared with a filled
+    sibling -- the generic free-text cascade (which blindly copies the
+    sibling's raw string) must never reach a boolean field (a live-
+    confirmed contamination bug this special case exists to prevent, per
+    the inline comment at this exact branch)."""
+    region_selector = _attr(1, "modelSelectionRegion_astro", "Region",
+                             options=_menu("NA", "EMEA"), required=True)
+    is_region_locked = _attr(2, "isRegionLockedCA_astro", "Is Region Locked",
+                              required=True, select_type="boolean")
+    eng = CpqEngine()
+    filled_out, display_out, pending = eng.auto_fill(
+        [region_selector, is_region_locked], hints={},
+        already_filled={"modelSelectionRegion_astro": "NA"},
+        filled_source={"modelSelectionRegion_astro": "user"},
+    )
+    assert filled_out["isRegionLockedCA_astro"] == "false"
+    assert display_out["isRegionLockedCA_astro"] == "No"
+    assert not any(a.variable_name == "isRegionLockedCA_astro" for a in pending)
