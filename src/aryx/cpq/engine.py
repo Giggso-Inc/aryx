@@ -2134,6 +2134,16 @@ from aryx.cpq import hiding_rules  # noqa: E402
 # those patches, so that package goes through the module object instead.)
 from aryx.cpq import layout_and_join_data  # noqa: E402
 
+# Deferred to here for the same circular-import reason as `hiding_rules`
+# above: aryx.cpq.recommendation_and_constraint_rules' submodules import
+# `logger`, `_valid` and `_condition_value_matches` BACK from this module
+# by name, so this line must sit after all three. (`get_cpq_rdb` is
+# deliberately NOT imported by name there — tests patch
+# `aryx.cpq.engine.get_cpq_rdb` by dotted path and a frozen import-time
+# reference would silently bypass those patches, so build_bml_evaluator
+# reaches it through the module object instead.)
+from aryx.cpq import recommendation_and_constraint_rules as rec_con_rules  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -5269,47 +5279,20 @@ class CpqEngine:
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> tuple[list[RecommendationRule], list[ConstraintRule]]:
-        """Both rule sets in a single pass — the call callers wanting BOTH
-        should use. load_recommendation_rules()/load_constraint_rules() each
-        independently call _load_value_rules(), which repeats the same 4
-        join-table queries plus a full function-script scan; calling both
-        back-to-back (as every CPQ turn does) doubles that DB work for no
-        reason. Prefer this method whenever both lists are needed.
-
-        Return arity deliberately unchanged (still a 2-tuple) — widely
-        monkeypatched across the test suite with a bare `(rec, con)` stub;
-        the value-less-action hiding rule subset (docs/CPQ_VALUELESS_HIDE_
-        ACTION_LOADING_GAP_PLAN_2026_08_05.md) is folded into
-        load_hiding_rules() instead, so every existing caller/mock of
-        EITHER method keeps working unchanged."""
-        rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
-            self._load_value_rules(workspace_id, catalog_prefix))
-        return rec_rules, con_rules
+        return rec_con_rules.load_recommendation_and_constraint_rules(
+            self, workspace_id, catalog_prefix)
 
     def load_validation_rules(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[ValidationRule]:
-        """Warning-message rules (Amendment 12) for this catalog — see
-        ValidationRule's own docstring and _load_value_rules for how these
-        are distinguished from Hiding/Recommendation/Constraint rules.
-        Shares _load_value_rules' fetch with load_recommendation_and_
-        constraint_rules — call both only when genuinely needed, same
-        double-fetch caveat as load_recommendation_rules."""
-        _rec_rules, _con_rules, validation_rules, _extra_hiding_rules = (
-            self._load_value_rules(workspace_id, catalog_prefix))
-        return validation_rules
+        return rec_con_rules.load_validation_rules(
+            self, workspace_id, catalog_prefix)
 
     def load_recommendation_rules(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[RecommendationRule]:
-        """Recommendation rules for this catalog — see _load_value_rules for
-        how rule semantics are classified (NOT by rule_type/action_type).
-        If you also need constraint rules, call
-        load_recommendation_and_constraint_rules() instead to avoid fetching
-        the same rule data twice."""
-        rec_rules, _con_rules, _validation_rules, _extra_hiding_rules = (
-            self._load_value_rules(workspace_id, catalog_prefix))
-        return rec_rules
+        return rec_con_rules.load_recommendation_rules(
+            self, workspace_id, catalog_prefix)
 
     def apply_recommendation_rules(
         self,
@@ -5320,133 +5303,8 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
-        """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
-
-        Only fills attrs that are not already filled. Does not override prior
-        user selections or auto-fills from earlier loop iterations.
-
-        Script-backed rules (rule.script set) derive their recommended value
-        from the BML evaluator using the current filled variables — same
-        Tier-1/Tier-2 machinery apply_constraint_rules already uses via
-        BmlEvaluator.allowed_values_for_script. Closes the gap where
-        script-backed recommendations were extracted but never evaluated
-        (RecommendationRule previously had no script field/hookup at all —
-        see docs/CPQ_RULE_TOOL_FLOW_PLAN.md item 2/§7-8's confirmed
-        "APX NEXT ENHANCED product + non-Enhanced hardware" inconsistency).
-        A script resolving to anything other than EXACTLY one value (None,
-        or 2+ candidates) is treated as "not yet determined" and skipped —
-        same D2 "never guess" principle as the existing tilde-delimited
-        ambiguous-recommendation skip below. bml_eval=None (caller opted
-        out) silently skips script-backed rules, same as apply_constraint_rules.
-
-        filled_multi — see apply_hiding_rules; only consulted for
-        declarative conditions on a select_type=="multi" attribute
-        (operators "7"/"8").
-
-        constrained_opts — this function runs BEFORE apply_constraint_rules
-        recomputes it for the CURRENT pass (evaluate_rules_loop's own
-        "hide -> auto_fill -> recommend -> constrain" order), so what's
-        passed in here is necessarily the PREVIOUS pass's result — still
-        the best available signal, and correct at the fixed point once the
-        loop converges. Live regression: without this, a recommendation
-        whose OWN condition never depends on the attribute a DIFFERENT,
-        active constraint just narrowed (e.g. "Default Service Type based
-        on Solution Type selected" vs. a Hardware-Version-keyed constraint
-        on the same target) kept unconditionally re-asserting its value
-        the instant auto_fill's own re-validation correctly dropped it —
-        every pass, forever, since this function only checks "is the
-        target currently filled at all", never "is this specific value
-        still valid". evaluate_rules_loop's fixed-point check compares KEY
-        sets, not values, so a target that's drop-then-immediately-refilled
-        to the SAME stale value every pass looked stable and converged
-        with the wrong answer, silently reporting a complete configuration
-        that a separate BOM-gate consistency check only caught one turn
-        later. None (caller opted out, e.g. the constraint pass hasn't run
-        even once yet) applies no filter, same "unknown -> don't guess a
-        restriction that isn't provably there" convention used everywhere
-        else a constraint is optional in this module.
-        """
-        if not rules:
-            return {}
-        by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
-        new_fills: dict[str, tuple[str, str]] = {}
-        for rule in rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            # A truthy check, not `in filled` — an empty string is D4's
-            # deliberate "user cleared this" marker
-            # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md), the single-select
-            # counterpart of filled_multi's existing "(none)" convention.
-            # A genuine rule re-assertion must still override it (same as
-            # it would override any other stale value) — only a REAL
-            # value already present blocks this rule from firing.
-            if not target or filled.get(target.variable_name):
-                continue
-            if rule.script is not None:
-                if bml_eval is None:
-                    continue
-                # Live-confirmed gap (2026-08-25, SVX "Force Set Quantity of
-                # Body Worn Cameras with sum of Mounting"): a rule can carry
-                # a script-backed ACTION and a script-backed CONDITION at
-                # the same time -- the action alone says nothing about WHEN
-                # to fire. Gate on the condition first when present, same
-                # D2 "never guess" convention as the declarative branch
-                # below (unknown/False -> never fires).
-                if rule.condition_script is not None:
-                    if bml_eval.condition_holds(rule.condition_script, filled) is not True:
-                        continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
-                if not allowed or len(allowed) != 1:
-                    continue  # unknown, or ambiguous — never guess
-                recommended_value = allowed[0]
-            elif rule.condition_script is not None:
-                if bml_eval is None:
-                    continue
-                fires = bml_eval.condition_holds(rule.condition_script, filled)
-                if fires is not True:
-                    continue  # False or unknown — never guess, doesn't fire
-                recommended_value = rule.recommended_value
-            else:
-                if rule.conditions:
-                    matched, _blocked = evaluate_declarative_conditions(
-                        rule.conditions, filled_by_rule_id)
-                    if matched is not True:
-                        continue
-                else:
-                    if rule.condition_attr_id not in filled_by_rule_id:
-                        continue
-                    if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
-                        rule.condition_operator,
-                    ):
-                        continue
-                recommended_value = rule.recommended_value
-            matched_display = next(
-                (o.display_name for o in target.options
-                 if o.item_value.lower() == recommended_value.lower()),
-                recommended_value,
-            )
-            if not _valid(recommended_value):
-                continue
-            allowed_for_target = (
-                constrained_opts.get(target.entity_id) if constrained_opts else None
-            )
-            if allowed_for_target is not None and not any(
-                recommended_value.lower() == v.lower() for v in allowed_for_target
-            ):
-                # A DIFFERENT, already-active constraint has ruled this
-                # value out — never re-assert it just because this rule's
-                # own condition doesn't happen to mention that constraint.
-                continue
-            new_fills[target.variable_name] = (recommended_value, matched_display)
-            rule_trace.record_fire(
-                rule_type="recommendation", rule_id=rule.rule_name,
-                attr=target.variable_name, outcome=f"set={recommended_value}",
-                bml_tier="script" if rule.script is not None else None,
-            )
-        if new_fills:
-            logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
-        return new_fills
+        return rec_con_rules.apply_recommendation_rules(
+            attrs, filled, rules, bml_eval, filled_multi, constrained_opts)
 
     def resync_stale_recommendations(
         self,
@@ -5458,126 +5316,9 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
-        """Re-apply recommendation rules to attrs the ENGINE already filled
-        (never a customer's own choice), correcting them when a driving
-        attribute's later value now changes what they should be.
-
-        docs/config_consistency_issues_2026-07-30.md issue 6 (FedRAMP) /
-        docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1: this codebase
-        previously only DETECTED this class of drift
-        (`find_rule_inconsistencies` — logged, never corrected), deliberately,
-        since "the engine can't be certain what the correct value should
-        have been" for a value the CUSTOMER chose. That reasoning does not
-        apply to a value the engine itself auto-filled before its own
-        driving attribute had a value yet (the documented "first-by-order
-        claimed it first" race in `auto_fill`'s own docstring) — re-running
-        the SAME deterministic rule with fresher inputs isn't guessing, it's
-        finishing a computation that fired too early. Scoped by
-        `filled_source`, the exact boundary `find_rule_inconsistencies`
-        already uses: "user" is never touched. Also excludes "hint" and
-        "cascade" — both still trace back to something the customer said or
-        confirmed, not a value this method has any business overwriting.
-
-        Only ever revisits attrs already in `filled` (single-select) — a
-        multi-select TARGET's value lives in `filled_multi`, out of scope
-        for this pass; `apply_recommendation_rules` (unfilled attrs) is
-        unaffected, this only ever touches already-filled ones. filled_multi
-        is still accepted here for the separate purpose of reading a rule's
-        CONDITION attribute when that attribute (not the target) is
-        select_type=="multi" (operators "7"/"8" — see apply_hiding_rules).
-
-        Returns {variable_name: (item_value, display)} for every attr whose
-        value actually changed. The caller is expected to apply these
-        exactly like any other rule-sourced fill and treat them as a real
-        change for cascade-dependent invalidation, same as an explicit
-        customer edit would.
-
-        constrained_opts — see apply_recommendation_rules' identical
-        parameter; a "correction" back to a value a different, currently-
-        active constraint has already excluded is not a correction.
-        """
-        if not rules:
-            return {}
-        _NEVER_OVERRIDE = {"user", "hint", "cascade"}
-        by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
-        corrections: dict[str, tuple[str, str]] = {}
-        for rule in rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if not target:
-                continue
-            vn = target.variable_name
-            current = filled.get(vn)
-            if not current:
-                continue  # unfilled — apply_recommendation_rules' job, not this one
-            if filled_source and filled_source.get(vn) in _NEVER_OVERRIDE:
-                continue
-            if rule.script is not None:
-                if bml_eval is None:
-                    continue
-                # Same dual-script gating gap as apply_recommendation_rules
-                # (2026-08-25) -- a script-backed action's own condition can
-                # ALSO be script-backed; check it first when present.
-                if rule.condition_script is not None:
-                    if bml_eval.condition_holds(rule.condition_script, filled) is not True:
-                        continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
-                if not allowed or len(allowed) != 1:
-                    continue
-                recommended_value = allowed[0]
-            elif rule.condition_script is not None:
-                if bml_eval is None:
-                    continue
-                fires = bml_eval.condition_holds(rule.condition_script, filled)
-                if fires is not True:
-                    continue
-                recommended_value = rule.recommended_value
-            else:
-                if rule.conditions:
-                    matched, _blocked = evaluate_declarative_conditions(
-                        rule.conditions, filled_by_rule_id)
-                    if matched is not True:
-                        continue
-                else:
-                    if rule.condition_attr_id not in filled_by_rule_id:
-                        continue
-                    if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
-                        rule.condition_operator,
-                    ):
-                        continue
-                recommended_value = rule.recommended_value
-            if not _valid(recommended_value) or current.lower() == recommended_value.lower():
-                continue
-            # Same guard as apply_recommendation_rules: a "correction" back
-            # to a value a DIFFERENT, currently-active constraint has
-            # already excluded is not a correction — it's silently undoing
-            # auto_fill's own correct fallback. Live regression: auto_fill
-            # correctly fell back to "ESSENTIAL" once Hardware Version
-            # activated a constraint excluding "ADVANCED", but this method
-            # ran right after (same pass) and — seeing its own unrelated
-            # condition (Solution Type) still held, with no constraint
-            # awareness at all — "resynced" it straight back to the
-            # excluded value, every single pass.
-            allowed_for_target = (
-                constrained_opts.get(target.entity_id) if constrained_opts else None
-            )
-            if allowed_for_target is not None and not any(
-                recommended_value.lower() == v.lower() for v in allowed_for_target
-            ):
-                continue
-            matched_display = next(
-                (o.display_name for o in target.options
-                 if o.item_value.lower() == recommended_value.lower()),
-                recommended_value,
-            )
-            corrections[vn] = (recommended_value, matched_display)
-        if corrections:
-            logger.info(
-                "cpq: resynced stale recommendation-governed attrs %s",
-                list(corrections.keys()),
-            )
-        return corrections
+        return rec_con_rules.resync_stale_recommendations(
+            attrs, filled, filled_source, rules, bml_eval, filled_multi,
+            constrained_opts)
 
     def apply_validation_rules(
         self,
@@ -5587,95 +5328,19 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, str]:
-        """Evaluate every ValidationRule's condition (script OR
-        declarative — docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md)
-        against the current filled state (Amendment 12). Returns
-        {variable_name: message} for every rule whose condition currently,
-        definitely holds — never on False or unknown (D2 "never guess": an
-        unresolvable condition never fires a warning it can't actually
-        back).
-
-        Script-backed rules need bml_eval; bml_eval=None skips those only
-        (same convention as apply_recommendation_rules/
-        apply_constraint_rules) — declarative rules need no BML evaluator
-        at all and are unaffected by bml_eval=None, same as
-        apply_hiding_rules' own declarative branch.
-
-        filled_multi — see apply_hiding_rules; only consulted for
-        declarative conditions on a select_type=="multi" attribute.
-        """
-        if not rules:
-            return {}
-        by_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
-        warnings: dict[str, str] = {}
-        for rule in rules:
-            target = by_id.get(rule.target_attr_id)
-            if not target:
-                continue
-            if rule.condition_script is not None:
-                if bml_eval is None:
-                    continue
-                if bml_eval.condition_holds(rule.condition_script, filled) is True:
-                    warnings[target.variable_name] = rule.message
-            elif rule.conditions:
-                matched, _blocked = evaluate_declarative_conditions(
-                    rule.conditions, filled_by_rule_id)
-                if matched is True:
-                    warnings[target.variable_name] = rule.message
-        return warnings
+        return rec_con_rules.apply_validation_rules(
+            attrs, filled, rules, bml_eval, filled_multi)
 
     # ── Constraint rule loader ────────────────────────────────────────────────
 
     def load_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[ConstraintRule]:
-        """Constraint rules for this catalog — declarative AND script.
-
-        See _load_value_rules for how rule semantics are classified (by
-        each action's set_type, NOT by rule_type/action_type — neither
-        matches real data in either ingested catalog). Script-form actions
-        (function_id != -1) get the raw BML script attached; allowed values
-        are derived at apply time by the BML evaluator from the current
-        filled variables. If you also need recommendation rules, call
-        load_recommendation_and_constraint_rules() instead to avoid
-        fetching the same rule data twice.
-        """
-        _rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
-            self._load_value_rules(workspace_id, catalog_prefix))
-        return con_rules
+        return rec_con_rules.load_constraint_rules(
+            self, workspace_id, catalog_prefix)
 
     def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
-        """BML evaluator over this workspace's BmFunction scripts.
-
-        catalog_prefix — scopes to one ingested catalog when the workspace
-        holds more than one product's XML export (BM-native function ids
-        collide across catalogs the same way rule ids do). Also passed to
-        the evaluator itself so its process-wide LLM-result cache (see
-        bml._SHARED_SCRIPT_CACHE) can't cross-contaminate between catalogs
-        or workspaces sharing a colliding function id.
-
-        Tier-2 LLM fallback is gated by settings.bml_use_llm (default
-        False) — see that field's docstring for why it's off by default.
-        """
-        _t0 = time.monotonic()
-        logger.info(
-            "cpq_step: build_bml_evaluator start workspace_id=%s catalog_prefix=%r",
-            workspace_id, catalog_prefix,
-        )
-        try:
-            scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
-        except Exception:  # noqa: BLE001
-            logger.debug("cpq: function script fetch failed", exc_info=True)
-            scripts = {}
-        logger.info(
-            "cpq_step: build_bml_evaluator done elapsed_s=%.3f scripts=%d",
-            time.monotonic() - _t0, len(scripts),
-        )
-        return BmlEvaluator(
-            scripts, use_llm=get_settings().bml_use_llm,
-            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-        )
+        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix)
 
     def apply_constraint_rules(
         self,
@@ -6047,103 +5712,9 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
     ) -> list[dict[str, Any]]:
-        """Cross-check `filled` against each rule type's OWN independently
-        computed result — NOT a self-referential re-derivation of the same
-        data that produced `filled` in the first place (see
-        docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §1 for why a check
-        against attr_by_vn/options would be tautological and useless).
-
-        Three checks, one per rule type — all reuse the SAME apply_* methods
-        already used to build the payload, so BML-script-backed rules
-        (rule.script / rule.condition_script) are covered automatically,
-        with zero new script-evaluation code (§4's docstring):
-
-          - hiding:         attr is filled AND an active hiding rule matches
-                             it right now — it should never have been kept.
-          - constraint:     attr's filled value is not in the currently
-                             active allowed-values set for it (stale/
-                             pre-cascade value that should have been cleared).
-          - recommendation: attr not filled via "user" source, whose
-                             recommendation rule condition IS satisfied, but
-                             the filled value does not match recommended_value
-                             (confirmed live this session: the "invalidated —
-                             re-evaluating" cascade note that changes nothing).
-
-        Returns a list of {"attr", "value", "rule_type", "issue"} dicts —
-        empty when everything is consistent. Never raises; a rule whose
-        script outcome is "unknown" is simply skipped for that check (never
-        guess a bug that isn't there).
-        """
-        issues: list[dict[str, Any]] = []
-        by_vn = {a.variable_name: a for a in attrs}
-
-        _visible, _msgs, hidden_vns = self.apply_hiding_rules(
-            attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi)
-        for vn in hidden_vns:
-            if filled.get(vn):
-                issues.append({
-                    "attr": vn, "value": filled[vn], "rule_type": "hiding",
-                    "issue": "filled but an active hiding rule matches",
-                })
-
-        constrained_opts = self.apply_constraint_rules(
-            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi,
-            workspace_id=workspace_id, catalog_prefix=catalog_prefix)
-        for vn, value in filled.items():
-            attr = by_vn.get(vn)
-            allowed = constrained_opts.get(attr.entity_id) if attr else None
-            if allowed is not None and value not in allowed:
-                issues.append({
-                    "attr": vn, "value": value, "rule_type": "constraint",
-                    "issue": f"value not in active allowed set {allowed}",
-                })
-
-        by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
-        for rule in rec_rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if not target or target.variable_name not in filled:
-                continue
-            vn = target.variable_name
-            if filled_source and filled_source.get(vn) == "user":
-                # A customer's deliberate override is not an inconsistency
-                # even if it now disagrees with a currently-satisfied
-                # recommendation — see docstring's "not filled via 'user'
-                # source" contract, which this param actually enforces.
-                continue
-            condition_met: bool | None
-            if rule.script is not None:
-                if bml_eval is None:
-                    continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
-                condition_met = bool(allowed) and len(allowed) == 1
-                recommended = allowed[0] if condition_met else None
-            elif rule.condition_script is not None:
-                if bml_eval is None:
-                    continue
-                condition_met = bml_eval.condition_holds(rule.condition_script, filled) is True
-                recommended = rule.recommended_value
-            else:
-                if rule.conditions:
-                    matched, _blocked = evaluate_declarative_conditions(
-                        rule.conditions, filled_by_rule_id)
-                    condition_met = matched is True
-                else:
-                    current_val = filled_by_rule_id.get(rule.condition_attr_id)
-                    condition_met = (
-                        current_val is not None
-                        and _condition_value_matches(
-                            current_val, rule.condition_value, rule.condition_operator
-                        )
-                    )
-                recommended = rule.recommended_value
-            if condition_met and recommended is not None and filled[vn].lower() != recommended.lower():
-                issues.append({
-                    "attr": vn, "value": filled[vn], "rule_type": "recommendation",
-                    "issue": f"condition met but value != recommended '{recommended}'",
-                })
-
-        return issues
+        return rec_con_rules.find_rule_inconsistencies(
+            self, filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval,
+            filled_source, filled_multi, workspace_id, catalog_prefix)
 
     # ── Rule evaluation loop ──────────────────────────────────────────────────
 
