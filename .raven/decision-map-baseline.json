@@ -9223,972 +9223,1002 @@
     ],
     [
       "src/aryx/cpq/engine.py",
-      2194,
+      2206,
       "_cpq_model_candidates"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2198,
+      2210,
       "_cpq_model_candidates"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3852,
+      3864,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3879,
+      3891,
       "_fetch_product_option_list"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3920,
+      3932,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3966,
+      3978,
       "resolve_product_hint"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3975,
+      3987,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      3997,
+      4009,
       "list_ingested_families"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4026,
+      4038,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4094,
+      4106,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4101,
+      4113,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4556,
+      4568,
       "load_product_config"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4573,
-      "_load_rule_join_data"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4582,
-      "_load_rule_join_data"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
       4585,
-      "_resolve_targets"
+      "_load_rule_join_data"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4592,
-      "_resolve_targets"
+      4594,
+      "_load_rule_join_data"
     ],
     [
       "src/aryx/cpq/engine.py",
       4597,
-      "_rule_key"
+      "_resolve_targets"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4599,
-      "_rule_key"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4602,
-      "_condition_has_operator_collision"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4603,
-      "_condition_has_operator_collision"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4605,
-      "_detect_layout_tier"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4606,
-      "_detect_layout_tier"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4608,
-      "_is_country_anchor_var"
+      4604,
+      "_resolve_targets"
     ],
     [
       "src/aryx/cpq/engine.py",
       4609,
-      "_is_country_anchor_var"
+      "_rule_key"
     ],
     [
       "src/aryx/cpq/engine.py",
       4611,
-      "_find_country_anchor_attr_id"
+      "_rule_key"
     ],
     [
       "src/aryx/cpq/engine.py",
       4614,
-      "_find_country_anchor_attr_id"
+      "_condition_has_operator_collision"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4615,
+      "_condition_has_operator_collision"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4617,
+      "_detect_layout_tier"
     ],
     [
       "src/aryx/cpq/engine.py",
       4618,
-      "resolve_ui_layout_scope"
+      "_detect_layout_tier"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4620,
+      "_is_country_anchor_var"
     ],
     [
       "src/aryx/cpq/engine.py",
       4621,
-      "resolve_ui_layout_scope"
+      "_is_country_anchor_var"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4623,
+      "_find_country_anchor_attr_id"
     ],
     [
       "src/aryx/cpq/engine.py",
       4626,
-      "_walk_layout_components"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4627,
-      "_walk_layout_components"
+      "_find_country_anchor_attr_id"
     ],
     [
       "src/aryx/cpq/engine.py",
       4630,
-      "_load_layout_components"
+      "resolve_ui_layout_scope"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4634,
-      "_load_layout_components"
+      4633,
+      "resolve_ui_layout_scope"
     ],
     [
       "src/aryx/cpq/engine.py",
       4638,
-      "load_layout_display_order"
+      "_walk_layout_components"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4639,
+      "_walk_layout_components"
     ],
     [
       "src/aryx/cpq/engine.py",
       4642,
-      "load_layout_display_order"
+      "_load_layout_components"
     ],
     [
       "src/aryx/cpq/engine.py",
       4646,
-      "_load_layout_full_order"
+      "_load_layout_components"
     ],
     [
       "src/aryx/cpq/engine.py",
       4650,
-      "_load_layout_full_order"
+      "load_layout_display_order"
     ],
     [
       "src/aryx/cpq/engine.py",
       4654,
+      "load_layout_display_order"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4658,
+      "_load_layout_full_order"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4662,
+      "_load_layout_full_order"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4666,
       "resolve_always_ask_skips"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4657,
-      "resolve_always_ask_skips"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4661,
-      "resolve_primary_layout_section_vns"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4664,
-      "resolve_primary_layout_section_vns"
     ],
     [
       "src/aryx/cpq/engine.py",
       4669,
+      "resolve_always_ask_skips"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4673,
+      "resolve_primary_layout_section_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4676,
+      "resolve_primary_layout_section_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4681,
       "model_context_mirror_vns"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4670,
+      4682,
       "model_context_mirror_vns"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4672,
+      4684,
       "payload_flow_exclusions"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4675,
+      4687,
       "payload_flow_exclusions"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4693,
+      4705,
       "array_grid_controls_in_play"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4694,
-      "array_grid_controls_in_play"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4697,
-      "resolve_array_grid_links"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4698,
-      "resolve_array_grid_links"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4700,
-      "is_grid_quantity_attr"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4701,
-      "is_grid_quantity_attr"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4703,
-      "parse_grid_quantity_reply"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4704,
-      "parse_grid_quantity_reply"
     ],
     [
       "src/aryx/cpq/engine.py",
       4706,
-      "resolve_pending_grid_quantities"
+      "array_grid_controls_in_play"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4709,
+      "resolve_array_grid_links"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4710,
+      "resolve_array_grid_links"
     ],
     [
       "src/aryx/cpq/engine.py",
       4712,
-      "resolve_pending_grid_quantities"
+      "is_grid_quantity_attr"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4713,
+      "is_grid_quantity_attr"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4715,
+      "parse_grid_quantity_reply"
     ],
     [
       "src/aryx/cpq/engine.py",
       4716,
+      "parse_grid_quantity_reply"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4718,
+      "resolve_pending_grid_quantities"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4724,
+      "resolve_pending_grid_quantities"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4728,
       "_finalize_grid_selections_from_quantities"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4726,
+      4738,
       "append_pending_grid_quantities"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4733,
+      4745,
       "append_pending_grid_quantities"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4739,
-      "grid_selector_remaining_options"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4744,
-      "grid_selector_remaining_options"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4748,
-      "unresolved_grid_quantity_options"
     ],
     [
       "src/aryx/cpq/engine.py",
       4751,
+      "grid_selector_remaining_options"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4756,
+      "grid_selector_remaining_options"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4760,
       "unresolved_grid_quantity_options"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4754,
-      "load_hiding_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4755,
-      "load_hiding_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4758,
-      "_attr_index"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4759,
-      "_attr_index"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      4762,
-      "_rule_forced_from_active_decision_vns"
+      4763,
+      "unresolved_grid_quantity_options"
     ],
     [
       "src/aryx/cpq/engine.py",
       4766,
-      "_rule_forced_from_active_decision_vns"
+      "load_hiding_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4767,
+      "load_hiding_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4770,
+      "_attr_index"
     ],
     [
       "src/aryx/cpq/engine.py",
       4771,
+      "_attr_index"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4774,
+      "_rule_forced_from_active_decision_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4778,
+      "_rule_forced_from_active_decision_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      4783,
       "_data_table_forced_vns"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4776,
+      4788,
       "_data_table_forced_vns"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4781,
+      4793,
       "_filled_by_rule_id"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4785,
+      4797,
       "_filled_by_rule_id"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4787,
+      4799,
       "apply_hiding_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4795,
+      4807,
       "apply_hiding_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4801,
+      4813,
       "_load_value_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4883,
+      4895,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      4891,
+      4903,
       "<try>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5287,
+      5299,
       "_load_value_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5289,
-      "load_recommendation_and_constraint_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5292,
-      "load_recommendation_and_constraint_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5295,
-      "load_validation_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5298,
-      "load_validation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
       5301,
-      "load_recommendation_rules"
+      "load_recommendation_and_constraint_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
       5304,
-      "load_recommendation_rules"
+      "load_recommendation_and_constraint_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
       5307,
-      "apply_recommendation_rules"
+      "load_validation_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5310,
+      "load_validation_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5313,
+      "load_recommendation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
       5316,
-      "apply_recommendation_rules"
+      "load_recommendation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
       5319,
-      "resync_stale_recommendations"
+      "apply_recommendation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5329,
-      "resync_stale_recommendations"
+      5328,
+      "apply_recommendation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5333,
-      "apply_validation_rules"
+      5331,
+      "resync_stale_recommendations"
     ],
     [
       "src/aryx/cpq/engine.py",
       5341,
+      "resync_stale_recommendations"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5345,
       "apply_validation_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5346,
-      "load_constraint_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5349,
-      "load_constraint_rules"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      5352,
-      "build_bml_evaluator"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
       5353,
+      "apply_validation_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5358,
+      "load_constraint_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5361,
+      "load_constraint_rules"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5364,
       "build_bml_evaluator"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5355,
+      5365,
+      "build_bml_evaluator"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      5367,
       "apply_constraint_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5708,
+      5720,
       "apply_constraint_rules"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5712,
+      5724,
       "find_rule_inconsistencies"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5725,
+      5737,
       "find_rule_inconsistencies"
     ],
     [
       "src/aryx/cpq/engine.py",
-      5731,
+      5743,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6204,
+      6216,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6207,
+      6219,
       "_bml_prefetch_requests"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6214,
+      6226,
       "_bml_prefetch_requests"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6218,
+      6230,
       "build_context_sentence"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6227,
+      6239,
       "build_context_sentence"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6234,
+      6246,
       "rule_governed_ids"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6240,
+      6252,
       "rule_governed_ids"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6243,
-      "product_label_noise_vns"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6249,
-      "product_label_noise_vns"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6254,
-      "_normalized_label_stem"
     ],
     [
       "src/aryx/cpq/engine.py",
       6255,
+      "product_label_noise_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6261,
+      "product_label_noise_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6266,
       "_normalized_label_stem"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6272,
+      6267,
+      "_normalized_label_stem"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6284,
       "exclusive_sibling_family_exclusions"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6281,
+      6293,
       "exclusive_sibling_family_exclusions"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6286,
+      6298,
       "enforce_exclusive_sibling_families"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6297,
-      "enforce_exclusive_sibling_families"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6303,
-      "governed_target_ids"
     ],
     [
       "src/aryx/cpq/engine.py",
       6309,
-      "governed_target_ids"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      6314,
-      "is_recognized_country"
+      "enforce_exclusive_sibling_families"
     ],
     [
       "src/aryx/cpq/engine.py",
       6315,
+      "governed_target_ids"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6321,
+      "governed_target_ids"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6326,
       "is_recognized_country"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6318,
+      6327,
+      "is_recognized_country"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      6330,
       "derive_region"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6319,
+      6331,
       "derive_region"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6322,
+      6334,
       "_apply_series_mapping_exclusions"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6332,
+      6344,
       "_suppress_ungoverned_attrs"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6337,
+      6349,
       "_suppress_ungoverned_attrs"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6342,
+      6354,
       "_compute_hidden_master_string"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6351,
+      6363,
       "_compute_hidden_master_string"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6356,
+      6368,
       "_invalidate_inconsistent_paired_values"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6361,
+      6373,
       "_invalidate_inconsistent_paired_values"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6366,
+      6378,
       "find_confirmed_data_table_conflicts"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6371,
+      6383,
       "find_confirmed_data_table_conflicts"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6376,
+      6388,
       "_resolve_via_data_tables"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6381,
+      6393,
       "_resolve_via_data_tables"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6386,
+      6398,
       "_resolve_narrowed_legal_values"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6390,
+      6402,
       "_resolve_narrowed_legal_values"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6394,
+      6406,
       "auto_fill"
     ],
     [
       "src/aryx/cpq/engine.py",
-      6921,
+      6933,
       "auto_fill"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7205,
+      7217,
       "detect_response_mode_request"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7206,
+      7218,
       "detect_response_mode_request"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7209,
+      7221,
       "detect_multi_select_removal"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7214,
+      7226,
       "detect_multi_select_removal"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7216,
-      "detect_attr_activation"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7227,
+      7228,
       "detect_attr_activation"
     ],
     [
       "src/aryx/cpq/engine.py",
       7239,
-      "detect_attr_clear"
+      "detect_attr_activation"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7250,
+      7251,
       "detect_attr_clear"
     ],
     [
       "src/aryx/cpq/engine.py",
       7262,
+      "detect_attr_clear"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7274,
       "detect_bulk_quantity_change"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7268,
-      "detect_bulk_quantity_change"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7271,
-      "detect_approval"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7272,
-      "detect_approval"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7275,
-      "detect_decline"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7276,
-      "detect_decline"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7279,
-      "detect_show_summary_request"
     ],
     [
       "src/aryx/cpq/engine.py",
       7280,
-      "detect_show_summary_request"
+      "detect_bulk_quantity_change"
     ],
     [
       "src/aryx/cpq/engine.py",
       7283,
-      "detect_qa_question"
+      "detect_approval"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7284,
+      "detect_approval"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7287,
+      "detect_decline"
     ],
     [
       "src/aryx/cpq/engine.py",
       7288,
+      "detect_decline"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7291,
+      "detect_show_summary_request"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7292,
+      "detect_show_summary_request"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7295,
       "detect_qa_question"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7290,
-      "detect_change_request"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7297,
-      "detect_change_request"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
       7300,
-      "detect_all_change_targets_without_value"
+      "detect_qa_question"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7302,
+      "detect_change_request"
     ],
     [
       "src/aryx/cpq/engine.py",
       7309,
+      "detect_change_request"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7312,
       "detect_all_change_targets_without_value"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7319,
+      7321,
+      "detect_all_change_targets_without_value"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7331,
       "detect_change_target_without_value"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7324,
-      "detect_change_target_without_value"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7326,
-      "detect_change_requests_multi"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7333,
-      "detect_change_requests_multi"
     ],
     [
       "src/aryx/cpq/engine.py",
       7336,
+      "detect_change_target_without_value"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7338,
+      "detect_change_requests_multi"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7345,
+      "detect_change_requests_multi"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7348,
       "detect_unmatched_change_targets"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7341,
+      7353,
       "detect_unmatched_change_targets"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7343,
+      7355,
       "_change_request_matches"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7350,
+      7362,
       "_change_request_matches"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7352,
+      7364,
       "find_cascade_dependents"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7360,
+      7372,
       "find_cascade_dependents"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7369,
+      7381,
       "build_review_prompt"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7375,
+      7387,
       "build_review_prompt"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7378,
+      7390,
       "detect_label_collision"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7379,
-      "detect_label_collision"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7382,
-      "detect_change_request_collision"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7388,
-      "detect_change_request_collision"
     ],
     [
       "src/aryx/cpq/engine.py",
       7391,
-      "count_turn_intents"
+      "detect_label_collision"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7397,
-      "count_turn_intents"
+      7394,
+      "detect_change_request_collision"
     ],
     [
       "src/aryx/cpq/engine.py",
       7400,
-      "detect_attr_query"
+      "detect_change_request_collision"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7401,
-      "detect_attr_query"
+      7403,
+      "count_turn_intents"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7404,
-      "_describe_char_allowlist"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7405,
-      "_describe_char_allowlist"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7408,
-      "describe_free_text_constraint"
+      7409,
+      "count_turn_intents"
     ],
     [
       "src/aryx/cpq/engine.py",
       7412,
-      "describe_free_text_constraint"
+      "detect_attr_query"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7415,
-      "should_ask_free_text_attr"
+      7413,
+      "detect_attr_query"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7416,
+      "_describe_char_allowlist"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7417,
+      "_describe_char_allowlist"
     ],
     [
       "src/aryx/cpq/engine.py",
       7420,
-      "should_ask_free_text_attr"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      7423,
-      "disambiguated_label"
+      "describe_free_text_constraint"
     ],
     [
       "src/aryx/cpq/engine.py",
       7424,
-      "disambiguated_label"
+      "describe_free_text_constraint"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7426,
-      "next_question_prompt"
+      7427,
+      "should_ask_free_text_attr"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7432,
+      "should_ask_free_text_attr"
     ],
     [
       "src/aryx/cpq/engine.py",
       7435,
+      "disambiguated_label"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7436,
+      "disambiguated_label"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7438,
       "next_question_prompt"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7446,
+      7447,
+      "next_question_prompt"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7458,
       "apply_answer"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7451,
+      7463,
       "apply_answer"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7454,
+      7466,
       "apply_multi_answer"
     ],
     [
       "src/aryx/cpq/engine.py",
-      7459,
+      7471,
       "apply_multi_answer"
     ],
     [
       "src/aryx/cpq/engine.py",
-      8362,
+      7486,
+      "build_standalone_payload"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7496,
+      "build_standalone_payload"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7553,
+      "mandatory_tier_c_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7557,
+      "mandatory_tier_c_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7560,
+      "_data_table_resolved_anchor_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      7565,
+      "_data_table_resolved_anchor_vns"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      8206,
       "<if>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      8404,
+      8248,
       "build_payload"
     ],
     [
       "src/aryx/cpq/engine.py",
-      9041,
+      8885,
       "<if>"
     ],
     [
       "src/aryx/cpq/engine.py",
-      9053,
+      8897,
       "_beautify_sectioned_rows"
     ],
     [
@@ -10540,6 +10570,26 @@
       "src/aryx/cpq/layout_and_join_data/ui_scope.py",
       95,
       "resolve_ui_layout_scope"
+    ],
+    [
+      "src/aryx/cpq/payload_building/anchor_exclusions.py",
+      22,
+      "_data_table_resolved_anchor_vns"
+    ],
+    [
+      "src/aryx/cpq/payload_building/anchor_exclusions.py",
+      88,
+      "_data_table_resolved_anchor_vns"
+    ],
+    [
+      "src/aryx/cpq/payload_building/mandatory_tiers.py",
+      26,
+      "mandatory_tier_c_vns"
+    ],
+    [
+      "src/aryx/cpq/payload_building/mandatory_tiers.py",
+      93,
+      "mandatory_tier_c_vns"
     ],
     [
       "src/aryx/cpq/recommendation_and_constraint_rules/apply_recommendations.py",

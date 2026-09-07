@@ -2154,6 +2154,18 @@ from aryx.cpq import recommendation_and_constraint_rules as rec_con_rules  # noq
 # original in-class `CpqEngine.<name>` / bare-global references were.
 from aryx.cpq import governance_and_sibling_exclusivity as gov_sibling  # noqa: E402
 
+# Deferred to here for the same circular-import reason as the packages
+# above: aryx.cpq.payload_building reaches `_cpq_model_candidates`,
+# `dt_resolve_whitelist_values`, `dt_resolve_region_allow_value`,
+# `dt_governed_required_attr_names_for_base_model` and
+# `_COUNTRY_TO_REGION` BACK from this module. All five are read through
+# the engine MODULE object rather than imported by name, so the lookups
+# happen at call time — that keeps `_cpq_model_candidates` and
+# `_COUNTRY_TO_REGION` (both defined further below) usable, and keeps the
+# dotted-path patches several tests apply to those names honored, exactly
+# as the original bare-global references were.
+from aryx.cpq import payload_building  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -7481,63 +7493,8 @@ class CpqEngine:
         hints: dict[str, str] | None = None,
         country: str | None = None,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-        """Assemble a correct BOM payload OUTSIDE a live conversational
-        turn, with the SAME defaulting and ordering guarantees a live turn
-        gets — the structural fix for docs/APX_Next_RootCause_And_Fix_
-        Report Issue 1 ("no path sets a rule-driven attr when a payload is
-        assembled directly") and Issue 2 (payload key ordering).
-
-        A live conversational turn (ask_api.py's per-turn handler) already
-        calls evaluate_rules_loop (hide -> recommend -> constrain -> auto-
-        fill until stable) before build_payload — that loop is what
-        actually populates rule-driven attrs like a recommendation-rule
-        target. A payload assembled directly by a script has historically
-        skipped straight to something payload-shaped without ever running
-        it, silently missing every attr only that loop can fill. This
-        method runs the identical loop (empty `hints={}` is a valid,
-        supported input — hints normally come from conversational text via
-        extract_flag_hints/extract_catalog_hints, but evaluate_rules_loop
-        itself has no dependency on conversation state) then calls
-        build_payload with `rules` populated for dependency-aware ordering,
-        so both issues are fixed by one call for any standalone caller.
-
-        Returns (payload, unresolved). `unresolved` is
-        find_unresolvable_context_attrs' output: every attr still missing
-        that NO rule could ever fill (the genuine customerType-class gap —
-        never guessed, always surfaced instead of silently omitted). An
-        empty `unresolved` list does not guarantee the payload is complete
-        against every catalog requirement — only that nothing MORE could
-        have been resolved automatically without guessing.
-
-        Catalog-agnostic: attrs/rules/scripts are all loaded fresh from
-        `reader`/`workspace_id` via the same generic loaders every other
-        catalog-facing method here uses — no attribute or rule name is
-        hardcoded, and this works identically for any ingested BM export.
-        """
-        attrs, resolved_product_name = self.load_product_config(
-            reader, workspace_id, product_hint)
-        catalog_prefix = attrs[0].catalog_prefix if attrs else ""
-        hiding_rules = self.load_hiding_rules(workspace_id, catalog_prefix)
-        rec_rules, con_rules = self.load_recommendation_and_constraint_rules(
-            workspace_id, catalog_prefix)
-        bml_eval = self.build_bml_evaluator(workspace_id, catalog_prefix)
-
-        working_filled = dict(filled)
-        working_multi = dict(filled_multi or {})
-        visible_attrs, working_filled, _display_filled, _constrained_opts = self.evaluate_rules_loop(
-            attrs, hints or {}, working_filled, hiding_rules, rec_rules, con_rules,
-            bml_eval=bml_eval, filled_multi=working_multi, country=country,
-        )
-
-        payload = self.build_payload(
-            working_filled, None, working_multi, visible_attrs,
-            rules=[*hiding_rules, *rec_rules, *con_rules],
-        )
-        unresolved = self.find_unresolvable_context_attrs(
-            visible_attrs, working_filled, workspace_id, catalog_prefix,
-            rec_rules, con_rules,
-        )
-        return payload, unresolved
+        return payload_building.build_standalone_payload(
+            self, reader, workspace_id, product_hint, filled, filled_multi, hints, country)
 
     # docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md -- for
     # `build_payload`'s config_data scoping specifically (NOT beautify/
@@ -7597,129 +7554,16 @@ class CpqEngine:
         self, filled: dict[str, str] | None, workspace_id: int | None,
         catalog_prefix: str = "", cache: dict[tuple[int, str], tuple] | None = None,
     ) -> frozenset[str]:
-        """Tier C for `_is_mandatory_input_attr` (beautify/summary ONLY --
-        NOT config_data, see docs/CPQ_ConfigData_Payload_Mandatory_Fix_
-        Scope_2026_08_19.md for why): attribute names the real ingested
-        AttrSequence Data Table flags optionOrReqFlag == "R" for the
-        active (cpq_model, base_model) -- catching defaulted-but-editable
-        Mandatory fields (Configuration Type, Software Bundles, Software
-        Release, Solution Type, Duration, Application Services Bundle
-        Duration, Wireless Carrier, Battery Type, Include a Spare,
-        Country) that Tier A/B miss entirely because their filled_source
-        is "rule"/"default", never "user" (docs/CPQ_Beautify_Mandatory_
-        Section_Miscategorization_2026_08_19.md).
-
-        "R" alone over-includes: many R-flagged attrs are auto-resolved by
-        a Whitelist/Defaultinattr row (Shylaja Shetty's "Auto-Resolved by
-        Data Tables" category) rather than ever being shown to the
-        customer as editable. Excludes any R-flagged attr `resolve_
-        whitelist_values` confirms has real constraint-shaped (Whitelist/
-        Defaultinattr, pooled into the same table) coverage for this
-        (cpq_model, base_model) -- same "genuinely unresolved, not merely
-        silent" discipline `_suppress_ungoverned_attrs` already applies
-        elsewhere. Also excludes `_RECOMMENDED_CONFIG_ONLY_VNS` (confirmed
-        Recommended-Configuration-only attrs).
-
-        Returns an empty frozenset (never None) when `filled`/
-        `workspace_id`/base model/CPQModel candidates are unavailable --
-        Tier C is purely additive, so "no coverage" must mean "adds
-        nothing," not "unknown."
-        """
-        if not filled or workspace_id is None:
-            return frozenset()
-        base_model = filled.get("modelSelectionbaseModel_astro", "")
-        if not base_model:
-            return frozenset()
-        product = filled.get("productSelectionProduct_all", "")
-        cands = _cpq_model_candidates(
-            product, workspace_id, catalog_prefix, cache, base_model=base_model,
-        )
-        if not cands:
-            return frozenset()
-        required_names: set[str] = set()
-        for cm in cands:
-            names = dt_governed_required_attr_names_for_base_model(
-                cm, base_model, workspace_id, catalog_prefix, cache,
-            )
-            if names:
-                required_names |= names
-        if not required_names:
-            return frozenset()
-        result: set[str] = set()
-        for vn in required_names:
-            if vn in self._RECOMMENDED_CONFIG_ONLY_VNS:
-                continue
-            if any(
-                dt_resolve_whitelist_values(
-                    cm, base_model, vn, filled, workspace_id, catalog_prefix, cache,
-                ) is not None
-                for cm in cands
-            ):
-                continue
-            result.add(vn)
-        return frozenset(result)
+        return payload_building.mandatory_tier_c_vns(
+            self, filled, workspace_id, catalog_prefix, cache)
 
     def _data_table_resolved_anchor_vns(
         self, filled: dict[str, str] | None, attrs: list["ConfigAttr"] | None,
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None, country: str = "",
     ) -> frozenset[str]:
-        """`config_data`-only exclusion set for Tier A's "basemodel"/
-        "selectmodel" fragment match (docs/CPQ_ConfigData_Payload_
-        Mandatory_Fix_Scope_2026_08_19.md). The inverse of
-        `mandatory_tier_c_vns` -- an EXCLUDE set, not an include set.
-
-        Live-confirmed: modelSelectionbaseModel_astro looks like a real
-        menu-type attribute at the catalog level (menu_type=1), and Tier A
-        treats any "basemodel"/"selectmodel"-fragment match as an
-        unconditional structural anchor -- but it is not a real UI
-        submission (missing from the actual APX NEXT screenshot AND from
-        a real target config_data payload). Its value is 100% derived
-        from Country + Hardware Version + Product via the ingested
-        NewCountryRegMapping (region-rule-shaped) Data Table --
-        `resolve_region_allow_value`'s own docstring names this exact
-        attribute as its worked example. Reuses the identical (product,
-        region, country) -> CPQModel-candidate -> region-rule resolution
-        pattern already live elsewhere in this file (see the
-        `_bm_region_allow_value` block above, used for a different
-        purpose -- pre-filling Base Model before it's asked).
-
-        For each attribute in `attrs` whose name fragment-matches
-        "basemodel"/"selectmodel", checks whether ANY resolved CPQModel
-        candidate's region-rule row deterministically resolves it -- if
-        so, it is not a genuine anchor decision and is added to the
-        exclude set. Returns `frozenset()` (never `None`) when `filled`/
-        `attrs`/`workspace_id`/product/region are unavailable -- purely
-        subtractive, so "no coverage" must mean "no exclusions," never a
-        guess.
-        """
-        if not filled or not attrs or workspace_id is None:
-            return frozenset()
-        product = filled.get("productSelectionProduct_all", "")
-        if not product:
-            return frozenset()
-        resolved_country = filled.get("ultimateDestinationCountry") or country or ""
-        region = filled.get("modelSelectionRegion_astro") or (
-            _COUNTRY_TO_REGION.get(resolved_country.strip().lower(), "") if resolved_country else ""
-        )
-        if not region:
-            return frozenset()
-        cands = _cpq_model_candidates(product, workspace_id, catalog_prefix, cache)
-        if not cands:
-            return frozenset()
-        result: set[str] = set()
-        for attr in attrs:
-            vn_flat = attr.variable_name.lower().replace("_", "")
-            if "basemodel" not in vn_flat and "selectmodel" not in vn_flat:
-                continue
-            for cm in cands:
-                if dt_resolve_region_allow_value(
-                    attr.variable_name, cm, region, workspace_id, catalog_prefix, cache,
-                    country=resolved_country,
-                ):
-                    result.add(attr.variable_name)
-                    break
-        return frozenset(result)
+        return payload_building._data_table_resolved_anchor_vns(
+            self, filled, attrs, workspace_id, catalog_prefix, cache, country)
 
     def _is_mandatory_input_attr(
         self, vn: str, attr: "ConfigAttr | None", source: str | None,
