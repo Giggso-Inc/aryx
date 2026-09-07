@@ -9496,7 +9496,7 @@ class CpqEngine:
                             if governed_source == "rule":
                                 rule_trace.record_fire(
                                     rule_type="auto_fill", rule_id="auto_fill:rule_governed_multi",
-                                    attr=vn, outcome=f"set={filled_multi[vn]}",
+                                    attr=vn, outcome=f"set={ctx.filled_multi[vn]}",
                                 )
                         elif allowed_for_attr is None:
                             # No active rule-based constraint narrowed this
