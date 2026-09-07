@@ -2144,6 +2144,16 @@ from aryx.cpq import layout_and_join_data  # noqa: E402
 # reaches it through the module object instead.)
 from aryx.cpq import recommendation_and_constraint_rules as rec_con_rules  # noqa: E402
 
+# Deferred to here (not the top-of-file imports) because this package
+# reaches names BACK from this module. Every one of them
+# (`_COUNTRY_TO_REGION`, `_DECISION_REQUIRED_KEYS`, the `_country_*`
+# alias helpers, `CpqEngine` itself) is read through the engine MODULE
+# object rather than imported by name, so the lookups happen at call
+# time — that keeps `_COUNTRY_TO_REGION` (defined further below) usable
+# and keeps any dotted-path patch of those names honored, exactly as the
+# original in-class `CpqEngine.<name>` / bare-global references were.
+from aryx.cpq import governance_and_sibling_exclusivity as gov_sibling  # noqa: E402
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -6201,49 +6211,9 @@ class CpqEngine:
         rec: list[RecommendationRule] | None = None,
         con: list[ConstraintRule] | None = None,
     ) -> list[tuple[str, str, dict[str, str], int | None]]:
-        """Build BmlEvaluator.prefetch_tier2 requests for every script-backed
-        rule in the given rule sets, against the CURRENT `filled` state.
+        return gov_sibling.bml_prefetch_requests(filled, attrs, hiding, rec, con)
 
-        Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): mirrors
-        exactly what apply_hiding_rules/apply_recommendation_rules/
-        apply_constraint_rules will each independently ask
-        hide_for_script/condition_holds/allowed_values_for_script for —
-        same rule fields, same `filled` argument, no cache_id (those call
-        sites never pass one either, so both sides key on hash(script)).
-        Coverage gaps here only cost speed, never correctness: an
-        uncovered rule's script just isn't pre-warmed and falls through to
-        its normal sequential call, exactly as if this method didn't run.
-
-        `rec` also mirrors apply_recommendation_rules' own "already filled"
-        skip (needs `attrs` to resolve target_attr_id -> variable_name) so
-        a prefetch doesn't burn concurrent Tier-2 calls on rules that loop
-        will never actually consult this pass. `hiding`/`con` have no such
-        skip in their own apply_* methods (visibility and allowed-value
-        narrowing both apply regardless of current fill state), so none is
-        replicated here either.
-        """
-        reqs: list[tuple[str, str, dict[str, str], int | None]] = []
-        for rule in (hiding or []):
-            if rule.script is not None:
-                reqs.append(("hide", rule.script, filled, None))
-        if rec:
-            by_rule_id = CpqEngine._attr_index(attrs or [])
-            for rule in rec:
-                target = by_rule_id.get(rule.target_attr_id)
-                if not target or filled.get(target.variable_name):
-                    continue
-                if rule.script is not None:
-                    reqs.append(("values", rule.script, filled, None))
-                elif rule.condition_script is not None:
-                    reqs.append(("cond", rule.condition_script, filled, None))
-        for rule in (con or []):
-            if rule.script is not None:
-                reqs.append(("values", rule.script, filled, None))
-            elif rule.condition_script is not None:
-                reqs.append(("cond", rule.condition_script, filled, None))
-        return reqs
-
-    # ── Context sentence builder ──────────────────────────────────────────────
+    # ── Context sentence builder ────────────────────────
 
     def build_context_sentence(
         self,
@@ -6254,47 +6224,11 @@ class CpqEngine:
         hiding_rules: list[HidingRule],
         rec_rules: list[RecommendationRule],
     ) -> str:
-        """Explain WHY this attribute is being asked, based on fired rules.
+        return gov_sibling.build_context_sentence(
+            self, pending_attr, attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
 
-        Returns a sentence like "Since X was set to Y, we now need Z." or ""
-        when no rule relationship is found (attribute is independently required).
-        """
-        by_rule_id = self._attr_index(attrs)
-        pending_ids = {pending_attr.entity_id}
-        if pending_attr.source_id is not None:
-            pending_ids.add(pending_attr.source_id)
-
-        # A show-type hiding rule revealed this attr
-        for rule in hiding_rules:
-            if rule.target_attr_id not in pending_ids or rule.hide:
-                continue
-            cond_attr = by_rule_id.get(rule.condition_attr_id)
-            if cond_attr and cond_attr.variable_name in filled:
-                disp_val = display_filled.get(
-                    cond_attr.variable_name, filled[cond_attr.variable_name]
-                )
-                return (
-                    f"Since we locked in **{disp_val}**, "
-                    f"please choose the **{pending_attr.display_label}**."
-                )
-
-        # A recommendation rule targeted this attr (but had multiple valid options)
-        for rule in rec_rules:
-            if rule.target_attr_id not in pending_ids:
-                continue
-            cond_attr = by_rule_id.get(rule.condition_attr_id)
-            if cond_attr and cond_attr.variable_name in filled:
-                disp_val = display_filled.get(
-                    cond_attr.variable_name, filled[cond_attr.variable_name]
-                )
-                return (
-                    f"Since we locked in **{disp_val}**, "
-                    f"please choose the **{pending_attr.display_label}**."
-                )
-
-        return ""
-
-    # ── Auto-fill ─────────────────────────────────────────────────────────────
+    # ── Auto-fill ───────────────────────────────────
 
     @staticmethod
     def rule_governed_ids(
@@ -6303,30 +6237,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
     ) -> set[int]:
-        """Entity ids of attrs targeted by at least one loaded rule.
-
-        D2 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): an attribute only counts as
-        a "dependent variable" eligible for default-or-first auto-fill if a
-        hiding, recommendation, or constraint rule actually targets it —
-        everything else keeps the existing ask-the-user safeguard (Issue 6).
-        This is the strict subset `auto_fill` tags `filled_source="rule"`;
-        see `governed_target_ids` for the wider Phase N eligibility set.
-        """
-        by_rule_id = CpqEngine._attr_index(attrs)
-        governed: set[int] = set()
-        for rule in hiding_rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if target:
-                governed.add(target.entity_id)
-        for rule in rec_rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if target:
-                governed.add(target.entity_id)
-        for rule in con_rules:
-            target = by_rule_id.get(rule.target_attr_id)
-            if target:
-                governed.add(target.entity_id)
-        return governed
+        return gov_sibling.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
 
     @staticmethod
     def product_label_noise_vns(
@@ -6335,53 +6246,25 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
     ) -> set[str]:
-        """Variable names of "Product"-labeled attrs that are genuinely
-        irrelevant noise once `session.model_leaf_resolved` is True — the
-        CommandCentral-style case Amendment 10 was built for, where a
-        generic "Product" attr carries no rule of its own and the real
-        model identity travels entirely through the resolved bm_catalog
-        leaf instead.
-
-        Deliberately NOT every attr labeled "Product" — live-confirmed bug
-        (2026-07-28): APX Next's order text ("Order APX Next Radios...")
-        also matches one of the workspace's catalog leaf candidates in the
-        ambiguous-multi-leaf resolution path, setting model_leaf_resolved
-        True for APX Next as well — but unlike CommandCentral, APX Next's
-        own "Product" attr (productSelectionProduct_all) IS a genuine,
-        rule-governed decision (a real constraint script narrows its
-        options by Hardware Version). The blanket "drop every Product-
-        labeled attr" rule silently dropped it from `pending` AND the
-        payload entirely, with no value ever collected. Scoping to
-        `rule_governed_ids` (a purely structural signal — which rules
-        already target which attrs, independent of current filled state)
-        distinguishes "truly noise, no rule cares about this" from "a real
-        rule narrows this, it must still be asked."
-        """
-        governed = CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
-        return {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-            and a.entity_id not in governed
-        }
+        return gov_sibling.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules,
+        )
 
     @staticmethod
     def _normalized_label_stem(label: str) -> str:
-        """Lowercase, whitespace-collapsed, singular-ized display label —
-        used only to detect whether two attrs are labeled as the "same"
-        real-world concept (e.g. "Frequency Bands" and "Frequency Band"),
-        never to identify a specific attribute by name."""
-        s = re.sub(r"\s+", " ", label.strip().lower())
-        if s.endswith("s") and not s.endswith("ss"):
-            s = s[:-1]
-        return s
+        return gov_sibling.normalized_label_stem(label)
 
     # Explicit, disclosed exception to the generic label-stem detector
-    # below — see exclusive_sibling_family_exclusions' docstring for why
-    # this pair specifically cannot be found by label similarity, and the
-    # live evidence establishing it belongs here anyway. Catalog-specific
-    # by necessity (this concept has no other derivable signal in the
-    # ingested data), NOT a general mechanism — kept to this one pair,
-    # added only after direct confirmation, not silently.
+    # in `exclusive_sibling_family_exclusions` — see that function's
+    # docstring (now in cpq/governance_and_sibling_exclusivity/sibling_
+    # exclusions.py) for why this pair specifically cannot be found by
+    # label similarity, and the live evidence establishing it belongs
+    # here anyway. Catalog-specific by necessity (this concept has no
+    # other derivable signal in the ingested data), NOT a general
+    # mechanism — kept to this one pair, added only after direct
+    # confirmation, not silently. Deliberately stays on the class: it
+    # is the single disclosed exception table and is read back through
+    # the `engine` instance by the extracted detector.
     _KNOWN_SIBLING_PAIRS: tuple[tuple[str, str], ...] = (
         ("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),
     )
@@ -6395,127 +6278,10 @@ class CpqEngine:
         all_attrs: list[ConfigAttr] | None = None,
         catalog_confirmed_vns: frozenset[str] | None = None,
     ) -> tuple[set[str], list[ConfigAttr]]:
-        """Generic (no catalog/attribute names hardcoded) detector for a gap
-        this engine can hit on ANY catalog: two attrs sharing the same
-        real-world concept (near-identical display label, e.g. "Frequency
-        Bands" vs "Frequency Band"), one select_type=="multi" and the other
-        not, that BOTH ended up filled in the same turn — meaning no
-        catalog hiding rule actually excluded either one for the current
-        product (confirmed live on the APX Next catalog, docs/
-        config_consistency_issues_2026-07-30.md Issue 5: the active hiding
-        rule for this catalog's single-select sibling omits some product
-        values entirely, so it stays visible and gets an unconditional
-        default_value even when the multi-select sibling is the real
-        governing attribute for that product).
-
-        Only acts when the single-select sibling's value came from a
-        NON-customer-confirmed provenance — an unconditional XML
-        default_value, an engine-derived recommendation, or the
-        conservative auto/first-option fallback (filled_source in
-        {"default", "rule", "auto"}) — never "user"/"hint"/"cascade", so a
-        genuine customer-confirmed or customer-triggered value is never
-        second-guessed. Widened beyond a bare "default" check (confirmed
-        live: this catalog's single-select sibling is actually populated by
-        a shared-input RECOMMENDATION rule — tagged source "rule" — not a
-        bare XML default_value, so a "default"-only check never caught it).
-
-        `all_attrs` (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
-        2026_08_05.md follow-up) — the label-stem grouping below only
-        trusts a pair when EXACTLY 2 attrs share that stem, specifically
-        so a genuinely ambiguous 3+-way label collision is never guessed.
-        That size check is meaningless if it only sees `attrs` (the
-        DYNAMICALLY hiding-filtered, currently-visible set): confirmed
-        live, a real catalog reuses the identical display label "Service
-        Type" across 4 semantically UNRELATED attributes (general service
-        type, related-services type, DMS coverage plan, RSM warranty
-        type); when a hiding rule happens to leave only 2 of the 4
-        visible this turn, the size-2 check wrongly treated them as a
-        genuine near-duplicate pair — the same false-positive class this
-        check exists to prevent, just reached via visibility instead of
-        catalog authoring. Groups by stem over `all_attrs` (the full,
-        pre-hiding catalog list) when given; defaults to `attrs` (old
-        behavior, unchanged) when omitted, so every existing caller/test
-        is unaffected.
-
-        `catalog_confirmed_vns` — optional (default `None`, no-op for every
-        existing caller). Confirmed live (2026-08-20, base model
-        H55TGT9PW8AN/APX NEXT All Band, 4G-only flow): this weak-source
-        strip fires even when the single-select's value was itself just
-        resolved via the real Whitelist/Defaultinattr Data Table or a
-        RecommendationRule triggered by an active decision (source tagged
-        "rule"/"default", same as a genuine blind pick) — for a 4G-only
-        product the multi-select sibling has zero legal Data Table rows,
-        so stripping the single-select's catalog-proven answer and asking
-        for the multi-select instead leaves BOTH empty. Callers pass the
-        union of `_rule_forced_from_active_decision_vns`/`_data_table_
-        forced_vns` here so a member already proven genuine by either
-        mechanism is exempted from this strip — narrow, catalog-agnostic
-        (no attribute name hardcoded), and leaves the 5G flow (where the
-        multi-select IS the real governing attr) untouched.
-
-        Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) — the
-        multi-select sibling is asked instead of silently guessing which
-        half applies. Empty on any catalog without this exact shape.
-        """
-        _WEAK_SOURCES = {"default", "rule", "auto"}
-        by_vn = {a.variable_name: a for a in attrs}
-        stem_universe = all_attrs if all_attrs is not None else attrs
-        by_stem: dict[str, list[ConfigAttr]] = {}
-        for a in stem_universe:
-            by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
-        groups: list[list[ConfigAttr]] = list(by_stem.values())
-
-        # Explicit, disclosed exception — NOT a generic mechanism. The
-        # label-stem detector above provably cannot pair these two: live-
-        # confirmed the display labels are "Wireless Carrier" vs "Carrier
-        # Selection" (zero shared tokens), yet they exhibit the EXACT same
-        # wrong-sibling bug as the generic-detected Frequency Band pair —
-        # confirmed live: wirelessCarrier_astro ends up with a value
-        # (e.g. "ATT/FIRSTNET", itself a real, valid option on BOTH
-        # attributes' overlapping menus, so bom_gate's provenance check
-        # never flags it) while carrierSelectionMultiSelect_astro — the
-        # real governing multi-select for this concept — stays empty.
-        # Named explicitly here (per direct approval) rather than silently
-        # extending the generic label heuristic to something it can't
-        # actually detect.
-        for vn_a, vn_b in self._KNOWN_SIBLING_PAIRS:
-            attr_a, attr_b = by_vn.get(vn_a), by_vn.get(vn_b)
-            if attr_a is not None and attr_b is not None:
-                groups.append([attr_a, attr_b])
-
-        to_strip: set[str] = set()
-        to_ask: list[ConfigAttr] = []
-        for group in groups:
-            if len(group) != 2:
-                continue
-            multi = [a for a in group if a.select_type == "multi"]
-            single = [a for a in group if a.select_type != "multi"]
-            if len(multi) != 1 or len(single) != 1:
-                continue
-            multi_attr, single_attr = multi[0], single[0]
-            if multi_attr.variable_name not in by_vn:
-                # The multi-select sibling only exists in `all_attrs` (the
-                # full, pre-hiding catalog list) — a real hiding rule has
-                # decided it does NOT apply this turn (confirmed live: "Hide
-                # Frequency Band Model Selection Attribute for APX NEXT All
-                # Band model" correctly hides modelSelectionFrequencyBandMsl_
-                # astro for that product). There is no more-specific answer
-                # to defer to, so the single-select's value — weak-sourced
-                # or not — is left alone rather than stripped for nothing;
-                # stripping it here previously resurrected a question the
-                # engine's own hiding-rule evaluation had already, correctly,
-                # decided to never ask.
-                continue
-            single_has_value = single_attr.variable_name in filled
-            multi_has_value = bool(filled_multi.get(multi_attr.variable_name))
-            if (
-                single_has_value and not multi_has_value
-                and filled_source.get(single_attr.variable_name) in _WEAK_SOURCES
-                and single_attr.variable_name not in (catalog_confirmed_vns or frozenset())
-            ):
-                to_strip.add(single_attr.variable_name)
-                to_ask.append(multi_attr)
-        return to_strip, to_ask
+        return gov_sibling.exclusive_sibling_family_exclusions(
+            self, attrs, filled, filled_multi, filled_source, all_attrs,
+            catalog_confirmed_vns,
+        )
 
     def enforce_exclusive_sibling_families(
         self,
@@ -6528,53 +6294,10 @@ class CpqEngine:
         all_attrs: list[ConfigAttr] | None = None,
         catalog_confirmed_vns: frozenset[str] | None = None,
     ) -> list[ConfigAttr]:
-        """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
-        sourced single-select sibling from `filled` (mutated in place) and
-        add its multi-select sibling to `pending` if nothing has already
-        filled or asked it. Returns the updated pending list.
-
-        `all_attrs` — see exclusive_sibling_family_exclusions' docstring;
-        pass the full, pre-hiding catalog attr list so the label-stem
-        pairing check isn't fooled by a multi-way label collision that
-        happens to look like a 2-attr pair only because hiding rules left
-        just 2 of the real N visible this turn."""
-        to_strip, to_ask = self.exclusive_sibling_family_exclusions(
-            attrs, filled, filled_multi, filled_source, all_attrs=all_attrs,
-            catalog_confirmed_vns=catalog_confirmed_vns,
+        return gov_sibling.enforce_exclusive_sibling_families(
+            self, attrs, filled, filled_multi, filled_source, display_filled,
+            pending, all_attrs, catalog_confirmed_vns,
         )
-        if not to_strip:
-            return pending
-        for vn in to_strip:
-            filled.pop(vn, None)
-            display_filled.pop(vn, None)
-            filled_source.pop(vn, None)
-        pending = [a for a in pending if a.variable_name not in to_strip]
-        pending_vns = {a.variable_name for a in pending}
-        for attr in to_ask:
-            # `to_ask` is already guaranteed visible-this-turn by
-            # exclusive_sibling_family_exclusions (it only pairs a multi-
-            # select sibling that's present in `attrs`, the visible list —
-            # see that function's docstring for the hidden-sibling
-            # regression this closes). Truthiness check (not mere key
-            # presence) is deliberate here —
-            # see test_enforce_still_asks_when_multi_sibling_has_an_empty_
-            # placeholder: a governing multi-select sibling this mechanism
-            # just decided IS the real answer for this concept must still
-            # be asked even if auto_fill left an empty-list placeholder for
-            # it, because THIS mechanism's whole point is that nobody has
-            # actually confirmed the real concept yet. (A false-positive
-            # pairing that wrongly reached this point at all — e.g. two
-            # unrelated attrs coincidentally sharing a display label — is
-            # fixed at the pairing stage in exclusive_sibling_family_
-            # exclusions, not by weakening this check.)
-            if (
-                not filled.get(attr.variable_name)
-                and not filled_multi.get(attr.variable_name)
-                and attr.variable_name not in pending_vns
-            ):
-                pending.append(attr)
-                pending_vns.add(attr.variable_name)
-        return pending
 
     @staticmethod
     def governed_target_ids(
@@ -6583,160 +6306,17 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
     ) -> set[int]:
-        """Entity ids eligible for default-or-first auto-fill.
-
-        Widened per CPQ_APX_NEXT_ISSUES_PLAN.md Phase N: rule coverage alone
-        left ~29 attrs pending on a richer catalog (APX Next) where most
-        attrs simply carry no rule at all in the source data — far short of
-        the client's <=2-3-prompt requirement. Attrs marked `required=False`
-        in the source are also eligible (a source-asserted "safe to default"
-        signal), excluding decision-required attrs (country/region), which
-        always ask regardless of governance. See `rule_governed_ids` for the
-        strict rule-only subset (used to tag `filled_source`).
-        """
-        governed = set(
-            CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        return gov_sibling.governed_target_ids(
+            attrs, hiding_rules, rec_rules, con_rules,
         )
-        for attr in attrs:
-            if attr.required:
-                continue
-            vn_flat = attr.variable_name.lower().replace("_", "")
-            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
-                continue
-            governed.add(attr.entity_id)
-        # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
-        # 10.md follow-up (2026-08-16, refined same day): attrs with no
-        # real fill justification are DELIBERATELY left in `governed`
-        # here -- an earlier version of this method unconditionally
-        # excluded them by name, which also blocked their own confident
-        # "a real constraint narrowed this to exactly one legal value"
-        # auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef
-        # are ingested, accessoriesSolutionSet_astro's constraint could
-        # legitimately resolve to a single real category). The actual
-        # "nothing justifies a guess" case is checked dynamically instead
-        # at its specific, narrower call sites (auto_fill's unconditional
-        # multi-select and single-select first-by-order fallbacks) -- see
-        # `_no_real_fill_justification`'s own docstring for exactly which
-        # sites and why each needed its own guard rather than one here.
-        return governed
 
     @staticmethod
     def is_recognized_country(value: str) -> str | None:
-        """The canonical common name (e.g. "United States") when `value`
-        is a real, recognized country -- by common name, official name,
-        ISO alpha-2/alpha-3 code, or a punctuation/abbreviation variant
-        of any of those ("US.A", "U.K", "U.A.E") -- else None.
-
-        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
-        17.md): previously checked membership in `_COUNTRY_TO_REGION` --
-        a small, hand-typed dict of exact strings covering a narrow
-        subset of countries, with none of their punctuation/abbreviation
-        variants ("us.a" was never a key). Now normalizes the candidate
-        (`_normalize_country_candidate`) and checks it against
-        `_country_alias_group` -- the comprehensive, symmetric, 249-real-
-        country alias table already built for exactly this purpose
-        (`engine.py:404+`) -- so any real alias/punctuation/abbreviation
-        form of any of the 249 countries resolves here, not just the
-        handful the old dict happened to spell out.
-
-        Returns `str | None` rather than the old bare `bool` because this
-        is the single shared validation gate for THREE call sites (Path
-        B's bare-anchor-reply hint validation, Path C's change-command
-        gate, and Path C's downstream LLM-result validation) that all
-        need the RESOLVED canonical value, not just a yes/no -- a caller
-        that only ever needed the boolean keeps working unmodified, since
-        a non-empty string is truthy and `None` is falsy, identical to
-        the old bool contract.
-
-        Guards `session.country`'s own assignment (ask_api.py) against a
-        real, confirmed live bug: `extract_hints`' generic
-        preposition-based country extractor's 2-letter-code alternative
-        has no trailing word-boundary check, so "for APX Next" matched
-        "for " + "AP" (the first two letters of "APX") and produced
-        `hints["country"] = "Ap"`. session.country is a "first hint wins,
-        never re-derived" field (ask_api.py) — once set, it's reused
-        verbatim on every later turn regardless of whether a real answer
-        ever fills the actual country attribute, so a single bad match
-        this early permanently blocks `derive_region` for the rest of the
-        session with no way to self-correct. Since `session.country`'s
-        only consumer is `derive_region`, and `derive_region` itself
-        already returns None for anything it can't resolve a region for,
-        rejecting an unrecognized candidate BEFORE it's stored costs
-        nothing today and stops it from calcifying into a wrong value
-        that can never be replaced by a later, correct hint.
-
-        PR #205 review fix: an earlier version of this exclusion rejected
-        ANY candidate matching one of this system's own region codes
-        ("NA"/"EMEA"/"ME"/"APAC"/"LA") -- but "ME" is genuinely Montenegro's
-        real ISO alpha-2 code and "LA" is genuinely Laos's, so that blanket
-        rule silently reintroduced the exact same collision bug for two
-        more real countries. The blanket exclusion was never actually
-        needed for "EMEA"/"ME"/"APAC"/"LA" in the first place: none of
-        those four strings appear in any real country's alias group
-        (`_COUNTRY_ALIAS_GROUPS`) as anything OTHER than Montenegro's/
-        Laos's own codes, so the alias-group lookup below already returns
-        None for "EMEA"/"APAC" on its own -- only "NA" is a genuine,
-        confirmed double meaning (this system's own "North America" token
-        AND Namibia's real alpha-2 code, confirmed live and locked in by
-        test_garbage_and_product_fragments_not_recognized, which predates
-        this fix and only exercises "NA"/"APAC", never "ME"/"LA"). Scoped
-        to the literal, documented single collision instead of a blanket
-        rule across this system's whole region-code namespace.
-        """
-        _normalized = _normalize_country_candidate(value)
-        if _normalized.upper() == "NA":
-            return None
-        group = _country_alias_group(_normalized)
-        if group is None:
-            return None
-        return _country_canonical_name(group)
+        return gov_sibling.is_recognized_country(value)
 
     @staticmethod
     def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
-        """Resolve a region attr's value from a known country, without
-        inventing a code the catalog doesn't actually offer.
-
-        Looks up `country` in `_COUNTRY_TO_REGION` for a standard region
-        abbreviation, then matches that abbreviation against `attr`'s real
-        menu options (exact item_value first, then display_name) — a
-        country with no mapping, or a catalog whose Region attr doesn't
-        offer the derived code, returns None so the caller falls back to
-        asking rather than guessing.
-
-        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
-        17.md): `country` may legitimately arrive as any real alias of a
-        country (official name, alpha-2/alpha-3 code, a punctuation
-        variant like "us.a" normalized upstream to "United States", ...)
-        rather than one of the handful of literal strings
-        `_COUNTRY_TO_REGION` happens to spell out as keys. The direct
-        lookup below is tried first (fast path, unchanged behavior for
-        the exact forms that already worked); only when that misses does
-        this resolve `country` to its full alias group and retry the
-        lookup against every member of that group -- generic for all 249
-        real countries, never a per-country special case -- since
-        `_COUNTRY_TO_REGION`'s own keys are already just a few of a
-        country's many real aliases (e.g. "us"/"usa"/"united states" are
-        all present for the US entry today).
-        """
-        if not country:
-            return None
-        region_code = _COUNTRY_TO_REGION.get(country.strip().lower())
-        if not region_code:
-            group = _country_alias_group(_normalize_country_candidate(country))
-            if group:
-                for alias in group:
-                    region_code = _COUNTRY_TO_REGION.get(alias)
-                    if region_code:
-                        break
-        if not region_code:
-            return None
-        for opt in attr.options:
-            if opt.item_value.upper() == region_code:
-                return opt.item_value, opt.display_name
-        for opt in attr.options:
-            if region_code in opt.display_name.upper():
-                return opt.item_value, opt.display_name
-        return None
+        return gov_sibling.derive_region(country, attr)
 
     @staticmethod
     def _apply_series_mapping_exclusions(
