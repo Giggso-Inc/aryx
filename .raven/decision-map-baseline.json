@@ -8283,77 +8283,82 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      7615,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      7631,
-      "_handle_pending_clarify_turn"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      7811,
+      7156,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7854,
+      7199,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7857,
+      7202,
       "_apply_real_llm_usage"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7915,
+      7260,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7973,
+      7318,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8213,
+      7558,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8583,
+      7928,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8921,
+      8266,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9067,
+      8412,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9707,
+      9052,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9726,
+      9071,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9877,
+      9222,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10101,
+      9446,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      10137,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      10754,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      10771,
       "<assign>"
     ],
     [
@@ -8363,82 +8368,67 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      11409,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      11426,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      11447,
+      10861,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11516,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      11542,
+      10887,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11634,
+      10979,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11668,
+      11013,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11709,
+      11054,
       "_attach_share_flags"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11877,
+      11222,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11935,
+      11280,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12127,
+      11472,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12136,
+      11481,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12137,
+      11482,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12140,
+      11485,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12142,
+      11487,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      12144,
+      11489,
       "ask_router"
     ],
     [
@@ -8460,6 +8450,91 @@
       "src/aryx/api/ask_data_table_conflict_reask.py",
       77,
       "_reask_confirmed_data_table_conflict"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_answer.py",
+      31,
+      "_set_pending_clarify_and_answer"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_answer.py",
+      137,
+      "_set_pending_clarify_and_answer"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_apply.py",
+      27,
+      "_apply_pending_clarify_resolution"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_apply.py",
+      89,
+      "_apply_pending_clarify_resolution"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_grounding.py",
+      22,
+      "_ground_clarify_candidates"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_grounding.py",
+      83,
+      "_ground_clarify_candidates"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_llm_classify.py",
+      16,
+      "_llm_classify_pending_clarify_reply"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_llm_classify.py",
+      65,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_llm_classify.py",
+      78,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_llm_classify.py",
+      83,
+      "_llm_classify_pending_clarify_reply"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_prompt.py",
+      14,
+      "_grounded_clarify_prompt"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_prompt.py",
+      24,
+      "_grounded_clarify_prompt"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_scoring.py",
+      19,
+      "_score_clarify_candidates"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_scoring.py",
+      107,
+      "_score_clarify_candidates"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_turn.py",
+      31,
+      "_handle_pending_clarify_turn"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_turn.py",
+      120,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_pending_clarify_turn.py",
+      136,
+      "_handle_pending_clarify_turn"
     ],
     [
       "src/aryx/api/ask_pending_exclusion_resolve.py",
