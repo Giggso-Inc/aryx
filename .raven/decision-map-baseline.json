@@ -7988,107 +7988,97 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2304,
+      2308,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2362,
+      2366,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2602,
+      2606,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3110,
+      3114,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3129,
+      3133,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3280,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3504,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      4195,
+      3701,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4812,
+      4318,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4829,
+      4335,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4850,
+      4356,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4919,
+      4425,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4945,
+      4451,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5033,
+      4539,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5067,
+      4573,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5119,
+      4625,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5128,
+      4634,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5129,
+      4635,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5132,
+      4638,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5134,
+      4640,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5136,
+      4642,
       "ask_router"
     ],
     [
@@ -9310,6 +9300,136 @@
       "src/aryx/api/ask_step1_product_family_prompt.py",
       123,
       "_build_product_family_prompt_or_resolve"
+    ],
+    [
+      "src/aryx/api/ask_step678_activation_and_clear.py",
+      22,
+      "_step6_activation_and_clear"
+    ],
+    [
+      "src/aryx/api/ask_step678_activation_and_clear.py",
+      58,
+      "_step6_activation_and_clear"
+    ],
+    [
+      "src/aryx/api/ask_step678_bulk_and_removal.py",
+      23,
+      "_step6_bulk_and_removal"
+    ],
+    [
+      "src/aryx/api/ask_step678_bulk_and_removal.py",
+      53,
+      "_step6_bulk_and_removal"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision.py",
+      21,
+      "_resolve_pending_change_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision.py",
+      71,
+      "_resolve_pending_change_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision.py",
+      74,
+      "_build_change_collision_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision.py",
+      95,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision.py",
+      101,
+      "_build_change_collision_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision_detect.py",
+      22,
+      "_step6_change_collision_detect"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_collision_detect.py",
+      55,
+      "_step6_change_collision_detect"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_dispatch.py",
+      26,
+      "_step6_change_dispatch"
+    ],
+    [
+      "src/aryx/api/ask_step678_change_dispatch.py",
+      73,
+      "_step6_change_dispatch"
+    ],
+    [
+      "src/aryx/api/ask_step678_json_and_approval.py",
+      19,
+      "_step678_json_or_approval"
+    ],
+    [
+      "src/aryx/api/ask_step678_json_and_approval.py",
+      36,
+      "_step678_json_or_approval"
+    ],
+    [
+      "src/aryx/api/ask_step678_llm_fallback.py",
+      22,
+      "_step6_llm_fallback_classify"
+    ],
+    [
+      "src/aryx/api/ask_step678_llm_fallback.py",
+      74,
+      "_step6_llm_fallback_classify"
+    ],
+    [
+      "src/aryx/api/ask_step678_no_value_and_nudge.py",
+      22,
+      "_step6_no_value_or_nudge"
+    ],
+    [
+      "src/aryx/api/ask_step678_no_value_and_nudge.py",
+      53,
+      "_step6_no_value_or_nudge"
+    ],
+    [
+      "src/aryx/api/ask_step678_options_collision.py",
+      22,
+      "_resolve_pending_options_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_options_collision.py",
+      69,
+      "_resolve_pending_options_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_options_collision.py",
+      72,
+      "_resolve_system_initiated_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_options_collision.py",
+      115,
+      "_resolve_system_initiated_collision"
+    ],
+    [
+      "src/aryx/api/ask_step678_review_status.py",
+      35,
+      "_handle_review_status_routing"
+    ],
+    [
+      "src/aryx/api/ask_step678_review_status.py",
+      46,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_step678_review_status.py",
+      102,
+      "_handle_review_status_routing"
     ],
     [
       "src/aryx/api/ask_thread_api.py",
