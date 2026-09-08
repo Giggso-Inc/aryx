@@ -2318,6 +2318,10 @@ from aryx.api.ask_step9_lock_pending_answer import _step9_lock_pending_answer  #
 # (Phase 10/11-phase ask_api decomposition) -- re-exported here so every
 # existing caller/test keeps working unchanged.
 from aryx.api.ask_step10_rule_eval_loop import _step10_run_rule_eval_loop  # noqa: E402
+# Moved to ask_step11_build_response.py + sibling ask_step11_*.py files
+# (Phase 10/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_step11_build_response import _step11_build_turn_response  # noqa: E402
 from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection  # noqa: E402
 
 
@@ -2979,162 +2983,11 @@ def _run_cpq_turn_inner(
     if _step10_early_response is not None:
         return _step10_early_response
 
-    _step_format_t0 = time.monotonic()
-    logger.info(
-        "cpq_step: step6_4_response_formatting start run_id=%s pending=%d",
-        session.run_id, len(pending),
+    return _step11_build_turn_response(
+        req, session, attrs, hints, visible_attrs, filled, display_filled, pending,
+        constrained_opts, rule_ids, dropped_note, hiding_rules, rec_rules, con_rules,
+        validation_rules, bml_eval, catalog_prefix, mode_request,
     )
-    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
-        visible_attrs, session.filled_multi)
-    if not pending and unresolved_grid_gaps:
-        # A selected grid option has NO resolvable quantity attr at all
-        # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 9) — never silently
-        # complete with a permanent per-row gap; block and ask the
-        # customer to resolve it (remove the selection or pick another).
-        session.status = "configuring"
-        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
-        answer = (
-            (f"{dropped_note.strip()}\n\n" if dropped_note else "")
-            + f"⚠️ {gap_list} has no quantity field configured in this "
-              f"catalog. Please remove it or choose a different option "
-              f"before this configuration can be completed."
-        )
-    elif not pending and (_stale_reask := _reask_stale_constraint_violations(
-        session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
-    )) is not None:
-        answer = (f"{dropped_note.strip()}\n\n" if dropped_note else "") + _stale_reask
-    elif not pending:
-        # ── STEP 6: FORMAT B — verbose summary, JSON only on request ─────────
-        # (§6/Phase K: JSON is never shown unasked, even at completion —
-        # only the earlier "still configuring" responses honored this
-        # before; this branch previously dumped the full BOM immediately.)
-        session.status = "awaiting_approval"
-        summary = _cpq_summary_text(
-            display_filled, attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-            product_quantity=session.product_quantity, filled=session.filled,
-        )
-        answer = (
-            (f"{dropped_note.strip()}\n\n" if dropped_note else "")
-            + f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
-    elif session.turn >= _cpq_engine.MAX_TURNS:
-        # Turn cap reached with attrs still unresolved. NEVER fabricate a
-        # complete BOM here — a payload presented as final must not contain
-        # guessed values. Emit an explicitly-incomplete state and keep the
-        # guided flow open on the next pending attribute.
-        unresolved = [a.display_label for a in pending]
-        next_attr = pending[0]
-        _pending_collision = _label_collision_for(next_attr, visible_attrs, session, pending)
-        if _pending_collision:
-            session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
-            q_block = _label_collision_prompt(
-                _pending_collision, session, req.question, req.workspace_id)
-        else:
-            q_block = _cpq_engine.next_question_prompt(
-                next_attr, "", constrained_opts.get(next_attr.entity_id),
-                validation_rules=validation_rules, attrs=visible_attrs,
-            )
-        answer = (
-            f"⚠️ The configuration for **{session.product_name}** is "
-            f"**incomplete** — {len(unresolved)} attribute(s) still need "
-            f"your input: *{', '.join(unresolved[:8])}"
-            f"{'…' if len(unresolved) > 8 else ''}*.\n\n"
-            f"I won't generate a BOM with guessed values. Let's continue:"
-            f"\n\n{q_block}"
-        )
-    else:
-        # ── §6: explicit on-request presentation — JSON preview or the full
-        # batch of pending questions — otherwise FORMAT A (one question).
-        # mode_request was detected early (before Step 5) so an explicit
-        # request never gets rejected as an invalid menu answer. ─────────
-        if mode_request == "json":
-            # Recomputed against the CURRENT `filled` (post-cascade), not the
-            # turn-start `_hidden_for_payload` — cascades earlier in this
-            # same turn can change which hiding rules are active.
-            _hidden_now = _cpq_engine.apply_hiding_rules(
-                attrs, filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
-            _hidden_now = _hidden_now | _cpq_engine.payload_flow_exclusions(
-                req.workspace_id, catalog_prefix, attrs)
-            preview_payload = _cpq_engine.build_payload(
-                filled, session.filled_source, session.filled_multi, visible_attrs,
-                hidden_vns=_hidden_now,
-                rules=[*hiding_rules, *rec_rules, *con_rules],
-                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-                product_quantity=session.product_quantity,
-                scope_required_and_edited=True,
-                workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
-            summary = _cpq_summary_text(
-                display_filled, attrs, rule_ids,
-                session.product_name, req.workspace_id, sources=session.filled_source,
-                product_quantity=session.product_quantity, filled=session.filled,
-            )
-            still_need = ", ".join(a.display_label for a in pending)
-            answer = (
-                (f"{dropped_note.strip()}\n\n" if dropped_note else "")
-                + (f"{summary}\n\n" if summary else "")
-                + f"Here's the configuration so far — **preview, not final**:\n\n"
-                f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
-                f"Still need: {still_need}."
-            )
-        elif mode_request == "batch":
-            blocks = []
-            for a in pending:
-                ctx = _cpq_engine.build_context_sentence(
-                    a, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
-                )
-                blocks.append(_cpq_engine.next_question_prompt(
-                    a, ctx, constrained_opts.get(a.entity_id),
-                    validation_rules=validation_rules, attrs=visible_attrs))
-            answer = (
-                (f"{dropped_note.strip()}\n\n" if dropped_note else "")
-                + f"Here's everything still needed ({len(pending)} item(s)):\n\n"
-                + "\n\n---\n\n".join(blocks)
-            )
-        else:
-            # ── STEP 4: FORMAT A — context sentence + numbered options only ──
-            next_attr = pending[0]
-            _pending_collision = _label_collision_for(next_attr, visible_attrs, session, pending)
-            if _pending_collision:
-                session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
-                answer = dropped_note + _label_collision_prompt(
-                    _pending_collision, session, req.question, req.workspace_id)
-            else:
-                context_sentence = dropped_note + _cpq_engine.build_context_sentence(
-                    next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
-                )
-                constrained_vals = constrained_opts.get(next_attr.entity_id)
-                # FORMAT A: pure options prompt — no background state, no counters
-                answer = _cpq_engine.next_question_prompt(
-                    next_attr, context_sentence, constrained_vals,
-                    validation_rules=validation_rules, attrs=visible_attrs,
-                    already_selected=session.filled_multi.get(next_attr.variable_name),
-                )
-                # PROMPT 7: remember the exact option list shown so a typo
-                # on the next turn re-asks within this scope (never 325).
-                _remember_attr_scope(
-                    session, next_attr, constrained_vals, req.question,
-                )
-
-    logger.info(
-        "cpq_step: step6_4_response_formatting done run_id=%s elapsed_s=%.3f",
-        session.run_id, time.monotonic() - _step_format_t0,
-    )
-    _persist_cpq_history(req.workspace_id, req.question, answer)
-    return {
-        "answer": answer,
-        "terms": list(hints.values()),
-        "tools_called": [f"cpq_config_load(product={session.product_name})"],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-        "grounding": None,
-        "session_data": session.to_dict(),
-        "cpq_payload": None,  # payload only generated on STEP 8 approval
-        "preview": mode_request == "json",
-    }
 # or the session has already reached review/approval regardless of count.
 _SHARE_READY_MIN_FILLED = 3
 

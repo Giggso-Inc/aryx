@@ -7988,82 +7988,62 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2324,
+      2328,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2382,
+      2386,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2622,
+      2626,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2994,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3011,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3032,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3101,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3127,
+      2986,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3215,
+      3068,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3249,
+      3102,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3301,
+      3154,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3310,
+      3163,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3311,
+      3164,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3314,
+      3167,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3316,
+      3169,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3318,
+      3171,
       "ask_router"
     ],
     [
@@ -9305,6 +9285,76 @@
       "src/aryx/api/ask_step10_sibling_and_multi_hint.py",
       69,
       "_step10_enforce_siblings_and_multi_hint"
+    ],
+    [
+      "src/aryx/api/ask_step11_build_response.py",
+      29,
+      "_step11_build_turn_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_build_response.py",
+      53,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_step11_build_response.py",
+      69,
+      "_step11_build_turn_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      24,
+      "_step11_grid_gap_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      34,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      36,
+      "_step11_grid_gap_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      58,
+      "_step11_completion_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      65,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_step11_completion_responses.py",
+      71,
+      "_step11_completion_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_on_request_response.py",
+      25,
+      "_step11_on_request_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_on_request_response.py",
+      92,
+      "_step11_on_request_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_turn_cap_response.py",
+      19,
+      "_step11_turn_cap_response"
+    ],
+    [
+      "src/aryx/api/ask_step11_turn_cap_response.py",
+      27,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_step11_turn_cap_response.py",
+      36,
+      "_step11_turn_cap_response"
     ],
     [
       "src/aryx/api/ask_step1_product_anchor.py",
