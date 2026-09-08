@@ -106,134 +106,6 @@ logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
 
-def _validate_workspace(workspace_id: int) -> None:
-    """Raise 422 if workspace_id does not exist — prevents cross-workspace log pollution."""
-    with get_pool(get_settings().effective_dsn()).connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(load("select_workspace_by_id"), (workspace_id,))
-            if cur.fetchone() is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"workspace {workspace_id} does not exist",
-                )
-
-
-def _reader(workspace_id: int = 1) -> GraphReaderPort:
-    return ports().graph_reader(workspace_id)
-
-
-def _safe_detect_product_mention(question: str, reader: Any, workspace_id: int) -> str:
-    """`CpqEngine.detect_product_mention`, but never lets a lookup failure
-    (e.g. a test-double `reader` without the real graph methods) propagate
-    into a gate that has no business crashing a turn — degrades to "no
-    mention found," the same never-guess convention every other
-    best-effort gate in this file already uses."""
-    try:
-        return _cpq_engine.detect_product_mention(question, {}, reader, workspace_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("cpq quantity gate: detect_product_mention failed: %r", exc)
-        return ""
-
-
-def _mine_history_for_cpq_context(
-    session: CpqSession,
-    history: list[Turn],
-    engine: Any,
-) -> None:
-    """Recover country / order utterance when turn 1 was standard Ask (not CPQ).
-
-    Residual Bug A: latch logic only runs inside ``_run_cpq_turn``. If the
-    first order sentence was answered by the graph pipeline, no CpqSession
-    existed — country and the long order text were never stashed. When CPQ
-    finally starts (e.g. user says "need to get the quote" / family code),
-    mine the last few history user-turns via extract_hints so country-once
-    and product_anchor still work.
-    """
-    texts = _user_texts_from_history(history)
-    if not texts:
-        return
-
-    from aryx.cpq.intent_gateway import soft_quote_heuristic
-
-    # Prefer the longest order-like utterance for product_anchor_question.
-    order_candidates = [
-        t for t in texts
-        if soft_quote_heuristic(t) or engine.extract_hints(t).get("country")
-    ]
-    if order_candidates:
-        best = max(order_candidates, key=len)
-        prior = session.product_anchor_question or ""
-        if not prior or len(best) > len(prior):
-            session.product_anchor_question = best
-            logger.info(
-                "cpq: mined product_anchor_question from history (%d chars)",
-                len(best),
-            )
-
-    if session.country:
-        return
-
-    # Newest country mention wins (scan history newest-first).
-    for text in reversed(texts):
-        country = engine.extract_hints(text).get("country")
-        # ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
-        # 17.md): `is_recognized_country` now returns the resolved
-        # canonical name (e.g. "United States"), not a bare bool — store
-        # THAT, not the raw historical text, so a mined "US.A"/"USA"/etc.
-        # lands in session.country the same clean form a fresh turn-1 hit
-        # would produce, not whatever punctuation/case the customer
-        # happened to type several turns ago.
-        canonical_country = country and engine.is_recognized_country(country)
-        if canonical_country:
-            session.country = canonical_country
-            logger.info(
-                "cpq: mined country=%r from Ask history (pre-CPQ turn)",
-                canonical_country,
-            )
-            return
-
-
-_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
-# Segments _cpq_summary_text asks the LLM to separate its reply by — one
-# lead-in sentence + one narration segment per category, code-assembled
-# with the real "• Category" headers afterwards (see _cpq_summary_text).
-# Distinctive enough that real narration text won't produce it by accident.
-_CPQ_SEGMENT_DELIM = "@@@"
-
-
-
-def _current_turn_usage_dict(default_model: str = "cpq-engine") -> dict[str, Any]:
-    """Real per-turn LLM usage accumulated so far, or the deterministic default.
-
-    docs/CPQ_Usage_Reporting_Gap — same llm_runtime.get_turn_usage() ContextVar
-    _apply_real_llm_usage reads from; shared here so every one of the ~50
-    _persist_cpq_history call sites scattered through _run_cpq_turn_inner
-    picks up real tokens/model too, without touching each one individually.
-    """
-    real = llm_runtime.get_turn_usage()
-    if real and real["calls"]:
-        models = ", ".join(real["models"]) or default_model
-        return {
-            "prompt_tokens": real["prompt_tokens"],
-            "completion_tokens": real["completion_tokens"],
-            "latency_ms": real["latency_ms"],
-            "menial_model": models,
-            "answer_model": models,
-        }
-    return {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-            "menial_model": default_model, "answer_model": default_model}
-
-
-def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
-    try:
-        hstore = AskHistoryStore(get_settings().effective_dsn())
-        try:
-            usage = _current_turn_usage_dict()
-            hstore.append(workspace_id, question, answer, [], [], usage)
-        finally:
-            hstore.close()
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # Moved to ask_cpq_summary_text.py (Phase 3/11-phase ask_api
@@ -241,47 +113,6 @@ def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
 # working unchanged.
 from aryx.api.ask_cpq_summary_text import _cpq_summary_text  # noqa: E402
 
-
-def _build_attr_options_text(
-    req: "AskRequest", session: Any, attrs: list, attr_q: Any,
-) -> str | None:
-    """Build "The available options for X are: ..." text for one already-
-    resolved attribute, constrained to the currently-active allowed set.
-    Returns None when the attribute has no presentable options at all.
-
-    Factored out of `_handle_cpq_qa`'s single-attr fast path (docs/
-    config_consistency_issues_2026-07-30.md issue 3) so the same constrained-
-    options logic can answer more than one attribute in one turn — a
-    customer asking about 2+ different attributes must get both answered,
-    not have `detect_attr_query`'s single-best-match nature silently drop
-    the second one.
-    """
-    _presentable = [o for o in attr_q.options if o.display_name.strip()]
-    if not _presentable:
-        return None
-    # Constrain to values compatible with what's already selected
-    # (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 2 —
-    # confirmed live: this Q&A fast path, exercised once the config is
-    # already awaiting_approval, listed all 325 raw Product codes instead
-    # of the ~2 an active constraint rule actually allows; the first fix
-    # attempt only patched _run_cpq_turn's OWN separate options-query
-    # block, which isn't the one reached here).
-    _qa_catalog_prefix = attrs[0].catalog_prefix if attrs else ""
-    _, _qa_con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
-        req.workspace_id, _qa_catalog_prefix)
-    _qa_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, _qa_catalog_prefix)
-    _qa_constrained = _cpq_engine.apply_constraint_rules(
-        attrs, _qa_con_rules, session.filled, _qa_bml_eval, filled_multi=session.filled_multi)
-    _qa_allowed = _qa_constrained.get(attr_q.entity_id)
-    if _qa_allowed is not None:
-        _presentable = [o for o in _presentable if o.item_value in _qa_allowed]
-    _numbered = "\n".join(
-        f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
-    )
-    return (
-        f"The available options for **{_cpq_engine.disambiguated_label(attr_q, attrs)}** "
-        f"are:\n\n{_numbered}"
-    )
 
 
 # Moved to ask_llm_catalog_enumeration.py (Phase 6/11-phase ask_api
@@ -296,55 +127,6 @@ from aryx.api.ask_llm_catalog_enumeration import _llm_detect_catalog_enumeration
 from aryx.api.ask_catalog_listing_text import _build_catalog_attribute_listing_text  # noqa: E402
 
 
-def _build_current_quote_attribute_listing_text(
-    session: Any, attrs: list, workspace_id: int, catalog_prefix: str, product_name: str,
-) -> str:
-    """Answer "list the attributes" when a quote is already in progress
-    or complete by reading the REAL filled state -- no layout
-    approximation, no simulation needed at all, because the customer's
-    own actual answers already ARE the one real path
-    `_build_catalog_attribute_listing_text` can only ever approximate
-    pre-quote (live-confirmed 2026-08-31: a real submitted quote's JSON
-    has ~7-10 keys, while even the layout-scoped pre-quote answer has
-    ~89 -- the full native-UI-visible set across every possible path,
-    since no path is chosen yet at that point).
-
-    Calls the exact SAME `build_payload(..., scope_required_and_edited=
-    True)` the JSON-preview ("Click JSON below") button already uses
-    (`ask_api.py`'s `cpq_payload_approved()` handler) -- so this list is
-    always exactly the keys that JSON preview shows, never a second,
-    driftable approximation of it.
-
-    Small by construction (a real quote's configData is single-digit to
-    low-tens of keys) -- rendered directly, no LLM grouping/
-    hallucination-guard machinery needed at this size; there is nothing
-    for an LLM to invent when the list is this short and this real.
-    """
-    layout_order = _cpq_engine.load_layout_display_order(workspace_id, catalog_prefix)
-    payload = _cpq_engine.build_payload(
-        session.filled, session.filled_source, session.filled_multi, attrs,
-        display_order=layout_order, product_quantity=session.product_quantity,
-        scope_required_and_edited=True,
-        workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-    )
-    config_data = payload.get("configData", {})
-    attr_by_vn = {a.variable_name: a for a in attrs}
-    seen: set[str] = set()
-    labels: list[str] = []
-    for vn in config_data:
-        attr = attr_by_vn.get(vn)
-        label = attr.display_label if attr else vn
-        if label and label not in seen:
-            seen.add(label)
-            labels.append(label)
-    if not labels:
-        return f"Your **{product_name}** quote doesn't have any confirmed attributes yet."
-    lines = "\n".join(f"- {label}" for label in labels)
-    return (
-        f"Here are the attributes currently confirmed in your **{product_name}** "
-        f"quote ({len(labels)} items):\n\n{lines}"
-    )
-
 
 # Moved to ask_llm_split_multi_attr_options.py/ask_llm_split_multi_
 # attr_change.py (Phase 6/11-phase ask_api decomposition) -- re-exported
@@ -357,165 +139,12 @@ from aryx.api.ask_llm_split_multi_attr_options import (  # noqa: E402
 )
 
 
-def _resolve_split_change_text(
-    text: str, attrs: list, filled: dict, filled_multi: dict,
-    last_qa_variables: list[str] | None = None,
-) -> tuple[Any, str] | None:
-    """Resolve one self-contained "change X to Y" fragment from
-    _llm_split_multi_attr_change_request to (attr, new_value_hint).
-
-    docs/config_consistency_issues_2026-07-30.md Issue 12 — live-confirmed
-    the generic catalog-wide detectors are NOT reliable enough for this:
-    `detect_change_request("change Frequency Bands to VHF", ...)` resolved
-    to the wrong sibling ("Primary Frequency", which also has a VHF
-    option), and `_resolve_target_description` resolved the same text to
-    an unrelated attr entirely (the added word "change" itself picked up
-    incidental vocabulary overlap elsewhere in the catalog). Both were
-    live-verified to work FINE for Wireless Carrier — the unreliability is
-    specific to which attribute happens to collide with others, not a
-    blanket failure.
-
-    Since last_qa_variables already narrows the search to the exact 1-2
-    attributes the customer was just discussing, resolving directly
-    against ONLY those (exact label containment, then a real option value
-    of that SAME attr named in the text) is a strictly smaller and more
-    precise search than either generic catalog-wide detector — and
-    correctly sidesteps both wrong-match failure modes above. Only falls
-    back to the generic deterministic detector when last_qa_variables
-    doesn't cover this fragment at all (e.g. a genuinely new attribute
-    named in the same compound message that wasn't part of the prior
-    turn's topic).
-    """
-    text_lower = text.lower()
-    preferred = [a for a in attrs if a.variable_name in (last_qa_variables or [])]
-    for a in preferred:
-        label_l = (a.display_label or "").lower()
-        if label_l and label_l in text_lower:
-            for opt in sorted(
-                a.options, key=lambda o: -len(o.display_name or o.item_value or ""),
-            ):
-                if (
-                    (opt.display_name or "").lower() in text_lower
-                    or (opt.item_value or "").lower() in text_lower
-                ):
-                    return a, opt.item_value
-    return _cpq_engine.detect_change_request(text, attrs, filled, filled_multi)
-
 
 # Moved to ask_handle_cpq_qa.py (Phase 8/11-phase ask_api
 # decomposition) -- re-exported here so every existing caller/test keeps
 # working unchanged.
 from aryx.api.ask_handle_cpq_qa import _handle_cpq_qa  # noqa: E402
 
-
-def _append_unmatched_targets_note(
-    result: dict, question: str, attrs: list, matched_vns: "set[str]",
-) -> dict:
-    """Surfaces (never silently drops) a fragment of a multi-target change
-    request that named nothing real — live-verified gap: "change solution
-    type and hardware type" successfully changed Solution Type but said
-    nothing at all about "hardware type" (which names no real attr in
-    this catalog), leaving the customer unable to tell whether it was
-    understood-and-ignored or simply forgotten. Called at every STEP 6
-    change-request dispatch site right after the real change succeeds, so
-    the note rides along with the genuine answer rather than blocking it —
-    an unrecognized SECOND fragment should never stop the FIRST, valid one
-    from being applied.
-    """
-    unmatched = _cpq_engine.detect_unmatched_change_targets(question, attrs, matched_vns)
-    if unmatched:
-        phrases = ", ".join(f'"{u}"' for u in unmatched)
-        result["answer"] += (
-            f"\n\n*(I didn't recognize {phrases} as anything in this "
-            f"configuration — did you mean something else?)*"
-        )
-    return result
-
-
-def _scan_and_enqueue_remaining_targets(
-    session: Any,
-    question: str,
-    attrs: list,
-    *,
-    exclude_vns: set[str] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Scan utterance for all valueless change targets; enqueue all but active.
-
-    Returns (enqueued_vns, overflow_vns). The first target in appearance
-    order that is NOT in exclude is treated as "active" (caller handles it);
-    the rest go on pending_intent_queue.
-    """
-    exclude = set(exclude_vns or set())
-    all_targets = _cpq_engine.detect_all_change_targets_without_value(
-        question, attrs, session.filled,
-        filled_multi=session.filled_multi,
-        exclude_vns=exclude,
-        cap=INTENT_QUEUE_CAP + 5,  # detect a few past cap so overflow is visible
-    )
-    remaining = [a.variable_name for a in all_targets if a.variable_name not in exclude]
-    # If caller already has an active target excluded, remaining is the queue.
-    # If not, first is active (caller handles) and rest are queued.
-    overflow = enqueue_intent_targets(
-        session, remaining, exclude=exclude, cap=INTENT_QUEUE_CAP,
-    )
-    enqueued = [v for v in remaining if v in session.pending_intent_queue]
-    return enqueued, overflow
-
-
-def _queue_followup_note(session: Any, attrs: list) -> str:
-    """Human note listing queued targets still to ask."""
-    if not session.pending_intent_queue:
-        note = ""
-    else:
-        by_vn = {a.variable_name: a for a in attrs}
-        labels = [
-            _cpq_engine.disambiguated_label(by_vn[v], attrs)
-            if v in by_vn else v
-            for v in session.pending_intent_queue
-        ]
-        if len(labels) == 1:
-            note = f"\n\n*(I'll also ask about **{labels[0]}** next.)*"
-        else:
-            joined = ", ".join(f"**{lbl}**" for lbl in labels)
-            note = f"\n\n*(I'll ask about each next: {joined}.)*"
-    if session.pending_intent_overflow:
-        note += "\n\n" + format_queue_overflow_notice(
-            list(session.pending_intent_overflow), attrs,
-        )
-        session.pending_intent_overflow = []
-    return note
-
-
-def _apply_intent_conservation(
-    result: dict[str, Any] | None,
-    question: str,
-    detected_targets: set[str] | list[str],
-    handled_vns: set[str] | list[str],
-    session: Any,
-    attrs: list,
-    *,
-    clarified_vns: set[str] | list[str] | None = None,
-) -> dict[str, Any] | None:
-    """Run intent-conservation audit; append dropped-intent notice to answer."""
-    if result is None:
-        return None
-    audit = audit_intent_conservation(
-        question, detected_targets, handled_vns, session,
-        clarified_vns=clarified_vns,
-        run_id=getattr(session, "run_id", "") or "",
-        turn=int(getattr(session, "turn", 0) or 0),
-        log=True,
-    )
-    if audit.dropped:
-        notice = format_dropped_intent_notice(audit.dropped, attrs)
-        if notice:
-            result["answer"] = (result.get("answer") or "") + "\n\n" + notice
-        # Refresh session_data after any queue mutations
-        result["session_data"] = session.to_dict()
-        tools = list(result.get("tools_called") or [])
-        tools.append("cpq_intent_dropped()")
-        result["tools_called"] = tools
-    return result
 
 
 # Moved to ask_build_no_value_response.py (Phase 3/11-phase ask_api
@@ -524,133 +153,6 @@ def _apply_intent_conservation(
 from aryx.api.ask_build_no_value_response import _build_no_value_response  # noqa: E402
 
 
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2):
-# no decline detector existed anywhere on the pending "which value?" path —
-# "I don't want to change product" fell straight into apply_answer as an
-# attempted (and failed) Product value. Stemmed with \w* on the verb forms
-# (change/changing/changed) rather than one literal, learning directly from
-# the earlier clarify-decline regex missing "wanted" vs "want" (§6) —
-# deliberately does NOT match bare "no" alone, since that's a legitimate
-# value for yes/no-shaped attrs.
-_CHANGE_VALUE_DECLINE_RE = re.compile(
-    r"don'?t\s+want\w*|do\s+not\s+want\w*"
-    r"|no\s+chang\w*|not\s+chang\w*"
-    r"|leave\s+it|keep\s+it"
-    r"|never\s*mind"
-    r"|cancel\s+(this|that|it)"
-    r"|skip\s+(this|that)",
-    re.IGNORECASE,
-)
-
-
-def _is_change_value_decline(reply: str) -> bool:
-    return bool(_CHANGE_VALUE_DECLINE_RE.search(reply or ""))
-
-
-# Thin wrappers — pure logic lives in aryx.cpq.replacement_clause so offline
-# regression / unit tests can load it without FastAPI. Ask-api keeps the
-# historical private names for call sites and monkeypatches.
-# PROMPT 6: returns (wanted, rejected); contrast-first reversed forms.
-def _extract_replacement_clause(text: str) -> tuple[str | None, str | None]:
-    """See ``aryx.cpq.replacement_clause.extract_replacement_clause``."""
-    return extract_replacement_clause(text)
-
-
-_GLOBAL_CHANGE_SCOPE_RE = re.compile(
-    r"\b(?:any\s+(?:attributes?|fields?|settings?)|anything)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_global_change_decline(reply: str) -> bool:
-    """Return True only for an explicit request to make no changes at all.
-
-    A replacement clause wins over decline wording so messages such as
-    "I don't want any attributes; use Hardware Version" keep flowing to
-    normal resolution instead of being cancelled.
-    """
-    normalized = (reply or "").replace("’", "'")
-    wanted, _rejected = _extract_replacement_clause(normalized)
-    return (
-        wanted is None
-        and _is_change_value_decline(normalized)
-        and bool(_GLOBAL_CHANGE_SCOPE_RE.search(normalized))
-    )
-
-
-def _remember_attr_scope(
-    session: Any,
-    attr: Any,
-    constrained_item_values: list[str] | None,
-    origin_question: str = "",
-) -> None:
-    """Persist the option list we just showed (PROMPT 7)."""
-    if attr is None or not getattr(attr, "options", None):
-        return
-    cands = candidates_from_attr_options(attr.options, constrained_item_values)
-    if not cands:
-        return
-    vn = getattr(attr, "variable_name", "") or ""
-    kind = (
-        "product_options"
-        if "productselection" in vn.lower().replace("_", "")
-        or vn.lower() == "productselectionproduct_all"
-        else "attr_options"
-    )
-    set_pending_scope(
-        session,
-        kind=kind,
-        candidates=cands,
-        origin_question=origin_question,
-        attr_vn=vn,
-        asked_turn=getattr(session, "turn", 0),
-    )
-
-
-def _scoped_reask_response(
-    req: "AskRequest",
-    session: Any,
-    reply: str,
-    *,
-    scope_label: str = "",
-    tools_called: str = "cpq_scope_reask()",
-) -> dict[str, Any]:
-    """Build a scoped 'did you mean' / numbered re-ask; retain scope."""
-    cands = list(session.pending_scope_candidates or [])
-    res = resolve_against_scope(reply, cands)
-    session.pending_scope_misses = int(session.pending_scope_misses or 0) + 1
-    log_scope_retained(
-        run_id=getattr(session, "run_id", "") or "",
-        reply=reply,
-        kind=session.pending_scope_kind or "",
-        n_candidates=len(cands),
-        suggestions=res.suggestions,
-        misses=session.pending_scope_misses,
-    )
-    numbered = session.pending_scope_misses >= scope_loop_exit_threshold()
-    sug = res.suggestions or cands[:3]
-    confident_single = len(sug) == 1 and is_confident_scope_suggestion(res)
-    if numbered:
-        sug = cands  # full same-scope list, never catalog-wide
-    elif len(sug) == 1 and not confident_single:
-        # A single suggestion that only cleared the bare fuzzy-suggest
-        # floor is coincidental overlap, not a real near-miss (confirmed
-        # live 2026-08-08 -- see is_confident_scope_suggestion's own
-        # docstring). Show the real full list instead of framing that one
-        # weak guess as "did you mean X?".
-        sug = cands
-    answer = format_did_you_mean(
-        reply, sug, numbered=numbered, scope_label=scope_label,
-        confident_single=confident_single,
-    )
-    _persist_cpq_history(req.workspace_id, req.question, answer)
-    return {
-        "answer": answer, "terms": [], "tools_called": [tools_called],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-    }
-
 
 # Moved to ask_llm_classify_scope_reply.py (Phase 6/11-phase ask_api
 # decomposition) -- re-exported here so every existing caller/test keeps
@@ -658,110 +160,7 @@ def _scoped_reask_response(
 from aryx.api.ask_llm_classify_scope_reply import _llm_classify_scope_reply  # noqa: E402
 
 
-def _resolve_scope_reply(
-    reply: str, candidates: list[str], scope_label: str,
-    session: Any, workspace_id: int,
-) -> "ScopeResolve | Literal['skip', 'family_only']":
-    """Single integration point replacing a bare `resolve_against_scope`
-    call wherever a reply to an ACTIVE pending scope question is being
-    resolved (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_PLAN_2026_08_13.md).
 
-    LLM classifies first; the deterministic ladder validates second —
-    the LLM never hands a final value to the caller, only a pointer
-    `resolve_against_scope` must independently confirm is real. Any
-    outcome other than a confirmed "candidate" falls through to running
-    the deterministic ladder on the ORIGINAL reply, unchanged from
-    today's behavior — this function can only ever ADD the "skip"/
-    "family_only" outcomes and loose-phrasing recovery, never remove
-    existing coverage.
-    """
-    outcome, guess = _llm_classify_scope_reply(reply, candidates, scope_label, session, workspace_id)
-    if outcome in ("skip", "family_only"):
-        return outcome
-    if outcome == "candidate" and guess:
-        res = resolve_against_scope(guess, candidates)
-        if res.tier != "miss":
-            return res
-    return resolve_against_scope(reply, candidates)
-
-
-def _build_scope_skip_response(
-    req: "AskRequest", session: Any, candidates: list[str], scope_label: str,
-    tools_called: str = "cpq_scope_skip_declined()",
-) -> dict[str, Any]:
-    """Response for a reply classified as asking to skip/defer a pending
-    scope question. Owner decision: ask what they'd like to do instead —
-    never auto-pick a default, never silently escalate.
-    """
-    lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
-    answer = (
-        f"This choice determines the rest of the configuration, so I "
-        f"can't skip it yet — could you tell me which **{scope_label}** "
-        f"you'd like, or what you're trying to configure? Here are the "
-        f"choices again:\n\n{lines}"
-    )
-    _persist_cpq_history(req.workspace_id, req.question, answer)
-    return {
-        "answer": answer, "terms": [], "tools_called": [tools_called],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-    }
-
-
-def _build_scope_family_only_response(
-    req: "AskRequest", session: Any, candidates: list[str], scope_label: str,
-    tools_called: str = "cpq_scope_family_only()",
-) -> dict[str, Any]:
-    """Response for a reply that's clearly on-topic but names only the
-    broader family/category, not a specific option — owner decision:
-    never auto-pick a variant for them, just tell them plainly to
-    choose one so the quote can proceed. Distinct wording from a
-    genuine miss (`_scoped_reask_response`) since the reply itself
-    wasn't wrong, just not specific enough yet.
-    """
-    lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
-    answer = (
-        f"To proceed with the quote, please select the specific "
-        f"**{scope_label}** from the list below:\n\n{lines}"
-    )
-    _persist_cpq_history(req.workspace_id, req.question, answer)
-    return {
-        "answer": answer, "terms": [], "tools_called": [tools_called],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-    }
-
-
-def _constrain_excluding_rejected(
-    attr: Any,
-    rejected_text: str | None,
-    base_constrained: list[str] | None,
-) -> list[str] | None:
-    """Drop the option matching ``rejected_text`` from the allowed set.
-
-    Option-level rejection (not VN-level): ``session.negated_vns`` tracks
-    *attributes* suppressed by "exclude any X", while a replacement rejects
-    a *value* on the target attr. Constrained-values is the correct path.
-    """
-    if not rejected_text or not getattr(attr, "options", None):
-        return base_constrained
-    rej = _cpq_engine.apply_answer(attr, rejected_text)
-    if not rej:
-        return base_constrained
-    excluded_iv = rej[0]
-    base = (
-        list(base_constrained)
-        if base_constrained is not None
-        else [o.item_value for o in attr.options]
-    )
-    filtered = [v for v in base if v != excluded_iv]
-    # Never return an empty allow-list — that would force match failure even
-    # for the wanted value if option inventory was unexpected.
-    if not filtered:
-        return base_constrained
-    return filtered
 
 
 # Moved to ask_data_table_conflict_reask.py/ask_pending_exclusion.py/
@@ -781,30 +180,15 @@ from aryx.api.ask_stale_constraint_reask import (  # noqa: E402
 
 
 
-# docs/CPQ_STALE_BASE_MODEL_CASCADE_CONFLICT_PLAN_2026_08_20.md
-_BASE_MODEL_VN = "modelSelectionbaseModel_astro"
-# Every input Base Model's own re-derivation reads (engine.py:7958-7975):
-# Product (via _cpq_model_candidates), and Country/Region (via
-# resolve_region_allow_value) when Product alone doesn't already resolve
-# it. Hardware Version is included because it's the real, live-reproduced
-# trigger (Hardware Version change -> Product invalidated -> re-answered)
-# even though Base Model's own derivation code never reads it directly --
-# changing it is what makes Product (a real derivation input) go stale in
-# the first place. Widened 2026-08-20 after auditing every Data-Table
-# resolver function in data_table_resolver.py and confirming Base Model is
-# the ONLY scoping-key attribute of its kind in this catalog -- but its
-# OWN derivation has two triggers (Product, Country/Region), and the
-# original fix only covered one of them.
-_BASE_MODEL_TRIGGER_VNS = frozenset({
-    "hWVersion_astro", "productSelectionProduct_all",
-    "ultimateDestinationCountry", "modelSelectionRegion_astro",
-})
-
 
 # Moved to ask_invalidate_stale_base_model.py (Phase 4/11-phase ask_api
 # decomposition) -- re-exported here so every existing caller/test keeps
 # working unchanged.
-from aryx.api.ask_invalidate_stale_base_model import _invalidate_stale_base_model  # noqa: E402
+from aryx.api.ask_invalidate_stale_base_model import (  # noqa: E402
+    _BASE_MODEL_TRIGGER_VNS,
+    _BASE_MODEL_VN,
+    _invalidate_stale_base_model,
+)
 
 
 # Moved to ask_handle_cascade.py (Phase 4/11-phase ask_api
@@ -856,24 +240,6 @@ from aryx.api.ask_relevant_intent_candidates import (  # noqa: E402
     _LLM_INTENT_ATTRS_CAP_HARD, _LLM_INTENT_RELEVANT_CAP, _WORD_RE,
 )
 
-# Decline detector for a pending change-target prompt (docs/CPQ_SESSION_
-# 2026_07_29_ISSUES_PLAN.md #2): "change product" -> "which value?" ->
-# "I don't want to change product" was previously fed straight into
-# apply_answer as an attempted (and failed) VALUE for Product, producing
-# "I couldn't match that to a valid option" instead of recognizing the
-# reply as a cancel. Deliberately narrow (only cancel-shaped phrasing) —
-# never treat an ordinary short reply as a decline by accident.
-_DECLINE_CHANGE_RE = re.compile(
-    r"\b(?:"
-    r"don'?t want to change|do not want to change|"
-    r"don'?t want to|no change|never\s?mind|"
-    r"keep (?:it|the current|the same)|leave (?:it|the current)|"
-    r"cancel (?:that|this)?"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
 # Moved to ask_relevant_intent_candidates.py (Phase 6/11-phase ask_api
 # decomposition) -- re-exported here so every existing caller/test keeps
 # working unchanged.
@@ -910,223 +276,6 @@ from aryx.api.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_sc
 from aryx.api.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hints  # noqa: E402
 
 
-def _label_collision_for(
-    attr: Any, attrs: list, session: Any = None, pending: list | None = None,
-) -> list | None:
-    """Detect a shared display_label collision for a SYSTEM-initiated next
-    question (the engine's own auto-selected `pending[0]`), not a
-    user-typed query — `detect_label_collision` (engine.py) only fires
-    against an explicit user question naming the label, so it never runs
-    for the ordinary "what do we ask next" step.
-
-    Live-confirmed gap (2026-07-26): a genuine same-catalog collision
-    (`ConnectorTypeProductArray_swSoln` and `productSelectionProduct_all`
-    both labeled "Product") was silently resolved to whichever attr came
-    first in catalog order — the engine asked "Product" and backed it
-    with the WRONG attr's options (113 unrelated values instead of the
-    real 325-option Product list), with no disambiguation at all. This
-    almost certainly explains earlier session reports of a persistent,
-    wrong 113-option "Product" prompt that survived even after the
-    cross-catalog scoping fix (Amendment 4) — a different bug entirely.
-
-    Excludes candidates already resolved (in `session.filled` or
-    `session.filled_multi`) when `session` is given — live-confirmed
-    follow-up bug (2026-07-26): once ONE of two same-labeled attrs was
-    answered, the remaining unresolved one still got treated as an
-    unresolved "collision", re-presenting the same "which one did you
-    mean?" choice even though there was no longer anything ambiguous —
-    only one candidate was actually still in play. Once filtering leaves
-    fewer than 2 truly-unresolved candidates, there's nothing left to
-    disambiguate.
-
-    Also excludes candidates absent from `pending` when it's given —
-    live-confirmed follow-up bug (2026-08-25, SVX Mounting Type): a
-    same-labeled sibling can be unfilled yet never actually reachable as
-    the next question (e.g. excluded by the ask-order/pending computation
-    for reasons unrelated to its label), and "unfilled" alone still
-    treated it as a live rival — re-presenting a "which one did you
-    mean?" choice for an attribute the engine had already, correctly,
-    decided not to ask about. Only a sibling the engine would actually
-    ask next is a real collision.
-
-    Returns the full list of same-labeled, still-unresolved attrs (2+)
-    when `attr`'s label collides with others, else None.
-    """
-    matches = [a for a in attrs if a.display_label == attr.display_label]
-    if session is not None:
-        matches = [
-            a for a in matches
-            if a.variable_name not in session.filled
-            and a.variable_name not in session.filled_multi
-        ]
-    if pending is not None:
-        pending_vns = {a.variable_name for a in pending}
-        matches = [a for a in matches if a.variable_name in pending_vns]
-    if len({a.variable_name for a in matches}) >= 2:
-        return matches
-    return None
-
-
-def _compose_disambiguation_question(
-    question: str, prompt_topic: str, candidate_labels: list[str],
-    already_known: dict[str, str], static_fallback: str, workspace_id: int,
-) -> str:
-    """Amendment 16 Layer 2 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
-    compose a natural clarifying question instead of a flat numbered-list
-    template, for the three ambiguous moments this doc scopes it to (label
-    collision, model-leaf list, low-confidence pending-answer).
-
-    NEVER invents an option — `candidate_labels` are the exact,
-    already-validated real candidates the caller determined; the LLM only
-    phrases the question naturally and reflects back `already_known` facts
-    (country, product, ...) so the customer isn't asked to repeat something
-    already said. Composing phrasing is lower-stakes than Gap A's
-    value-picking (`_llm_resolve_pending_answer`) — it never commits to an
-    answer, only asks a question — so unlike Gap A there's no separate
-    confidence gate here; the safety net is the fallback below instead.
-
-    Falls back to `static_fallback` (today's exact template) verbatim
-    whenever: the LLM call raises, the response is empty, OR the composed
-    text is missing any real candidate's identifying text (checked via the
-    same alphanumeric-only normalization used elsewhere in this file) —
-    a composed question that silently dropped an option would be worse
-    than today's plain list, so that case must never be trusted. Behavior
-    is never worse than before this existed.
-    """
-    if not candidate_labels:
-        return static_fallback
-    known_lines = "\n".join(f"- {k}: {v}" for k, v in already_known.items() if v)
-    sys = (
-        "You write ONE short, natural, conversational clarifying question "
-        "for a customer configuring a product, given what they already "
-        "said and a fixed list of real options they must choose between. "
-        "Reflect back anything already known so they aren't asked to "
-        "repeat it. List the exact options given, formatted naturally — "
-        "never add, remove, rename, or invent an option. Reply with ONLY "
-        "the question text (the option list may be part of it) — no JSON, "
-        "no preamble, no explanation of what you're doing."
-    )
-    user = (
-        f"CUSTOMER'S MOST RECENT MESSAGE: {question}\n\n"
-        f"ALREADY KNOWN:\n{known_lines or '(nothing yet)'}\n\n"
-        f"WHAT TO ASK ABOUT: {prompt_topic}\n\n"
-        "REAL OPTIONS (use exactly these, do not invent others):\n"
-        + "\n".join(f"- {c}" for c in candidate_labels)
-    )
-    try:
-        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
-        text = text.strip()
-        if not text:
-            return static_fallback
-        norm_text = re.sub(r"[^a-z0-9]", "", text.lower())
-        for label in candidate_labels:
-            norm_label = re.sub(r"[^a-z0-9]", "", label.lower())
-            if norm_label and norm_label not in norm_text:
-                return static_fallback  # a real candidate got dropped — never trust this
-        return text
-    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
-        logger.debug("disambiguation composer failed: %r", exc)
-        return static_fallback
-
-
-def _label_collision_prompt(
-    collision: list, session: Any,
-    question: str = "", workspace_id: int = 1,
-) -> str:
-    """Render the disambiguation prompt for a label collision — composed
-    conversationally via the LLM (Amendment 16 Layer 2) when possible,
-    falling back to the original flat template otherwise. `question`/
-    `workspace_id` default to values that make the fallback path behave
-    identically to before Layer 2 existed, for any caller not yet updated
-    to pass them.
-
-    Live-confirmed gap (2026-08-24): this prompt showed the raw internal
-    `variable_name` ("mountType_viSoln") instead of a customer-meaningful
-    label — every OTHER place in the flow that names one of a colliding
-    pair (the actual question header, cascade-announcement text) already
-    uses `disambiguated_label()` for exactly this reason
-    (`CpqEngine.disambiguated_label`'s own docstring); this was the one
-    spot still bypassing it. Not SVX-specific — every label collision in
-    every catalog (e.g. APX Next's 3-way "Service Type" collision) hit
-    this same raw-name leak. `collision` itself is a sufficient `attrs`
-    argument for `disambiguated_label` — it already contains exactly the
-    siblings sharing this label, which is all the function needs to
-    derive a unique suffix for each."""
-    labels = {
-        a.variable_name: _cpq_engine.disambiguated_label(a, collision)
-        for a in collision
-    }
-    lines = "\n".join(
-        f"- **{labels[a.variable_name]}**"
-        f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
-        for a in collision
-    )
-    static_fallback = (
-        f"There are {len(collision)} different attributes labeled "
-        f"**\"{collision[0].display_label}\"** in this catalog — which one "
-        f"did you mean?\n\n{lines}"
-    )
-    if not question:
-        return static_fallback
-    return _compose_disambiguation_question(
-        question, f'which attribute they mean by "{collision[0].display_label}"',
-        [labels[a.variable_name] for a in collision],
-        {"Country": getattr(session, "country", ""),
-         "Product": getattr(session, "product_name", "")},
-        static_fallback, workspace_id,
-    )
-
-
-def _narrow_label_collision(question: str, collision: list) -> list:
-    """Narrow a label-collision candidate list by relevance to the question
-    before presenting it (Amendment 2 Gap B, docs/CPQ_UNIFIED_INTENT_
-    CLASSIFIER_PLAN.md) — reuses `_relevant_intent_candidates`'s existing,
-    already-generic word-overlap scoring instead of a new per-catalog
-    heuristic. Live-confirmed need (2026-07-26): a genuine same-catalog
-    "Solution Type" collision (RAorderType_swSoln / serviceType_swSoln /
-    package_swSoln) presented all 3 unconditionally even when the
-    customer's own phrasing ("new solution type") already overlaps only
-    one of them.
-
-    Returns the narrowed list (only the top-scoring candidates) when the
-    question's vocabulary overlaps at least one candidate's label/options;
-    returns the original, unnarrowed list when nothing overlaps at all —
-    never narrows to zero, never guesses among a genuine tie.
-
-    Live-confirmed regression (2026-07-26): an early version of this
-    function narrowed all the way to a SINGLE candidate on a long,
-    multi-intent sentence whose generic words happened to coincidentally
-    overlap just one candidate's option text (e.g. "standard"/"plus"
-    appearing among that one attr's own option values), silently
-    eliminating 2 otherwise-equally-plausible candidates without ever
-    asking the user — an auto-resolve this plan explicitly deferred
-    pending more testing (see Amendment 2 Gap B). Fixed: (1) the shared
-    display_label's own words are excluded from scoring — every candidate
-    here has the IDENTICAL label by construction, so label words can never
-    discriminate between them and only add coincidental noise; (2)
-    narrowing that would collapse to fewer than 2 candidates is rejected
-    and the original, unnarrowed list is returned instead — narrowing the
-    shown list is safe (it still asks), auto-resolving to one is not.
-    """
-    q_words = set(_WORD_RE.findall(question.lower()))
-    if not q_words:
-        return collision
-    shared_label_words = set(_WORD_RE.findall(collision[0].display_label.lower()))
-    scored = []
-    for a in collision:
-        vocab = set()
-        for o in a.options:
-            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
-        vocab -= shared_label_words
-        overlap = len(q_words & vocab)
-        scored.append((overlap, a))
-    top_score = max(score for score, _a in scored)
-    if top_score == 0:
-        return collision
-    narrowed = [a for score, a in scored if score == top_score]
-    if len(narrowed) < 2:
-        return collision
-    return narrowed
 
 
 # Moved to ask_llm_classify_change_intent.py (Phase 6/11-phase ask_api
@@ -2327,6 +1476,70 @@ from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection
 # (Phase 10/11-phase ask_api decomposition) -- re-exported here so every
 # existing caller/test keeps working unchanged.
 from aryx.api.ask_preamble_run import _preamble_run  # noqa: E402
+# Moved to ask_core_helpers.py (final sweep, Phase 11/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_core_helpers import (  # noqa: E402
+    _CPQ_SEGMENT_DELIM,
+    _SENTENCE_SPLIT,
+    _current_turn_usage_dict,
+    _mine_history_for_cpq_context,
+    _persist_cpq_history,
+    _reader,
+    _safe_detect_product_mention,
+    _validate_workspace,
+)
+# Moved to ask_attr_text_helpers.py (final sweep, Phase 11/11-phase
+# ask_api decomposition) -- re-exported here so every existing
+# caller/test keeps working unchanged.
+from aryx.api.ask_attr_text_helpers import (  # noqa: E402
+    _build_attr_options_text,
+    _build_current_quote_attribute_listing_text,
+    _resolve_split_change_text,
+)
+# Moved to ask_intent_queue_text_helpers.py (final sweep, Phase 11/11-
+# phase ask_api decomposition) -- re-exported here so every existing
+# caller/test keeps working unchanged.
+from aryx.api.ask_intent_queue_text_helpers import (  # noqa: E402
+    _append_unmatched_targets_note,
+    _apply_intent_conservation,
+    _queue_followup_note,
+    _scan_and_enqueue_remaining_targets,
+)
+# Moved to ask_change_decline_and_scope_memory.py (final sweep, Phase
+# 11/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_change_decline_and_scope_memory import (  # noqa: E402
+    _constrain_excluding_rejected,
+    _extract_replacement_clause,
+    _is_change_value_decline,
+    _is_global_change_decline,
+    _remember_attr_scope,
+)
+# Moved to ask_scope_reask_responses.py (final sweep, Phase 11/11-phase
+# ask_api decomposition) -- re-exported here so every existing
+# caller/test keeps working unchanged.
+from aryx.api.ask_scope_reask_responses import (  # noqa: E402
+    _build_scope_family_only_response,
+    _build_scope_skip_response,
+    _resolve_scope_reply,
+    _scoped_reask_response,
+)
+# Moved to ask_label_collision_detect_and_compose.py (final sweep,
+# Phase 11/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_label_collision_detect_and_compose import (  # noqa: E402
+    _DECLINE_CHANGE_RE,
+    _compose_disambiguation_question,
+    _label_collision_for,
+)
+# Moved to ask_label_collision_prompt_and_narrow.py (final sweep, Phase
+# 11/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_label_collision_prompt_and_narrow import (  # noqa: E402
+    _label_collision_prompt,
+    _narrow_label_collision,
+)
 
 
 def _run_cpq_turn_inner(
