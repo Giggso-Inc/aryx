@@ -20,8 +20,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.config import get_settings
-
 from aryx.api.ask_model_leaf_resolve import _resolve_model_leaf
 from aryx.api.ask_step2_anchor_gates import _step2_resolve_product_and_gates
 from aryx.api.ask_step2_catalog_hints import _step2_catalog_hints_and_negation
@@ -91,7 +89,7 @@ def _step2_resolve_and_load(
     )
 
     if (
-        get_settings().cpq_llm_first_universal_enabled
+        _ask_api_module.get_settings().cpq_llm_first_universal_enabled
         and session.status not in ("awaiting_approval", "post_approval")
         and not incoming_pending_anchor
     ):
