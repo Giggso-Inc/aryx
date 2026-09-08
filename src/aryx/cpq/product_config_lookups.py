@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from aryx.cpq.engine import get_cpq_rdb
+from aryx.cpq import engine as _engine_module
 
 
 @dataclass
@@ -30,7 +30,7 @@ def build_array_set_lookups(workspace_id: int, resolved_catalog_prefix: str) -> 
     # by the BM-native attribute id (source_id), the same id every
     # other rule/set join in this method already cross-references by.
     lookups = ArraySetLookups()
-    array_sets = get_cpq_rdb().fetch_attr_set_assoc(workspace_id, resolved_catalog_prefix)
+    array_sets = _engine_module.get_cpq_rdb().fetch_attr_set_assoc(workspace_id, resolved_catalog_prefix)
     for set_id, sdef in array_sets.items():
         driver_id = sdef["driver_attr_id"]
         lookups.array_set_id_by_attr_id[driver_id] = set_id
