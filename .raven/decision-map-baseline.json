@@ -7988,97 +7988,87 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2308,
+      2312,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2366,
+      2370,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2606,
+      2610,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3114,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3133,
+      3361,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3701,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      4318,
+      3978,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4335,
+      3995,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4356,
+      4016,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4425,
+      4085,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4451,
+      4111,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4539,
+      4199,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4573,
+      4233,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4625,
+      4285,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4634,
+      4294,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4635,
+      4295,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4638,
+      4298,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4640,
+      4300,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4642,
+      4302,
       "ask_router"
     ],
     [
@@ -9300,6 +9290,61 @@
       "src/aryx/api/ask_step1_product_family_prompt.py",
       123,
       "_build_product_family_prompt_or_resolve"
+    ],
+    [
+      "src/aryx/api/ask_step2_anchor_gates.py",
+      29,
+      "_step2_resolve_product_and_gates"
+    ],
+    [
+      "src/aryx/api/ask_step2_anchor_gates.py",
+      91,
+      "_step2_resolve_product_and_gates"
+    ],
+    [
+      "src/aryx/api/ask_step2_catalog_hints.py",
+      27,
+      "_step2_catalog_hints_and_negation"
+    ],
+    [
+      "src/aryx/api/ask_step2_catalog_hints.py",
+      58,
+      "_step2_catalog_hints_and_negation"
+    ],
+    [
+      "src/aryx/api/ask_step2_pending_change_no_value.py",
+      21,
+      "_resolve_pending_change_no_value"
+    ],
+    [
+      "src/aryx/api/ask_step2_pending_change_no_value.py",
+      58,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_step2_pending_change_no_value.py",
+      77,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_step2_pending_change_no_value.py",
+      112,
+      "_resolve_pending_change_no_value"
+    ],
+    [
+      "src/aryx/api/ask_step2_resolve_and_load.py",
+      35,
+      "_step2_resolve_and_load"
+    ],
+    [
+      "src/aryx/api/ask_step2_resolve_and_load.py",
+      105,
+      "_step2_resolve_and_load"
+    ],
+    [
+      "src/aryx/api/ask_step2_rule_consistency.py",
+      25,
+      "_step2_log_rule_consistency_and_array_grid"
     ],
     [
       "src/aryx/api/ask_step678_activation_and_clear.py",
