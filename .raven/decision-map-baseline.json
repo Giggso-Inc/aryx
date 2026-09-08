@@ -7988,62 +7988,42 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2328,
-      "_run_cpq_turn_inner"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2386,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2626,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2986,
-      "_run_cpq_turn_inner"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3068,
+      2494,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3102,
+      2528,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3154,
+      2580,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3163,
+      2589,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3164,
+      2590,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3167,
+      2593,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3169,
+      2595,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3171,
+      2597,
       "ask_router"
     ],
     [
@@ -9015,6 +8995,101 @@
       "src/aryx/api/ask_pending_exclusion_resolve.py",
       89,
       "resolve_hard_excluded_attr"
+    ],
+    [
+      "src/aryx/api/ask_preamble_country_change.py",
+      25,
+      "_preamble_country_change_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_country_change.py",
+      47,
+      "_preamble_country_change_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_hints_and_country.py",
+      30,
+      "_preamble_extract_hints_and_resolve_country"
+    ],
+    [
+      "src/aryx/api/ask_preamble_hints_and_country.py",
+      79,
+      "_preamble_extract_hints_and_resolve_country"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_background.py",
+      28,
+      "_preamble_capture_quantity_background"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_background.py",
+      50,
+      "_preamble_capture_quantity_background"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_background.py",
+      53,
+      "_preamble_quantity_no_quote_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_background.py",
+      78,
+      "_preamble_quantity_no_quote_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_gate.py",
+      28,
+      "_preamble_dedicated_quantity_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_gate.py",
+      110,
+      "_preamble_dedicated_quantity_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_target_resolve.py",
+      26,
+      "_preamble_resolve_quantity_target"
+    ],
+    [
+      "src/aryx/api/ask_preamble_quantity_target_resolve.py",
+      80,
+      "_preamble_resolve_quantity_target"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      34,
+      "_preamble_init_session"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      55,
+      "_preamble_init_session"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      58,
+      "_preamble_undo_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      74,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      79,
+      "_preamble_undo_gate"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      87,
+      "_preamble_shortcut_gates"
+    ],
+    [
+      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      115,
+      "_preamble_shortcut_gates"
     ],
     [
       "src/aryx/api/ask_qa_fast_path.py",
