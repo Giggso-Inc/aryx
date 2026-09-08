@@ -2287,13 +2287,16 @@ def _pending_reply_looks_like_new_request(
     )
 
 
-# Moved to ask_turn_product_switch_anchor.py/ask_step1_product_anchor.py
-# (Phase 10/11-phase ask_api decomposition) -- re-exported here so every
+# Moved to ask_turn_product_switch_anchor.py/ask_step1_product_anchor.py/
+# ask_turn_intent_diagnostics.py/ask_turn_seed_product_anchor.py (Phase
+# 10/11-phase ask_api decomposition) -- re-exported here so every
 # existing caller/test keeps working unchanged.
 from aryx.api.ask_step1_product_anchor import _step1_resolve_product_anchor  # noqa: E402
+from aryx.api.ask_turn_intent_diagnostics import _log_turn_intent_diagnostics  # noqa: E402
 from aryx.api.ask_turn_product_switch_anchor import (  # noqa: E402
     _handle_product_switch_pending_anchor,
 )
+from aryx.api.ask_turn_seed_product_anchor import _seed_product_select_from_anchor  # noqa: E402
 
 
 def _run_cpq_turn_inner(
@@ -2924,96 +2927,9 @@ def _run_cpq_turn_inner(
         session.run_id, time.monotonic() - _step2_t0, len(attrs),
     )
 
-    # Read-only intent-count diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
-    # Fix 4, incremental first step) — measures how many distinct intents
-    # this message actually contains against real traffic, WITHOUT
-    # changing any routing behavior below. Never allowed to affect the
-    # turn: wrapped so a failure here can't break anything real.
-    try:
-        _intent_hits = _cpq_engine.count_turn_intents(
-            req.question, attrs, session.filled, session.filled_multi,
-        )
-        if len(_intent_hits) >= 2:
-            logger.info(
-                "cpq_intent_count: message %r matched %d distinct intents: %s "
-                "-- only the first will actually be addressed today",
-                req.question, len(_intent_hits), _intent_hits,
-            )
-        elif _intent_hits:
-            logger.debug("cpq_intent_count: message %r matched: %s", req.question, _intent_hits)
-    except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
-        logger.debug("cpq_intent_count: diagnostic failed", exc_info=True)
+    _log_turn_intent_diagnostics(req, session, attrs)
 
-    # Phase 1 shadow-mode universal-intent diagnostic (docs/
-    # CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md) — same read-only, never-
-    # affects-the-turn guarantee as count_turn_intents just above. Logs
-    # its own classification for later comparison against the real
-    # deterministic outcome (logged by run_ask after this function
-    # returns) via matching run_id — never touches routing here.
-    # Gated on cpq_shadow_intent_enabled (default off): live-confirmed
-    # this unconditional LLM call took the CPQ/BML test suite from ~10s
-    # to ~128s with zero behavioral change — a real test-speed/CI-cost
-    # regression, separate from the "not a concern in production" stance.
-    if get_settings().cpq_shadow_intent_enabled:
-        _shadow_classify_cpq_turn(req, session, attrs)
-
-    # A product-switch (or the initial turn's own NL detection) already
-    # PROVED session.product_name against this catalog — asking the
-    # productSelectionProduct_all question again on the very next turn
-    # would ignore that proof and re-derive it from a reply ("yes") that
-    # carries no product hint at all. Seed it directly via the same fuzzy
-    # option-matcher normal answers use, mirroring the confirmed-country
-    # carry-over above. Guarded on "not yet filled" so this only fires once
-    # (turn 1, or the turn right after _complete_product_switch reset
-    # session.filled) and never clobbers a value a later turn's real answer
-    # already set.
-    #
-    # Seed productSelectionProduct_all only AFTER Hardware is known on
-    # hardware-based catalogs (mandatory HW). Seeding from family name
-    # early caused Product to look "answered" or raced ahead of Hardware.
-    # On non-hardware catalogs, keep prior seed-from-anchor behavior.
-    _hw_attrs = [a for a in attrs if _cpq_engine._is_hardware_version_attr(a)]
-    _hw_ready = (
-        not _hw_attrs
-        or any(a.variable_name in session.filled for a in _hw_attrs)
-    )
-    if (
-        _hw_ready
-        and "productSelectionProduct_all" not in session.filled
-    ):
-        _product_attr = next(
-            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
-        )
-        if _product_attr is not None:
-            _seed_candidates = [
-                c for c in (
-                    session.pending_switch_question,
-                    session.product_anchor_question,
-                    session.product_name,
-                ) if c
-            ]
-            for _candidate_text in _seed_candidates:
-                _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
-                if _match:
-                    _item_value, _display_name = _match
-                    # PR #205 review fix (High finding #4): this seeds a
-                    # genuine first-time fill of Product from anchor text,
-                    # one of the `apply_answer` sites the ISSUE-003 fix
-                    # plan flagged for the same undo-snapshot audit. Not
-                    # covered by any enclosing cascade handler's own
-                    # snapshot (unlike the `_handle_cascade`/`_handle_
-                    # cascade_multi` sites, which already push one at their
-                    # own top) — genuinely uncovered until now.
-                    push_snapshot(session, reason="product_anchor_seed")
-                    session.filled["productSelectionProduct_all"] = _item_value
-                    session.display_filled["productSelectionProduct_all"] = _display_name
-                    session.filled_source["productSelectionProduct_all"] = "product_anchor"
-                    logger.info(
-                        "cpq: seeded productSelectionProduct_all=%r from %r "
-                        "turn=%s — skips a redundant re-ask",
-                        _item_value, _candidate_text, session.turn,
-                    )
-                    break
+    _seed_product_select_from_anchor(session, attrs)
 
     # session.pending_switch_question is captured above only to seed
     # productSelectionProduct_all — Region/Country hints from that same

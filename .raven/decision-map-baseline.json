@@ -7988,107 +7988,107 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2299,
+      2302,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2357,
+      2360,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2597,
+      2600,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3503,
+      3419,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3522,
+      3438,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3673,
+      3589,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3897,
+      3813,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4588,
+      4504,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5205,
+      5121,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5222,
+      5138,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5243,
+      5159,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5312,
+      5228,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5338,
+      5254,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5426,
+      5342,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5460,
+      5376,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5512,
+      5428,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5521,
+      5437,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5522,
+      5438,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5525,
+      5441,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5527,
+      5443,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5529,
+      5445,
       "ask_router"
     ],
     [
@@ -9317,6 +9317,16 @@
       "_country_available_for"
     ],
     [
+      "src/aryx/api/ask_turn_intent_diagnostics.py",
+      19,
+      "_log_turn_intent_diagnostics"
+    ],
+    [
+      "src/aryx/api/ask_turn_intent_diagnostics.py",
+      38,
+      "<try>"
+    ],
+    [
       "src/aryx/api/ask_turn_product_switch_complete.py",
       21,
       "_complete_product_switch"
@@ -9325,6 +9335,11 @@
       "src/aryx/api/ask_turn_product_switch_complete.py",
       92,
       "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_turn_seed_product_anchor.py",
+      19,
+      "_seed_product_select_from_anchor"
     ],
     [
       "src/aryx/api/ask_turn_suggest_switch_anchor.py",
