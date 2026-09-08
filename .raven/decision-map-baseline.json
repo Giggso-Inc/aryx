@@ -7988,87 +7988,87 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2312,
+      2316,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2370,
+      2374,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2610,
+      2614,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3361,
+      3128,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3978,
+      3745,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3995,
+      3762,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4016,
+      3783,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4085,
+      3852,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4111,
+      3878,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4199,
+      3966,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4233,
+      4000,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4285,
+      4052,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4294,
+      4061,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4295,
+      4062,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4298,
+      4065,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4300,
+      4067,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4302,
+      4069,
       "ask_router"
     ],
     [
@@ -9475,6 +9475,56 @@
       "src/aryx/api/ask_step678_review_status.py",
       102,
       "_handle_review_status_routing"
+    ],
+    [
+      "src/aryx/api/ask_step8_label_and_query.py",
+      23,
+      "_step8_label_collision_and_query"
+    ],
+    [
+      "src/aryx/api/ask_step8_label_and_query.py",
+      85,
+      "_step8_label_collision_and_query"
+    ],
+    [
+      "src/aryx/api/ask_step8_mid_config_change.py",
+      27,
+      "_step8_mid_config_change"
+    ],
+    [
+      "src/aryx/api/ask_step8_mid_config_change.py",
+      91,
+      "_step8_mid_config_change"
+    ],
+    [
+      "src/aryx/api/ask_step8_pre_step5_gates.py",
+      24,
+      "_step8_run_pre_step5_gates"
+    ],
+    [
+      "src/aryx/api/ask_step8_pre_step5_gates.py",
+      57,
+      "_step8_run_pre_step5_gates"
+    ],
+    [
+      "src/aryx/api/ask_step8_qa_and_collision.py",
+      25,
+      "_step8_qa_and_pending_collision"
+    ],
+    [
+      "src/aryx/api/ask_step8_qa_and_collision.py",
+      75,
+      "_step8_qa_and_pending_collision"
+    ],
+    [
+      "src/aryx/api/ask_step8_qa_and_collision.py",
+      78,
+      "_resolve_pending_question_collision"
+    ],
+    [
+      "src/aryx/api/ask_step8_qa_and_collision.py",
+      119,
+      "_resolve_pending_question_collision"
     ],
     [
       "src/aryx/api/ask_thread_api.py",
