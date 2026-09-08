@@ -8068,57 +8068,42 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      6009,
+      6005,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6043,
+      6039,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6084,
-      "_attach_share_flags"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      6252,
-      "_route_qa"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      6310,
-      "_route_qa"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      6502,
+      6091,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6511,
+      6100,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6512,
+      6101,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6515,
+      6104,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6517,
+      6106,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6519,
+      6108,
       "ask_router"
     ],
     [
@@ -8145,6 +8130,11 @@
       "src/aryx/api/ask_approval_stale_violations.py",
       116,
       "_handle_approval_stale_reask"
+    ],
+    [
+      "src/aryx/api/ask_attach_share_flags.py",
+      21,
+      "_attach_share_flags"
     ],
     [
       "src/aryx/api/ask_attr_activation_recompute.py",
@@ -8622,6 +8612,41 @@
       "_dispatch_decline"
     ],
     [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      21,
+      "_finish_cpq_result"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      31,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      49,
+      "_finish_cpq_result"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      52,
+      "_deterministic_cpq_gate"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      60,
+      "_deterministic_cpq_gate"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      65,
+      "_route_quote"
+    ],
+    [
+      "src/aryx/api/ask_finish_cpq_result.py",
+      73,
+      "_route_quote"
+    ],
+    [
       "src/aryx/api/ask_gateway_compound_split.py",
       20,
       "_try_compound_split_on_clarify"
@@ -9090,6 +9115,41 @@
       "src/aryx/api/ask_qa_status_shortcircuit.py",
       65,
       "_qa_status_shortcircuit"
+    ],
+    [
+      "src/aryx/api/ask_route_qa.py",
+      21,
+      "_route_qa"
+    ],
+    [
+      "src/aryx/api/ask_route_qa.py",
+      44,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_route_qa.py",
+      80,
+      "_route_qa"
+    ],
+    [
+      "src/aryx/api/ask_run_ask.py",
+      24,
+      "run_ask"
+    ],
+    [
+      "src/aryx/api/ask_run_ask.py",
+      139,
+      "run_ask"
+    ],
+    [
+      "src/aryx/api/ask_run_ask_router_error.py",
+      19,
+      "_handle_router_error"
+    ],
+    [
+      "src/aryx/api/ask_run_ask_router_error.py",
+      53,
+      "_handle_router_error"
     ],
     [
       "src/aryx/api/ask_singleton_pending.py",
