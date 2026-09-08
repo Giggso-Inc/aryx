@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _build_attr_query_response(
@@ -27,6 +27,7 @@ def _build_attr_query_response(
     queried_attr: Any,
 ) -> dict[str, Any]:
     """"What are the options for X?" response."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _queried_constrained = _cpq_engine.apply_constraint_rules(
         attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi)
@@ -49,7 +50,7 @@ def _build_attr_query_response(
     other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
     session.pending_variables = [queried_attr.variable_name] + other_pending
     session.last_qa_variables = [queried_attr.variable_name]
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [queried_attr.variable_name],
         "tools_called": [f"cpq_attr_query({queried_attr.variable_name})"],

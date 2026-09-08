@@ -21,7 +21,6 @@ from typing import Any
 
 from aryx.cpq import rule_trace
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step2_catalog_hints_and_negation(
@@ -30,6 +29,7 @@ def _step2_catalog_hints_and_negation(
     """Mutates `hints` and `session.negated_vns` in place. Returns
     `(catalog_prefix, negated_vns)` for the rest of the turn to use.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     rule_trace.bind_context(req.workspace_id, catalog_prefix)

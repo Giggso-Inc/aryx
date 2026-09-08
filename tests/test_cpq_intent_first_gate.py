@@ -45,7 +45,7 @@ def test_question_while_pending_product_anchor_is_not_swallowed_as_anchor():
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "stub")), \
-         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -72,8 +72,8 @@ def test_plain_family_reply_still_anchors_normally():
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "aSTRO25_bom")), \
          patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=["aSTRO25_bom"]), \
-         patch("aryx.api.ask_api._persist_cpq_history"), \
-         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"), \
+         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         _run_cpq_turn(req, _reader())
 
     mock_qa.assert_not_called()
@@ -105,7 +105,7 @@ def test_generic_first_message_with_two_products_asks_which_one_not_a_guess():
                return_value=["APX NEXT", "MOTOTRBO"]), \
          patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates", return_value=[]), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] == ["cpq_anchor_validation()"]
@@ -128,7 +128,7 @@ def test_generic_radio_quote_request_asks_which_product_with_three_variants():
          patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=families), \
          patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates", return_value=[]), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] == ["cpq_anchor_validation()"]
@@ -153,7 +153,7 @@ def test_question_about_family_relationships_routes_to_qa_not_anchor():
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "stub")), \
-         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -195,7 +195,7 @@ def test_confident_new_mention_escapes_a_session_poisoned_by_a_prior_wrong_sugge
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config",
                return_value=([], "APX NEXT")), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] != ["cpq_product_did_you_mean()"], (
@@ -220,7 +220,7 @@ def test_stale_scope_reask_still_fires_when_the_new_message_also_has_no_signal()
     )
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=""), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] == ["cpq_product_did_you_mean()"]
@@ -256,7 +256,7 @@ def test_escape_hatch_detection_is_not_fetched_twice_on_the_double_miss_path():
                return_value="") as mock_detect, \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=[]), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         _run_cpq_turn(req, _reader())
 
     assert mock_detect.call_count == 1, (
@@ -293,7 +293,7 @@ def test_single_fuzzy_suggestion_auto_resolves_without_asking():
                return_value=["videoSolutions_BOM"]), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config",
                return_value=([], "videoSolutions_BOM")), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] != ["cpq_product_did_you_mean()"], (
@@ -319,7 +319,7 @@ def test_two_fuzzy_suggestions_still_ask_which_one():
          patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates",
                return_value=["videoSolutions_BOM", "aSTRO25_bom"]), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] == ["cpq_product_did_you_mean()"]
@@ -343,7 +343,7 @@ def test_zero_fuzzy_suggestions_unaffected_by_the_single_candidate_shortcut():
                return_value=["APX NEXT", "MOTOTRBO"]), \
          patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates", return_value=[]), \
-         patch("aryx.api.ask_api._persist_cpq_history"):
+         patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _run_cpq_turn(req, _reader())
 
     assert resp["tools_called"] == ["cpq_anchor_validation()"]

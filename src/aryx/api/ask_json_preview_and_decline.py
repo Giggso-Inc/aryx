@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _build_json_preview_response(
@@ -32,6 +33,7 @@ def _build_json_preview_response(
     `catalog_prefix`/hidden-attr set internally, same reasoning as
     `_handle_approval` — one source of truth both callers share.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     hidden_for_payload = _cpq_engine.apply_hiding_rules(
@@ -51,7 +53,7 @@ def _build_json_preview_response(
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
     rule_ids_preview = _cpq_engine.rule_governed_ids(
         attrs, hiding_rules, rec_rules, con_rules)
-    summary = _ask_api_module._cpq_summary_text(
+    summary = _cpq_summary_text(
         session.display_filled, attrs, rule_ids_preview,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
@@ -63,7 +65,7 @@ def _build_json_preview_response(
         f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
         f"Say **confirm** to submit, or describe any changes."
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_json_preview()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -85,7 +87,7 @@ def _handle_decline(
         session.status = "configuring"
     session.complete = False
     answer = "Understood — not submitting yet. What would you like to change?"
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_decline()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

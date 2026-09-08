@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.cpq.intent_schema import Confidence, IntentCategory
 
 
@@ -25,9 +26,10 @@ def _qa_graph_search(
     answered the question. Returns (qa_answer, (p_in, p_out, p_ms, s_in,
     s_out, s_ms)).
     """
+    from aryx.api import ask_api as _ask_api_module
     types = _ask_api_module.all_types(reader)
     try:
-        terms, p_in, p_out, p_ms = _ask_api_module._extract_terms(
+        terms, p_in, p_out, p_ms = _ask_standard_pipeline_module._extract_terms(
             req.question, types, req.history, workspace_id=req.workspace_id,
         )
         entities, calls = _ask_api_module.gather(reader, terms)
@@ -47,7 +49,7 @@ def _qa_graph_search(
                     n for n in e.neighbors
                     if n.get("type", "").startswith(catalog_prefix)
                 ]
-        entities = _ask_api_module._enrich_with_attributes(entities, req.workspace_id)
+        entities = _ask_standard_pipeline_module._enrich_with_attributes(entities, req.workspace_id)
         context = _ask_api_module.render_context(entities)
         # Session values (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 3):
         # entities found here come from the STATIC catalog graph only —
@@ -94,7 +96,7 @@ def _qa_graph_search(
                 if meta_result is not None:
                     _qa_intent, _qa_it, _qa_ot = meta_result, meta_prompt_tokens, meta_completion_tokens
                 else:
-                    _qa_intent, _qa_it, _qa_ot = _ask_api_module._llm_classify_intent_universal(
+                    _qa_intent, _qa_it, _qa_ot = _ask_llm_classify_intent_universal_module._llm_classify_intent_universal(
                         req.question, attrs, session, req.workspace_id)
                 if (
                     _qa_intent is not None
@@ -114,7 +116,7 @@ def _qa_graph_search(
             # this branch skips is what would have otherwise reported).
             s_in, s_out, s_ms = _qa_it, _qa_ot, 0
         else:
-            qa_answer, s_in, s_out, s_ms = _ask_api_module._synthesise(
+            qa_answer, s_in, s_out, s_ms = _ask_standard_pipeline_module._synthesise(
                 req.question, context, history=req.history, workspace_id=req.workspace_id,
                 session_values=session_values,
             )

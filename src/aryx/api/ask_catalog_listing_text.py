@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
 from aryx.api.ask_catalog_listing_reconcile import _reconcile_catalog_listing_groups
 from aryx.api.ask_catalog_listing_scope import _scope_catalog_listing_labels
 
@@ -99,7 +99,7 @@ def _build_catalog_attribute_listing_text(
         groups = parsed.get("groups")
         return groups if isinstance(groups, list) else None
 
-    groups = _ask_api_module._llm_classify_intent_core(
+    groups = _llm_classify_intent_core(
         sys, user, workspace_id, _validate,
     ) or []
     rendered = _reconcile_catalog_listing_groups(groups, labels)

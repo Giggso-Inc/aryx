@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.cpq.session_guard import clear_clarify
 
 
@@ -36,6 +38,7 @@ def _apply_pending_clarify_resolution(
     bml_eval: Any,
 ) -> dict[str, Any]:
     """Replay the original vague utterance against the resolved attribute."""
+    from aryx.api import ask_api as _ask_api_module
     _clear_pending_clarify(session)
     clear_clarify(session, resolved_vn)
     # Remember this resolution as the anchor for a later bare-value reply
@@ -48,7 +51,7 @@ def _apply_pending_clarify_resolution(
             f"I couldn't load the attribute `{resolved_vn}` from this catalog. "
             "Please name the field again."
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
             "tools_called": ["cpq_pending_clarify_missing_attr()"],
@@ -80,13 +83,13 @@ def _apply_pending_clarify_resolution(
         )
     if change:
         _attr, value_hint = change
-        return _ask_api_module._handle_cascade(
+        return _ask_handle_cascade_module._handle_cascade(
             req, session, attrs, _attr, value_hint,
             hiding_rules, rec_rules, con_rules,
         )
     # Valueless change ("change hardware") → ask which value for the
     # now-resolved attribute (same helper as regex/LLM no-value paths).
-    return _ask_api_module._build_no_value_response(
+    return _build_no_value_response(
         req, session, attrs, resolved_attr, con_rules, bml_eval,
         "cpq_pending_clarify_resolved",
     )

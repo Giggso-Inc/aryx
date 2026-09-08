@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _revert_overridden_multi_singles(
@@ -29,6 +28,7 @@ def _revert_overridden_multi_singles(
     Mutates `applied_notes` in place (appending) and returns the possibly
     updated `pending` list.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     overridden_attrs: list[Any] = []
     for _vn, (_attr, _want_value, _want_display) in user_requested_single.items():

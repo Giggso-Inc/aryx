@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_invalidate_stale_base_model import _invalidate_stale_base_model
 from aryx.cpq.session_guard import clear_clarify, push_snapshot
 
@@ -28,6 +27,7 @@ def _invalidate_cascade_dependents(
     option exclusion, and the retry prompt. Returns (hints, negated_vns,
     catalog_prefix, dependent_labels, hc_allowed).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     push_snapshot(session, reason="cascade")
     clear_clarify(session, getattr(changed_attr, "variable_name", None))

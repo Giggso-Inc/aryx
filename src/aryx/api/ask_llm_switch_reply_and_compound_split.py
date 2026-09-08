@@ -18,7 +18,7 @@ names by dotted path.
 
 from __future__ import annotations
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
 
 
 def _llm_classify_switch_reply(
@@ -52,7 +52,7 @@ def _llm_classify_switch_reply(
             return None
         return decision
 
-    result = _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
     return result if result is not None else "unclear"
 
 
@@ -96,4 +96,4 @@ def _llm_split_compound_change_and_question(
             return None
         return (change_text, question_text)
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)

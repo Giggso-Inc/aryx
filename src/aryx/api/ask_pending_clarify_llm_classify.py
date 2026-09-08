@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
 
 
 def _llm_classify_pending_clarify_reply(
@@ -37,6 +37,7 @@ def _llm_classify_pending_clarify_reply(
       - ("decline", None) — reply explicitly rejects all candidates
       - ("unclear", None) — reply doesn't address the question at all
     """
+    from aryx.api import ask_api as _ask_api_module
     catalog_lines = [
         f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
         f"current={session.filled_multi.get(a.variable_name) or session.display_filled.get(a.variable_name)!r}"
@@ -77,7 +78,7 @@ def _llm_classify_pending_clarify_reply(
             return ("resolved", vn)
         return (status, None)
 
-    result = _ask_api_module._llm_classify_intent_core(
+    result = _llm_classify_intent_core(
         sys, user, workspace_id, _validate,
     )
     return result if result is not None else ("unclear", None)

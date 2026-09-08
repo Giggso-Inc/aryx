@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.session_guard import push_snapshot
 
 
@@ -26,6 +26,7 @@ def _handle_approval_gate_conflict(
     is mutated. Returns None when there is no genuine conflict, in which
     case the caller proceeds to the stale-but-fixable re-ask branch.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _conflicted = [v for v in gate.stale_violations if not v.allowed]
     if not _conflicted:
@@ -46,7 +47,7 @@ def _handle_approval_gate_conflict(
         "of your earlier selections, or say **undo** to "
         "restore the previous snapshot."
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_rule_conflict()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -62,6 +63,7 @@ def _handle_approval_stale_reask(
     auto-clear + re-ask rather than hard-block; push_snapshot before
     mutating so "undo" reverts just this clear.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     push_snapshot(session, reason="stale_constraint_reask")
     _stale_display: dict[str, str] = {}
@@ -112,7 +114,7 @@ def _handle_approval_stale_reask(
         f"isn't valid anymore given your other choices:\n\n"
         f"{_stale_opts_prompt}{_also_note}"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_stale_constraint_reask()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

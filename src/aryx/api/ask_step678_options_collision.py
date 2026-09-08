@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 
 
 def _resolve_pending_options_collision(
@@ -27,6 +29,7 @@ def _resolve_pending_options_collision(
     by) a pending options-query label collision; None when there was no
     such pending collision, in which case the caller continues.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if not session.pending_label_collision_vns:
         return None
@@ -44,7 +47,7 @@ def _resolve_pending_options_collision(
             if a.variable_name in session.pending_label_collision_vns
         ]
         if _lc_candidates:
-            _lc_resolved_vn = _ask_api_module._llm_resolve_label_collision(
+            _lc_resolved_vn = _ask_decline_reply_and_label_collision_llm_module._llm_resolve_label_collision(
                 _lc_reply, _lc_candidates, session, req.workspace_id)
     if _lc_resolved_vn:
         _lc_resolved_attr = next(
@@ -54,7 +57,7 @@ def _resolve_pending_options_collision(
         session.pending_label_collision_question = ""
         if _lc_resolved_attr is not None and _lc_orig_question:
             _lc_req = req.model_copy(update={"question": _lc_orig_question})
-            return _ask_api_module._handle_cpq_qa(
+            return _ask_handle_cpq_qa_module._handle_cpq_qa(
                 _lc_req, session, [_lc_resolved_attr], reader, resume_review=True)
         if _lc_resolved_attr is not None:
             return _resolve_system_initiated_collision(
@@ -79,6 +82,7 @@ def _resolve_system_initiated_collision(
     a user's own Q&A query. Just ask the customer's now-disambiguated
     attr next.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session.pending_variables = [lc_resolved_attr.variable_name] + [
         v for v in session.pending_variables if v != lc_resolved_attr.variable_name
@@ -111,7 +115,7 @@ def _resolve_system_initiated_collision(
     _lc_q_block = _cpq_engine.next_question_prompt(
         lc_resolved_attr, _lc_ctx, _lc_constrained, attrs=attrs,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _lc_q_block)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _lc_q_block)
     return {
         "answer": _lc_q_block, "terms": [],
         "tools_called": ["cpq_pending_question_collision_resolved()"],

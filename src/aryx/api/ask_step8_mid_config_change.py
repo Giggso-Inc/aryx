@@ -21,7 +21,12 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api.ask_handle_cascade_multi import _handle_cascade_multi
+from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _scan_and_enqueue_remaining_targets
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 
 def _step8_mid_config_change(
@@ -32,6 +37,7 @@ def _step8_mid_config_change(
     change request; None otherwise, in which case the caller continues
     to STEP 5.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     logger.info("cpq_step: mid_config_change_request_gate enter run_id=%s", session.run_id)
     if mode_request:
@@ -41,16 +47,16 @@ def _step8_mid_config_change(
     _mc_multi_matches = _cpq_engine.detect_change_requests_multi(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
     if len(_mc_multi_matches) >= 2:
-        _ask_api_module._scan_and_enqueue_remaining_targets(
+        _scan_and_enqueue_remaining_targets(
             session, req.question, attrs,
             exclude_vns={a.variable_name for a, _ in _mc_multi_matches},
         )
-        _mc_multi_result = _ask_api_module._handle_cascade_multi(
+        _mc_multi_result = _handle_cascade_multi(
             req, session, attrs, _mc_multi_matches,
             hiding_rules, rec_rules, con_rules,
         )
         if _mc_multi_result is not None:
-            return _ask_api_module._append_unmatched_targets_note(
+            return _append_unmatched_targets_note(
                 _mc_multi_result, req.question, attrs,
                 {a.variable_name for a, _ in _mc_multi_matches},
             )
@@ -58,18 +64,18 @@ def _step8_mid_config_change(
 
     _mc_change_result = _cpq_engine.detect_change_request(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
-    if _mc_change_result and _ask_api_module._llm_confirm_deterministic_intent(
+    if _mc_change_result and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.CHANGE_REQUEST,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_mc_change_result[0].variable_name,
     ):
         _mc_changed_attr, _mc_new_value_hint = _mc_change_result
-        _ask_api_module._scan_and_enqueue_remaining_targets(
+        _scan_and_enqueue_remaining_targets(
             session, req.question, attrs,
             exclude_vns={_mc_changed_attr.variable_name},
         )
-        return _ask_api_module._append_unmatched_targets_note(
-            _ask_api_module._handle_cascade(
+        return _append_unmatched_targets_note(
+            _ask_handle_cascade_module._handle_cascade(
                 req, session, attrs, _mc_changed_attr, _mc_new_value_hint,
                 hiding_rules, rec_rules, con_rules,
             ),
@@ -82,10 +88,10 @@ def _step8_mid_config_change(
         req.question, attrs, session.filled,
     )
     if _mc_attr_no_value:
-        _mc_nv_result = _ask_api_module._build_no_value_response(
+        _mc_nv_result = _build_no_value_response(
             req, session, attrs, _mc_attr_no_value, con_rules, bml_eval,
             "cpq_change_target_no_value",
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _mc_nv_result["answer"])
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _mc_nv_result["answer"])
         return _mc_nv_result
     return None

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
+from aryx.api.ask_label_collision_detect_and_compose import _DECLINE_CHANGE_RE
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_cascade_apply_value import _apply_cascade_new_value
 from aryx.api.ask_cascade_invalidate_dependents import _invalidate_cascade_dependents
 from aryx.api.ask_cascade_note import _build_cascade_note
@@ -35,13 +37,14 @@ def _handle_cascade(
     constrained_item_values: list[str] | None = None,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _cascade_label = _cpq_engine.disambiguated_label(changed_attr, attrs)
-    if _ask_api_module._is_decline_reply(
+    if _is_decline_reply(
         new_value_hint, _cascade_label,
         session.display_filled.get(changed_attr.variable_name, ""),
         req.workspace_id,
-        deterministic_hit=bool(_ask_api_module._DECLINE_CHANGE_RE.search(new_value_hint)),
+        deterministic_hit=bool(_DECLINE_CHANGE_RE.search(new_value_hint)),
     ):
         # Customer declined the pending change (docs/CPQ_SESSION_2026_07_29_
         # ISSUES_PLAN.md #2, LLM fallback added per docs/CPQ_REGEX_VS_LLM_
@@ -57,7 +60,7 @@ def _handle_cascade(
             f"No changes made to **{label}**."
         )
         session.status = "configuring" if session.pending_variables else session.status
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_decline_change()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -90,7 +93,7 @@ def _handle_cascade(
             v for v in session.pending_variables if v != changed_attr.variable_name
         ]
         session.status = "configuring"
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_cascade()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

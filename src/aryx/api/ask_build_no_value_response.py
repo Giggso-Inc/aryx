@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _apply_intent_conservation, _queue_followup_note, _scan_and_enqueue_remaining_targets
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.session_guard import clear_queue_vn
 
 
@@ -43,7 +44,8 @@ def _build_no_value_response(
     asks each in sequence.
     """
     # Enqueue every OTHER named no-value target in this utterance.
-    enqueued, _overflow = _ask_api_module._scan_and_enqueue_remaining_targets(
+    from aryx.api import ask_api as _ask_api_module
+    enqueued, _overflow = _scan_and_enqueue_remaining_targets(
         session, req.question, attrs,
         exclude_vns={target_attr.variable_name},
     )
@@ -68,7 +70,7 @@ def _build_no_value_response(
         f"**{_cpq_engine.disambiguated_label(target_attr, attrs)}**?"
         f"\n\n{options_block}{current_note}"
     )
-    answer += _ask_api_module._queue_followup_note(session, attrs)
+    answer += _queue_followup_note(session, attrs)
     session.pending_change_no_value_vn = target_attr.variable_name
     detected = {target_attr.variable_name} | set(enqueued) | set(
         session.pending_intent_queue or [],
@@ -76,7 +78,7 @@ def _build_no_value_response(
     # Also count overflow as detected for conservation (must not silently drop)
     if _overflow:
         detected |= set(_overflow)
-    result = _ask_api_module._append_unmatched_targets_note(
+    result = _append_unmatched_targets_note(
         {
             "answer": answer, "terms": [target_attr.variable_name],
             "tools_called": [f"{tool_name}({target_attr.variable_name})"],
@@ -86,11 +88,11 @@ def _build_no_value_response(
         },
         req.question, attrs, {target_attr.variable_name},
     )
-    result = _ask_api_module._apply_intent_conservation(
+    result = _apply_intent_conservation(
         result, req.question, detected,
         handled_vns=set(),  # none applied yet
         session=session, attrs=attrs,
         clarified_vns={target_attr.variable_name},
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, result["answer"])
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, result["answer"])
     return result

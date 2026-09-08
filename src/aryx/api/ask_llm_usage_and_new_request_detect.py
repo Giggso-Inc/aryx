@@ -22,7 +22,6 @@ from typing import Any
 
 from aryx import llm_runtime
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _apply_real_llm_usage(result: dict[str, Any]) -> None:
@@ -54,6 +53,7 @@ def _pending_reply_looks_like_new_request(
     genuine new request, not a bare reply meant to answer the currently-
     pending question.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if pending_attr is None:
         return False

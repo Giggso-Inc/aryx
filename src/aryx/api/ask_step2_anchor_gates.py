@@ -23,7 +23,8 @@ from aryx.api.ask_turn_intent_diagnostics import _log_turn_intent_diagnostics
 from aryx.api.ask_turn_seed_product_anchor import _seed_product_select_from_anchor
 from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_confirm_extract_quantity import _build_llm_call_failed_response
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step2_resolve_product_and_gates(
@@ -36,6 +37,7 @@ def _step2_resolve_product_and_gates(
     empty catalog); the caller must return it immediately when present,
     in which case `attrs` is `[]` and `switch_trigger_question` is `""`.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 
@@ -69,13 +71,13 @@ def _step2_resolve_product_and_gates(
 
     if not session.country:
         if country_llm_call_failed:
-            return _ask_api_module._build_llm_call_failed_response(req, session), [], ""
+            return _build_llm_call_failed_response(req, session), [], ""
         session.pending_anchor = "country"
         answer = (
             "Thanks — and what's the **destination country** for this "
             "quote? (e.g., *United States*, *Canada*, *Germany*)"
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

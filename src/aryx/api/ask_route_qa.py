@@ -12,7 +12,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_finish_cpq_result import _finish_cpq_result
 from aryx.cpq.intent_gateway import AskRouteDecision
 from aryx.cpq.state import CpqSession
@@ -28,6 +29,7 @@ def _route_qa(
     or triggers a family switch (few-shot: 'options for product' must not
     hop to softwareSolutions_BOM).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session = (
         CpqSession.from_dict(req.session_data)
@@ -62,7 +64,7 @@ def _route_qa(
         except Exception:  # noqa: BLE001
             _ask_api_module.logger.debug("route_qa: load_product_config failed", exc_info=True)
             attrs = []
-    result = _ask_api_module._handle_cpq_qa(
+    result = _ask_handle_cpq_qa_module._handle_cpq_qa(
         req, session, attrs, reader, resume_review=False, product_hint=product_for_attrs,
     )
     # Belt-and-suspenders: never let QA path mutate product without switch.
@@ -77,7 +79,7 @@ def _route_qa(
                     pass  # allow only if engine already entered real CPQ
             result["session_data"] = sd
     finished = _finish_cpq_result(result, req, reader, route_meta=meta)
-    return finished or _ask_api_module._standard_ask_pipeline(req, reader)
+    return finished or _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
 
 
 def _route_ambiguous(meta: AskRouteDecision, req: "Any") -> dict[str, Any]:

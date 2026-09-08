@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _build_attr_options_text(
@@ -32,6 +31,7 @@ def _build_attr_options_text(
     resolved attribute, constrained to the currently-active allowed set.
     Returns None when the attribute has no presentable options at all.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _presentable = [o for o in attr_q.options if o.display_name.strip()]
     if not _presentable:
@@ -63,6 +63,7 @@ def _build_current_quote_attribute_listing_text(
     button already uses — so this list is always exactly the keys that
     JSON preview shows, never a second, driftable approximation of it.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     layout_order = _cpq_engine.load_layout_display_order(workspace_id, catalog_prefix)
     payload = _cpq_engine.build_payload(
@@ -97,6 +98,7 @@ def _resolve_split_change_text(
     """Resolve one self-contained "change X to Y" fragment from
     _llm_split_multi_attr_change_request to (attr, new_value_hint).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     text_lower = text.lower()
     preferred = [a for a in attrs if a.variable_name in (last_qa_variables or [])]

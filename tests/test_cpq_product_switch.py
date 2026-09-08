@@ -32,6 +32,7 @@ from unittest.mock import patch
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 class _FakeProductReader:
@@ -109,7 +110,7 @@ def _mid_config_session(product_name="SL3500e", country="United States",
 
 
 def _no_switch_setup(monkeypatch, catalogs=None, trees=None):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = _fake_reader_with_batch_fetch(
         monkeypatch, catalogs or _TWO_PRODUCT_CATALOGS, trees)
     # Step 2 onward needs real graph/RDB config-attr data we don't have here
@@ -1302,7 +1303,7 @@ _APXISH_TREES = {
 
 
 def _pending_menu_setup(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = _fake_reader_with_batch_fetch(
         monkeypatch, _TWO_PRODUCT_CATALOGS, _APXISH_TREES)
     monkeypatch.setattr(

@@ -19,7 +19,8 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 
 def _step10_blocked_removal_gap(
@@ -30,19 +31,20 @@ def _step10_blocked_removal_gap(
     blocked with no pending question; None otherwise, in which case the
     caller continues to STEP 3.
     """
+    from aryx.api import ask_api as _ask_api_module
     if session.pending_variables or session.turn <= 1 or mode_request:
         return None
     _cpq_engine = _ask_api_module._cpq_engine
 
     _gap_removal_match = _cpq_engine.detect_multi_select_removal(
         req.question, attrs, session.filled_multi)
-    if _gap_removal_match and _ask_api_module._llm_confirm_deterministic_intent(
+    if _gap_removal_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.MULTI_SELECT_REMOVAL,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_gap_removal_match[0].variable_name,
     ):
         _gap_attr, _gap_to_remove = _gap_removal_match
-        return _ask_api_module._handle_multi_select_removal(
+        return _ask_handle_multi_select_removal_module._handle_multi_select_removal(
             req, session, attrs, _gap_attr, _gap_to_remove,
             hiding_rules, rec_rules, con_rules,
         )
@@ -64,7 +66,7 @@ def _step10_blocked_removal_gap(
             _gap_selector_vn, _gap_item_value = _gaps[0]
             _gap_attr = _by_vn.get(_gap_selector_vn)
             if _gap_attr is not None:
-                return _ask_api_module._handle_multi_select_removal(
+                return _ask_handle_multi_select_removal_module._handle_multi_select_removal(
                     req, session, attrs, _gap_attr, [_gap_item_value],
                     hiding_rules, rec_rules, con_rules,
                 )

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_label_collision_prompt_and_narrow import _narrow_label_collision
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _qa_label_collision_response(
@@ -26,10 +27,11 @@ def _qa_label_collision_response(
     order. Returns None when there is no collision, in which case the
     caller proceeds to the next Q&A stage unchanged.
     """
+    from aryx.api import ask_api as _ask_api_module
     _collision = _ask_api_module._cpq_engine.detect_label_collision(req.question, attrs)
     if not _collision:
         return None
-    _collision = _ask_api_module._narrow_label_collision(req.question, _collision)
+    _collision = _narrow_label_collision(req.question, _collision)
     _lines = "\n".join(
         f"- **{a.variable_name}**"
         f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
@@ -48,7 +50,7 @@ def _qa_label_collision_response(
     # change-request collision via pending_change_collision_vns).
     session.pending_label_collision_vns = [a.variable_name for a in _collision]
     session.pending_label_collision_question = req.question
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
     return {
         "answer": qa_answer, "terms": [], "tools_called": ["cpq_label_collision()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

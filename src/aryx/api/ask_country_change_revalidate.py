@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _rederive_and_revalidate_for_country_change(
@@ -41,6 +40,7 @@ def _rederive_and_revalidate_for_country_change(
     assumed to be the only one -- gets cleared and re-asked if the new
     country invalidates its current value.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not session.product_name:
         return
     _cpq_engine = _ask_api_module._cpq_engine

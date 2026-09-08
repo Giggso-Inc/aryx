@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_handle_attr_clear import _handle_attr_clear
 from aryx.api.ask_target_description import _resolve_target_description
 
@@ -29,6 +29,7 @@ def _dispatch_attr_clear(
     disguised as an action" discipline detect_attr_clear's own
     docstring describes).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if not result.target:
         return None
@@ -53,7 +54,7 @@ def _dispatch_attr_clear(
         _valid_opts = [o for o in attr.options if o.item_value in _allowed]
         if len(_valid_opts) == 1:
             return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_attr_clear(
             req, session, attrs, attr, hiding_rules, rec_rules, con_rules,
         ),

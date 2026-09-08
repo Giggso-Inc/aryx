@@ -27,6 +27,7 @@ from aryx.cpq.intent_schema import (
     validate_gateway_quarantine,
 )
 from aryx.cpq.state import CpqSession
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _country_decision(category, country_text=None):
@@ -140,7 +141,7 @@ def test_change_command_value_is_the_llms_country_not_the_regex_capture(monkeypa
     here too, but the LLM's country_text is deliberately mocked to a
     DIFFERENT value -- proving the value comes from the LLM call, not
     from `_country_change_match`."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     monkeypatch.setattr(
@@ -163,7 +164,7 @@ def test_turn1_llm_country_wins_with_no_preposition_at_all(monkeypatch):
     before the country at all -- _COUNTRY_PREP structurally cannot match
     this. route_meta.country (a full-sentence LLM read) has no such
     requirement."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -183,7 +184,7 @@ def test_turn1_llm_country_wins_over_definite_article_regex_gap(monkeypatch):
     """C30: "in the United States" -- the definite article breaks
     _COUNTRY_PREP's capture start entirely. route_meta.country has no
     such fragility."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -204,7 +205,7 @@ def test_turn1_llm_country_wins_over_allcaps_word_boundary_regex_bug(monkeypatch
     trailing word boundary and grabs only "CA" -> "Ca", which
     is_recognized_country then rejects. route_meta.country supplies the
     real value instead."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -227,7 +228,7 @@ def test_turn1_llm_country_wins_over_allcaps_word_boundary_regex_bug(monkeypatch
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_router_timeout_surfaces_an_explicit_failure_message_not_a_generic_reask(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     # A product is already selected -- otherwise the turn short-circuits
@@ -257,7 +258,7 @@ def test_mid_conversation_gateway_timeout_also_surfaces_the_explicit_failure_mes
     silently fell through to the generic hint/attribute re-ask instead of
     the explicit "classifier call failed" message turn-1 already
     guarantees. Must now surface the same explicit message here too."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="Canada")
@@ -281,7 +282,7 @@ def test_turn1_no_country_stated_at_all_still_asks_normally(monkeypatch):
     """Distinguishes "the LLM call failed" from "the LLM succeeded and
     correctly found no country" -- the latter must still ask normally,
     not claim a failure that didn't happen."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom")

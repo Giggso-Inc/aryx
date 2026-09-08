@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_build_show_summary_response import _build_show_summary_response
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, is_valid_product_quantity,
@@ -33,6 +33,7 @@ def _build_product_quantity_change_response(
     same discipline as `_build_attr_query_response` factoring out
     ATTR_QUERY's shared response shape.
     """
+    from aryx.api import ask_api as _ask_api_module
     if decimal_value is not None:
         # PR #186 review, medium: an explicit decimal ("change quantity to
         # 10.0") gets its own dedicated rejection quoting exactly what the
@@ -44,7 +45,7 @@ def _build_product_quantity_change_response(
             f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
             f"still **{session.product_quantity}**."
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
             "tools_called": ["cpq_product_quantity_rejected()"],
@@ -63,7 +64,7 @@ def _build_product_quantity_change_response(
             f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
             f"**{session.product_quantity}**."
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
             "tools_called": ["cpq_product_quantity_rejected()"],
@@ -118,7 +119,7 @@ def _build_product_quantity_change_response(
                     _qty_pending_attr, attrs=_qty_resume_attrs,
                 )
             )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

@@ -19,6 +19,7 @@ from aryx.cpq.intent_schema import (
     validate_gateway_quarantine,
 )
 from aryx.cpq.state import CpqSession
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -255,7 +256,7 @@ def test_extract_accepts_a_negative_value_from_the_llm():
 # Full turn — the STEP-6 gate corrects a wrong deterministic value
 # ═══════════════════════════════════════════════════════════════════════
 
-@patch.object(api, "_persist_cpq_history", lambda *a, **k: None)
+@patch.object(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 def test_full_turn_change_command_uses_llm_corrected_value(monkeypatch):
     """"change the quantity to one hundred and twelve" with the pre-fix
     dozen/twelve collision would deterministically resolve to 1200 --

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
+from aryx.api.ask_llm_usage_and_new_request_detect import _pending_reply_looks_like_new_request
 
 
 def _llm_detect_pending_topic_switch(
@@ -61,7 +62,7 @@ def _llm_detect_pending_topic_switch(
             return None
         return target
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
 def _pending_reply_is_topic_switch(
@@ -75,7 +76,7 @@ def _pending_reply_is_topic_switch(
     """
     if pending_attr is None:
         return False
-    if _ask_api_module._pending_reply_looks_like_new_request(
+    if _pending_reply_looks_like_new_request(
         question, pending_attr, attrs, filled, filled_multi,
     ):
         return True
@@ -119,5 +120,5 @@ def _llm_detect_change_decline(
             return None
         return val
 
-    result = _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
     return bool(result)

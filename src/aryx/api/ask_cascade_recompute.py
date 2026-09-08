@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_cascade_user_value_precedence import _revert_overridden_user_value
 from aryx.cpq.session_guard import clear_queue_vn, drain_intent_queue_into_pending
 
@@ -32,6 +31,7 @@ def _recompute_after_cascade(
     filled, display_filled, constrained_opts, pending, rule_ids, bml_eval,
     dropped_multi, user_value_overridden, requested_display).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)

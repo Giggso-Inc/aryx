@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_handle_cascade_multi import _handle_cascade_multi
@@ -39,7 +39,7 @@ def _dispatch_change_request(
         result.target.target_description, attrs)
     if attr is None:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_cascade(
             req, session, attrs, attr, result.target.new_value_description,
             hiding_rules, rec_rules, con_rules,
@@ -71,7 +71,7 @@ def _dispatch_change_target_without_value(
         result.target.target_description, attrs)
     if attr is None:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _build_no_value_response(
             req, session, attrs, attr, con_rules, bml_eval,
             "cpq_llm_first_change_target_no_value",
@@ -103,7 +103,7 @@ def _dispatch_change_requests_multi(
             matches.append((attr, t.new_value_description))
     if len(matches) < 2:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_cascade_multi(
             req, session, attrs, matches, hiding_rules, rec_rules, con_rules,
         ),

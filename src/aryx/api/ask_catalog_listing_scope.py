@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _looks_like_raw_variable_name(label: str) -> bool:
@@ -32,6 +31,7 @@ def _reaches_json_payload(a: Any) -> bool:
     # are set_type=="2" transient/action-layer -- real, on-screen
     # controls, but never real submitted data. Skipping this check
     # for the layout-scoped path let them leak back in.
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     return (
         not a.hidden
@@ -51,6 +51,7 @@ def _scope_catalog_listing_labels(
     `_build_catalog_attribute_listing_text`'s own docstring for the full
     rationale. Returns de-duplicated display labels in scope/rank order.
     """
+    from aryx.api import ask_api as _ask_api_module
     layout_order = _ask_api_module._cpq_engine.load_layout_display_order(
         workspace_id, catalog_prefix,
     )

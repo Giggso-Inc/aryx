@@ -25,6 +25,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _build_show_summary_response
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -57,7 +58,7 @@ def test_summary_mandatory_bucket_includes_a_tier_a_attr_hidden_from_visible_att
     Quantity & Duration's fragments, so (unlike Hardware Version, which
     correctly and separately lands under Product Name) it can only ever
     surface via the Mandatory User Input catch-all rename."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 
     def _boom_chat(*a, **k):
         raise RuntimeError("no LLM narrator in this test — force the deterministic fallback")

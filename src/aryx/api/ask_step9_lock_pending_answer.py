@@ -31,7 +31,7 @@ from aryx.api.ask_step9_miss_response import (
 )
 from aryx.api.ask_step9_scope_setup import _step9_scope_and_constraint_setup
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
 
 
 def _step9_lock_pending_answer(
@@ -54,7 +54,7 @@ def _step9_lock_pending_answer(
     pending_attr = next(
         (a for a in attrs if a.variable_name == pending_var), None,
     )
-    _looks_like_new_request = _ask_api_module._pending_reply_is_topic_switch(
+    _looks_like_new_request = _pending_reply_is_topic_switch(
         req.question, pending_attr, attrs, session.filled,
         session.filled_multi, req.workspace_id,
     )

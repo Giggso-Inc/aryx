@@ -33,6 +33,7 @@ from aryx.api.ask_api import (
 from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _opt(*pairs: tuple[str, str]) -> list[MenuOption]:
@@ -75,7 +76,7 @@ def test_ambiguous_with_resolved_attr_and_matching_value_applies_directly(monkey
     """The core repro: gateway names the right attribute; the message also
     happens to contain a real, exact value -- must apply directly, never
     ask anything."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     attrs = _freq_attrs()
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: (attrs, "aSTRO25_bom"))
@@ -105,7 +106,7 @@ def test_ambiguous_with_resolved_attr_and_unmatched_value_asks_scoped_to_that_on
     option) -- must still ask, but scoped to Primary Frequency ALONE, never
     re-opening the old multi-attribute "which attribute" disambiguation
     that pulled in Frequency Band via raw word overlap on "frequency"."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     attrs = _freq_attrs()
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: (attrs, "aSTRO25_bom"))
@@ -148,7 +149,7 @@ def test_ambiguous_with_resolved_attr_currently_hidden_falls_through_to_clarify(
     resolution) must never be silently changed via this fast path; it
     must fall through to the same hidden-aware clarify flow every other
     candidate uses."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     attrs = _freq_attrs()
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: (attrs, "aSTRO25_bom"))
@@ -194,7 +195,7 @@ def test_ambiguous_with_resolved_attr_currently_hidden_falls_through_to_clarify(
 def test_ambiguous_with_no_resolved_attr_keeps_existing_multi_attribute_behavior(monkeypatch):
     """A genuinely attribute-level ambiguity (no variable_name at all) must
     be completely unaffected by this fix."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     attrs = _freq_attrs()
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: (attrs, "aSTRO25_bom"))

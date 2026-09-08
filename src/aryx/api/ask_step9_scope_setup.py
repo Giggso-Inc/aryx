@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply
 
 
 def _step9_scope_and_constraint_setup(
@@ -28,6 +28,7 @@ def _step9_scope_and_constraint_setup(
     non-None when the in-scope resolve fully answered this turn (skip or
     family_only); the caller must return it immediately when present.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 
@@ -83,13 +84,13 @@ def _step9_scope_and_constraint_setup(
     _scope_match_text = req.question
     if _scope_for_attr and pending_attr.select_type != "multi":
         _scope_label_early = _cpq_engine.disambiguated_label(pending_attr, attrs)
-        _scope_reply = _ask_api_module._resolve_scope_reply(
+        _scope_reply = _resolve_scope_reply(
             req.question, _scope_cands, _scope_label_early,
             session, req.workspace_id,
         )
         if _scope_reply == "skip":
             return (
-                _ask_api_module._build_scope_skip_response(
+                _build_scope_skip_response(
                     req, session, _scope_cands, _scope_label_early,
                 ),
                 hint_val_for_attr, pending_constrained, _scope_cands, _scope_for_attr,
@@ -97,7 +98,7 @@ def _step9_scope_and_constraint_setup(
             )
         if _scope_reply == "family_only":
             return (
-                _ask_api_module._build_scope_family_only_response(
+                _build_scope_family_only_response(
                     req, session, _scope_cands, _scope_label_early,
                 ),
                 hint_val_for_attr, pending_constrained, _scope_cands, _scope_for_attr,

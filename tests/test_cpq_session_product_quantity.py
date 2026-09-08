@@ -30,6 +30,7 @@ from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _confirm_product_quantity_change(monkeypatch, quantity_text: str | None = None) -> None:
@@ -70,7 +71,7 @@ def _no_real_history_persistence(monkeypatch):
     to acquire a real connection to an unreachable 'postgres' host and
     blocks for a very long time rather than failing fast (confirmed via
     faulthandler stack dump during this test file's own development)."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 
 
 def _vx650_qty_attr() -> ConfigAttr:

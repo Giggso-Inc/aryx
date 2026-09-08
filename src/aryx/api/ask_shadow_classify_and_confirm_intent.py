@@ -21,7 +21,8 @@ from typing import Any
 
 from aryx.cpq.intent_schema import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_target_description import _resolve_target_description
+from aryx.api import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 
 
 def _shadow_classify_cpq_turn(
@@ -32,9 +33,10 @@ def _shadow_classify_cpq_turn(
     after `_run_cpq_turn` returns, tagged with the same `session.run_id`
     this logs.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     try:
-        result, _it, _ot = _ask_api_module._llm_classify_intent_universal(
+        result, _it, _ot = _ask_llm_classify_intent_universal_module._llm_classify_intent_universal(
             req.question, attrs, session, req.workspace_id)
         if result is None:
             logger.info(
@@ -44,7 +46,7 @@ def _shadow_classify_cpq_turn(
             return
         resolved_summary = []
         for t in ([result.target] if result.target else result.targets):
-            attr, candidates = _ask_api_module._resolve_target_description(t.target_description, attrs)
+            attr, candidates = _resolve_target_description(t.target_description, attrs)
             resolved_summary.append({
                 "target_description": t.target_description,
                 "resolved_vn": attr.variable_name if attr else None,
@@ -69,6 +71,7 @@ def _llm_confirm_deterministic_intent(
     classifier fresh, independently, and requires it to agree with the
     deterministic candidate before the caller is allowed to act on it.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     try:
         decision = _ask_api_module.gateway_classify_intent(

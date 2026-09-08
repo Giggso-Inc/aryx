@@ -27,6 +27,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _handle_cpq_qa
 from aryx.cpq.intent_schema import Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -42,7 +43,7 @@ def _attr(eid, vn, label, *, options=None) -> ConfigAttr:
 
 def _qa_common_mocks(monkeypatch):
     """Same lightweight monkeypatch pattern used in test_cpq_2026_07_28_fixes.py."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_label_collision", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_attr_query", lambda *a, **k: None)
     monkeypatch.setattr(api, "all_types", lambda *a, **k: [])
@@ -74,10 +75,10 @@ def test_status_meta_question_short_circuits_to_resume_only_when_pending(monkeyp
     req = AskRequest(question="what is the next step for configuration", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(_status_result(), 30, 10)) as mock_classify, \
-         patch("aryx.api.ask_api._synthesise") as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_standard_pipeline._synthesise") as mock_synth, \
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_classify.assert_called_once()
@@ -101,14 +102,14 @@ def test_status_meta_question_falls_through_when_nothing_pending(monkeypatch):
     req = AskRequest(question="what is the next step for configuration", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal") as mock_classify, \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal") as mock_classify, \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Your quote is complete.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [], object())
 
     mock_classify.assert_not_called()
@@ -129,15 +130,15 @@ def test_real_catalog_question_while_pending_is_unaffected(monkeypatch):
     req = AskRequest(question="what carriers are supported?", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(_qa_question_result(), 30, 10)), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("ATT and Verizon are supported.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_synth.assert_called_once()
@@ -161,15 +162,15 @@ def test_next_hardware_version_phrasing_does_not_misfire(monkeypatch):
     req = AskRequest(question="what's the next hardware version model after this one",
                       workspace_id=1, session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(_qa_question_result(), 30, 10)), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("H2 is the newer model.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_synth.assert_called_once()
@@ -187,15 +188,15 @@ def test_low_confidence_session_status_does_not_short_circuit(monkeypatch):
     session.pending_variables = ["hWVersion_astro"]
     req = AskRequest(question="what now", workspace_id=1, session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(_status_result(confidence=Confidence.LOW), 30, 10)), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Fell through to normal QA.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_synth.assert_called_once()
@@ -214,15 +215,15 @@ def test_classifier_failure_falls_through_safely(monkeypatch):
     req = AskRequest(question="what is the next step for configuration", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(None, 0, 0)), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Fell through to normal QA.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_synth.assert_called_once()
@@ -264,15 +265,15 @@ def test_stale_pending_variable_not_in_attrs_falls_through_to_normal_qa(monkeypa
     req = AskRequest(question="what is the next step for configuration", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(_status_result(), 30, 10)), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Fell through to normal QA.", 20, 15, 0)) as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [], object())
 
     mock_synth.assert_called_once()
@@ -306,15 +307,15 @@ def test_ambiguity_check_reuses_the_session_status_classify_call_not_a_second_on
     patched_settings = real_settings.model_copy(
         update={"cpq_qa_ambiguity_check_enabled": True})
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(ambiguous_result, 30, 10)) as mock_classify, \
          patch("aryx.api.ask_api.get_settings", lambda: patched_settings), \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise") as mock_synth, \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_standard_pipeline._synthesise") as mock_synth, \
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object())
 
     mock_classify.assert_called_once()
@@ -333,16 +334,16 @@ def test_resume_review_path_is_never_short_circuited(monkeypatch):
     req = AskRequest(question="what is the next step for configuration", workspace_id=1,
                       session_data=session.to_dict())
 
-    with patch("aryx.api.ask_api._llm_classify_intent_universal") as mock_classify, \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal") as mock_classify, \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 10, 5, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Here's the graph answer.", 20, 15, 0)) as mock_synth, \
          patch("aryx.api.ask_api._cpq_engine.build_review_prompt",
                return_value="Review: Hardware Version = H1"), \
-         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+         patch("aryx.api.ask_llm_split_multi_attr_options._llm_split_multi_attr_options_query", return_value=None):
         resp = _handle_cpq_qa(req, session, [hw], object(), resume_review=True)
 
     mock_classify.assert_not_called()

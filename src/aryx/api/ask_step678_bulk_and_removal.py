@@ -17,7 +17,9 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
+from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 
 def _step6_bulk_and_removal(
@@ -28,25 +30,26 @@ def _step6_bulk_and_removal(
     or a multi-select removal; None otherwise, in which case the caller
     continues with the rest of the STEP 6 routing.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _bulk_qty_match = _cpq_engine.detect_bulk_quantity_change(
         req.question, attrs, session.filled_multi)
     if _bulk_qty_match:
         _bulk_selector_vn, _bulk_item_values, _bulk_new_qty = _bulk_qty_match
-        return _ask_api_module._handle_bulk_quantity_change(
+        return _handle_bulk_quantity_change(
             req, session, attrs, _bulk_selector_vn, _bulk_item_values, _bulk_new_qty,
             hiding_rules, rec_rules, con_rules,
         )
 
     _removal_match = _cpq_engine.detect_multi_select_removal(
         req.question, attrs, session.filled_multi)
-    if _removal_match and _ask_api_module._llm_confirm_deterministic_intent(
+    if _removal_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.MULTI_SELECT_REMOVAL,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_removal_match[0].variable_name,
     ):
         _removal_attr, _to_remove = _removal_match
-        return _ask_api_module._handle_multi_select_removal(
+        return _ask_handle_multi_select_removal_module._handle_multi_select_removal(
             req, session, attrs, _removal_attr, _to_remove,
             hiding_rules, rec_rules, con_rules,
         )

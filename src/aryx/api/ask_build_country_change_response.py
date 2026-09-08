@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_country_change_revalidate import (
     _rederive_and_revalidate_for_country_change,
 )
@@ -87,7 +87,7 @@ def _build_country_change_response(
                 session.display_filled.pop(_mirror_vn, None)
                 session.filled_source.pop(_mirror_vn, None)
         _rederive_and_revalidate_for_country_change(req, session, new_country, reader)
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_country_change()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

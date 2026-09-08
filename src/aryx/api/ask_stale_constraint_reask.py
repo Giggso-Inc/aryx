@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_data_table_conflict_reask import _reask_confirmed_data_table_conflict
 from aryx.api.ask_stale_constraint_conflicted import handle_conflicted_violations
 from aryx.api.ask_stale_constraint_prompt import build_stale_reask_prompt
@@ -61,6 +60,7 @@ def _reask_stale_constraint_violations(
     attrs typically have no menu to re-ask from, so this only reports
     what's missing rather than inventing a question.
     """
+    from aryx.api import ask_api as _ask_api_module
     missing_required = find_missing_required_fields(attrs, session)
     if missing_required:
         labels = [

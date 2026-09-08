@@ -20,7 +20,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from aryx.api.ask_api import AskRequest, Turn, _validate_workspace, run_ask
+from aryx.api.ask_core_helpers import _validate_workspace
+from aryx.api.ask_request_models import AskRequest, Turn
+from aryx.api.ask_run_ask import run_ask
 from aryx.api.ask_thread_helpers import (
     AskThreadMessageRequest,
     _complete_request_after_success,

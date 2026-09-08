@@ -14,7 +14,10 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_finish_cpq_result as _ask_finish_cpq_result_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_finish_cpq_result import _route_quote
 from aryx.api.ask_request_models import AskRequest
 from aryx.api.ask_route_qa import _route_ambiguous, _route_qa
@@ -33,7 +36,8 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     Live CPQ sessions always enter _run_cpq_turn (session owns state).
     BOM payloads still only come from auto_fill → rule loop → build_payload.
     """
-    reader = _ask_api_module._reader(req.workspace_id)
+    from aryx.api import ask_api as _ask_api_module
+    reader = _ask_core_helpers_module._reader(req.workspace_id)
     settings = _ask_api_module.get_settings()
     mode = (settings.cpq_intent_mode or "shadow").strip().lower()
     # ISSUE-001: `mode == "cpq"` is a dataclass default on EVERY CpqSession,
@@ -61,9 +65,9 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # N10: hard off-topic before any mode work (no LLM, no CPQ).
     if _ask_api_module.hard_off_topic(req.question):
         _ask_api_module.logger.info("cpq_router: hard_off_topic → standard Ask")
-        return _ask_api_module._standard_ask_pipeline(req, reader)
+        return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
 
-    det_is_cpq = _ask_api_module._deterministic_cpq_gate(req, reader)
+    det_is_cpq = _ask_finish_cpq_result_module._deterministic_cpq_gate(req, reader)
     soft_quote = _ask_api_module.soft_quote_heuristic(req.question)
 
     # ── deterministic_first: legacy short-circuit (no gateway LLM) ──────────
@@ -71,11 +75,11 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
         is_cpq = (
             det_is_cpq
             or soft_quote
-            or _ask_api_module._llm_classify_is_cpq_question(req.question, req.workspace_id)
+            or _llm_classify_is_cpq_question(req.question, req.workspace_id)
         )
         if is_cpq:
             return _route_quote(req, reader)
-        return _ask_api_module._standard_ask_pipeline(req, reader)
+        return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
 
     # ── llm_first / shadow: one top-level gateway call ──────────────────────
     route_meta = _ask_api_module.classify_ask_route(
@@ -116,11 +120,11 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
         if det_is_cpq or soft_quote:
             _shadow_meta = dataclasses.replace(route_meta, quantity=None, country=None)
             return _route_quote(req, reader, _shadow_meta)
-        return _ask_api_module._standard_ask_pipeline(req, reader)
+        return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
 
     # ── llm_first: handlers execute the gateway decision ────────────────────
     if route_meta.route == "off_topic":
-        return _ask_api_module._standard_ask_pipeline(req, reader)
+        return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
 
     if route_meta.route == "quote":
         if det_is_cpq is False:
@@ -136,4 +140,4 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if route_meta.route == "ambiguous":
         return _route_ambiguous(route_meta, req)
 
-    return _ask_api_module._standard_ask_pipeline(req, reader)
+    return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)

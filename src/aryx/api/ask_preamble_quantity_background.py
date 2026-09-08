@@ -22,7 +22,9 @@ from aryx.cpq.quantity_hint_extraction import extract_quantity_hint
 from aryx.cpq.quantity_patterns import is_valid_product_quantity
 from aryx.cpq.quantity_turn_detection import question_mentions_quantity, quantity_turn_precheck
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_core_helpers import _safe_detect_product_mention
+from aryx.api.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _preamble_capture_quantity_background(
@@ -40,7 +42,7 @@ def _preamble_capture_quantity_background(
         if not (_qty_bg_precheck and _qty_bg_precheck.get("has_change_verb")):
             session.product_quantity = _qty_hint
         else:
-            _qty_bg_confirmed, _qty_bg_value, _ = _ask_api_module._llm_confirm_and_extract_quantity(
+            _qty_bg_confirmed, _qty_bg_value, _ = _llm_confirm_and_extract_quantity(
                 req, session, [],
                 hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
                 fallback_value=_qty_hint, fallback_decimal=None,
@@ -61,7 +63,7 @@ def _preamble_quantity_no_quote_gate(
         not session.product_name
         and question_mentions_quantity(req.question)
         and qty_hint is None
-        and not _ask_api_module._safe_detect_product_mention(
+        and not _safe_detect_product_mention(
             req.question, reader, req.workspace_id)
     ):
         return None
@@ -74,7 +76,7 @@ def _preamble_quantity_no_quote_gate(
         f"**{session.product_quantity}** once you do). What would you "
         f"like to order?"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity_no_quote()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

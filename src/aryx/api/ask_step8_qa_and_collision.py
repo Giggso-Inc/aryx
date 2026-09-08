@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 
 
 def _step8_qa_and_pending_collision(
@@ -31,6 +33,7 @@ def _step8_qa_and_pending_collision(
     Q&A check or resolved a pending system-initiated collision; None
     otherwise, in which case the caller continues.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 
@@ -46,7 +49,7 @@ def _step8_qa_and_pending_collision(
             (a for a in attrs if a.variable_name == pending_var_for_qa), None,
         )
         if _cpq_engine.detect_qa_question(req.question, pending_attr_for_qa, strict=True):
-            return _ask_api_module._handle_cpq_qa(req, session, attrs, reader, resume_review=False)
+            return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, attrs, reader, resume_review=False)
 
     if session.pending_label_collision_vns and not session.pending_label_collision_question:
         _pqc_reply = req.question.strip()
@@ -62,7 +65,7 @@ def _step8_qa_and_pending_collision(
                 a for a in attrs if a.variable_name in session.pending_label_collision_vns
             ]
             if _pqc_candidates:
-                _pqc_resolved_vn = _ask_api_module._llm_resolve_label_collision(
+                _pqc_resolved_vn = _ask_decline_reply_and_label_collision_llm_module._llm_resolve_label_collision(
                     _pqc_reply, _pqc_candidates, session, req.workspace_id)
         if _pqc_resolved_vn:
             return _resolve_pending_question_collision(
@@ -79,6 +82,7 @@ def _resolve_pending_question_collision(
     req: "Any", session: Any, attrs: list, pqc_resolved_vn: str, hiding_rules: list,
     rec_rules: list, con_rules: list, bml_eval: Any, catalog_prefix: str,
 ) -> dict[str, Any] | None:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _pqc_resolved_attr = next(
         (a for a in attrs if a.variable_name == pqc_resolved_vn), None)
@@ -115,7 +119,7 @@ def _resolve_pending_question_collision(
     _pqc_q_block = _cpq_engine.next_question_prompt(
         _pqc_resolved_attr, _pqc_ctx, _pqc_constrained, attrs=attrs,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _pqc_q_block)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _pqc_q_block)
     return {
         "answer": _pqc_q_block, "terms": [],
         "tools_called": ["cpq_pending_question_collision_resolved()"],

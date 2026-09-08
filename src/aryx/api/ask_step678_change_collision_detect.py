@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_intent_queue_text_helpers import _queue_followup_note, _scan_and_enqueue_remaining_targets
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step6_change_collision_detect(
@@ -26,6 +27,7 @@ def _step6_change_collision_detect(
     attr display_label shared by 2+ distinct attrs; None otherwise, in
     which case the caller continues with the rest of the STEP 6 routing.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _change_collision = _cpq_engine.detect_change_request_collision(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
@@ -45,13 +47,13 @@ def _step6_change_collision_detect(
     # change targets (excluding the collision candidates) and enqueue them
     # so none are silently dropped.
     _collision_vns = {a.variable_name for a in _change_collision}
-    _ask_api_module._scan_and_enqueue_remaining_targets(
+    _scan_and_enqueue_remaining_targets(
         session, req.question, attrs, exclude_vns=_collision_vns,
     )
-    answer += _ask_api_module._queue_followup_note(session, attrs)
+    answer += _queue_followup_note(session, attrs)
     session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
     session.pending_change_collision_question = req.question
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_change_label_collision()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

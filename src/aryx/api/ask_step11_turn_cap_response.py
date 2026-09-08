@@ -13,20 +13,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
+from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
 
 
 def _step11_turn_cap_response(
     req: "Any", session: Any, visible_attrs: list, pending: list,
     constrained_opts: dict, validation_rules: list,
 ) -> str:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     unresolved = [a.display_label for a in pending]
     next_attr = pending[0]
-    _pending_collision = _ask_api_module._label_collision_for(next_attr, visible_attrs, session, pending)
+    _pending_collision = _label_collision_for(next_attr, visible_attrs, session, pending)
     if _pending_collision:
         session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
-        q_block = _ask_api_module._label_collision_prompt(
+        q_block = _label_collision_prompt(
             _pending_collision, session, req.question, req.workspace_id)
     else:
         q_block = _cpq_engine.next_question_prompt(

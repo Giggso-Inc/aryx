@@ -23,7 +23,6 @@ from typing import Any
 
 from aryx import llm_runtime
 
-from aryx.api import ask_api as _ask_api_module
 
 # Decline detector for a pending change-target prompt (docs/CPQ_SESSION_
 # 2026_07_29_ISSUES_PLAN.md #2): "change product" -> "which value?" ->
@@ -81,6 +80,7 @@ def _compose_disambiguation_question(
     whenever the LLM call raises, the response is empty, OR the composed
     text is missing any real candidate's identifying text.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     if not candidate_labels:
         return static_fallback

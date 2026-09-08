@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _remember_attr_scope
+from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
+from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_pending_exclusion import _hard_exclude_from_pending
 from aryx.api.ask_singleton_pending import _auto_resolve_singleton_pending
@@ -27,6 +30,7 @@ def _build_cascade_multi_response(
     display_filled: dict, constrained_opts: dict, pending: list, rule_ids: set,
     bml_eval: Any, catalog_prefix: str,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
@@ -43,12 +47,12 @@ def _build_cascade_multi_response(
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
-        _pending_collision = _ask_api_module._label_collision_for(
+        _pending_collision = _label_collision_for(
             next_attr, visible_attrs, session, pending,
         )
         if _pending_collision:
             session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
-            q_block = _ask_api_module._label_collision_prompt(
+            q_block = _label_collision_prompt(
                 _pending_collision, session, req.question, req.workspace_id)
         else:
             ctx = _cpq_engine.build_context_sentence(
@@ -59,7 +63,7 @@ def _build_cascade_multi_response(
                 next_attr, ctx, _cvals_nqp, attrs=visible_attrs,
                 already_selected=session.filled_multi.get(next_attr.variable_name),
             )
-            _ask_api_module._remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     elif unresolved_grid_gaps:
         session.status = "configuring"
@@ -91,7 +95,7 @@ def _build_cascade_multi_response(
                   f"say **confirm** to submit, or describe any changes."
             )
 
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_cascade_multi()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

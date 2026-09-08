@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause, _is_change_value_decline
+from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
+from aryx.api.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
 
 
 def _resolve_pending_change_no_value(
@@ -26,6 +30,7 @@ def _resolve_pending_change_no_value(
     by) a pending change-no-value clarification; None when there was no
     such pending state, in which case the caller continues.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not session.pending_change_no_value_vn:
         return None
     logger = _ask_api_module.logger
@@ -46,7 +51,7 @@ def _resolve_pending_change_no_value(
     # match that to a valid option for Hardware Version." Falls through
     # to normal routing (identical to the STEP 5 fix) whenever the LLM
     # confidently identifies a different real target.
-    if _pcnv_attr and _ask_api_module._pending_reply_is_topic_switch(
+    if _pcnv_attr and _pending_reply_is_topic_switch(
         req.question, _pcnv_attr, attrs, session.filled,
         session.filled_multi, req.workspace_id,
     ):
@@ -67,9 +72,9 @@ def _resolve_pending_change_no_value(
         )
         _pcnv_constrained = None
     # PROMPT 6: extract wanted (+ rejected); exclude rejected option.
-    _pcnv_wanted, _pcnv_rejected = _ask_api_module._extract_replacement_clause(req.question)
+    _pcnv_wanted, _pcnv_rejected = _extract_replacement_clause(req.question)
     _pcnv_match_text = _pcnv_wanted or req.question
-    _pcnv_constrained = _ask_api_module._constrain_excluding_rejected(
+    _pcnv_constrained = _constrain_excluding_rejected(
         _pcnv_attr, _pcnv_rejected, _pcnv_constrained,
     )
     # QA issue #2: try real value FIRST; only treat as decline when
@@ -83,10 +88,10 @@ def _resolve_pending_change_no_value(
             _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
         ) is not None
     _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
-    if not _pcnv_matched and _ask_api_module._is_decline_reply(
+    if not _pcnv_matched and _is_decline_reply(
         req.question, _cpq_engine.disambiguated_label(_pcnv_attr, attrs),
         _pcnv_current or "", req.workspace_id,
-        deterministic_hit=_ask_api_module._is_change_value_decline(req.question),
+        deterministic_hit=_is_change_value_decline(req.question),
     ):
         # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
         # 15-16: LLM fallback added for decline phrasing the
@@ -97,7 +102,7 @@ def _resolve_pending_change_no_value(
             f"as it is"
             + (f" (**{_pcnv_current}**)." if _pcnv_current else ".")
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_change_declined()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -109,7 +114,7 @@ def _resolve_pending_change_no_value(
     # convergence point every change-request entry point reaches, so
     # re-queuing pending_multi_intent_vn there covers this caller too
     # without needing its own copy here.
-    return _ask_api_module._handle_cascade(
+    return _ask_handle_cascade_module._handle_cascade(
         req, session, attrs, _pcnv_attr, _pcnv_match_text,
         hiding_rules, rec_rules, con_rules,
         constrained_item_values=_pcnv_constrained,

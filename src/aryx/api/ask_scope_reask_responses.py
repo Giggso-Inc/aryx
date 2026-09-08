@@ -30,7 +30,7 @@ from aryx.cpq.pending_scope import (
     scope_loop_exit_threshold,
 )
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _scoped_reask_response(
@@ -69,7 +69,7 @@ def _scoped_reask_response(
         reply, sug, numbered=numbered, scope_label=scope_label,
         confident_single=confident_single,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": [tools_called],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -111,7 +111,7 @@ def _build_scope_skip_response(
         f"you'd like, or what you're trying to configure? Here are the "
         f"choices again:\n\n{lines}"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": [tools_called],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -136,7 +136,7 @@ def _build_scope_family_only_response(
         f"To proceed with the quote, please select the specific "
         f"**{scope_label}** from the list below:\n\n{lines}"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": [tools_called],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

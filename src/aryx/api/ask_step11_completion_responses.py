@@ -18,7 +18,7 @@ from typing import Any
 
 from aryx.api.ask_stale_constraint_reask import _reask_stale_constraint_violations
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_cpq_summary_text import _cpq_summary_text
 
 
 def _step11_grid_gap_response(
@@ -26,6 +26,7 @@ def _step11_grid_gap_response(
 ) -> str | None:
     """Returns the answer text when a selected grid option has no
     resolvable quantity attr at all; None otherwise."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
@@ -61,9 +62,10 @@ def _step11_completion_response(
 ) -> str:
     """STEP 6 FORMAT B: verbose summary, JSON only on request. Always
     returns an answer — the final catch-all for a not-pending turn."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session.status = "awaiting_approval"
-    summary = _ask_api_module._cpq_summary_text(
+    summary = _cpq_summary_text(
         display_filled, attrs, rule_ids,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,

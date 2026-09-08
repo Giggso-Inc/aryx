@@ -23,7 +23,7 @@ from aryx.cpq.session_guard import push_snapshot
 
 from aryx.api.ask_invalidate_stale_base_model import _invalidate_stale_base_model
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step9_apply_pending_result(
@@ -36,6 +36,7 @@ def _step9_apply_pending_result(
     the value outright; None otherwise (the caller falls through to
     STEP 5b/STEP 3 unchanged, same as the original inline block).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     clear_pending_scope(session)
     iv, disp = result
@@ -66,7 +67,7 @@ def _step9_apply_pending_result(
             session.filled_source.pop(pending_var, None)
             _opts_prompt = _cpq_engine.next_question_prompt(pending_attr, attrs=attrs)
             _validation_answer = f"⚠️ {_warning_msg}\n\n{_opts_prompt}"
-            _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _validation_answer)
+            _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _validation_answer)
             return {
                 "answer": _validation_answer, "terms": [],
                 "tools_called": ["cpq_validation_warning()"],

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _build_cascade_note(
@@ -27,6 +26,7 @@ def _build_cascade_note(
     plus an independently-firing recommendation rule elsewhere) the raw
     label made every line read as the same fact repeated.
     """
+    from aryx.api import ask_api as _ask_api_module
     _changed_label = _ask_api_module._cpq_engine.disambiguated_label(changed_attr, attrs)
     if user_value_overridden:
         cascade_note = (

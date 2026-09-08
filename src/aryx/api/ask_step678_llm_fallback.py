@@ -16,7 +16,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
+from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
+from aryx.api import ask_llm_classify_change_intent as _ask_llm_classify_change_intent_module
 
 
 def _step6_llm_fallback_classify(
@@ -27,7 +31,8 @@ def _step6_llm_fallback_classify(
     resolved a remove/change intent the regex detectors all missed;
     None otherwise, in which case the caller continues.
     """
-    _llm_intent, _ci_it, _ci_ot = _ask_api_module._llm_classify_change_intent(
+    from aryx.api import ask_api as _ask_api_module
+    _llm_intent, _ci_it, _ci_ot = _ask_llm_classify_change_intent_module._llm_classify_change_intent(
         req.question, attrs, session, req.workspace_id)
     if not _llm_intent:
         return None
@@ -41,8 +46,8 @@ def _step6_llm_fallback_classify(
         _mentioned = _cpq_engine.apply_multi_answer(_llm_attr, _llm_intent["value"])
         _to_remove = [iv for iv, _dn in _mentioned if iv in _current]
         if _to_remove:
-            return _ask_api_module._with_classify_usage(
-                _ask_api_module._handle_multi_select_removal(
+            return _with_classify_usage(
+                _ask_handle_multi_select_removal_module._handle_multi_select_removal(
                     req, session, attrs, _llm_attr, _to_remove,
                     hiding_rules, rec_rules, con_rules,
                 ),
@@ -60,14 +65,14 @@ def _step6_llm_fallback_classify(
             # away instead of asking which value, the same live-verified
             # gap detect_change_target_without_value already fixes for
             # its own regex-matched targets.
-            return _ask_api_module._with_classify_usage(
-                _ask_api_module._build_no_value_response(
+            return _with_classify_usage(
+                _build_no_value_response(
                     req, session, attrs, _llm_attr, con_rules, bml_eval,
                     "cpq_llm_change_target_no_value",
                 ),
                 _ci_it, _ci_ot,
             )
-        return _ask_api_module._with_classify_usage(_ask_api_module._handle_cascade(
+        return _with_classify_usage(_ask_handle_cascade_module._handle_cascade(
             req, session, attrs, _llm_attr, _llm_intent["value"],
             hiding_rules, rec_rules, con_rules,
         ), _ci_it, _ci_ot)

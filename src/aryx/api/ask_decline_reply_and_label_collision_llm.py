@@ -19,7 +19,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
+from aryx.api.ask_llm_topic_switch_and_change_decline import _llm_detect_change_decline
 
 # Cheap pre-filter, gating the LLM fallback below — NOT itself a
 # decline decision. Live regression caught during this fix: without a
@@ -54,7 +55,7 @@ def _is_decline_reply(
         return True
     if not _LOOSE_DECLINE_HINT_RE.search(question):
         return False
-    return _ask_api_module._llm_detect_change_decline(question, attr_label, current_value, workspace_id)
+    return _llm_detect_change_decline(question, attr_label, current_value, workspace_id)
 
 
 def _llm_resolve_label_collision(
@@ -66,6 +67,7 @@ def _llm_resolve_label_collision(
     reply like "the one that currently has jacket magnetic mount" can
     resolve correctly.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     catalog_lines = [
         f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
@@ -94,4 +96,4 @@ def _llm_resolve_label_collision(
             return None
         return vn
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)

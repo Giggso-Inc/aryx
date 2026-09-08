@@ -22,7 +22,10 @@ from aryx.cpq.quantity_turn_detection import question_mentions_quantity, quantit
 
 from aryx.api.ask_preamble_quantity_target_resolve import _preamble_resolve_quantity_target
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_build_product_quantity_response import _build_product_quantity_change_response
+from aryx.api.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
+from aryx.api.ask_llm_extract_quantity_and_country_reply import _llm_extract_quantity
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _preamble_dedicated_quantity_gate(
@@ -34,6 +37,7 @@ def _preamble_dedicated_quantity_gate(
     `_qty_target` naming a specific real catalog attribute for it to
     resolve).
     """
+    from aryx.api import ask_api as _ask_api_module
     if not (session.product_name and question_mentions_quantity(req.question)):
         return None
     _cpq_engine = _ask_api_module._cpq_engine
@@ -55,7 +59,7 @@ def _preamble_dedicated_quantity_gate(
         and _qty_pre["value"] is None
         and _qty_pre.get("decimal_value") is None
     ):
-        _qty_llm_value = _ask_api_module._llm_extract_quantity(req.question, req.workspace_id)
+        _qty_llm_value = _llm_extract_quantity(req.question, req.workspace_id)
         if _qty_llm_value is not None:
             _qty_pre["value"] = _qty_llm_value
             _qty_pre["is_change"] = True
@@ -66,7 +70,7 @@ def _preamble_dedicated_quantity_gate(
         if not _qty_pre["is_change"]:
             _qty_confirmed, _qty_value, _qty_decimal = True, None, None
         else:
-            _qty_confirmed, _qty_value, _qty_decimal = _ask_api_module._llm_confirm_and_extract_quantity(
+            _qty_confirmed, _qty_value, _qty_decimal = _llm_confirm_and_extract_quantity(
                 req, session, _qty_attrs,
                 hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
                 catalog_prefix=(_qty_attrs[0].catalog_prefix if _qty_attrs else ""),
@@ -74,7 +78,7 @@ def _preamble_dedicated_quantity_gate(
                 fallback_decimal=_qty_pre.get("decimal_value"),
             )
         if _qty_confirmed:
-            return _ask_api_module._build_product_quantity_change_response(
+            return _build_product_quantity_change_response(
                 req, session, reader,
                 value=_qty_value if _qty_pre["is_change"] else None,
                 decimal_value=(
@@ -95,7 +99,7 @@ def _preamble_dedicated_quantity_gate(
             f"(currently {session.product_quantity}), or the quantity "
             f"for a specific item like {_qty_options}?"
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
             "tools_called": ["cpq_quantity_disambiguation()"],

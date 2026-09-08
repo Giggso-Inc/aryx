@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 from aryx.cpq.intent_schema import Confidence, IntentCategory
 
 
@@ -41,9 +42,10 @@ def _qa_status_shortcircuit(
     (PR #213 review finding), regardless of whether this short-circuit
     fired.
     """
+    from aryx.api import ask_api as _ask_api_module
     if resume_review or not session.pending_variables:
         return None, None, 0, 0
-    _meta_result, _meta_it, _meta_ot = _ask_api_module._llm_classify_intent_universal(
+    _meta_result, _meta_it, _meta_ot = _ask_llm_classify_intent_universal_module._llm_classify_intent_universal(
         req.question, attrs, session, req.workspace_id,
     )
     if not (
@@ -61,7 +63,7 @@ def _qa_status_shortcircuit(
         "*Resuming your configuration...*\n\n"
         + _ask_api_module._cpq_engine.next_question_prompt(_meta_pending_attr, attrs=attrs)
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_qa_status()"],
         "usage": {"prompt_tokens": _meta_it, "completion_tokens": _meta_ot,

@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _splice_mandatory_block_into_summary
 from aryx.cpq.state import CpqSession
 
 _SHARE_READY_MIN_FILLED = 3
@@ -25,6 +25,7 @@ def _attach_share_flags(result: dict[str, Any], req: "Any", reader: Any) -> None
     return site) — recomputed every ready turn from current session state, never
     cached, since cascade can invalidate previously-filled attrs mid-conversation.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session_data = result.get("session_data")
     if not session_data:
@@ -125,11 +126,11 @@ def _attach_share_flags(result: dict[str, Any], req: "Any", reader: Any) -> None
     # still waiting on the customer, which is the one place Beautify's
     # own Mandatory list belongs in the chat summary.
     if result.get("answer") and session.status == "awaiting_approval":
-        _already_shown = _ask_api_module._labels_already_shown(result["answer"])
-        _mandatory_block = _ask_api_module._beautify_mandatory_block(
+        _already_shown = _labels_already_shown(result["answer"])
+        _mandatory_block = _beautify_mandatory_block(
             result["beautify_rows"], _already_shown,
         )
         if _mandatory_block is not None:
-            result["answer"] = _ask_api_module._splice_mandatory_block_into_summary(
+            result["answer"] = _splice_mandatory_block_into_summary(
                 result["answer"], _mandatory_block,
             )

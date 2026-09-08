@@ -12,7 +12,6 @@ import json
 from typing import Any
 
 from aryx import llm_runtime
-from aryx.api import ask_api as _ask_api_module
 
 
 def _llm_classify_intent_core(
@@ -41,6 +40,7 @@ def _llm_classify_intent_core(
     a caller into the cheap/fast tier (`llm_menial_model`) instead, for
     a classification simple enough not to need it.
     """
+    from aryx.api import ask_api as _ask_api_module
     try:
         text, _it, _ot = llm_runtime.chat(role, sys_prompt, user_prompt, workspace_id=workspace_id)
         s, e = text.find("{"), text.rfind("}")

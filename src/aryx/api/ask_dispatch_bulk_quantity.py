@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
 from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.engine import is_valid_product_quantity
@@ -51,6 +51,7 @@ def _dispatch_bulk_quantity_change(
     to be written into a grid row completely unvalidated; it now
     correctly falls through instead.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not result.target or not result.quantity_description:
         return None
     attr, _candidates = _resolve_target_description(
@@ -70,7 +71,7 @@ def _dispatch_bulk_quantity_change(
     _qty = result.quantity_description.strip()
     if not _is_signed_digit_quantity_text(_qty) or not is_valid_product_quantity(int(_qty)):
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_bulk_quantity_change(
             req, session, attrs, attr.variable_name, _resolvable, _qty,
             hiding_rules, rec_rules, con_rules,

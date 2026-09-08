@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_cascade_multi_apply import _apply_cascade_multi_changes
 from aryx.api.ask_cascade_multi_note import (
     _build_cascade_multi_note,
@@ -45,6 +45,7 @@ def _handle_cascade_multi(
     that" nudge) only when NONE of the named changes could be applied —
     mirrors `detect_change_request` returning None today.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     push_snapshot(session, reason="cascade_multi")
     by_eid = {a.entity_id: a for a in attrs}
@@ -79,7 +80,7 @@ def _handle_cascade_multi(
             bml_eval_nv = _cpq_engine.build_bml_evaluator(
                 req.workspace_id, attrs[0].catalog_prefix if attrs else "",
             )
-            return _ask_api_module._build_no_value_response(
+            return _build_no_value_response(
                 req, session, attrs, head_attr, con_rules, bml_eval_nv,
                 "cpq_cascade_multi_queue_ask",
             )

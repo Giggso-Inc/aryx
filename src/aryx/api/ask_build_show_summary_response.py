@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_cpq_summary_text import _cpq_summary_text
 
 
@@ -32,6 +32,7 @@ def _build_show_summary_response(
     a change-target prompt for that unrelated attribute. Checked and
     handled here, deterministically, before either of those paths runs.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     try:
         attrs, _ = _cpq_engine.load_product_config(
@@ -100,7 +101,7 @@ def _build_show_summary_response(
             f"Click **JSON** below to see the full payload, say **confirm** "
             f"to submit, or describe any changes."
         )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_show_summary()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

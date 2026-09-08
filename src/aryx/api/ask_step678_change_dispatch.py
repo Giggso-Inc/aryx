@@ -20,7 +20,10 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_handle_cascade_multi import _handle_cascade_multi
+from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _scan_and_enqueue_remaining_targets
+from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 
 def _step6_change_dispatch(
@@ -31,20 +34,21 @@ def _step6_change_dispatch(
     single-attribute change request; None otherwise, in which case the
     caller continues with the rest of the STEP 6 routing.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _multi_matches = _cpq_engine.detect_change_requests_multi(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
     if len(_multi_matches) >= 2:
         _multi_vns = {a.variable_name for a, _ in _multi_matches}
-        _ask_api_module._scan_and_enqueue_remaining_targets(
+        _scan_and_enqueue_remaining_targets(
             session, req.question, attrs, exclude_vns=_multi_vns,
         )
-        _multi_result = _ask_api_module._handle_cascade_multi(
+        _multi_result = _handle_cascade_multi(
             req, session, attrs, _multi_matches,
             hiding_rules, rec_rules, con_rules,
         )
         if _multi_result is not None:
-            return _ask_api_module._append_unmatched_targets_note(
+            return _append_unmatched_targets_note(
                 _multi_result, req.question, attrs,
                 {a.variable_name for a, _ in _multi_matches},
             )
@@ -52,19 +56,19 @@ def _step6_change_dispatch(
 
     change_result = _cpq_engine.detect_change_request(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
-    if change_result and _ask_api_module._llm_confirm_deterministic_intent(
+    if change_result and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.CHANGE_REQUEST,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=change_result[0].variable_name,
     ):
         changed_attr, new_value_hint = change_result
         # Enqueue sibling named targets before applying the primary.
-        _ask_api_module._scan_and_enqueue_remaining_targets(
+        _scan_and_enqueue_remaining_targets(
             session, req.question, attrs,
             exclude_vns={changed_attr.variable_name},
         )
-        return _ask_api_module._append_unmatched_targets_note(
-            _ask_api_module._handle_cascade(
+        return _append_unmatched_targets_note(
+            _ask_handle_cascade_module._handle_cascade(
                 req, session, attrs, changed_attr, new_value_hint,
                 hiding_rules, rec_rules, con_rules,
             ),

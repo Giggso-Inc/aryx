@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_invalidate_stale_base_model import _invalidate_stale_base_model
 from aryx.cpq.session_guard import clear_queue_vn, enqueue_intent_targets
 from aryx.cpq.state import INTENT_QUEUE_CAP
@@ -36,6 +35,7 @@ def _apply_cascade_multi_changes(
     (docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md) requires checking them
     against the outcome AFTER the rule pass the caller runs next.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     applied_notes: list[str] = []
     failed_labels: list[str] = []

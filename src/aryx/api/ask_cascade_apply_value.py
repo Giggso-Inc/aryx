@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause
 
 
 def _apply_cascade_new_value(
@@ -28,10 +28,11 @@ def _apply_cascade_new_value(
     (result, apply_constrained) — `result` is None on no-match, in which
     case the caller must build the "couldn't match" retry response.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
-    wanted_clause, rejected_clause = _ask_api_module._extract_replacement_clause(new_value_hint)
+    wanted_clause, rejected_clause = _extract_replacement_clause(new_value_hint)
     apply_hint = wanted_clause if wanted_clause else new_value_hint
-    apply_constrained = _ask_api_module._constrain_excluding_rejected(
+    apply_constrained = _constrain_excluding_rejected(
         changed_attr, rejected_clause, hc_allowed,
     )
     if wanted_clause or rejected_clause:

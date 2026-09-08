@@ -8,11 +8,11 @@ singleton via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _grounded_clarify_prompt(candidates: list, attrs: list) -> str:
     """Numbered catalog-label list — never LLM-invented example names."""
+    from aryx.api import ask_api as _ask_api_module
     if not candidates:
         return "Which field did you mean? Please name the attribute."
     lines = [

@@ -14,6 +14,7 @@ from aryx.cpq.pending_scope import (
 )
 from aryx.cpq.session_guard import has_consumable_pending_state
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -163,7 +164,7 @@ def test_pending_product_mismatch_scoped_reask_not_325(monkeypatch):
 
     Never dumps the catalog-wide 325-option Product prompt (APX 6500 examples).
     """
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -236,7 +237,7 @@ def test_pending_product_mismatch_scoped_reask_not_325(monkeypatch):
 
 
 def test_pending_federal_partial_applies(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -315,7 +316,7 @@ def test_already_resolved_model_leaf_never_wipes_an_unrelated_pending_scope(monk
     Product-matching code, turning a should-be-scoped reask into a
     full-catalog one.
     """
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])

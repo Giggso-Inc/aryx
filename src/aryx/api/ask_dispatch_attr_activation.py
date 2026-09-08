@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_handle_attr_activation import _handle_attr_activation
 from aryx.api.ask_target_description import _resolve_target_description
 
@@ -35,6 +35,7 @@ def _dispatch_attr_activation(
     state can never activate an attr the regex path would have silently
     declined.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not result.target:
         return None
     attr, _candidates = _resolve_target_description(
@@ -51,7 +52,7 @@ def _dispatch_attr_activation(
     )[2]
     if attr.variable_name in _hidden_now:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_attr_activation(
             req, session, attrs, attr, hiding_rules, rec_rules, con_rules,
         ),

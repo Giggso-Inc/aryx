@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope import format_did_you_mean, resolve_against_scope, set_pending_scope
 
 
@@ -28,6 +28,7 @@ def _build_product_family_prompt_or_resolve(
     scope-fuzzy family match) when the caller should fall through and
     anchor to it instead.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session.pending_anchor = "product"
     families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
@@ -85,7 +86,7 @@ def _build_product_family_prompt_or_resolve(
         answer = format_did_you_mean(
             req.question, suggestions, scope_label="product family",
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_product_did_you_mean()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -119,7 +120,7 @@ def _build_product_family_prompt_or_resolve(
             f"To start the configuration I need the **product family** "
             f"(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
         )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

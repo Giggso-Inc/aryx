@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _country_available_for(
@@ -41,6 +40,7 @@ def _country_available_for(
     resulting filled state. Only runs on a switch turn, never on
     ordinary answers.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     new_attrs, _resolved = _cpq_engine.load_product_config(reader, workspace_id, product_name)
     if not new_attrs:

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _build_attr_query_response
+from aryx.api.ask_label_collision_prompt_and_narrow import _narrow_label_collision
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step8_label_collision_and_query(
@@ -28,11 +30,12 @@ def _step8_label_collision_and_query(
     attribute option query, or a free-text constraint query about the
     pending attr; None otherwise, in which case the caller continues.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
 
     _collision = _cpq_engine.detect_label_collision(req.question, attrs)
     if _collision:
-        _collision = _ask_api_module._narrow_label_collision(req.question, _collision)
+        _collision = _narrow_label_collision(req.question, _collision)
         _lines = "\n".join(
             f"- **{a.variable_name}**"
             f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
@@ -43,7 +46,7 @@ def _step8_label_collision_and_query(
             f"**\"{_collision[0].display_label}\"** in this catalog — which one "
             f"did you mean?\n\n{_lines}"
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_label_collision()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -53,7 +56,7 @@ def _step8_label_collision_and_query(
 
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
     if queried_attr:
-        return _ask_api_module._build_attr_query_response(
+        return _build_attr_query_response(
             req, session, attrs, con_rules, bml_eval, queried_attr,
         )
 
@@ -74,7 +77,7 @@ def _step8_label_collision_and_query(
                     f"doesn't have a fixed list of values — it's free text, but it must "
                     f"only contain {_constraint_desc}."
                 )
-                _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+                _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
                 return {
                     "answer": answer, "terms": [_pending_attr_for_constraint.variable_name],
                     "tools_called": ["cpq_free_text_constraint()"],

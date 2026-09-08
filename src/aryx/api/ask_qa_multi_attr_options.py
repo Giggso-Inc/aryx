@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_text_helpers import _build_attr_options_text
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_llm_split_multi_attr_options as _ask_llm_split_multi_attr_options_module
 
 
 def _qa_multi_attr_options_response(
@@ -30,13 +32,14 @@ def _qa_multi_attr_options_response(
     caller falls through to the single-attr fast path unchanged rather
     than returning a half-answered response.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if not (
         any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
         and (" and " in f" {req.question.lower()} " or "," in req.question)
     ):
         return None
-    _multi_qs = _ask_api_module._llm_split_multi_attr_options_query(
+    _multi_qs = _ask_llm_split_multi_attr_options_module._llm_split_multi_attr_options_query(
         req.question, attrs, req.workspace_id,
     )
     if not _multi_qs:
@@ -46,7 +49,7 @@ def _qa_multi_attr_options_response(
     for _sub_q in _multi_qs:
         _sub_attr = _cpq_engine.detect_attr_query(_sub_q, attrs)
         _sub_answer = (
-            _ask_api_module._build_attr_options_text(req, session, attrs, _sub_attr)
+            _build_attr_options_text(req, session, attrs, _sub_attr)
             if _sub_attr else None
         )
         if _sub_answer:
@@ -59,7 +62,7 @@ def _qa_multi_attr_options_response(
     # (Issue 12).
     session.last_qa_variables = _multi_qa_vns
     qa_answer = "\n\n".join(_multi_answers)
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
     return {
         "answer": qa_answer, "terms": [],
         "tools_called": ["cpq_multi_attr_options()"],

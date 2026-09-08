@@ -14,7 +14,6 @@ import json
 from typing import Any
 
 from aryx import llm_runtime
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_llm_intent_universal_pending import _build_pending_state_block
 from aryx.api.ask_relevant_intent_candidates import _relevant_intent_candidates
 from aryx.cpq.intent_schema import INTENT_RESULT_JSON_SCHEMA, IntentCategory, parse_intent_result
@@ -69,6 +68,7 @@ def _llm_classify_intent_universal(
        literally — the same "never guess a real decision" discipline the
        deterministic detectors already follow.
     """
+    from aryx.api import ask_api as _ask_api_module
     candidates = _relevant_intent_candidates(question, attrs)
     catalog_lines = []
     for a in candidates:

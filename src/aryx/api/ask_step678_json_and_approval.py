@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_handle_approval import _handle_approval
+from aryx.api.ask_json_preview_and_decline import _build_json_preview_response
 
 
 def _step678_json_or_approval(
@@ -24,13 +25,14 @@ def _step678_json_or_approval(
     or a STEP 8 explicit approval; None otherwise, in which case the
     caller continues with the rest of the review-status routing.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if _cpq_engine.detect_response_mode_request(req.question) == "json":
-        return _ask_api_module._build_json_preview_response(
+        return _build_json_preview_response(
             req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
         )
     if _cpq_engine.detect_approval(req.question):
-        return _ask_api_module._handle_approval(
+        return _handle_approval(
             req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval, hints=hints,
         )
     return None

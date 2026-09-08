@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _is_answer_to_pending_over_switch(
@@ -54,6 +53,7 @@ def _is_answer_to_pending_over_switch(
     productSelectionProduct_all cross-check ran, so the caller can reuse
     them instead of re-fetching (review finding P2).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     pending_attr_guard = next(
         (a for a in attrs

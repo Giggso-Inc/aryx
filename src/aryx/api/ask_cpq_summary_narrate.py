@@ -14,7 +14,6 @@ import re
 from typing import Callable
 
 from aryx import llm_runtime
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_cpq_summary_prompt import _CPQ_SEGMENT_DELIM
 from aryx.api.ask_standard_pipeline import _strip_think
 from aryx.cpq.engine import SUMMARY_FALLBACK_CATEGORY
@@ -41,6 +40,7 @@ def _narrate_cpq_summary(
     fall back through deterministic bullets to a raw state table on any
     miss — see `_cpq_summary_text`'s own docstring for the full contract.
     """
+    from aryx.api import ask_api as _ask_api_module
     curated_fields = {
         label: value for _cat, pairs in groups
         if _cat != SUMMARY_FALLBACK_CATEGORY

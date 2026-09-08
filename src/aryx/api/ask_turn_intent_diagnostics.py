@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_shadow_classify_and_confirm_intent import _shadow_classify_cpq_turn
 
 
 def _log_turn_intent_diagnostics(req: "Any", session: Any, attrs: list) -> None:
@@ -34,6 +34,7 @@ def _log_turn_intent_diagnostics(req: "Any", session: Any, attrs: list) -> None:
     test-speed/CI-cost regression, separate from the "not a concern in
     production" stance.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     try:
         _intent_hits = _cpq_engine.count_turn_intents(
@@ -53,4 +54,4 @@ def _log_turn_intent_diagnostics(req: "Any", session: Any, attrs: list) -> None:
         _ask_api_module.logger.debug("cpq_intent_count: diagnostic failed", exc_info=True)
 
     if _ask_api_module.get_settings().cpq_shadow_intent_enabled:
-        _ask_api_module._shadow_classify_cpq_turn(req, session, attrs)
+        _shadow_classify_cpq_turn(req, session, attrs)

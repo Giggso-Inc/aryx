@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _handle_suggest_switch_anchor(req: "Any", session: Any) -> dict[str, Any] | None:
@@ -30,7 +30,7 @@ def _handle_suggest_switch_anchor(req: "Any", session: Any) -> dict[str, Any] | 
             f"product name — or say **no** to continue with "
             f"**{session.product_name}**."
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_switch_ambiguous()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -41,7 +41,7 @@ def _handle_suggest_switch_anchor(req: "Any", session: Any) -> dict[str, Any] | 
     session.pending_switch_candidates = []
     if _sreply.startswith(("n", "no")):
         answer = f"OK — continuing with **{session.product_name}**."
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

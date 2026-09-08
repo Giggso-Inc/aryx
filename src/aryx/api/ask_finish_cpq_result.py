@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_attach_share_flags as _ask_attach_share_flags_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.cpq.intent_gateway import AskRouteDecision
 
 
@@ -26,6 +27,7 @@ def _finish_cpq_result(
     route_meta: AskRouteDecision | None = None,
 ) -> dict[str, Any] | None:
     """Attach share flags + bidirectional shadow logs; return result or None."""
+    from aryx.api import ask_api as _ask_api_module
     if not result:
         return None
     try:
@@ -45,7 +47,7 @@ def _finish_cpq_result(
             )
     except Exception:  # noqa: BLE001
         _ask_api_module.logger.debug("cpq_shadow_intent_actual: logging failed", exc_info=True)
-    _ask_api_module._attach_share_flags(result, req, reader)
+    _ask_attach_share_flags_module._attach_share_flags(result, req, reader)
     return result
 
 
@@ -55,6 +57,7 @@ def _deterministic_cpq_gate(req: "Any", reader: Any) -> bool:
     Demoted from primary router to post-check / escape-hatch path so the
     turn pays at most one gateway LLM call (Prompt 3 acceptance).
     """
+    from aryx.api import ask_api as _ask_api_module
     if req.session_data.get("mode") == "cpq":
         return True
     return bool(
@@ -65,9 +68,10 @@ def _deterministic_cpq_gate(req: "Any", reader: Any) -> bool:
 def _route_quote(
     req: "Any", reader: Any, meta: AskRouteDecision | None = None,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     result = _ask_api_module._run_cpq_turn(req, reader, route_meta=meta)
     finished = _finish_cpq_result(result, req, reader, route_meta=meta)
     if finished:
         return finished
     # No CPQ graph data — fall through to standard Ask rather than empty.
-    return _ask_api_module._standard_ask_pipeline(req, reader)
+    return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)

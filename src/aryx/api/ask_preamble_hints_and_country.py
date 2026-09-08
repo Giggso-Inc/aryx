@@ -24,7 +24,7 @@ from typing import Any
 
 from aryx.cpq.intent_gateway import soft_quote_heuristic
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_extract_quantity_and_country_reply import _llm_resolve_bare_country_reply
 
 
 def _preamble_extract_hints_and_resolve_country(
@@ -33,6 +33,7 @@ def _preamble_extract_hints_and_resolve_country(
     """Mutates `session` in place (country, product_anchor_question).
     Returns (hints, country_llm_call_failed).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _country_llm_call_failed = False
     hints = _cpq_engine.extract_hints(req.question)
@@ -42,7 +43,7 @@ def _preamble_extract_hints_and_resolve_country(
         _bare_country_reply = req.question.strip()
         _resolved_bare_country = _cpq_engine.is_recognized_country(_bare_country_reply)
         if not _resolved_bare_country:
-            _resolved_bare_country = _ask_api_module._llm_resolve_bare_country_reply(
+            _resolved_bare_country = _llm_resolve_bare_country_reply(
                 _bare_country_reply, req.workspace_id,
             )
         hints["country"] = _resolved_bare_country or _bare_country_reply

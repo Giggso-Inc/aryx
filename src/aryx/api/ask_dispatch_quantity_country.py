@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_build_country_change_response import _build_country_change_response
 from aryx.api.ask_build_product_quantity_response import (
     _build_product_quantity_change_response,
@@ -49,7 +49,7 @@ def _dispatch_quantity_change(
     _qty = result.quantity_description.strip()
     if not _is_signed_digit_quantity_text(_qty):
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _build_product_quantity_change_response(
             req, session, reader, value=int(_qty),
         ),
@@ -77,13 +77,14 @@ def _dispatch_country_change(
     path now uses, so this path can't reintroduce the "US.A"/
     "U.S.A"-class bug through its own separate route.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not result.country_description:
         return None
     _canonical_country_description = (
         _ask_api_module._cpq_engine.is_recognized_country(result.country_description)
         or result.country_description
     )
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _build_country_change_response(
             req, session, _canonical_country_description, reader=reader,
         ),

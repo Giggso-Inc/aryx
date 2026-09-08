@@ -20,6 +20,7 @@ from collections import Counter
 import pytest
 
 from tests.cpq_fixtures import REPO_ROOT, load_truth, sample_path
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 pytestmark = pytest.mark.skipif(
     not sample_path().exists(),
@@ -607,7 +608,7 @@ def _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=30):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
 
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
@@ -727,7 +728,7 @@ def test_s7_turn_cap_never_fabricates_payload(truth, fake_rdb, monkeypatch):
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
     from aryx.cpq.engine import CpqEngine
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     # Cap at 1 turn so the very first configuring turn with pending attrs
     # exercises the cap branch deterministically.
     monkeypatch.setattr(CpqEngine, "MAX_TURNS", 1)
@@ -781,7 +782,7 @@ def test_s8_sequential_anchor_prompting(fake_rdb, monkeypatch):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
 
     # Turn 1: neither product nor country mentioned.
@@ -895,7 +896,7 @@ def test_s12_verbose_default_json_on_request_only(truth, fake_rdb, monkeypatch):
     # Explicit JSON request mid-configuration.
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
     resp2 = _run_cpq_turn(
         AskRequest(question="show me the json so far", workspace_id=1,
@@ -924,7 +925,7 @@ def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
     resp = _run_cpq_turn(
         AskRequest(question="quote sl 3500 single unit for customer in United States",
@@ -1001,8 +1002,8 @@ def test_s13_share_flags_appear_via_run_ask_after_three_answers(truth, fake_rdb,
     if not transcript:
         pytest.skip("engine filtered out all config attrs for this export")
 
-    monkeypatch.setattr(api, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 
     saw_ready = False
     prior_session: dict = {}
@@ -1349,7 +1350,7 @@ def test_s23_at_most_a_few_prompts_to_configure(apx_truth, apx_fake_rdb, monkeyp
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
 
@@ -2089,7 +2090,7 @@ def test_s38_single_query_full_quote_zero_pending(apx_truth, apx_fake_rdb, monke
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(
@@ -2116,7 +2117,7 @@ def test_s39_missing_country_falls_to_anchor_gate_with_real_options(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(question="Quote APX Next Enhanced radios.", workspace_id=1, session_data={})
@@ -2139,7 +2140,7 @@ def test_s41_conversational_quote_only_payload_after_confirm(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
 
@@ -2196,7 +2197,7 @@ def test_s42_run_id_stable_across_turns_and_present_in_logs(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req1 = AskRequest(question="Quote APX Next for a US customer.", workspace_id=1, session_data={})
@@ -2232,7 +2233,7 @@ def test_s44_enhanced_product_hint_vs_hwversion_default_documented(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(

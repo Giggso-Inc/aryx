@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.session_guard import push_snapshot
 
 
@@ -33,6 +32,7 @@ def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:
     early caused Product to look "answered" or raced ahead of Hardware.
     On non-hardware catalogs, keep prior seed-from-anchor behavior.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _hw_attrs = [a for a in attrs if _cpq_engine._is_hardware_version_attr(a)]
     _hw_ready = (

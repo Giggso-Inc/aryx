@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_label_collision_detect_and_compose import _compose_disambiguation_question
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope import set_pending_scope
 
 
@@ -34,13 +35,13 @@ def _build_model_leaf_ask_prompt(
         f"This family has more than one product line — which one are "
         f"you configuring?\n\n{_leaf_lines}"
     )
-    _leaf_answer = _ask_api_module._compose_disambiguation_question(
+    _leaf_answer = _compose_disambiguation_question(
         req.question, "which specific product line/model they want",
         leaf_candidates,
         {"Country": session.country, "Product": session.product_name},
         _static_leaf_answer, req.workspace_id,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _leaf_answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _leaf_answer)
     return {
         "answer": _leaf_answer, "terms": [],
         "tools_called": ["cpq_model_leaf_ambiguous()"],

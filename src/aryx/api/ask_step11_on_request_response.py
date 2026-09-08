@@ -19,7 +19,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _remember_attr_scope
+from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
+from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
 
 
 def _step11_on_request_response(
@@ -28,6 +31,7 @@ def _step11_on_request_response(
     hiding_rules: list, rec_rules: list, con_rules: list, validation_rules: list,
     bml_eval: Any, catalog_prefix: str, mode_request: str | None, dropped_note: str,
 ) -> str:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if mode_request == "json":
         _hidden_now = _cpq_engine.apply_hiding_rules(
@@ -42,7 +46,7 @@ def _step11_on_request_response(
             product_quantity=session.product_quantity,
             scope_required_and_edited=True,
             workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
-        summary = _ask_api_module._cpq_summary_text(
+        summary = _cpq_summary_text(
             display_filled, attrs, rule_ids,
             session.product_name, req.workspace_id, sources=session.filled_source,
             product_quantity=session.product_quantity, filled=session.filled,
@@ -72,10 +76,10 @@ def _step11_on_request_response(
 
     # ── STEP 4: FORMAT A — context sentence + numbered options only ──
     next_attr = pending[0]
-    _pending_collision = _ask_api_module._label_collision_for(next_attr, visible_attrs, session, pending)
+    _pending_collision = _label_collision_for(next_attr, visible_attrs, session, pending)
     if _pending_collision:
         session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
-        return dropped_note + _ask_api_module._label_collision_prompt(
+        return dropped_note + _label_collision_prompt(
             _pending_collision, session, req.question, req.workspace_id)
     context_sentence = dropped_note + _cpq_engine.build_context_sentence(
         next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
@@ -86,7 +90,7 @@ def _step11_on_request_response(
         validation_rules=validation_rules, attrs=visible_attrs,
         already_selected=session.filled_multi.get(next_attr.variable_name),
     )
-    _ask_api_module._remember_attr_scope(
+    _remember_attr_scope(
         session, next_attr, constrained_vals, req.question,
     )
     return answer

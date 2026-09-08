@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_module
 
 
 def _step9_llm_fallback_match(
@@ -32,7 +32,7 @@ def _step9_llm_fallback_match(
     if result or pending_attr.select_type == "multi":
         return result, _llm_low_confidence_candidates
 
-    _llm_pick = _ask_api_module._llm_resolve_pending_answer(req.question, pending_attr, req.workspace_id)
+    _llm_pick = _ask_llm_resolve_pending_answer_module._llm_resolve_pending_answer(req.question, pending_attr, req.workspace_id)
     if _llm_pick and _llm_pick["confidence"] == "high":
         _iv = _llm_pick["iv"]
         _in_constrained = pending_constrained is None or _iv in pending_constrained

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_turn_country_available_for import _country_available_for
 from aryx.api.ask_turn_product_switch_complete import _complete_product_switch
 
@@ -41,6 +41,7 @@ def _handle_switch_country_anchor(
     falls through to STEP 1, which sees session.country/product_name
     already set and proceeds straight to STEP 2 for the new catalog.
     """
+    from aryx.api import ask_api as _ask_api_module
     _sc_reply = req.question.strip().lower()
     if _sc_reply in ("n", "no", "cancel", "stop", "abort",
                      "never mind", "nevermind"):
@@ -52,7 +53,7 @@ def _handle_switch_country_anchor(
             session.turn, session.product_name,
         )
         answer = f"OK — continuing with **{session.product_name}**."
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -83,7 +84,7 @@ def _handle_switch_country_anchor(
         f"**{new_product}** isn't available for **{new_country}** either. "
         f"Could you provide a different country to continue switching?"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_switch_country_invalid()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_finish_cpq_result import _route_quote
 from aryx.cpq.intent_gateway import AskRouteDecision
 
@@ -20,6 +20,7 @@ def _handle_router_error(
     req: "Any", reader: Any, route_meta: AskRouteDecision, mode: str,
     det_is_cpq: bool, soft_quote: bool,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     if mode == "shadow":
         # Shadow mode's whole point is "gateway is observe-only" — a
         # gateway FAILURE must not become customer-visible either; the
@@ -32,7 +33,7 @@ def _handle_router_error(
         )
         if det_is_cpq or soft_quote:
             return _route_quote(req, reader, route_meta)
-        return _ask_api_module._standard_ask_pipeline(req, reader)
+        return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
     # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
     # extraction plan — DELIBERATE, SCOPED departure from this codebase's
     # usual "never fail the turn, always degrade gracefully" convention,

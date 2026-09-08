@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _build_qa_resume_prompt(session: Any, attrs: list, resume_review: bool) -> str:
     """Appends a resume prompt so the user knows where to continue."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if resume_review:
         return "\n\n---\n\n" + _cpq_engine.build_review_prompt(

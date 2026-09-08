@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope import set_pending_scope
 
 
@@ -33,6 +33,7 @@ def _build_switch_redetect_prompt(
     confident or plausible switch candidate was found at all, in which
     case the caller continues with the rest of the turn unchanged.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if alias_map is None:
         alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
@@ -53,7 +54,7 @@ def _build_switch_redetect_prompt(
             f"session is configuring **{session.product_name}**. Switch to "
             f"**{switch_candidate}** and discard the current configuration? (yes/no)"
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_switch_candidate()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -112,7 +113,7 @@ def _build_switch_redetect_prompt(
             f"mean one of: {sug_list}? Reply with the product name, or "
             f"say **no** to continue with **{session.product_name}**."
         )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_switch_ambiguous()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

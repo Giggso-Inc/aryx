@@ -20,7 +20,6 @@ from typing import Any
 
 from aryx.cpq.intent_schema import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
 
 # Gateway failure reasons (GatewayDecision.reason) meaning the LLM call
 # itself never produced a usable classification -- distinct from a real
@@ -49,6 +48,7 @@ def _llm_confirm_and_extract_country(
         Caller must never fall back to a regex-captured value, and
         should fall through to normal processing.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     try:
         decision = _ask_api_module.gateway_classify_intent(

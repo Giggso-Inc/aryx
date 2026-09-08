@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_handle_multi_select_removal import _handle_multi_select_removal
 from aryx.api.ask_target_description import _resolve_target_description
 
@@ -53,7 +53,7 @@ def _dispatch_multi_select_removal(
     )
     if _resolved_iv is None:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_multi_select_removal(
             req, session, attrs, attr, [_resolved_iv],
             hiding_rules, rec_rules, con_rules,

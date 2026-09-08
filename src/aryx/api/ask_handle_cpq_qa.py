@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_qa_fast_path import _qa_fast_path_or_enumeration
 from aryx.api.ask_qa_graph_search import _qa_graph_search
 from aryx.api.ask_qa_label_collision import _qa_label_collision_response
@@ -58,7 +58,7 @@ def _handle_cpq_qa(
 
     resume = _build_qa_resume_prompt(session, attrs, resume_review)
     answer = qa_answer + resume
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
 
     usage = {
         "prompt_tokens": p_in + s_in,

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
 from aryx.cpq.pending_scope import set_pending_scope
 
 
@@ -36,15 +36,15 @@ def _resolve_pending_model_leaf_reply(
     """
     _reply = req.question.strip()
     _leaf_scope = list(session.pending_model_leaf_candidates)
-    _scope_reply = _ask_api_module._resolve_scope_reply(
+    _scope_reply = _resolve_scope_reply(
         _reply, _leaf_scope, "product line", session, req.workspace_id,
     )
     if _scope_reply == "skip":
-        return None, _ask_api_module._build_scope_skip_response(
+        return None, _build_scope_skip_response(
             req, session, _leaf_scope, "product line",
         )
     if _scope_reply == "family_only":
-        return None, _ask_api_module._build_scope_family_only_response(
+        return None, _build_scope_family_only_response(
             req, session, _leaf_scope, "product line",
         )
     _sres = _scope_reply
@@ -59,7 +59,7 @@ def _resolve_pending_model_leaf_reply(
             attr_vn="",
             asked_turn=session.turn,
         )
-        return None, _ask_api_module._scoped_reask_response(
+        return None, _scoped_reask_response(
             req, session, _reply,
             scope_label="product line",
             tools_called="cpq_model_leaf_ambiguous()",

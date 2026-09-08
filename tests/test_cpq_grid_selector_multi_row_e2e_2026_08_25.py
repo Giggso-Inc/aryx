@@ -13,6 +13,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 _VALID_FIVE = [
     "Shirt Magnetic Mount", "Jacket Magnetic Mount", "Shirt Clip Mount",
@@ -46,7 +47,7 @@ def _attrs():
 
 
 def _setup(monkeypatch, attrs, con_rules):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])

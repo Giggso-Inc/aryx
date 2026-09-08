@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_approval_stale_violations import (
     _handle_approval_gate_conflict,
     _handle_approval_stale_reask,
@@ -45,6 +45,7 @@ def _handle_approval(
     `hints` (default `{}`) only affects the final approved response's
     cosmetic `terms` field — never anything the BOM gate itself checks.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     hints = hints or {}
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
@@ -69,7 +70,7 @@ def _handle_approval(
     if not gate.ok:
         session.complete = False
         session.status = "awaiting_approval"
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, gate.catch_message)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, gate.catch_message)
         return {
             "answer": gate.catch_message, "terms": [], "tools_called": ["cpq_bom_gate_blocked()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -116,7 +117,7 @@ def _handle_approval(
         scope_required_and_edited=True,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
     answer = f"```json\n{json.dumps(payload, indent=2)}\n```"
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": list(hints.values()), "tools_called": ["cpq_payload_approved()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

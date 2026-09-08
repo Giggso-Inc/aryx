@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
+from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_pending_clarify_apply import (
     _apply_pending_clarify_resolution,
     _clear_pending_clarify,
@@ -44,6 +46,7 @@ def _set_pending_clarify_and_answer(
     rec_rules: list | None = None,
 ) -> dict[str, Any]:
     """Persist grounded clarify state and return the clarify response."""
+    from aryx.api import ask_api as _ask_api_module
     candidates = _ground_clarify_candidates(
         original_question, attrs, session, clarifying_question, hidden_vns=hidden_vns,
     )
@@ -94,8 +97,8 @@ def _set_pending_clarify_and_answer(
     # before it's safe to auto-apply anything.
     if len(candidates) == 1 and con_rules is not None:
         _clear_pending_clarify(session)
-        return _ask_api_module._with_classify_usage(
-            _ask_api_module._build_no_value_response(
+        return _with_classify_usage(
+            _build_no_value_response(
                 req, session, attrs, candidates[0], con_rules, bml_eval,
                 f"{tool_name}->single_candidate",
             ),
@@ -133,8 +136,8 @@ def _set_pending_clarify_and_answer(
         session.pending_clarify_prompt = answer
     if should_offer_guided_mode(session):
         answer = f"{answer}\n\n{guided_mode_offer_message()}"
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
-    return _ask_api_module._with_classify_usage({
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    return _with_classify_usage({
         "answer": answer, "terms": list(session.pending_clarify_vns),
         "tools_called": [tool_name],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

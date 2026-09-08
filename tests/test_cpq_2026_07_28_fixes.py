@@ -31,6 +31,9 @@ from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import clear_gateway_cache
 from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
+from aryx.api import ask_pending_clarify_llm_classify as _ask_pending_clarify_llm_classify_test_module
+from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -57,7 +60,7 @@ def test_stuck_pending_attr_does_not_block_a_new_change_request(monkeypatch):
     filled attr with a change verb — this must fall through to the
     change-request handler, not be swallowed as a failed answer attempt
     to the stuck Product question."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -99,7 +102,7 @@ def test_stuck_pending_attr_still_locks_a_genuine_bare_reply(monkeypatch):
     change request (no change verb, no other real attr named), STEP 5's
     original lock-the-pending-answer behavior must still fire —
     _looks_like_new_request must not become "never lock anything"."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -323,7 +326,7 @@ def test_override_menu_items_are_merged_with_override_display_winning(monkeypatc
 # ═══════════════════════════════════════════════════════════════════════
 
 def _rules_setup(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -491,8 +494,7 @@ def test_match_pending_clarify_reply_stays_ambiguous_without_an_anchor():
     primary = _attr(2, "modelSelectionPrimaryFrequency_astro", "Primary Frequency",
                      options=_opt("700/800 MHZ", "VHF"))
     session = CpqSession(mode="cpq")
-    with patch.object(
-        api, "_llm_classify_pending_clarify_reply", return_value=("unclear", None),
+    with patch.object(_ask_pending_clarify_llm_classify_test_module, "_llm_classify_pending_clarify_reply", return_value=("unclear", None),
     ) as mock_llm:
         status, vn = api._match_pending_clarify_reply("VHF", [bands, primary], session, 1)
     assert (status, vn) == ("unclear", None)
@@ -534,7 +536,7 @@ def test_llm_first_qa_question_dispatches_on_high_confidence_with_reader():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -563,7 +565,7 @@ def test_llm_first_qa_question_medium_confidence_falls_through():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.MEDIUM,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         resp = _dispatch_intent_result(
             req, session, [], result, [], [], [], None, reader=object(),
         )
@@ -582,7 +584,7 @@ def test_llm_first_qa_question_never_dispatches_without_a_reader():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
     mock_qa.assert_not_called()
     assert resp is None
@@ -691,7 +693,7 @@ def test_llm_first_attr_activation_dispatches_an_eligible_attr():
         rationale="activation",
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules", return_value=({}, {}, set())), \
-         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+         patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         mock_activate.return_value = {
             "answer": "stub activation", "terms": [], "tools_called": ["cpq_attr_activation()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -717,7 +719,7 @@ def test_llm_first_attr_activation_never_reactivates_an_already_filled_attr():
         target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -735,7 +737,7 @@ def test_llm_first_attr_activation_never_reactivates_a_required_attr():
         target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [required_attr], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -755,7 +757,7 @@ def test_llm_first_attr_activation_never_reactivates_a_still_hidden_attr():
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules",
                return_value=({}, {}, {"extendedBattery_astro"})), \
-         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+         patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -779,7 +781,7 @@ def test_llm_first_attr_clear_dispatches_an_eligible_attr():
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules", return_value={}), \
-         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         mock_clear.return_value = {
             "answer": "stub clear", "terms": [], "tools_called": ["cpq_attr_clear()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -804,7 +806,7 @@ def test_llm_first_attr_clear_never_clears_an_unfilled_attr():
         target=ChangeTarget(target_description="Device Color", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -827,7 +829,7 @@ def test_llm_first_attr_clear_refuses_when_a_recommendation_would_immediately_re
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules",
                return_value={"deviceColor_astro": "Black"}), \
-         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -1048,7 +1050,7 @@ def test_pending_change_no_value_retry_keeps_constrained_option_scope(monkeypatc
     scoped to the SAME constrained set the original "which value?" ask
     used — not fall back to every option on the attribute (e.g. the full
     cross-family catalog)."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1091,7 +1093,7 @@ def test_pending_change_no_value_retry_keeps_constrained_option_scope(monkeypatc
 # these must auto-clear + re-ask instead of hard-blocking.
 
 def test_confirm_auto_clears_stale_constraint_value_and_reasks(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1142,7 +1144,7 @@ def test_confirm_auto_clear_pushes_snapshot_before_mutating(monkeypatch):
     """The auto-clear mutation must push_snapshot first, same discipline
     as every other session mutation, so "undo" right after this re-ask
     reverts just this clear instead of skipping past it."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1179,7 +1181,7 @@ def test_confirm_auto_clears_stale_multi_select_value_when_all_invalid(monkeypat
     """A multi-select attr whose ENTIRE selection is now invalid must be
     cleared from filled_multi (not silently left in place because the
     code only checked filled)."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1222,7 +1224,7 @@ def test_confirm_auto_clears_stale_multi_select_value_when_all_invalid(monkeypat
 # carrier selections and 1 now-invalid one lost all 5.
 
 def test_confirm_auto_clear_keeps_still_valid_multi_select_values(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1273,7 +1275,7 @@ def test_confirm_auto_clear_keeps_still_valid_multi_select_values(monkeypatch):
 # value" loop, since no reply could ever match zero allowed options.
 
 def test_confirm_reports_rule_conflict_instead_of_unanswerable_reask(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1359,7 +1361,7 @@ def test_question_mark_during_config_routes_to_qa_not_treated_as_an_answer(monke
                          status="configuring", turn=2)
     req = AskRequest(question="what does extended battery mean?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -1377,7 +1379,7 @@ def test_question_mark_during_config_routes_to_qa_not_treated_as_an_answer(monke
 # ── B4. Quote / approval submission ─────────────────────────────────────
 
 def test_confirm_during_awaiting_approval_submits_the_payload(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1417,7 +1419,7 @@ def test_confirm_scopes_both_cpq_payload_and_answer(monkeypatch):
     embedded JSON. In the live flow Wireless Carrier is always a genuine
     Tier A/B (customer-asked) attribute, never rule-only, so real orders
     are unaffected by this exclusion."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1464,7 +1466,7 @@ def test_cascade_clears_stale_multiselect_dependent_from_filled_multi(monkeypatc
     ConstraintRule making carrierSelectionMultiSelect_astro a cascade
     dependent of hWVersion_astro, and asserts the stale filled_multi
     entry is gone afterward."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
@@ -1529,7 +1531,7 @@ def test_pending_answer_lock_clears_stale_multiselect_dependent(monkeypatch):
     root cause as the _handle_cascade fix, reached via a completely
     separate code path that fix didn't cover. Drives the real
     _run_cpq_turn end to end (not a reimplementation)."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
@@ -1591,7 +1593,7 @@ def test_country_change_clears_invalidated_multiselect_selection(monkeypatch):
     entirely. A now-illegal multi-select selection could survive a
     country change indefinitely. Drives the real
     _build_country_change_response end to end."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -1643,7 +1645,7 @@ def test_llm_first_approval_dispatches_and_submits_the_payload(monkeypatch):
     """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md APPROVAL
     dispatch: same _handle_approval the regex path (test above) uses,
     reached via _dispatch_intent_result instead of detect_approval."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     attrs = [battery]
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
@@ -1672,7 +1674,7 @@ def test_llm_first_approval_threads_hints_into_terms(monkeypatch):
     threading hints through _dispatch_intent_result, so an approval reached
     via unusual phrasing ("yep, that's everything, go ahead") returned an
     empty terms field where the regex path would have populated one."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     attrs = [battery]
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
@@ -1711,7 +1713,7 @@ def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
     """The classification alone must never bypass the untouched BOM
     gate -- a genuine rule conflict still blocks the payload exactly
     like the regex path, since both now share _handle_approval."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(
         "aryx.api.ask_api.validate_before_payload",
         lambda *a, **k: type(
@@ -1741,7 +1743,7 @@ def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
 # match, with _cpq_engine.detect_approval patched to return False so a
 # passing test can't be hiding a regex match underneath the LLM path.
 def test_llm_first_approval_dispatches_for_phrasing_the_regex_cannot_match(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_approval", lambda q: False)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     attrs = [battery]
@@ -1770,7 +1772,7 @@ def test_llm_first_response_mode_request_json_dispatches_a_preview(monkeypatch):
     """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
     RESPONSE_MODE_REQUEST("json") dispatches the same json-preview
     response _build_json_preview_response gives the regex path."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
                          filled={"batteryType_astro": "STANDARD"},
@@ -1846,7 +1848,7 @@ def test_llm_first_bulk_quantity_change_dispatches_the_selected_grid_rows(monkey
     BULK_QUANTITY_CHANGE dispatches the same _handle_bulk_quantity_change
     the regex path (detect_bulk_quantity_change) uses, re-verifying the
     target is a real array-grid selector with resolvable selected rows."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     attrs = _mount_attrs_for_bulk_qty()
     session = CpqSession(
         mode="cpq", product_name="viSoln_bom", country="United States",
@@ -1939,7 +1941,7 @@ def test_llm_first_product_quantity_change_dispatches_a_negative_value_for_rejec
     function that gives the customer a clear "-5 isn't a valid quantity"
     message. Unlike BULK_QUANTITY_CHANGE, this builder DOES validate
     range itself, so it's safe to let the signed value through to it."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", product_quantity=10)
     req = AskRequest(question="change the quantity to minus 5", workspace_id=1,
                       session_data=session.to_dict())
@@ -2006,7 +2008,7 @@ def test_llm_first_bulk_quantity_change_rejects_zero():
 
 
 def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -2151,7 +2153,7 @@ def test_llm_first_uncovered_categories_defer_to_deterministic_path(category):
 # a result exists. ────────────────────────────────────────────────────
 
 def _llm_first_gate_setup(monkeypatch, *, enabled: bool):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -2278,13 +2280,13 @@ def test_llm_first_gate_falls_through_to_deterministic_on_unparseable_reply(monk
 # ═══════════════════════════════════════════════════════════════════════
 
 def _qa_common_mocks(monkeypatch, *, ambiguity_enabled: bool):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_label_collision", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_attr_query", lambda *a, **k: None)
     monkeypatch.setattr(api, "all_types", lambda *a, **k: [])
-    monkeypatch.setattr(api, "_extract_terms", lambda *a, **k: ([], 10, 5, 0))
+    monkeypatch.setattr(_ask_standard_pipeline_test_module, "_extract_terms", lambda *a, **k: ([], 10, 5, 0))
     monkeypatch.setattr(api, "gather", lambda *a, **k: ([], []))
-    monkeypatch.setattr(api, "_enrich_with_attributes", lambda entities, *a, **k: entities)
+    monkeypatch.setattr(_ask_standard_pipeline_test_module, "_enrich_with_attributes", lambda entities, *a, **k: entities)
     monkeypatch.setattr(api, "render_context", lambda *a, **k: "")
     real_settings = api.get_settings()
     patched_settings = real_settings.model_copy(
@@ -2311,9 +2313,9 @@ def test_qa_ambiguity_check_asks_clarifying_question_instead_of_answering(monkey
         clarifying_question="Did you mean Hardware Version or Housing?",
         rationale="both plausible",
     )
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(result, 40, 8)), \
-         patch("aryx.api.ask_api._synthesise") as mock_synth:
+         patch("aryx.api.ask_standard_pipeline._synthesise") as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
     mock_synth.assert_not_called()
     assert resp["answer"] == "Did you mean Hardware Version or Housing?"
@@ -2334,9 +2336,9 @@ def test_qa_ambiguity_check_falls_back_to_synthesis_when_not_ambiguous(monkeypat
                       session_data=session.to_dict(), history=[])
     result = IntentResult(category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
                            rationale="clear Q&A")
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(result, 40, 8)), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Advantage includes 24/7 support.", 20, 15, 0)) as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
     mock_synth.assert_called_once()
@@ -2350,8 +2352,8 @@ def test_qa_ambiguity_check_never_calls_the_llm_when_disabled(monkeypatch):
     session = _qa_session()
     req = AskRequest(question="what about the hardware", workspace_id=1,
                       session_data=session.to_dict(), history=[])
-    with patch("aryx.api.ask_api._llm_classify_intent_universal") as mock_classify, \
-         patch("aryx.api.ask_api._synthesise",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal") as mock_classify, \
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Here's what the graph shows.", 20, 15, 0)) as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
     mock_classify.assert_not_called()
@@ -2441,9 +2443,9 @@ def test_qa_ambiguity_check_failure_falls_back_to_synthesis_safely(monkeypatch):
     session = _qa_session()
     req = AskRequest(question="what about the hardware", workspace_id=1,
                       session_data=session.to_dict(), history=[])
-    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                side_effect=RuntimeError("llm unavailable")), \
-         patch("aryx.api.ask_api._synthesise",
+         patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Fallback answer.", 20, 15, 0)) as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
     mock_synth.assert_called_once()

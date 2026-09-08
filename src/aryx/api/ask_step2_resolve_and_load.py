@@ -27,7 +27,7 @@ from aryx.api.ask_step2_pending_change_no_value import _resolve_pending_change_n
 from aryx.api.ask_step2_rule_consistency import _step2_log_rule_consistency_and_array_grid
 from aryx.api.ask_pending_clarify_turn import _handle_pending_clarify_turn
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
 
 
 def _step2_resolve_and_load(
@@ -41,6 +41,7 @@ def _step2_resolve_and_load(
     of the gates in this preamble; the caller must return it immediately
     when present.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 
@@ -93,7 +94,7 @@ def _step2_resolve_and_load(
         and session.status not in ("awaiting_approval", "post_approval")
         and not incoming_pending_anchor
     ):
-        _llm_first_universal_result = _ask_api_module._llm_first_gateway_turn(
+        _llm_first_universal_result = _llm_first_gateway_turn(
             req, session, attrs, reader, hints,
             hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         )

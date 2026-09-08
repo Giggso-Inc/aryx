@@ -45,6 +45,12 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
+from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_test_module
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_test_module
+from aryx.api import ask_llm_classify_change_intent as _ask_llm_classify_change_intent_test_module
+from aryx.api import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_test_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -64,7 +70,7 @@ def _setup(monkeypatch, attrs, product_name="aSTRO25_bom"):
     the DB/catalog-config loaders are stubbed. `cpq_llm_first_enabled` is
     forced False so the LLM-first gateway never intercepts these turns
     before reaching the deterministic branches under test here."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: (attrs, product_name))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -173,7 +179,7 @@ def test_stage8_pending_label_collision_index_resolves_and_resumes_original_ques
         pending_label_collision_question="what values are available for Product?",
     )
     req = AskRequest(question="2", workspace_id=1, session_data=session.to_dict())
-    with patch.object(api, "_handle_cpq_qa") as mock_qa:
+    with patch.object(_ask_handle_cpq_qa_test_module, "_handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "resumed", "terms": [], "tools_called": [], "usage": {},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
@@ -226,7 +232,7 @@ def test_stage8_pending_label_collision_llm_fallback_resolves(monkeypatch):
     )
     req = AskRequest(question="the second one, the actual product selector",
                       workspace_id=1, session_data=session.to_dict())
-    with patch.object(api, "_llm_resolve_label_collision",
+    with patch.object(_ask_decline_reply_and_label_collision_llm_test_module, "_llm_resolve_label_collision",
                        return_value="productSelectionProduct_all"):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["pending_variables"][0] == "productSelectionProduct_all"
@@ -247,7 +253,7 @@ def test_stage8_pending_label_collision_unrecognized_reply_clears_and_falls_thro
         pending_label_collision_question="",
     )
     req = AskRequest(question="huh what", workspace_id=1, session_data=session.to_dict())
-    with patch.object(api, "_llm_resolve_label_collision", return_value=None):
+    with patch.object(_ask_decline_reply_and_label_collision_llm_test_module, "_llm_resolve_label_collision", return_value=None):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["pending_label_collision_vns"] == []
     assert resp["tools_called"] == ["cpq_review_nudge()"]
@@ -264,7 +270,7 @@ def test_stage8_qa_during_review_resumes_review_after_answering(monkeypatch):
                           filled={"batteryType_astro": "STANDARD"}, turn=3)
     req = AskRequest(question="what is the STANDARD battery type made of?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(api, "_handle_cpq_qa") as mock_qa:
+    with patch.object(_ask_handle_cpq_qa_test_module, "_handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "it is a lithium battery", "terms": [], "tools_called": [],
             "usage": {}, "grounding": None, "session_data": session.to_dict(),
@@ -334,7 +340,7 @@ def test_stage8_pending_change_collision_unrecognized_reply_clears_and_falls_thr
     )
     req = AskRequest(question="no idea what you mean", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(api, "_llm_resolve_label_collision", return_value=None):
+    with patch.object(_ask_decline_reply_and_label_collision_llm_test_module, "_llm_resolve_label_collision", return_value=None):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["pending_change_collision_vns"] == []
     assert resp["tools_called"] == ["cpq_review_nudge()"]
@@ -404,7 +410,7 @@ def test_stage8_multi_select_removal_deselects_an_option(monkeypatch):
     )
     req = AskRequest(question="remove Jacket Mount", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(api, "_llm_confirm_deterministic_intent", return_value=True):
+    with patch.object(_ask_shadow_classify_and_confirm_intent_test_module, "_llm_confirm_deterministic_intent", return_value=True):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["filled_multi"]["mountingTypeArray_viSoln"] == ["Shirt Mount"]
 
@@ -469,7 +475,7 @@ def test_stage8_single_change_request_dispatches_via_cascade(monkeypatch):
     # "Battery Type"'s label match requires its "type" word present too.
     req = AskRequest(question="change battery type to Extended", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(api, "_llm_confirm_deterministic_intent", return_value=True):
+    with patch.object(_ask_shadow_classify_and_confirm_intent_test_module, "_llm_confirm_deterministic_intent", return_value=True):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["filled"]["batteryType_astro"] == "EXTENDED"
 
@@ -487,8 +493,7 @@ def test_stage8_llm_fallback_classifies_a_remove_intent(monkeypatch):
     )
     req = AskRequest(question="I don't want the jacket one anymore", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(
-        api, "_llm_classify_change_intent",
+    with patch.object(_ask_llm_classify_change_intent_test_module, "_llm_classify_change_intent",
         return_value=(
             {"intent": "remove", "variable_name": "mountingTypeArray_viSoln",
              "value": "Jacket Mount"},
@@ -508,8 +513,7 @@ def test_stage8_llm_fallback_change_with_no_value_asks_which_value(monkeypatch):
                           filled={"batteryType_astro": "STANDARD"}, turn=3)
     req = AskRequest(question="change the battery please", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(
-        api, "_llm_classify_change_intent",
+    with patch.object(_ask_llm_classify_change_intent_test_module, "_llm_classify_change_intent",
         return_value=(
             {"intent": "change", "variable_name": "batteryType_astro", "value": ""}, 5, 5,
         ),
@@ -662,7 +666,7 @@ def test_configuring_step7_qa_strict_answers_and_does_not_lock_pending(monkeypat
                           pending_variables=["deviceColor_astro"])
     req = AskRequest(question="what is device color used for?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch.object(api, "_handle_cpq_qa") as mock_qa:
+    with patch.object(_ask_handle_cpq_qa_test_module, "_handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "cosmetic finish", "terms": [], "tools_called": [],
             "usage": {}, "grounding": None, "session_data": session.to_dict(),
@@ -700,7 +704,7 @@ def test_configuring_pending_label_collision_unrecognized_clears_state(monkeypat
         pending_label_collision_vns=["productInformationText_astro", "productSelectionProduct_all"],
     )
     req = AskRequest(question="huh", workspace_id=1, session_data=session.to_dict())
-    with patch.object(api, "_llm_resolve_label_collision", return_value=None):
+    with patch.object(_ask_decline_reply_and_label_collision_llm_test_module, "_llm_resolve_label_collision", return_value=None):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["pending_label_collision_vns"] == []
 
@@ -884,8 +888,7 @@ def test_step5_llm_low_confidence_fallback_asks_to_confirm_which_option(monkeypa
     session = CpqSession(mode="cpq", country="United States", product_name="aSTRO25_bom", status="configuring", turn=2,
                           pending_variables=["deviceColor_astro"])
     req = AskRequest(question="the gray one", workspace_id=1, session_data=session.to_dict())
-    with patch.object(
-        api, "_llm_resolve_pending_answer",
+    with patch.object(_ask_llm_resolve_pending_answer_test_module, "_llm_resolve_pending_answer",
         return_value={"confidence": "low", "candidates": ["Slate Gray", "Storm Gray"]},
     ):
         resp = _run_cpq_turn_inner(req, object())
@@ -904,8 +907,7 @@ def test_step5_llm_high_confidence_fallback_commits_the_match(monkeypatch):
     session = CpqSession(mode="cpq", country="United States", product_name="aSTRO25_bom", status="configuring", turn=2,
                           pending_variables=["deviceColor_astro"])
     req = AskRequest(question="the darker gray", workspace_id=1, session_data=session.to_dict())
-    with patch.object(
-        api, "_llm_resolve_pending_answer",
+    with patch.object(_ask_llm_resolve_pending_answer_test_module, "_llm_resolve_pending_answer",
         return_value={"confidence": "high", "iv": "Storm Gray", "disp": "Storm Gray"},
     ):
         resp = _run_cpq_turn_inner(req, object())
@@ -923,7 +925,7 @@ def test_step5_invalid_answer_with_no_match_reasks_with_scoped_options(monkeypat
     session = CpqSession(mode="cpq", country="United States", product_name="aSTRO25_bom", status="configuring", turn=2,
                           pending_variables=["deviceColor_astro"])
     req = AskRequest(question="paisley", workspace_id=1, session_data=session.to_dict())
-    with patch.object(api, "_llm_resolve_pending_answer", return_value=None):
+    with patch.object(_ask_llm_resolve_pending_answer_test_module, "_llm_resolve_pending_answer", return_value=None):
         resp = _run_cpq_turn_inner(req, object())
     assert "deviceColor_astro" not in resp["session_data"]["filled"]
     assert resp["tools_called"] == ["cpq_invalid_answer()"]
@@ -956,7 +958,7 @@ def test_step5_pending_reply_topic_switch_skips_answer_locking(monkeypatch):
     # elsewhere in this file to avoid a real network hang) would silently
     # swallow this change request instead. Same mock as the Stage 8
     # sibling single-change test.
-    with patch.object(api, "_llm_confirm_deterministic_intent", return_value=True):
+    with patch.object(_ask_shadow_classify_and_confirm_intent_test_module, "_llm_confirm_deterministic_intent", return_value=True):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
     assert "productSelectionProduct_all" not in resp["session_data"]["filled"]

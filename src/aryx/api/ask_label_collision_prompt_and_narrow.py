@@ -21,7 +21,7 @@ from typing import Any
 
 from aryx.api.ask_relevant_intent_candidates import _WORD_RE
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_label_collision_detect_and_compose import _compose_disambiguation_question
 
 
 def _label_collision_prompt(
@@ -33,6 +33,7 @@ def _label_collision_prompt(
     identically to before Layer 2 existed, for any caller not yet updated
     to pass them.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     labels = {
         a.variable_name: _cpq_engine.disambiguated_label(a, collision)
@@ -50,7 +51,7 @@ def _label_collision_prompt(
     )
     if not question:
         return static_fallback
-    return _ask_api_module._compose_disambiguation_question(
+    return _compose_disambiguation_question(
         question, f'which attribute they mean by "{collision[0].display_label}"',
         [labels[a.variable_name] for a in collision],
         {"Country": getattr(session, "country", ""),

@@ -27,7 +27,6 @@ from aryx.cpq.session_guard import (
 )
 from aryx.cpq.state import INTENT_QUEUE_CAP
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _append_unmatched_targets_note(
@@ -35,6 +34,7 @@ def _append_unmatched_targets_note(
 ) -> dict:
     """Surfaces (never silently drops) a fragment of a multi-target
     change request that named nothing real."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     unmatched = _cpq_engine.detect_unmatched_change_targets(question, attrs, matched_vns)
     if unmatched:
@@ -55,6 +55,7 @@ def _scan_and_enqueue_remaining_targets(
 ) -> tuple[list[str], list[str]]:
     """Scan utterance for all valueless change targets; enqueue all but
     active. Returns (enqueued_vns, overflow_vns)."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     exclude = set(exclude_vns or set())
     all_targets = _cpq_engine.detect_all_change_targets_without_value(
@@ -73,6 +74,7 @@ def _scan_and_enqueue_remaining_targets(
 
 def _queue_followup_note(session: Any, attrs: list) -> str:
     """Human note listing queued targets still to ask."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if not session.pending_intent_queue:
         note = ""

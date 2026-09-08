@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _handle_confirm_switch_decline(
@@ -26,6 +26,7 @@ def _handle_confirm_switch_decline(
     differs from both the current product and the one just declined;
     otherwise fall through to a normal decline exactly as before.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _decline_alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
     _redetected = _cpq_engine.detect_product_mention(
@@ -51,7 +52,7 @@ def _handle_confirm_switch_decline(
             f"Switch to **{_redetected}** and discard the current "
             f"configuration? (yes/no)"
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_switch_reoffer()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -66,7 +67,7 @@ def _handle_confirm_switch_decline(
         session.turn, session.product_name,
     )
     answer = f"OK — continuing with **{session.product_name}**."
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

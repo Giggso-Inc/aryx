@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.pending_scope import set_pending_scope
 from aryx.cpq.session_guard import push_snapshot
 
@@ -30,6 +29,7 @@ def _reask_confirmed_data_table_conflict(
     REASK_PLAN_2026_08_10.md). Best-effort — a lookup failure never blocks
     "Configuration complete" on this proactive check; returns None.
     """
+    from aryx.api import ask_api as _ask_api_module
     try:
         confirmed_conflicts = _ask_api_module._cpq_engine.find_confirmed_data_table_conflicts(
             session.filled, session.filled_source, workspace_id, catalog_prefix,

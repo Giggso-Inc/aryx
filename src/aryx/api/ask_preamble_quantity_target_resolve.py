@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_resolve_quantity_target import _llm_resolve_quantity_target, _quantity_message_might_name_candidate
 
 
 def _preamble_resolve_quantity_target(
@@ -29,6 +29,7 @@ def _preamble_resolve_quantity_target(
     """Returns (qty_target, qty_candidates). `qty_target` is "product",
     a specific attr's variable_name, or None (genuinely ambiguous).
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     _qty_candidates = [
         a for a in qty_pre["candidates"]
@@ -44,7 +45,7 @@ def _preamble_resolve_quantity_target(
     ]
     _qty_has_user_sourced = any(src == "user" for _vn, src in _qty_provenance)
     _qty_maybe_named = any(
-        _ask_api_module._quantity_message_might_name_candidate(req.question, a)
+        _quantity_message_might_name_candidate(req.question, a)
         for a in _qty_candidates
     )
     if not _qty_has_user_sourced and not _qty_maybe_named:
@@ -57,7 +58,7 @@ def _preamble_resolve_quantity_target(
         )
         return "product", _qty_candidates
 
-    _qty_target = _ask_api_module._llm_resolve_quantity_target(
+    _qty_target = _llm_resolve_quantity_target(
         req.question, _qty_candidates, session, req.workspace_id,
     )
     if _qty_target == "product" and not _qty_has_user_sourced:

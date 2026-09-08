@@ -16,7 +16,9 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_handle_attr_activation as _ask_handle_attr_activation_module
+from aryx.api import ask_handle_attr_clear as _ask_handle_attr_clear_module
+from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 
 def _step6_activation_and_clear(
@@ -27,17 +29,18 @@ def _step6_activation_and_clear(
     or nullify; None otherwise, in which case the caller continues with
     the rest of the STEP 6 routing.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _activation_match = _cpq_engine.detect_attr_activation(
         req.question, attrs, session.filled, session.filled_multi,
         hiding_rules, req.workspace_id, catalog_prefix, bml_eval=bml_eval,
     )
-    if _activation_match and _ask_api_module._llm_confirm_deterministic_intent(
+    if _activation_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.ATTR_ACTIVATION,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_activation_match.variable_name,
     ):
-        return _ask_api_module._handle_attr_activation(
+        return _ask_handle_attr_activation_module._handle_attr_activation(
             req, session, attrs, _activation_match,
             hiding_rules, rec_rules, con_rules,
         )
@@ -46,12 +49,12 @@ def _step6_activation_and_clear(
         req.question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
-    if _clear_match and _ask_api_module._llm_confirm_deterministic_intent(
+    if _clear_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.ATTR_CLEAR,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_clear_match.variable_name,
     ):
-        return _ask_api_module._handle_attr_clear(
+        return _ask_handle_attr_clear_module._handle_attr_clear(
             req, session, attrs, _clear_match,
             hiding_rules, rec_rules, con_rules,
         )

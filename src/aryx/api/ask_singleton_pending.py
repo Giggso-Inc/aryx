@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.engine import _valid
 
 logger = logging.getLogger(__name__)
@@ -51,6 +50,7 @@ def _auto_resolve_singleton_pending(
     is a best-effort late narrowing, never a hard requirement for the
     turn to proceed.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not pending or not con_rules or bml_eval is None:
         return pending
     pending = list(pending)

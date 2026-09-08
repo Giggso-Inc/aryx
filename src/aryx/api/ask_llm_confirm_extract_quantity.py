@@ -21,7 +21,7 @@ from typing import Any
 
 from aryx.cpq.intent_schema import IntentCategory, _is_signed_digit_quantity_text
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _llm_confirm_and_extract_quantity(
@@ -39,6 +39,7 @@ def _llm_confirm_and_extract_quantity(
         its `quantity_text` wasn't usable; caller falls back to
         `fallback_value`/`fallback_decimal`.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     try:
         decision = _ask_api_module.gateway_classify_intent(
@@ -73,7 +74,7 @@ def _build_llm_call_failed_response(req: "Any", session: Any) -> dict[str, Any]:
         "Sorry — I couldn't process that just now (a classifier "
         "call failed). Please try again in a moment."
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_llm_call_failed()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

@@ -29,7 +29,8 @@ from aryx.api.ask_step678_llm_fallback import _step6_llm_fallback_classify
 from aryx.api.ask_step678_no_value_and_nudge import _step6_no_value_or_nudge
 from aryx.api.ask_step678_options_collision import _resolve_pending_options_collision
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 
 
 def _handle_review_status_routing(
@@ -42,6 +43,7 @@ def _handle_review_status_routing(
     session isn't in one of those two statuses, in which case the caller
     continues with the rest of the turn unchanged.
     """
+    from aryx.api import ask_api as _ask_api_module
     if session.status == "approved":
         session.status = "post_approval"
     if session.status not in ("awaiting_approval", "post_approval"):
@@ -61,13 +63,13 @@ def _handle_review_status_routing(
 
     # STEP 7: Q&A during review — answer graph question, then show review again
     if _cpq_engine.detect_qa_question(req.question, strict=False):
-        return _ask_api_module._handle_cpq_qa(req, session, attrs, reader, resume_review=True)
+        return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
     result = _resolve_pending_change_collision(req, session, attrs, hiding_rules, rec_rules, con_rules)
     if result is not None:
         return result
 
-    _llm_first_result = _ask_api_module._llm_first_gateway_turn(
+    _llm_first_result = _llm_first_gateway_turn(
         req, session, attrs, reader, hints,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
     )

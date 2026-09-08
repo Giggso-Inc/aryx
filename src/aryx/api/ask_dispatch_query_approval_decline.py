@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _build_attr_query_response, _with_classify_usage
+from aryx.api.ask_json_preview_and_decline import _build_json_preview_response
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api import ask_json_preview_and_decline as _ask_json_preview_and_decline_module
 from aryx.api.ask_handle_approval import _handle_approval
 from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.intent_schema import Confidence
@@ -38,8 +41,8 @@ def _dispatch_response_mode_request(
     """
     if result.confidence != Confidence.HIGH or result.response_mode != "json":
         return None
-    return _ask_api_module._with_classify_usage(
-        _ask_api_module._build_json_preview_response(
+    return _with_classify_usage(
+        _build_json_preview_response(
             req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
         ),
         classify_prompt_tokens, classify_completion_tokens,
@@ -62,8 +65,8 @@ def _dispatch_attr_query(
         result.target.target_description, attrs)
     if attr is None:
         return None
-    return _ask_api_module._with_classify_usage(
-        _ask_api_module._build_attr_query_response(req, session, attrs, con_rules, bml_eval, attr),
+    return _with_classify_usage(
+        _build_attr_query_response(req, session, attrs, con_rules, bml_eval, attr),
         classify_prompt_tokens, classify_completion_tokens,
     )
 
@@ -80,8 +83,8 @@ def _dispatch_qa_question(
     """
     if result.confidence != Confidence.HIGH or reader is None:
         return None
-    return _ask_api_module._with_classify_usage(
-        _ask_api_module._handle_cpq_qa(req, session, attrs, reader, resume_review=True),
+    return _with_classify_usage(
+        _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, attrs, reader, resume_review=True),
         classify_prompt_tokens, classify_completion_tokens,
     )
 
@@ -102,7 +105,7 @@ def _dispatch_approval(
     """
     if result.confidence != Confidence.HIGH:
         return None
-    return _ask_api_module._with_classify_usage(
+    return _with_classify_usage(
         _handle_approval(
             req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
             hints=hints,
@@ -125,7 +128,7 @@ def _dispatch_decline(
     """
     if result.confidence != Confidence.HIGH:
         return None
-    return _ask_api_module._with_classify_usage(
-        _ask_api_module._handle_decline(req, session),
+    return _with_classify_usage(
+        _ask_json_preview_and_decline_module._handle_decline(req, session),
         classify_prompt_tokens, classify_completion_tokens,
     )

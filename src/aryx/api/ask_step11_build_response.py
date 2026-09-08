@@ -23,7 +23,7 @@ from aryx.api.ask_step11_completion_responses import (
 from aryx.api.ask_step11_on_request_response import _step11_on_request_response
 from aryx.api.ask_step11_turn_cap_response import _step11_turn_cap_response
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step11_build_turn_response(
@@ -33,6 +33,7 @@ def _step11_build_turn_response(
     con_rules: list, validation_rules: list, bml_eval: Any, catalog_prefix: str,
     mode_request: str | None,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
     _step_format_t0 = time.monotonic()
     logger.info(
@@ -65,7 +66,7 @@ def _step11_build_turn_response(
         "cpq_step: step6_4_response_formatting done run_id=%s elapsed_s=%.3f",
         session.run_id, time.monotonic() - _step_format_t0,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer,
         "terms": list(hints.values()),

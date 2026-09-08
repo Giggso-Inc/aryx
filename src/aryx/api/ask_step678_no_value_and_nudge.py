@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step6_no_value_or_nudge(
@@ -26,18 +28,19 @@ def _step6_no_value_or_nudge(
     """Always returns a response dict — the final catch-all of STEP 6/7/8
     routing once every other detector has come up empty.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _no_value_attr = _cpq_engine.detect_change_target_without_value(
         req.question, attrs, session.filled,
     )
     if _no_value_attr:
-        return _ask_api_module._build_no_value_response(
+        return _build_no_value_response(
             req, session, attrs, _no_value_attr, con_rules, bml_eval,
             "cpq_change_target_no_value",
         )
 
     rule_ids_nudge = _cpq_engine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
-    summary = _ask_api_module._cpq_summary_text(
+    summary = _cpq_summary_text(
         session.display_filled, attrs, rule_ids_nudge,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
@@ -49,7 +52,7 @@ def _step6_no_value_or_nudge(
         + f"Click **JSON** below to see the full payload, "
           f"say **confirm** to submit, or describe what to change."
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_review_nudge()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

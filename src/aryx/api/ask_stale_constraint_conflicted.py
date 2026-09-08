@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.session_guard import push_snapshot
 
 
@@ -41,6 +40,7 @@ def handle_conflicted_violations(session: Any, attrs: list, conflicted: list) ->
     conflicting side already known, giving the constraint engine a real
     chance to narrow it.
     """
+    from aryx.api import ask_api as _ask_api_module
     conflict_labels = [
         _ask_api_module._cpq_engine.disambiguated_label(v.attr, attrs) for v in conflicted
     ]

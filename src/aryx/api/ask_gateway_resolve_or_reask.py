@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_pending_clarify_answer import _set_pending_clarify_and_answer
 from aryx.api.ask_pending_clarify_apply import _apply_pending_clarify_resolution
 
@@ -50,6 +50,7 @@ def _resolve_or_reask_ambiguous(
     straight into `_apply_pending_clarify_resolution` even when the
     gateway's resolved attribute is currently hidden for this product.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _hidden_vns = _cpq_engine.apply_hiding_rules(
         attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
@@ -60,7 +61,7 @@ def _resolve_or_reask_ambiguous(
         and gw.result.variable_name not in _hidden_vns
         and hiding_rules is not None and rec_rules is not None and con_rules is not None
     ):
-        return _ask_api_module._with_classify_usage(
+        return _with_classify_usage(
             _apply_pending_clarify_resolution(
                 req, session, attrs, gw.result.variable_name, req.question,
                 hiding_rules, rec_rules, con_rules, bml_eval,

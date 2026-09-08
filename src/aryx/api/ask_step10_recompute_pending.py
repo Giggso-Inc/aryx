@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step10_recompute_pending(
@@ -30,6 +29,7 @@ def _step10_recompute_pending(
 ) -> "tuple[list, dict, dict, list, dict, set]":
     """Returns (visible_attrs, filled, display_filled, pending,
     constrained_opts, rule_ids)."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
 
     v_attrs, f, d_filled, c_opts = _cpq_engine.evaluate_rules_loop(

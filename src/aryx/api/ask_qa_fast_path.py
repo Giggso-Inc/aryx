@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_text_helpers import _build_attr_options_text
+from aryx.api import ask_attr_text_helpers as _ask_attr_text_helpers_module
+from aryx.api import ask_catalog_listing_text as _ask_catalog_listing_text_module
+from aryx.api import ask_llm_catalog_enumeration as _ask_llm_catalog_enumeration_module
 
 
 def _qa_fast_path_or_enumeration(
@@ -23,13 +26,14 @@ def _qa_fast_path_or_enumeration(
     enumeration path answered the question; None when neither applies,
     in which case the caller falls through to the generic graph search.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     # Fast path: question asks about a specific attribute's available
     # options. Uses attr.options already in memory from BmMenuItem — no
     # graph query, no LLM synthesis, no schema leakage possible.
     _attr_q = _cpq_engine.detect_attr_query(req.question, attrs)
     qa_answer = (
-        _ask_api_module._build_attr_options_text(req, session, attrs, _attr_q)
+        _build_attr_options_text(req, session, attrs, _attr_q)
         if _attr_q else None
     )
     if qa_answer:
@@ -43,7 +47,7 @@ def _qa_fast_path_or_enumeration(
     if not (
         attrs
         and any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
-        and _ask_api_module._llm_detect_catalog_enumeration_query(req.question, req.workspace_id)
+        and _ask_llm_catalog_enumeration_module._llm_detect_catalog_enumeration_query(req.question, req.workspace_id)
     ):
         return None
 
@@ -73,11 +77,11 @@ def _qa_fast_path_or_enumeration(
         # _build_current_quote_attribute_listing_text's own docstring)
         # instead of the pre-quote, path-agnostic catalog-wide
         # approximation below.
-        qa_answer = _ask_api_module._build_current_quote_attribute_listing_text(
+        qa_answer = _ask_attr_text_helpers_module._build_current_quote_attribute_listing_text(
             session, attrs, req.workspace_id, _catalog_prefix, _catalog_label,
         )
     else:
-        qa_answer = _ask_api_module._build_catalog_attribute_listing_text(
+        qa_answer = _ask_catalog_listing_text_module._build_catalog_attribute_listing_text(
             attrs, _catalog_label, req.workspace_id, _catalog_prefix,
         )
     session.last_qa_variables = []

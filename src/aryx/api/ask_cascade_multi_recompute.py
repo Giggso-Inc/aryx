@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _recompute_after_cascade_multi(
@@ -28,6 +27,7 @@ def _recompute_after_cascade_multi(
     display_filled, constrained_opts, pending, rule_ids, bml_eval,
     dropped_multi).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)

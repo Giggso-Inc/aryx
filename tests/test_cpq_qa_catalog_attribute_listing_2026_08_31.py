@@ -30,6 +30,7 @@ from aryx.api.ask_api import (
 )
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _attr(
@@ -46,7 +47,7 @@ def _attr(
 
 def _qa_common_mocks(monkeypatch):
     """Same lightweight monkeypatch pattern used in test_cpq_qa_status_meta_resume.py."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_label_collision", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_attr_query", lambda *a, **k: None)
     monkeypatch.setattr(api, "all_types", lambda *a, **k: [])
@@ -367,13 +368,13 @@ def test_list_attributes_question_answers_from_attrs_not_the_graph(monkeypatch):
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ) as mock_detect, \
          patch(
-             "aryx.api.ask_api._build_catalog_attribute_listing_text",
+             "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
              return_value="Here are the attributes: ...",
          ) as mock_build, \
-         patch("aryx.api.ask_api._extract_terms") as mock_extract, \
+         patch("aryx.api.ask_standard_pipeline._extract_terms") as mock_extract, \
          patch("aryx.api.ask_api.gather") as mock_gather:
         result = _handle_cpq_qa(req, session, attrs, reader=object())
 
@@ -401,9 +402,9 @@ def test_list_attributes_question_uses_human_readable_product_name(monkeypatch):
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_api._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
         _handle_cpq_qa(req, session, attrs, reader=object())
 
@@ -423,9 +424,9 @@ def test_list_attributes_question_uses_product_hint_when_no_session_product_name
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_api._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
         _handle_cpq_qa(
             req, session, attrs, reader=object(), product_hint="APX Next",
@@ -449,12 +450,12 @@ def test_list_attributes_question_uses_real_quote_state_once_a_quote_exists(monk
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_api._build_current_quote_attribute_listing_text",
+        "aryx.api.ask_attr_text_helpers._build_current_quote_attribute_listing_text",
         return_value="Real quote attributes: ...",
     ) as mock_quote_build, patch(
-        "aryx.api.ask_api._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_catalog_build:
         result = _handle_cpq_qa(req, session, attrs, reader=object())
 
@@ -476,14 +477,14 @@ def test_non_enumeration_options_question_still_uses_the_generic_fallback(monkey
         workspace_id=1, session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query", return_value=False,
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=False,
     ) as mock_detect, \
-         patch("aryx.api.ask_api._build_catalog_attribute_listing_text") as mock_build, \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 0, 0, 0)), \
+         patch("aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text") as mock_build, \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 0, 0, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise", return_value=("fallback answer", 0, 0, 0)):
+         patch("aryx.api.ask_standard_pipeline._synthesise", return_value=("fallback answer", 0, 0, 0)):
         _handle_cpq_qa(req, session, attrs, reader=object())
 
     mock_detect.assert_called_once()
@@ -501,13 +502,13 @@ def test_question_without_any_options_keyword_never_calls_the_llm_classifier(mon
         question="tell me a joke", workspace_id=1, session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_api._llm_detect_catalog_enumeration_query",
+        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query",
     ) as mock_detect, \
-         patch("aryx.api.ask_api._extract_terms", return_value=([], 0, 0, 0)), \
+         patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 0, 0, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
-         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \
          patch("aryx.api.ask_api.render_context", return_value=""), \
-         patch("aryx.api.ask_api._synthesise", return_value=("fallback answer", 0, 0, 0)):
+         patch("aryx.api.ask_standard_pipeline._synthesise", return_value=("fallback answer", 0, 0, 0)):
         _handle_cpq_qa(req, session, attrs, reader=object())
 
     mock_detect.assert_not_called()
@@ -519,7 +520,7 @@ def test_specific_attribute_question_is_unaffected_by_the_new_matcher(monkeypatc
     enumeration matcher at all."""
     from aryx.cpq.state import MenuOption
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "detect_label_collision", lambda *a, **k: None)
     attr = _attr(
         1, "wirelessCarrier_astro", "Wireless Carrier",
@@ -535,7 +536,7 @@ def test_specific_attribute_question_is_unaffected_by_the_new_matcher(monkeypatc
         question="what are the wireless carrier options",
         workspace_id=1, session_data=session.to_dict(),
     )
-    with patch("aryx.api.ask_api._llm_detect_catalog_enumeration_query") as mock_detect:
+    with patch("aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query") as mock_detect:
         result = _handle_cpq_qa(req, session, [attr], reader=object())
 
     mock_detect.assert_not_called()

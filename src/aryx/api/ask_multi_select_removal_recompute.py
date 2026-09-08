@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_pending_exclusion import _hard_exclude_from_pending
 from aryx.api.ask_singleton_pending import _auto_resolve_singleton_pending
 
@@ -31,6 +30,7 @@ def _recompute_after_multi_select_removal(
     constrained_opts, rule_ids, bml_eval, catalog_prefix,
     unresolved_grid_gaps).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     hints = _cpq_engine.extract_hints(req.question)
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)

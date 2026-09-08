@@ -19,6 +19,8 @@ from aryx.cpq.engine import CpqEngine, extract_quantity_hint
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_build_show_summary_response as _ask_build_show_summary_response_test_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _confirm_product_quantity_change(monkeypatch, quantity_text: str | None = None) -> None:
@@ -97,7 +99,7 @@ def test_extract_quantity_hint_dozen_without_a_quantity_context_word_returns_non
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_quantity_change_shows_full_summary_when_config_already_complete(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     attrs = [battery]
@@ -181,7 +183,7 @@ def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monke
     so the whole file was skipped in every "full regression" pass this
     session) -- now updated to assert the current, intentional behavior
     instead of reverting it."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
@@ -201,7 +203,7 @@ def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monke
 
 
 def test_quantity_change_invalid_value_still_rejects_without_a_summary(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
@@ -220,12 +222,12 @@ def test_quantity_change_invalid_value_still_rejects_without_a_summary(monkeypat
 
 
 def test_quantity_change_summary_build_failure_falls_back_to_plain_line(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
-    monkeypatch.setattr(api, "_build_show_summary_response", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_build_show_summary_response_test_module, "_build_show_summary_response", lambda *a, **k: None)
     session = CpqSession(
         mode="cpq", product_name="aSTRO25_bom", country="United States",
         filled={"batteryType_astro": "STANDARD"},
@@ -260,7 +262,7 @@ def test_build_payload_includes_quantity_as_a_sibling_of_configdata():
 
 
 def test_final_approval_payload_includes_the_product_quantity(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -357,7 +359,7 @@ def test_detect_show_summary_request_does_not_over_trigger_on_attr_query_phrasin
 
 
 def test_show_summary_reshows_the_current_configuration_when_complete(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -384,7 +386,7 @@ def test_show_summary_reshows_the_current_configuration_when_complete(monkeypatc
 
 def test_show_summary_never_hijacked_into_an_unrelated_attr_prompt(monkeypatch):
     """Reproduces the suspected 'Configuration Type' collision directly."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     config_type = _attr(2, "configType_astro", "Configuration Type",
                          options=_opt("Software Bundles", "Custom Configuration"))
@@ -420,14 +422,14 @@ def test_show_summary_never_fires_with_no_product_selected():
 
 
 def test_show_summary_never_steals_a_pending_anchor_reply(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     built = {"called": False}
 
     def _fake_build(*a, **k):
         built["called"] = True
         return None
 
-    monkeypatch.setattr(api, "_build_show_summary_response", _fake_build)
+    monkeypatch.setattr(_ask_build_show_summary_response_test_module, "_build_show_summary_response", _fake_build)
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", pending_anchor="country")
     req = AskRequest(question="give the configuration", workspace_id=1,
                       session_data=session.to_dict())
@@ -442,7 +444,7 @@ def test_show_summary_never_steals_a_pending_anchor_reply(monkeypatch):
 
 
 def test_show_summary_never_intercepts_a_literal_matching_option_answer(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     config_type = _attr(2, "configType_astro", "Configuration Type",
                          options=_opt("Software Bundles", "Custom Configuration"))
     attrs = [config_type]
@@ -516,7 +518,7 @@ def test_parse_route_rejects_non_integer_quantity():
 
 
 def test_route_meta_quantity_and_country_seed_the_turn_before_step_1(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -552,7 +554,7 @@ def test_router_country_wins_even_over_a_correct_regex_reading(monkeypatch):
     resolves from the deterministic regex here since it found a real
     value and no change-verb LLM call is triggered for a plain order
     statement."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -580,7 +582,7 @@ def test_route_meta_recovers_when_regex_matches_a_product_name_fragment(monkeypa
     (from the SAME turn-1 unified LLM call, never a second one) for the
     rest of the turn -- the customer got re-asked for a country they'd
     already stated."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -597,7 +599,7 @@ def test_route_meta_recovers_when_regex_matches_a_product_name_fragment(monkeypa
 
 
 def test_route_meta_rejects_a_hallucinated_country(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -615,7 +617,7 @@ def test_route_meta_rejects_a_hallucinated_country(monkeypatch):
 
 
 def test_route_meta_rejects_an_invalid_quantity(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -633,7 +635,7 @@ def test_route_meta_rejects_an_invalid_quantity(monkeypatch):
 
 
 def test_turn_2_never_has_a_route_meta_and_still_works(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq", country="United States", turn=2)
@@ -651,10 +653,10 @@ def test_llm_first_router_failure_surfaces_a_customer_facing_error():
         rationale="timeout", timed_out=True, error="timeout", model_id="m",
         det_is_cpq=True,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
@@ -667,7 +669,7 @@ def test_llm_first_router_failure_surfaces_a_customer_facing_error():
 def test_shadow_mode_strips_quantity_and_country_before_the_turn(monkeypatch):
     """Shadow mode is observe-only -- quantity/country must never leak
     into actual turn behavior in this mode, only routing/logging."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
     session = CpqSession(mode="cpq")
@@ -679,11 +681,11 @@ def test_shadow_mode_strips_quantity_and_country_before_the_turn(monkeypatch):
         route="quote", confidence="high", clarifying_question=None,
         rationale="ok", det_is_cpq=True, quantity=24, country="United States",
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
+         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0
         out = api.run_ask(req)

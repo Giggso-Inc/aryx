@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step9_decline_optional_multiselect(
@@ -29,6 +28,7 @@ def _step9_decline_optional_multiselect(
     always falls through to STEP 5b/STEP 3 afterward, same as the
     original inline block.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 

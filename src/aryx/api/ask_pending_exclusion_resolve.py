@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.engine import _valid
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,7 @@ def resolve_hard_excluded_attr(
     """Returns the single MenuOption a real rule/default justifies for
     this hard-excluded `attr`, or None when nothing does (caller must
     leave it in `pending` rather than guess)."""
+    from aryx.api import ask_api as _ask_api_module
     from aryx.cpq.bml import referenced_variables
 
     valid_opts = [o for o in attr.options if _valid(o.item_value)]

@@ -98,7 +98,7 @@ def test_llm_first_country_change_dispatches_and_canonicalizes_alias(monkeypatch
     exercises just the dispatch branch's own canonicalization step:
     `is_recognized_country` resolves a punctuation/case variant to its
     canonical common name before _build_country_change_response ever sees it."""
-    monkeypatch.setattr("aryx.api.ask_api._persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="", country="United States")
     req = AskRequest(question="change country to u.s.a", workspace_id=1,
                       session_data=session.to_dict())
@@ -115,7 +115,7 @@ def test_llm_first_country_change_dispatches_and_canonicalizes_alias(monkeypatch
 
 
 def test_llm_first_country_change_applies_a_recognized_new_country(monkeypatch):
-    monkeypatch.setattr("aryx.api.ask_api._persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="", country="United States")
     req = AskRequest(question="change country to Germany", workspace_id=1,
                       session_data=session.to_dict())
@@ -143,7 +143,7 @@ def test_llm_first_country_change_dispatches_an_unrecognized_country_verbatim(mo
     out of scope for this function -- this test pins THIS function's own
     behavior in isolation, matching how the file's other characterization
     tests treat "shape of the code today," not the full pipeline."""
-    monkeypatch.setattr("aryx.api.ask_api._persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="", country="United States")
     req = AskRequest(question="change country to Wakanda", workspace_id=1,
                       session_data=session.to_dict())
@@ -165,7 +165,7 @@ def test_llm_first_decline_dispatches_and_returns_to_configuring(monkeypatch):
     (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md): a real
     decline rolls the session back to "configuring" via the dedicated
     cpq_decline() tool, never cpq_payload_approved()."""
-    monkeypatch.setattr("aryx.api.ask_api._persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
                          filled={"batteryType_astro": "STANDARD"}, complete=True)
     req = AskRequest(question="actually no, don't submit that", workspace_id=1,
@@ -190,7 +190,7 @@ def test_llm_first_decline_medium_confidence_falls_through():
     req = AskRequest(question="no thanks", workspace_id=1, session_data=session.to_dict())
     result = IntentResult(category=IntentCategory.DECLINE, confidence=Confidence.MEDIUM,
                            rationale="decline")
-    with patch("aryx.api.ask_api._handle_decline") as mock_decline:
+    with patch("aryx.api.ask_json_preview_and_decline._handle_decline") as mock_decline:
         resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
     mock_decline.assert_not_called()
     assert resp is None
@@ -202,8 +202,8 @@ def test_llm_first_product_quantity_change_dispatches_a_valid_value(monkeypatch)
     """Only the negative-quantity REJECTION path was previously pinned via
     _dispatch_intent_result -- this pins the plain success path: a valid,
     in-range positive quantity is applied to session.product_quantity."""
-    monkeypatch.setattr("aryx.api.ask_api._persist_cpq_history", lambda *a, **k: None)
-    monkeypatch.setattr("aryx.api.ask_api._build_show_summary_response", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_build_show_summary_response._build_show_summary_response", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", product_quantity=10)
     req = AskRequest(question="change the quantity to 25", workspace_id=1,
                       session_data=session.to_dict())
@@ -289,7 +289,7 @@ def test_llm_first_attr_clear_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -309,7 +309,7 @@ def test_llm_first_attr_clear_never_clears_a_required_attr():
         target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [hw], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -330,7 +330,7 @@ def test_llm_first_attr_clear_never_clears_a_multi_select_attr():
         target=ChangeTarget(target_description="Mounting Type", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -356,7 +356,7 @@ def test_llm_first_attr_clear_refuses_when_a_constraint_would_narrow_to_one_opti
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules",
                return_value={1: ["Black"]}), \
-         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -374,7 +374,7 @@ def test_llm_first_attr_activation_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -395,7 +395,7 @@ def test_llm_first_attr_activation_never_reactivates_an_attr_already_in_filled_m
         target=ChangeTarget(target_description="Mounting Type", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -415,7 +415,7 @@ def test_llm_first_multi_select_removal_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description="A"),
         rationale="removal",
     )
-    with patch("aryx.api.ask_api._handle_multi_select_removal") as mock_remove:
+    with patch("aryx.api.ask_handle_multi_select_removal._handle_multi_select_removal") as mock_remove:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_remove.assert_not_called()
     assert resp is None

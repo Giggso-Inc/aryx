@@ -27,7 +27,6 @@ from aryx.queries import load
 from aryx.store.ask_history_store import AskHistoryStore
 from aryx.store.pool import get_pool
 
-from aryx.api import ask_api as _ask_api_module
 
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
 # Segments _cpq_summary_text asks the LLM to separate its reply by — one
@@ -59,6 +58,7 @@ def _safe_detect_product_mention(question: str, reader: Any, workspace_id: int) 
     into a gate that has no business crashing a turn — degrades to "no
     mention found," the same never-guess convention every other
     best-effort gate in this file already uses."""
+    from aryx.api import ask_api as _ask_api_module
     try:
         return _ask_api_module._cpq_engine.detect_product_mention(question, {}, reader, workspace_id)
     except Exception as exc:  # noqa: BLE001
@@ -80,6 +80,7 @@ def _mine_history_for_cpq_context(
     mine the last few history user-turns via extract_hints so country-once
     and product_anchor still work.
     """
+    from aryx.api import ask_api as _ask_api_module
     texts = _user_texts_from_history(history)
     if not texts:
         return

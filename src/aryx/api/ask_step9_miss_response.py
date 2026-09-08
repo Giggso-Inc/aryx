@@ -19,13 +19,17 @@ from typing import Any
 
 from aryx.cpq.pending_scope import log_scope_lost, set_pending_scope
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _remember_attr_scope
+from aryx.api.ask_label_collision_detect_and_compose import _compose_disambiguation_question
+from aryx.api.ask_scope_reask_responses import _scoped_reask_response
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _step9_low_confidence_response(
     req: "Any", session: Any, attrs: list, pending_attr: Any, pending_var: str,
     llm_low_confidence_candidates: list,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
     set_pending_scope(
@@ -41,13 +45,13 @@ def _step9_low_confidence_response(
         f"I'm not certain which option you meant for "
         f"**{_pending_label}** — could you confirm which one?\n\n{_lines}"
     )
-    answer = _ask_api_module._compose_disambiguation_question(
+    answer = _compose_disambiguation_question(
         req.question, f"which value they meant for {_pending_label}",
         llm_low_confidence_candidates,
         {"Country": session.country, "Product": session.product_name},
         _static_answer, req.workspace_id,
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_low_confidence_answer()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -60,17 +64,18 @@ def _step9_options_miss_response(
     req: "Any", session: Any, attrs: list, pending_attr: Any, pending_var: str,
     pending_constrained: list | None,
 ) -> dict[str, Any]:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
     if not session.pending_scope_candidates or (
         session.pending_scope_attr_vn
         and session.pending_scope_attr_vn != pending_var
     ):
-        _ask_api_module._remember_attr_scope(
+        _remember_attr_scope(
             session, pending_attr, pending_constrained, req.question,
         )
     if session.pending_scope_candidates:
-        return _ask_api_module._scoped_reask_response(
+        return _scoped_reask_response(
             req, session, req.question,
             scope_label=_pending_label,
             tools_called="cpq_invalid_answer()",
@@ -83,14 +88,14 @@ def _step9_options_miss_response(
     opts_prompt = _cpq_engine.next_question_prompt(
         pending_attr, "", pending_constrained, attrs=attrs,
     )
-    _ask_api_module._remember_attr_scope(
+    _remember_attr_scope(
         session, pending_attr, pending_constrained, req.question,
     )
     answer = (
         f"I didn't recognise **\"{req.question.strip()}\"** as a valid "
         f"choice for **{_pending_label}**. Please pick one:\n\n{opts_prompt}"
     )
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_invalid_answer()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

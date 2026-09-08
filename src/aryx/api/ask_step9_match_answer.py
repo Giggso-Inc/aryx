@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step9_match_pending_answer(
@@ -29,6 +28,7 @@ def _step9_match_pending_answer(
     `(item_value, display_name)` pair a multi-select answer named (empty
     for a single-select attr).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 

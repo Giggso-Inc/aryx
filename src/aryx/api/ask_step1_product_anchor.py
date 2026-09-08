@@ -19,7 +19,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_step1_product_family_prompt import _build_product_family_prompt_or_resolve
 from aryx.cpq.pending_scope import clear_pending_scope, resolve_against_scope
 
@@ -32,6 +33,7 @@ def _step1_resolve_product_anchor(
     (freshly this turn, or already set before this call), in which case
     the caller proceeds to STEP 2 for the resolved product's catalog.
     """
+    from aryx.api import ask_api as _ask_api_module
     if session.product_name:
         return None
     _cpq_engine = _ask_api_module._cpq_engine
@@ -57,7 +59,7 @@ def _step1_resolve_product_anchor(
             "before product-anchor detection (turn=%s) -> routing to Q&A",
             req.question, session.turn,
         )
-        return _ask_api_module._handle_cpq_qa(req, session, [], reader, resume_review=False)
+        return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, [], reader, resume_review=False)
     # PROMPT 7: reply to a prior "did you mean" / family list first
     detected = ""
     _fresh_detection_tried = False
@@ -65,16 +67,16 @@ def _step1_resolve_product_anchor(
         "product_suggestions", "family_disambiguation", "",
     ):
         _scope_cands0 = list(session.pending_scope_candidates)
-        _sres0 = _ask_api_module._resolve_scope_reply(
+        _sres0 = _resolve_scope_reply(
             req.question, _scope_cands0, "product family",
             session, req.workspace_id,
         )
         if _sres0 == "skip":
-            return _ask_api_module._build_scope_skip_response(
+            return _build_scope_skip_response(
                 req, session, _scope_cands0, "product family",
             )
         if _sres0 == "family_only":
-            return _ask_api_module._build_scope_family_only_response(
+            return _build_scope_family_only_response(
                 req, session, _scope_cands0, "product family",
             )
         if _sres0.matched:
@@ -96,7 +98,7 @@ def _step1_resolve_product_anchor(
             if detected:
                 clear_pending_scope(session)
             elif _sres0.suggestions:
-                return _ask_api_module._scoped_reask_response(
+                return _scoped_reask_response(
                     req, session, req.question,
                     scope_label="product family",
                     tools_called="cpq_product_did_you_mean()",

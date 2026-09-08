@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 _PRODUCT_SNAPSHOT_CAP = 5
 
@@ -32,6 +31,7 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
     longer valid under current rules/constraints is naturally dropped
     and re-asked, exactly like any other turn's continuation (see
     docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md §3)."""
+    from aryx.api import ask_api as _ask_api_module
     session.cascade_log.append({
         "event": "product_switch", "from": session.product_name,
         "to": new_product, "turn": session.turn,

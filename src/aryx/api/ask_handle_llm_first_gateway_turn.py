@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.api.ask_gateway_compound_split import _try_compound_split_on_clarify
 from aryx.api.ask_gateway_defer_check import _should_defer_gateway_to_pending_answer
@@ -52,6 +51,7 @@ def _llm_first_gateway_turn(
     deterministic path," exactly like `_dispatch_intent_result`'s own
     contract.
     """
+    from aryx.api import ask_api as _ask_api_module
     _defer_gateway_to_pending_answer = _should_defer_gateway_to_pending_answer(
         req, session, attrs,
     )

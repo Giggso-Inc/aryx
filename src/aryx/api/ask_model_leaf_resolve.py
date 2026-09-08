@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
 from aryx.api.ask_model_leaf_norm import _norm_leaf
 from aryx.api.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
@@ -36,6 +35,7 @@ def _resolve_model_leaf(
     continues with the rest of the turn (`hints` may have been mutated
     with a resolved `_bm_model_variable_name`).
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     model_vn = _cpq_engine.single_model_variable_name(
         reader, req.workspace_id, catalog_prefix)

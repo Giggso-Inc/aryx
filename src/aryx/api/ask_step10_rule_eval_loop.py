@@ -21,7 +21,6 @@ from aryx.api.ask_step10_commit_and_drain import _step10_commit_and_drain
 from aryx.api.ask_step10_recompute_pending import _step10_recompute_pending
 from aryx.api.ask_step10_sibling_and_multi_hint import _step10_enforce_siblings_and_multi_hint
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step10_run_rule_eval_loop(
@@ -36,6 +35,7 @@ def _step10_run_rule_eval_loop(
     turn; the caller must return it immediately when present, in which
     case every other value is a placeholder empty/None.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 

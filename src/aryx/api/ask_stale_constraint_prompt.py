@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.cpq.pending_scope import set_pending_scope
 from aryx.cpq.session_guard import push_snapshot
 
@@ -22,6 +21,7 @@ def build_stale_reask_prompt(session: Any, attrs: list, stale: list) -> str:
     for the first one — narrowed to whatever the fresh recheck still
     allows.
     """
+    from aryx.api import ask_api as _ask_api_module
     push_snapshot(session, reason="stale_constraint_reask")
     stale_vns: list[str] = []
     for v in stale:

@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
+from aryx.api.ask_llm_usage_and_new_request_detect import _pending_reply_looks_like_new_request
 
 _BARE_REPLY_MAX_WORDS = 6
 
@@ -66,6 +67,7 @@ def _should_defer_gateway_to_pending_answer(
     a whole, equals one specific real option verbatim -- so it bypasses
     the cap entirely, while substring/fuzzy matches still respect it.
     """
+    from aryx.api import ask_api as _ask_api_module
     _pending_attr_for_gate = None
     if session.pending_variables and session.turn > 1:
         _pending_attr_for_gate = next(
@@ -73,7 +75,7 @@ def _should_defer_gateway_to_pending_answer(
         )
     _looks_like_new_request = bool(
         _pending_attr_for_gate is not None
-        and _ask_api_module._pending_reply_looks_like_new_request(
+        and _pending_reply_looks_like_new_request(
             req.question, _pending_attr_for_gate, attrs,
             session.filled, session.filled_multi,
         )
@@ -103,7 +105,7 @@ def _should_defer_gateway_to_pending_answer(
         return False
     if _pending_reply_matches_own_options:
         return True
-    return not _ask_api_module._pending_reply_is_topic_switch(
+    return not _pending_reply_is_topic_switch(
         req.question, _pending_attr_for_gate, attrs,
         session.filled, session.filled_multi, req.workspace_id,
     )

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from aryx.cpq.engine import CpqEngine
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
 
 
 def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
@@ -50,7 +50,7 @@ def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
             return None
         return val
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
 def _llm_resolve_bare_country_reply(question: str, workspace_id: int) -> str | None:
@@ -87,4 +87,4 @@ def _llm_resolve_bare_country_reply(question: str, workspace_id: int) -> str | N
         # through this escalation step.
         return CpqEngine.is_recognized_country(val)
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)

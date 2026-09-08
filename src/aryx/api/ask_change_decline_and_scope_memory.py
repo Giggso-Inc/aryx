@@ -24,7 +24,6 @@ from typing import Any
 from aryx.cpq.pending_scope import candidates_from_attr_options, set_pending_scope
 from aryx.cpq.replacement_clause import extract_replacement_clause
 
-from aryx.api import ask_api as _ask_api_module
 
 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2):
 # no decline detector existed anywhere on the pending "which value?" path —
@@ -120,6 +119,7 @@ def _constrain_excluding_rejected(
     *attributes* suppressed by "exclude any X", while a replacement rejects
     a *value* on the target attr. Constrained-values is the correct path.
     """
+    from aryx.api import ask_api as _ask_api_module
     if not rejected_text or not getattr(attr, "options", None):
         return base_constrained
     rej = _ask_api_module._cpq_engine.apply_answer(attr, rejected_text)

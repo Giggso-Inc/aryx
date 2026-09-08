@@ -28,7 +28,9 @@ from aryx.cpq.session_guard_snapshot import (
 )
 from aryx.cpq.state import CpqSession
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_core_helpers import _mine_history_for_cpq_context, _safe_detect_product_mention
+from aryx.api import ask_build_show_summary_response as _ask_build_show_summary_response_module
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 
 def _preamble_init_session(req: "Any", reader: Any) -> "tuple[Any, str]":
@@ -38,6 +40,7 @@ def _preamble_init_session(req: "Any", reader: Any) -> "tuple[Any, str]":
     cutover later in the turn needs to know whether THIS turn started out
     answering a pending anchor question.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     session = (
         CpqSession.from_dict(req.session_data)
@@ -51,7 +54,7 @@ def _preamble_init_session(req: "Any", reader: Any) -> "tuple[Any, str]":
     record_utterance(session, req.question)
     _incoming_pending_anchor = session.pending_anchor
 
-    _ask_api_module._mine_history_for_cpq_context(session, req.history, _cpq_engine)
+    _mine_history_for_cpq_context(session, req.history, _cpq_engine)
     return session, _incoming_pending_anchor
 
 
@@ -62,7 +65,7 @@ def _preamble_undo_gate(req: "Any", session: Any, reader: Any) -> dict[str, Any]
     _is_undo = detect_undo(req.question)
     if not _is_undo:
         return None
-    _undo_switch_target = _ask_api_module._safe_detect_product_mention(
+    _undo_switch_target = _safe_detect_product_mention(
         req.question, reader, req.workspace_id,
     )
     _is_product_switch_instead = bool(
@@ -75,7 +78,7 @@ def _preamble_undo_gate(req: "Any", session: Any, reader: Any) -> dict[str, Any]
         answer = undo_success_message(session)
     else:
         answer = undo_empty_message()
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_undo()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -88,13 +91,14 @@ def _preamble_shortcut_gates(req: "Any", session: Any, reader: Any) -> dict[str,
     """Handles the show-summary and guided-mode-accept shortcuts. Returns
     a response dict when either fired; None otherwise.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     if (
         session.product_name
         and not session.pending_anchor
         and _cpq_engine.detect_show_summary_request(req.question)
     ):
-        _summary_resp = _ask_api_module._build_show_summary_response(req, session, reader)
+        _summary_resp = _ask_build_show_summary_response_module._build_show_summary_response(req, session, reader)
         if _summary_resp is not None:
             return _summary_resp
 
@@ -105,7 +109,7 @@ def _preamble_shortcut_gates(req: "Any", session: Any, reader: Any) -> dict[str,
             "Guided mode is on — I'll ask one clear question at a time "
             "using the deterministic catalog flow (no free-form intent jumps)."
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_guided_mode()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

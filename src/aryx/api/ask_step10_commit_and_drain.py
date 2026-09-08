@@ -22,7 +22,6 @@ from typing import Any
 
 from aryx.cpq.session_guard import clear_queue_vn, drain_intent_queue_into_pending
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step10_commit_and_drain(
@@ -33,6 +32,7 @@ def _step10_commit_and_drain(
     """Mutates `session` in place. Returns (dropped_note, pending) — the
     caller's `pending` list may be replaced by intent-queue draining.
     """
+    from aryx.api import ask_api as _ask_api_module
     logger = _ask_api_module.logger
 
     def _dropped_phrase(dvar: str, dvals: list[str]) -> str:

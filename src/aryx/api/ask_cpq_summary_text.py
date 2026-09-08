@@ -10,7 +10,6 @@ via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_cpq_summary_narrate import _narrate_cpq_summary
 from aryx.api.ask_cpq_summary_prompt import _build_summary_narration_user_prompt
 from aryx.cpq.state import ConfigAttr
@@ -64,6 +63,7 @@ def _cpq_summary_text(
     `render_filled_summary` — the CPQ flow must never block on, or silently
     mis-format via, the narrator.
     """
+    from aryx.api import ask_api as _ask_api_module
     def _finish(text: str) -> str:
         # Live-verified gap, 2026-08-13: this used to unconditionally
         # append "**Quantity:** N" AFTER the whole summary regardless of

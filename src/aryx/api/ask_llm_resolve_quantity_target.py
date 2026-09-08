@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
 
 _QTY_LABEL_BOILERPLATE_WORDS = frozenset({"quantity", "qty", "of", "the", "a", "an", "for"})
 
@@ -103,4 +103,4 @@ def _llm_resolve_quantity_target(
             return None
         return target
 
-    return _ask_api_module._llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)

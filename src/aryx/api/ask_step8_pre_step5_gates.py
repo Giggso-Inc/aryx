@@ -18,7 +18,6 @@ from aryx.api.ask_step8_label_and_query import _step8_label_collision_and_query
 from aryx.api.ask_step8_mid_config_change import _step8_mid_config_change
 from aryx.api.ask_step8_qa_and_collision import _step8_qa_and_pending_collision
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step8_run_pre_step5_gates(
@@ -31,6 +30,7 @@ def _step8_run_pre_step5_gates(
     caller must return it immediately when present. `mode_request` is
     always returned since STEP 5 and beyond consult it too.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     mode_request = _cpq_engine.detect_response_mode_request(req.question)
 

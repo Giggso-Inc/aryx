@@ -14,7 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_llm_switch_reply_and_compound_split import _llm_classify_switch_reply
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_turn_confirm_switch_decline import _handle_confirm_switch_decline
 from aryx.api.ask_turn_country_available_for import _country_available_for
 from aryx.api.ask_turn_product_switch_complete import _complete_product_switch
@@ -28,6 +29,7 @@ def _handle_confirm_switch_anchor(
     product only if it's still empty (a validated carried-over country
     is preserved, never re-asked).
     """
+    from aryx.api import ask_api as _ask_api_module
     reply = req.question.strip().lower()
     # Affirmative includes replying with the offered product's own name
     # ("videoSolutions_BOM" to "switch to videoSolutions_BOM?") — a
@@ -50,7 +52,7 @@ def _handle_confirm_switch_anchor(
         reply, re.IGNORECASE,
     ))
     if not affirmative and not _clear_decline:
-        _switch_decision = _ask_api_module._llm_classify_switch_reply(
+        _switch_decision = _llm_classify_switch_reply(
             req.question, session.pending_switch_product,
             session.product_name, req.workspace_id,
         )
@@ -77,7 +79,7 @@ def _handle_confirm_switch_anchor(
                 f"**{new_product}** isn't available for **{old_country}**. "
                 f"Could you provide a different country to continue switching?"
             )
-            _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+            _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
             return {
                 "answer": answer, "terms": [], "tools_called": ["cpq_switch_country_invalid()"],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

@@ -36,6 +36,7 @@ from aryx.cpq.intent_schema import (
     IntentCategory,
 )
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _attr(eid, vn, label, *, options=None, required=False, select_type="single") -> ConfigAttr:
@@ -54,7 +55,7 @@ def _no_rules_engine_patches(monkeypatch):
     `_rules_setup` — real CpqEngine matching/rule-eval logic runs
     unmodified, only the DB/catalog-config loaders are stubbed out so no
     real Postgres/FalkorDB connection is needed."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])

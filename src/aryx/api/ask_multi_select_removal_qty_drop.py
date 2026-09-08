@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _drop_related_quantity_attrs(
@@ -23,6 +22,7 @@ def _drop_related_quantity_attrs(
     is stale data, not a value worth keeping around or re-showing. Returns
     the display labels of whatever quantity attrs were actually dropped.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     grid_links = _cpq_engine.resolve_array_grid_links(attrs)
     qty_map = grid_links.get(changed_attr.variable_name, {})

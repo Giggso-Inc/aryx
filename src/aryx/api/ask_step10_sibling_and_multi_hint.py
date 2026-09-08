@@ -22,7 +22,6 @@ from aryx.api.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hi
 from aryx.api.ask_relevant_intent_candidates import _relevant_intent_candidates
 from aryx.api.ask_step10_recompute_pending import _step10_recompute_pending
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step10_enforce_siblings_and_multi_hint(
@@ -34,6 +33,7 @@ def _step10_enforce_siblings_and_multi_hint(
 ) -> "tuple[list, dict, dict, list, dict, set]":
     """Returns the (possibly updated) (visible_attrs, filled,
     display_filled, pending, constrained_opts, rule_ids) tuple."""
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
 
     _sibling_catalog_confirmed_vns = (

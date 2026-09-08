@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_change_decline_and_scope_memory import _is_global_change_decline
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_pending_clarify_apply import (
     _apply_pending_clarify_resolution,
     _clear_pending_clarify,
@@ -42,6 +43,7 @@ def _handle_pending_clarify_turn(
     Returns a response dict when the pending path handles the turn;
     None when no pending_clarify is set (caller continues normally).
     """
+    from aryx.api import ask_api as _ask_api_module
     if not session.pending_clarify_vns:
         return None
 
@@ -57,7 +59,7 @@ def _handle_pending_clarify_turn(
         _clear_pending_clarify(session)
         return None
 
-    global_change_decline = _ask_api_module._is_global_change_decline(req.question)
+    global_change_decline = _is_global_change_decline(req.question)
     if global_change_decline:
         clarify_status, resolved_vn = ("decline", None)
     else:
@@ -105,7 +107,7 @@ def _handle_pending_clarify_turn(
                 "or setting you'd like to change or ask about?"
             )
         )
-        _ask_api_module._persist_cpq_history(req.workspace_id, req.question, answer)
+        _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
             "tools_called": ["cpq_pending_clarify_decline()"],
@@ -132,7 +134,7 @@ def _handle_pending_clarify_turn(
         )
     if should_offer_guided_mode(session):
         prompt = f"{prompt}\n\n{guided_mode_offer_message()}"
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, prompt)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, prompt)
     return {
         "answer": prompt, "terms": list(session.pending_clarify_vns),
         "tools_called": ["cpq_pending_clarify_reprompt()"],

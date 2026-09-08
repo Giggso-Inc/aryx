@@ -206,13 +206,13 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
         clarifying_question=None, rationale="disagree",
         model_id="m", det_is_cpq=False, agreement=False,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api.soft_quote_heuristic", return_value=False), \
-         patch("aryx.api.ask_api._standard_ask_pipeline",
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline",
                return_value={"answer": "std", "tools_called": [], "usage": {}}), \
          patch("aryx.api.ask_api.mark_top_level_route_used"):
         gs.return_value.cpq_intent_mode = "shadow"
@@ -232,8 +232,8 @@ def test_n2_route_qa_read_only_product():
         workspace_id=1, history=[], session_data={},
     )
     with patch("aryx.api.ask_api._cpq_engine") as eng, \
-         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa, \
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_api.set_run_id"):
         eng.extract_hints.return_value = {}
         eng.detect_product_mention.return_value = "aSTRO25_bom"
@@ -275,15 +275,15 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
         clarifying_question=None, rationale="timeout",
         timed_out=True, error="timeout", model_id="m", det_is_cpq=False,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_api.mark_top_level_route_used"), \
-         patch("aryx.api.ask_api._standard_ask_pipeline") as mock_std:
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
         out = run_ask(req)

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_pending_clarify_constants import _WORD_TOKEN_RE
 
 
@@ -44,6 +43,7 @@ def _score_clarify_candidates(
 
     Returns (by_vn, scores, strong_vns).
     """
+    from aryx.api import ask_api as _ask_api_module
     by_vn: dict[str, Any] = {}
     scores: dict[str, float] = {}
     strong_vns: set[str] = set()

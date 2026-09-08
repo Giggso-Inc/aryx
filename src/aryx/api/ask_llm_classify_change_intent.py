@@ -11,7 +11,6 @@ import json
 from typing import Any
 
 from aryx import llm_runtime
-from aryx.api import ask_api as _ask_api_module
 from aryx.api.ask_relevant_intent_candidates import (
     _LLM_INTENT_ATTRS_CAP_HARD,
     _relevant_intent_candidates,
@@ -38,6 +37,7 @@ def _llm_classify_change_intent(
     options before being trusted (a "remove" against a single-select attr,
     or a value not in the target attr's option set, is discarded).
     """
+    from aryx.api import ask_api as _ask_api_module
     filled_candidates = [
         a for a in attrs
         if a.variable_name in session.filled or a.variable_name in session.filled_multi

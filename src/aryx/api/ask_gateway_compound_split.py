@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
+from aryx.api.ask_attr_text_helpers import _resolve_split_change_text
+from aryx.api.ask_llm_switch_reply_and_compound_split import _llm_split_compound_change_and_question
+from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request
 
@@ -42,12 +45,13 @@ def _try_compound_split_on_clarify(
     existing clarify path unchanged, same never-guess discipline as
     every other Tier-2 fallback in this file.
     """
+    from aryx.api import ask_api as _ask_api_module
     _cq_lower = req.question.lower()
     _looks_compound = " and " in _cq_lower or ";" in req.question
     _recent_multi_topic = len(session.last_qa_variables or []) >= 2
     if not (_looks_compound or _recent_multi_topic):
         return None
-    _split = _ask_api_module._llm_split_compound_change_and_question(
+    _split = _llm_split_compound_change_and_question(
         req.question, req.workspace_id,
     )
     if _split is not None:
@@ -63,12 +67,12 @@ def _try_compound_split_on_clarify(
                 _new_value_hint, hiding_rules, rec_rules, con_rules,
             )
             _qa_req = req.model_copy(update={"question": _question_text})
-            _qa_result = _ask_api_module._handle_cpq_qa(_qa_req, session, attrs, reader)
+            _qa_result = _ask_handle_cpq_qa_module._handle_cpq_qa(_qa_req, session, attrs, reader)
             _combined = (
                 f"{_change_result.get('answer', '')}\n\n"
                 f"{_qa_result.get('answer', '')}"
             )
-            _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _combined)
+            _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _combined)
             return {
                 **_qa_result,
                 "answer": _combined,
@@ -96,7 +100,7 @@ def _try_compound_split_on_clarify(
     _resolved_changes = [
         (
             _mc_text,
-            _ask_api_module._resolve_split_change_text(
+            _resolve_split_change_text(
                 _mc_text, attrs, session.filled, session.filled_multi,
                 last_qa_variables=session.last_qa_variables,
             ),
@@ -118,7 +122,7 @@ def _try_compound_split_on_clarify(
             _mc_value_hint, hiding_rules, rec_rules, con_rules,
         ))
     _combined = "\n\n".join(r.get("answer", "") for r in _mc_results)
-    _ask_api_module._persist_cpq_history(req.workspace_id, req.question, _combined)
+    _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _combined)
     return {
         **_mc_results[-1],
         "answer": _combined,

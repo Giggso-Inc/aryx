@@ -19,13 +19,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_api as _ask_api_module
 
 
 def _step2_log_rule_consistency_and_array_grid(
     req: "Any", session: Any, attrs: list, hiding_rules: list, rec_rules: list,
     con_rules: list, bml_eval: Any, catalog_prefix: str,
 ) -> None:
+    from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
 
