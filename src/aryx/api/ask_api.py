@@ -2287,9 +2287,10 @@ def _pending_reply_looks_like_new_request(
     )
 
 
-# Moved to ask_turn_product_switch_anchor.py (Phase 10/11-phase ask_api
-# decomposition) -- re-exported here so every existing caller/test keeps
-# working unchanged.
+# Moved to ask_turn_product_switch_anchor.py/ask_step1_product_anchor.py
+# (Phase 10/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_step1_product_anchor import _step1_resolve_product_anchor  # noqa: E402
 from aryx.api.ask_turn_product_switch_anchor import (  # noqa: E402
     _handle_product_switch_pending_anchor,
 )
@@ -2894,253 +2895,16 @@ def _run_cpq_turn_inner(
     )
     if _switch_anchor_response is not None:
         return _switch_anchor_response
-    # ── STEP 1: Sequential anchor prompting — product first, then country.
-    # hwVersion is no longer an anchor (D1); it resolves through the normal
-    # rule cascade like any other dependent variable, once product+country
-    # are known. ───────────────────────────────────────────────────────────
     # Whether the product was anchored BEFORE this turn — switch detection
-    # (now after Step 2, see Issue 6 in docs/CPQ_PRODUCT_SWITCH_ISSUE.md)
-    # must only run for messages sent to an already-anchored session, never
-    # on the very message that anchored it.
+    # must only run for messages sent to an already-anchored session,
+    # never on the very message that anchored it.
     product_was_anchored = bool(session.product_name)
-    _step1_t0 = time.monotonic()
-    if not session.product_name:
-        logger.info("cpq_step: step1_anchor_gate start run_id=%s", session.run_id)
-        # Intent-first gate (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 1): check
-        # whether this message reads as a genuine question BEFORE trusting
-        # any anchor-detection result at all — not just in the blind-accept
-        # fallback below. Confirmed live this needed to run first, not
-        # second: detect_product_mention itself matched "Svx Video Remote
-        # Speaker Microphone" (quoted back from the assistant's own PRIOR
-        # answer) inside "You said something about Svx Video RSM, how is it
-        # connected to astra?" and confidently resolved it to
-        # videoSolutions_BOM — a fuzzy incidental mention inside a question,
-        # not the user's actual intent — so gating only on "detection
-        # failed" was never going to catch this case. Routes to the same
-        # graph-grounded Q&A path (_handle_cpq_qa) used everywhere else in
-        # this file — attrs=[] is safe here since no product/catalog is
-        # chosen yet, and _handle_cpq_qa's generic graph search doesn't
-        # require it.
-        if (
-            session.pending_anchor == "product"
-            and _cpq_engine.detect_qa_question(req.question, None, strict=True)
-        ):
-            logger.info(
-                "cpq_intent_gate: question-shaped message %r intercepted "
-                "before product-anchor detection (turn=%s) -> routing to Q&A",
-                req.question, session.turn,
-            )
-            return _handle_cpq_qa(req, session, [], reader, resume_review=False)
-        # PROMPT 7: reply to a prior "did you mean" / family list first
-        detected = ""
-        _fresh_detection_tried = False
-        if session.pending_scope_candidates and session.pending_scope_kind in (
-            "product_suggestions", "family_disambiguation", "",
-        ):
-            _scope_cands0 = list(session.pending_scope_candidates)
-            _sres0 = _resolve_scope_reply(
-                req.question, _scope_cands0, "product family",
-                session, req.workspace_id,
-            )
-            if _sres0 == "skip":
-                return _build_scope_skip_response(
-                    req, session, _scope_cands0, "product family",
-                )
-            if _sres0 == "family_only":
-                return _build_scope_family_only_response(
-                    req, session, _scope_cands0, "product family",
-                )
-            if _sres0.matched:
-                detected = _sres0.matched
-                clear_pending_scope(session)
-            else:
-                # A weak/"miss"-tier match against the STALE candidate list
-                # (set by an earlier, possibly WRONG suggestion) must never
-                # outrank a confident, independent detection on this new
-                # message — otherwise a session poisoned by one bad "did
-                # you mean" reply stays trapped repeating it forever, even
-                # once the customer sends a completely clear, different
-                # product name. Confirmed live: "Give me quote of APXNEXT
-                # with 10 qty" resolved correctly in a brand-new session but
-                # kept re-triggering the earlier turn's wrong "did you mean
-                # videoSolutions_BOM?" in the SAME session, purely because
-                # resolve_against_scope always ran first and its own
-                # "miss"-tier suggestion short-circuited the return before
-                # detect_product_mention ever got a chance to run on the
-                # new text. Only fall back to the stale-scope reask when
-                # this fresh, full-catalog detection ALSO finds nothing.
-                # _fresh_detection_tried guards the identical call below
-                # (Raven review M1) — detect_product_mention self-fetches
-                # ingested_product_alias_map via the reader when no
-                # alias_map is passed, the exact double graph+RDB fetch its
-                # own docstring already documents as a previously-fixed
-                # review finding; skip re-running it when this branch
-                # already tried and it came back empty.
-                detected = _cpq_engine.detect_product_mention(
-                    req.question, hints, reader, req.workspace_id,
-                )
-                _fresh_detection_tried = True
-                if detected:
-                    clear_pending_scope(session)
-                elif _sres0.suggestions:
-                    return _scoped_reask_response(
-                        req, session, req.question,
-                        scope_label="product family",
-                        tools_called="cpq_product_did_you_mean()",
-                    )
-        if not detected and not _fresh_detection_tried:
-            detected = _cpq_engine.detect_product_mention(
-                req.question, hints, reader, req.workspace_id,
-            )
-        if not detected and session.pending_anchor == "product":
-            # Only blind-accept raw text when it resolves via scope ladder
-            # against known families — never invent a product name.
-            _fams = _cpq_engine.list_ingested_families(reader, req.workspace_id)
-            if _fams:
-                _sraw = resolve_against_scope(req.question, list(_fams))
-                if _sraw.matched:
-                    detected = _sraw.matched
-        if not detected:
-            # Priority 2: resolve against real ingested catalog/family/
-            # product-option data instead of falling back to accepting
-            # raw text unconditionally. Confirmed live this closes two
-            # real gaps at once: (a) products outside the fixed pattern
-            # list, e.g. "DGM 8500e", now resolve correctly with zero
-            # hardcoded entries; (b) a reply to the "what family?" question
-            # below is now validated the SAME way instead of being accepted
-            # verbatim — previously a bare "US" (a country, not a family)
-            # silently became session.product_name = "US", which then
-            # resolved to an unrelated phantom "APX6500" quote nobody asked
-            # for. Runs on every turn product_name is still unset, so it
-            # equally validates the very first message and any retry.
-            match = _cpq_engine.resolve_product_hint(reader, req.workspace_id, req.question)
-            if match:
-                detected = match[1]
-        if not detected:
-            session.pending_anchor = "product"
-            families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
-            # PROMPT 7: pet names / typos ("Asr"/"asty") → did you mean,
-            # with pending_scope so the next reply is matched in-scope.
-            _alias = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
-            suggestions = _cpq_engine.suggest_product_candidates(
-                req.question, reader, req.workspace_id, limit=5, alias_map=_alias,
-            )
-            # Also allow prefix / in-scope fuzzy against family names for
-            # short nicknames that fall below the mid-band threshold — but
-            # ONLY for a short, nickname-shaped reply (the documented
-            # intent above). resolve_against_scope's own fuzzy tier has no
-            # sliding window for a candidate SHORTER than the query (it
-            # falls straight to a raw whole-string ratio), so running it
-            # against a full, ordinary sentence ("I need a quote for some
-            # radios") scores an unrelated short family name via pure
-            # character-overlap coincidence, the same class of bug fixed in
-            # engine.py's _fuzzy_score_candidates — confirmed live: that
-            # exact sentence "matched" MOTOTRBO with zero real signal.
-            # Gating on word count keeps the genuine nickname case (a bare
-            # "APX" or "aPXNext_BOM" reply) working while a long, clearly
-            # generic message falls through to the all-families "did you
-            # mean...?" prompt below instead of a fabricated guess.
-            if not suggestions and families and len(req.question.strip().split()) <= 4:
-                _sres = resolve_against_scope(req.question, list(families))
-                if _sres.matched:
-                    detected = _sres.matched
-                elif _sres.suggestions:
-                    suggestions = list(_sres.suggestions)
-            if detected:
-                pass  # fall through to anchor with fuzzy family match
-            elif len(suggestions) == 1:
-                # Live-confirmed gap (2026-08-27, "quote for SVX" / "quote
-                # SVX" / "SVX quote"): resolve_product_hint doesn't score
-                # a bare short nickname confidently enough on its own, but
-                # suggest_product_candidates's fuzzy "maybe" band finds
-                # exactly ONE real ingested family it could plausibly
-                # mean -- there is nothing else in the catalog for it to
-                # be confused with. Asking "did you mean X?" here only
-                # wastes a turn on an answer that was never actually in
-                # doubt. Same "a single real candidate isn't ambiguity"
-                # principle already trusted elsewhere in this codebase
-                # (auto_fill's single-remaining-option fallback,
-                # _label_collision_for's requires-pending guard) --
-                # deliberately scoped to exactly one suggestion; 2+ still
-                # falls through to the real "did you mean...?" prompt
-                # below, where genuine ambiguity remains.
-                detected = suggestions[0]
-            elif suggestions:
-                set_pending_scope(
-                    session,
-                    kind="product_suggestions",
-                    candidates=list(suggestions),
-                    origin_question=req.question,
-                    attr_vn="",
-                    asked_turn=session.turn,
-                )
-                answer = format_did_you_mean(
-                    req.question, suggestions, scope_label="product family",
-                )
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [], "tools_called": ["cpq_product_did_you_mean()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
-            else:
-                # No fuzzy/mid-band signal at all (a truly generic message,
-                # e.g. "I need a quote for some radios") — rather than a
-                # soft "please provide the product family" instruction that
-                # names the options only as an aside, ask the SAME direct
-                # "did you mean A, or B?" question used everywhere else a
-                # choice needs disambiguating (format_did_you_mean), so a
-                # small (e.g. two-product) workspace always reads as an
-                # explicit choice between the real ingested names, never a
-                # generic ask-again prompt. Falls back to the old
-                # instructive phrasing only when NOTHING is ingested yet —
-                # format_did_you_mean requires at least one real candidate.
-                if families:
-                    set_pending_scope(
-                        session,
-                        kind="product_suggestions",
-                        candidates=list(families),
-                        origin_question=req.question,
-                        attr_vn="",
-                        asked_turn=session.turn,
-                    )
-                    answer = format_did_you_mean(
-                        req.question, list(families), scope_label="product family",
-                    )
-                else:
-                    answer = (
-                        f"To start the configuration I need the **product family** "
-                        f"(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
-                    )
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
-        # If we fuzzy-matched a family via scope above, detected is set.
-        if not session.product_name and not detected:
-            # Defensive — should not reach here without return.
-            pass
-        session.product_name = detected
-        # Keep the longer order utterance (often has country + customer) when
-        # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
-        # country-once: overwriting with the short reply made the later
-        # country gate blind to the original "destination country United States".
-        prior_anchor = session.product_anchor_question or ""
-        if (
-            not prior_anchor
-            or len(req.question.strip()) >= len(prior_anchor.strip())
-            or "country" in _cpq_engine.extract_hints(req.question)
-        ):
-            session.product_anchor_question = req.question
-        logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
-        logger.info(
-            "cpq_step: step1_anchor_gate done run_id=%s elapsed_s=%.3f",
-            session.run_id, time.monotonic() - _step1_t0,
-        )
+    # STEP 1 (Phase 10/11-phase ask_api decomposition): moved to
+    # ask_step1_product_anchor.py -- logic unchanged, see that module's
+    # own docstring.
+    _step1_response = _step1_resolve_product_anchor(req, session, reader, hints)
+    if _step1_response is not None:
+        return _step1_response
 
     # ── STEP 2: Resolve product name → item_value mapping ────────────────────
     _step2_t0 = time.monotonic()

@@ -7988,117 +7988,107 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2298,
+      2299,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2356,
+      2357,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2596,
+      2597,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2953,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3099,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3739,
+      3503,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3758,
+      3522,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3909,
+      3673,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4133,
+      3897,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4824,
+      4588,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5441,
+      5205,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5458,
+      5222,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5479,
+      5243,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5548,
+      5312,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5574,
+      5338,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5662,
+      5426,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5696,
+      5460,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5748,
+      5512,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5757,
+      5521,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5758,
+      5522,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5761,
+      5525,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5763,
+      5527,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5765,
+      5529,
       "ask_router"
     ],
     [
@@ -9260,6 +9250,36 @@
       "src/aryx/api/ask_standard_pipeline/_terms.py",
       62,
       "_extract_terms"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_anchor.py",
+      27,
+      "_step1_resolve_product_anchor"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_anchor.py",
+      80,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_anchor.py",
+      150,
+      "_step1_resolve_product_anchor"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_family_prompt.py",
+      21,
+      "_build_product_family_prompt_or_resolve"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_family_prompt.py",
+      105,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_step1_product_family_prompt.py",
+      123,
+      "_build_product_family_prompt_or_resolve"
     ],
     [
       "src/aryx/api/ask_thread_api.py",
