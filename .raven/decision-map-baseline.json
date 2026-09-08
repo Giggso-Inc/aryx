@@ -7988,107 +7988,107 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2302,
+      2303,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2360,
+      2361,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2600,
+      2601,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3419,
+      3258,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3438,
+      3277,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3589,
+      3428,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3813,
+      3652,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4504,
+      4343,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5121,
+      4960,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5138,
+      4977,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5159,
+      4998,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5228,
+      5067,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5254,
+      5093,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5342,
+      5181,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5376,
+      5215,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5428,
+      5267,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5437,
+      5276,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5438,
+      5277,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5441,
+      5280,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5443,
+      5282,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5445,
+      5284,
       "ask_router"
     ],
     [
@@ -9352,6 +9352,16 @@
       "_handle_suggest_switch_anchor"
     ],
     [
+      "src/aryx/api/ask_turn_switch_answer_guard.py",
+      19,
+      "_is_answer_to_pending_over_switch"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch_answer_guard.py",
+      95,
+      "_is_answer_to_pending_over_switch"
+    ],
+    [
       "src/aryx/api/ask_turn_switch_country_anchor.py",
       21,
       "_handle_switch_country_anchor"
@@ -9360,6 +9370,16 @@
       "src/aryx/api/ask_turn_switch_country_anchor.py",
       87,
       "_handle_switch_country_anchor"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch_redetect_prompt.py",
+      21,
+      "_build_switch_redetect_prompt"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch_redetect_prompt.py",
+      116,
+      "_build_switch_redetect_prompt"
     ],
     [
       "src/aryx/api/axioms_api.py",

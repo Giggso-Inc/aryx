@@ -2297,6 +2297,7 @@ from aryx.api.ask_turn_product_switch_anchor import (  # noqa: E402
     _handle_product_switch_pending_anchor,
 )
 from aryx.api.ask_turn_seed_product_anchor import _seed_product_select_from_anchor  # noqa: E402
+from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection  # noqa: E402
 
 
 def _run_cpq_turn_inner(
@@ -2944,177 +2945,15 @@ def _run_cpq_turn_inner(
     session.pending_switch_question = ""
 
     if product_was_anchored:
-        # Product already anchored on an earlier turn — re-check THIS turn's
-        # text for a mention of a DIFFERENT product. detect_product_mention
-        # is dynamic (matches against whatever catalogs are actually
-        # ingested in this workspace, not a hardcoded list) and fuzzy —
-        # the confirm gate below is the safety net regardless.
-        #
-        # ANSWER-OVER-SWITCH PRECEDENCE (Issue 6,
-        # docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a message that validly answers
-        # the currently-pending attribute is an ANSWER, never a switch
-        # signal — confirmed live: answering the pending Product menu with
-        # "APX 6500" scored 0.67 against the alias "APX™ N70" and was
-        # hijacked into a "did you mean aSTRO25_bom?" prompt instead of
-        # locking. This check needs the pending attr's OPTIONS, which is
-        # why detection now runs after Step 2 loads attrs (the same
-        # structural constraint that killed the pre-Step-2 word-count gate
-        # in an earlier design round). Options-backed matches only — the
-        # free-text tier of apply_answer is deliberately not consulted,
-        # since it would classify ANY text as an answer while a free-text
-        # attr is pending, swallowing every switch mention.
-        pending_attr_guard = next(
-            (a for a in attrs
-             if session.pending_variables
-             and a.variable_name == session.pending_variables[0]),
-            None,
+        # Mid-turn product-switch re-detection (Phase 10/11-phase ask_api
+        # decomposition): moved to ask_turn_switch_redetect.py and
+        # sibling ask_turn_switch_*.py files -- logic unchanged, see
+        # those modules' own docstrings.
+        _switch_redetect_response = _check_mid_turn_switch_redetection(
+            req, session, reader, attrs, hints,
         )
-        is_answer_to_pending = bool(
-            pending_attr_guard is not None
-            and pending_attr_guard.options
-            and _cpq_engine.apply_answer(pending_attr_guard, req.question)
-        )
-        # productSelectionProduct_all's option list is shared, catalog-wide
-        # (the exact same ~325 SKU codes on every ingested catalog — see
-        # engine.py's own docstrings on this attr) — confirmed live: a
-        # genuine switch sentence ("Quote APX Next Enhanced radios...")
-        # legitimately option-matched against THIS unrelated catalog's copy
-        # of that same list (APX NEXT ENHANCED really is one of its 325
-        # options too), so is_answer_to_pending was True and the switch
-        # mention never got checked at all — the wrong product's code
-        # silently landed in the wrong catalog's build. For this one
-        # attr specifically, always check switch-detection FIRST and only
-        # trust the option-match if no other ingested product was named —
-        # every other pending attr's option list is catalog-specific, so
-        # the original answer-over-switch precedence (Issue 6 above) stays
-        # unchanged for them, preserving the "APX 6500" fix it exists for.
-        # An exact, standalone match against one of THIS attr's own options
-        # (the whole reply, not a substring within a longer sentence) is a
-        # strong "definitely answering" signal regardless of what else the
-        # text might also resemble — confirmed live: "APX NEXT Single Band"
-        # is a real SL3500e-catalog option whose own text happens to
-        # contain a different family's alias ("APX NEXT"), and must still
-        # lock as an answer. Only a longer sentence that merely CONTAINS an
-        # option string (e.g. "Quote APX Next Enhanced radios for a US
-        # customer.") is ambiguous enough to need the switch-mention probe
-        # below.
-        _reply_norm = req.question.strip().lower()
-        is_exact_option_reply = bool(
-            pending_attr_guard is not None
-            and any(
-                _reply_norm in (o.item_value.strip().lower(), o.display_name.strip().lower())
-                for o in (pending_attr_guard.options or ())
-            )
-        )
-        alias_map: dict[str, str] | None = None
-        switch_candidate: str | None = None
-        if (
-            is_answer_to_pending
-            and not is_exact_option_reply
-            and pending_attr_guard is not None
-            and pending_attr_guard.variable_name == "productSelectionProduct_all"
-        ):
-            alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
-            switch_candidate = _cpq_engine.detect_product_mention(
-                req.question, hints, reader, req.workspace_id,
-                alias_map=alias_map,
-            )
-            if (
-                switch_candidate
-                and switch_candidate.strip().lower() != session.product_name.strip().lower()
-            ):
-                is_answer_to_pending = False
-        if not is_answer_to_pending:
-            # Alias inventory fetched ONCE for this turn, and only on the
-            # non-answer path (review finding P2 — plus the answer guard
-            # above now skips the fetch entirely for ordinary answers).
-            # Reuse the probe above when the productSelectionProduct_all
-            # guard already computed it — no need to hit the graph twice.
-            if alias_map is None:
-                alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
-                switch_candidate = _cpq_engine.detect_product_mention(
-                    req.question, hints, reader, req.workspace_id,
-                    alias_map=alias_map,
-                )
-            if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
-                logger.info(
-                    "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
-                    session.turn, session.product_name, switch_candidate,
-                )
-                session.pending_switch_product = switch_candidate
-                session.pending_switch_question = req.question
-                session.pending_anchor = "confirm_switch"
-                answer = (
-                    f"It looks like you're asking about **{switch_candidate}**, but this "
-                    f"session is configuring **{session.product_name}**. Switch to "
-                    f"**{switch_candidate}** and discard the current configuration? (yes/no)"
-                )
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [], "tools_called": ["cpq_switch_candidate()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
-
-            # No confident switch candidate — but the message might still be
-            # a garbled/partial attempt at naming a product (fuzzy score in
-            # the "maybe" band, below confirm-worthy but above pure noise).
-            # Rather than silently ignore it, offer up to 5 real candidates
-            # so the client isn't left unrecognised with no signal anything
-            # was ambiguous.
-            suggestions = _cpq_engine.suggest_product_candidates(
-                req.question, reader, req.workspace_id, exclude=session.product_name,
-                alias_map=alias_map,
-            )
-            if suggestions:
-                logger.info(
-                    "cpq_switch: ambiguous product mention turn=%s current=%r suggestions=%r",
-                    session.turn, session.product_name, suggestions,
-                )
-                # The hint question MUST set a pending state its reply can be
-                # matched against (Issue 7): the stateless version of this
-                # prompt let a "yes" reply fall through to the approval
-                # handler, which SUBMITTED the current quote the user was
-                # trying to switch away from (confirmed live). One candidate
-                # → the existing confirm_switch gate handles yes/no (and its
-                # country re-validation); several → suggest_switch, whose
-                # gate re-prompts on a bare "yes" instead of guessing.
-                # PROMPT 7: also set pending_scope so a near-miss typo on
-                # the reply re-asks within these suggestions only.
-                set_pending_scope(
-                    session,
-                    kind="product_suggestions",
-                    candidates=list(suggestions),
-                    origin_question=req.question,
-                    attr_vn="",
-                    asked_turn=session.turn,
-                )
-                if len(suggestions) == 1:
-                    session.pending_switch_product = suggestions[0]
-                    session.pending_switch_question = req.question
-                    session.pending_anchor = "confirm_switch"
-                    answer = (
-                        f"I couldn't tell if that's a different product — did you "
-                        f"mean **{suggestions[0]}**? Switching would discard the "
-                        f"current **{session.product_name}** configuration. (yes/no)"
-                    )
-                else:
-                    session.pending_switch_candidates = suggestions
-                    session.pending_anchor = "suggest_switch"
-                    sug_list = ", ".join(f"**{s}**" for s in suggestions)
-                    answer = (
-                        f"I couldn't tell if that's a different product — did you "
-                        f"mean one of: {sug_list}? Reply with the product name, or "
-                        f"say **no** to continue with **{session.product_name}**."
-                    )
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [], "tools_called": ["cpq_switch_ambiguous()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
+        if _switch_redetect_response is not None:
+            return _switch_redetect_response
 
     # docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: the old "Country-once"
     # re-scan here reran the SAME regex (`extract_hints`) across multiple
