@@ -7893,107 +7893,57 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      399,
-      "_llm_confirm_and_extract_quantity"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      457,
-      "_llm_confirm_and_extract_quantity"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      493,
-      "_llm_confirm_and_extract_country"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      556,
-      "_llm_confirm_and_extract_country"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      863,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      867,
-      "_handle_decline"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      915,
-      "_llm_resolve_bare_country_reply"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      961,
-      "_validate"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      969,
-      "_validate"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      971,
-      "_llm_resolve_bare_country_reply"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1335,
+      488,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1378,
+      531,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1381,
+      534,
       "_apply_real_llm_usage"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1707,
+      926,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1741,
+      960,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1793,
+      1012,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1802,
+      1021,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1803,
+      1022,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1806,
+      1025,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1808,
+      1027,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1810,
+      1029,
       "ask_router"
     ],
     [
@@ -8045,6 +7995,16 @@
       "src/aryx/api/ask_attr_clear_recompute.py",
       129,
       "_recompute_after_attr_clear"
+    ],
+    [
+      "src/aryx/api/ask_attr_query_and_classify_usage.py",
+      25,
+      "_build_attr_query_response"
+    ],
+    [
+      "src/aryx/api/ask_attr_query_and_classify_usage.py",
+      53,
+      "_build_attr_query_response"
     ],
     [
       "src/aryx/api/ask_attr_text_helpers.py",
@@ -8395,6 +8355,26 @@
       "src/aryx/api/ask_data_table_conflict_reask.py",
       77,
       "_reask_confirmed_data_table_conflict"
+    ],
+    [
+      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
+      42,
+      "_is_decline_reply"
+    ],
+    [
+      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
+      57,
+      "_is_decline_reply"
+    ],
+    [
+      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
+      60,
+      "_llm_resolve_label_collision"
+    ],
+    [
+      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
+      97,
+      "_llm_resolve_label_collision"
     ],
     [
       "src/aryx/api/ask_dispatch_ambiguous_and_scope.py",
@@ -8852,6 +8832,31 @@
       "_queue_followup_note"
     ],
     [
+      "src/aryx/api/ask_json_preview_and_decline.py",
+      27,
+      "_build_json_preview_response"
+    ],
+    [
+      "src/aryx/api/ask_json_preview_and_decline.py",
+      67,
+      "_build_json_preview_response"
+    ],
+    [
+      "src/aryx/api/ask_json_preview_and_decline.py",
+      76,
+      "_handle_decline"
+    ],
+    [
+      "src/aryx/api/ask_json_preview_and_decline.py",
+      85,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_json_preview_and_decline.py",
+      89,
+      "_handle_decline"
+    ],
+    [
       "src/aryx/api/ask_label_collision_detect_and_compose.py",
       72,
       "_compose_disambiguation_question"
@@ -8922,6 +8927,76 @@
       "_llm_classify_intent_universal"
     ],
     [
+      "src/aryx/api/ask_llm_confirm_extract_country.py",
+      36,
+      "_llm_confirm_and_extract_country"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_country.py",
+      53,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_country.py",
+      81,
+      "_llm_confirm_and_extract_country"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_quantity.py",
+      27,
+      "_llm_confirm_and_extract_quantity"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_quantity.py",
+      43,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_quantity.py",
+      64,
+      "_llm_confirm_and_extract_quantity"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_quantity.py",
+      67,
+      "_build_llm_call_failed_response"
+    ],
+    [
+      "src/aryx/api/ask_llm_confirm_extract_quantity.py",
+      77,
+      "_build_llm_call_failed_response"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      27,
+      "_llm_extract_quantity"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      53,
+      "_llm_extract_quantity"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      56,
+      "_llm_resolve_bare_country_reply"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      80,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      88,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_llm_extract_quantity_and_country_reply.py",
+      90,
+      "_llm_resolve_bare_country_reply"
+    ],
+    [
       "src/aryx/api/ask_llm_intent_core.py",
       18,
       "_llm_classify_intent_core"
@@ -8935,6 +9010,46 @@
       "src/aryx/api/ask_llm_intent_core.py",
       51,
       "_llm_classify_intent_core"
+    ],
+    [
+      "src/aryx/api/ask_llm_resolve_quantity_target.py",
+      44,
+      "_llm_resolve_quantity_target"
+    ],
+    [
+      "src/aryx/api/ask_llm_resolve_quantity_target.py",
+      106,
+      "_llm_resolve_quantity_target"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      24,
+      "_llm_detect_pending_topic_switch"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      64,
+      "_llm_detect_pending_topic_switch"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      67,
+      "_pending_reply_is_topic_switch"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      88,
+      "_pending_reply_is_topic_switch"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      91,
+      "_llm_detect_change_decline"
+    ],
+    [
+      "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
+      123,
+      "_llm_detect_change_decline"
     ],
     [
       "src/aryx/api/ask_model_leaf_ask_prompt.py",
@@ -9320,6 +9435,31 @@
       "src/aryx/api/ask_scope_reask_responses.py",
       140,
       "_build_scope_family_only_response"
+    ],
+    [
+      "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
+      27,
+      "_shadow_classify_cpq_turn"
+    ],
+    [
+      "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
+      36,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
+      63,
+      "_llm_confirm_deterministic_intent"
+    ],
+    [
+      "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
+      73,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
+      90,
+      "_llm_confirm_deterministic_intent"
     ],
     [
       "src/aryx/api/ask_singleton_pending.py",
