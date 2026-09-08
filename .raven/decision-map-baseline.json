@@ -7903,533 +7903,623 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      239,
-      "_cpq_summary_text"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      383,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      444,
-      "_cpq_summary_text"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1009,
+      596,
       "_handle_cpq_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1194,
+      781,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1211,
+      798,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1274,
+      861,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1320,
+      907,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1340,
+      927,
       "_handle_cpq_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1980,
+      1495,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2083,
+      1598,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2132,
+      1647,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      1834,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      1846,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      1867,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      1883,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      1904,
+      "_handle_cascade"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2072,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2075,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2091,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2106,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2121,
+      "_handle_multi_select_removal"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2279,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2282,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2304,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
       2319,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2331,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2352,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2368,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2389,
-      "_handle_cascade"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2557,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2560,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2576,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2591,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2606,
-      "_handle_multi_select_removal"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2764,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2767,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2789,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2804,
       "_handle_attr_activation"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2940,
+      2455,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2943,
+      2458,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2965,
+      2480,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2980,
+      2495,
       "_handle_attr_clear"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3052,
+      2644,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      2647,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3071,
-      "_build_show_summary_response"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3214,
+      2663,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3217,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3233,
+      2678,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3248,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      3263,
+      2693,
       "_handle_bulk_quantity_change"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3351,
+      2781,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3584,
+      3014,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3587,
+      3017,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3603,
+      3033,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3618,
+      3048,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3633,
+      3063,
       "_handle_cascade_multi"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3809,
+      3239,
       "_llm_classify_intent_core"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3835,
+      3265,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3842,
+      3272,
       "_llm_classify_intent_core"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4157,
+      3587,
       "_compose_disambiguation_question"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4203,
+      3633,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4319,
+      3749,
       "_llm_classify_change_intent"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4423,
+      3853,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4430,
+      3860,
       "_llm_classify_change_intent"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4442,
+      3872,
       "_llm_classify_intent_universal"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4581,
+      4011,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4588,
+      4018,
       "_llm_classify_intent_universal"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4691,
+      4121,
       "_llm_confirm_and_extract_quantity"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4749,
+      4179,
       "_llm_confirm_and_extract_quantity"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4785,
+      4215,
       "_llm_confirm_and_extract_country"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4848,
+      4278,
       "_llm_confirm_and_extract_country"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4851,
+      4281,
       "_gateway_to_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4900,
+      4330,
       "_gateway_to_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5002,
+      4432,
       "_dispatch_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5605,
+      5035,
       "_dispatch_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5901,
+      5052,
       "_llm_first_gateway_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6011,
+      5162,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6297,
+      5448,
       "_llm_first_gateway_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6476,
+      5627,
       "_handle_approval"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6574,
+      5725,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6605,
+      5756,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6613,
+      5764,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6654,
+      5805,
       "_handle_approval"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6684,
+      5835,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6688,
+      5839,
       "_handle_decline"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6736,
+      5887,
       "_llm_resolve_bare_country_reply"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6782,
+      5933,
       "_validate"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6790,
+      5941,
       "_validate"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6792,
+      5943,
       "_llm_resolve_bare_country_reply"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7156,
+      6307,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7199,
+      6350,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7202,
+      6353,
       "_apply_real_llm_usage"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7260,
+      6411,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7318,
+      6469,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7558,
+      6709,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7928,
+      7079,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8266,
+      7417,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8412,
+      7563,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9052,
+      8203,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9071,
+      8222,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9222,
+      8373,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      9446,
+      8597,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10137,
+      9288,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10754,
+      9905,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10771,
+      9922,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10792,
+      9943,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10861,
+      10012,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10887,
+      10038,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      10979,
+      10130,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11013,
+      10164,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11054,
+      10205,
       "_attach_share_flags"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11222,
+      10373,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11280,
+      10431,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11472,
+      10623,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11481,
+      10632,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11482,
+      10633,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11485,
+      10636,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11487,
+      10638,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      11489,
+      10640,
       "ask_router"
+    ],
+    [
+      "src/aryx/api/ask_build_country_change_response.py",
+      23,
+      "_build_country_change_response"
+    ],
+    [
+      "src/aryx/api/ask_build_country_change_response.py",
+      91,
+      "_build_country_change_response"
+    ],
+    [
+      "src/aryx/api/ask_build_no_value_response.py",
+      20,
+      "_build_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_build_no_value_response.py",
+      96,
+      "_build_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_build_product_quantity_response.py",
+      21,
+      "_build_product_quantity_change_response"
+    ],
+    [
+      "src/aryx/api/ask_build_product_quantity_response.py",
+      101,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_build_product_quantity_response.py",
+      122,
+      "_build_product_quantity_change_response"
+    ],
+    [
+      "src/aryx/api/ask_build_show_summary_response.py",
+      18,
+      "_build_show_summary_response"
+    ],
+    [
+      "src/aryx/api/ask_build_show_summary_response.py",
+      85,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_build_show_summary_response.py",
+      104,
+      "_build_show_summary_response"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_scope.py",
+      26,
+      "_reaches_json_payload"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_scope.py",
+      36,
+      "_reaches_json_payload"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_scope.py",
+      44,
+      "_scope_catalog_listing_labels"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_scope.py",
+      89,
+      "_scope_catalog_listing_labels"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_text.py",
+      21,
+      "_build_catalog_attribute_listing_text"
+    ],
+    [
+      "src/aryx/api/ask_catalog_listing_text.py",
+      112,
+      "_build_catalog_attribute_listing_text"
+    ],
+    [
+      "src/aryx/api/ask_country_change_revalidate.py",
+      19,
+      "_rederive_and_revalidate_for_country_change"
+    ],
+    [
+      "src/aryx/api/ask_country_change_revalidate.py",
+      47,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_cpq_summary_narrate.py",
+      26,
+      "_narrate_cpq_summary"
+    ],
+    [
+      "src/aryx/api/ask_cpq_summary_narrate.py",
+      49,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_cpq_summary_narrate.py",
+      112,
+      "_narrate_cpq_summary"
+    ],
+    [
+      "src/aryx/api/ask_cpq_summary_text.py",
+      19,
+      "_cpq_summary_text"
+    ],
+    [
+      "src/aryx/api/ask_cpq_summary_text.py",
+      123,
+      "_cpq_summary_text"
     ],
     [
       "src/aryx/api/ask_data_table_conflict_reask.py",
