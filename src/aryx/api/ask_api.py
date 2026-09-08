@@ -284,55 +284,10 @@ def _build_attr_options_text(
     )
 
 
-def _llm_detect_catalog_enumeration_query(question: str, workspace_id: int) -> bool:
-    """LLM-first check: is this asking to LIST/ENUMERATE a whole category of
-    catalog attributes (e.g. "list the attributes in APX Next", "what
-    attributes does this catalog have"), as opposed to a question about one
-    specific attribute's options/value?
-
-    Live-confirmed gap (2026-08-31): a pre-quote "list the attributes in
-    APX Next" question fell through detect_attr_query (which requires
-    naming one SPECIFIC attribute) into the generic open-domain graph
-    search — which itself turned out to be structurally unable to answer
-    this class of question at all (see the analysis this fix is based on):
-    _extract_terms/gather's name-substring match for "APX Next" resolves
-    to an unrelated Dimension:Updatedby lookup node, not the product/
-    catalog itself, so even widening the search's limits could never reach
-    the real ~430 ApxnextConfigdataBmConfigAttr entities from that anchor.
-    The correct data source for "list the attributes" was already sitting
-    in memory the whole time (`attrs`, loaded by load_product_config for
-    every QA call) -- this function only decides WHETHER a question wants
-    that whole-list treatment; _build_catalog_attribute_listing_text does
-    the actual answering, straight from `attrs`, never from the graph.
-
-    Gated behind the same cheap _OPTIONS_KEYWORDS pre-check the sibling
-    multi-attribute-options split already uses (ask_api.py, `if any(kw in
-    req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)`) --
-    "list" is already a member of that set, so the common single-attribute
-    case never pays this extra LLM call; only when a cheap keyword hints
-    at listing/options language does the LLM get asked to judge intent.
-    """
-    sys = (
-        "A customer asked a product-configuration assistant a question "
-        "about a CPQ catalog. Determine whether the question is asking to "
-        "LIST or ENUMERATE a whole CATEGORY of things (e.g. 'list the "
-        "attributes', 'what attributes does this have', 'show me all the "
-        "options this catalog configures') -- as opposed to asking about "
-        "ONE specific, named attribute's value or options (e.g. 'what are "
-        "the wireless carrier options'), which is a different, already-"
-        "handled case. Only answer true for a genuine whole-category "
-        "listing request."
-    )
-    user = (
-        f"MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"is_catalog_enumeration": true|false}'
-    )
-
-    def _validate(parsed: dict) -> bool | None:
-        return bool(parsed.get("is_catalog_enumeration"))
-
-    result = _llm_classify_intent_core(sys, user, workspace_id, _validate, role="menial")
-    return bool(result)
+# Moved to ask_llm_catalog_enumeration.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_llm_catalog_enumeration import _llm_detect_catalog_enumeration_query  # noqa: E402
 
 
 # Moved to ask_catalog_listing_text.py (Phase 3/11-phase ask_api
@@ -391,161 +346,15 @@ def _build_current_quote_attribute_listing_text(
     )
 
 
-def _llm_split_multi_attr_options_query(
-    question: str, attrs: list, workspace_id: int,
-) -> list[str] | None:
-    """LLM-first check: does this options-query ask about 2+ genuinely
-    DIFFERENT attributes at once (docs/config_consistency_issues_2026-07-30.md
-    issue 3)?
-
-    "what are the Frequency Bands and Wireless Carrier available?" must
-    answer BOTH — `detect_attr_query` only ever returns a single best
-    match, and (before the `detect_label_collision` grouping fix,
-    engine.py) this exact question was wrongly treated as a single 3-way
-    label collision even though "Wireless Carrier" shares zero tokens
-    with "Frequency Bands" and isn't ambiguous at all. Those are two
-    different bugs: a genuine label collision needs disambiguation
-    (unchanged, still handled first); a compound multi-attribute mention
-    needs BOTH answered, never a pick-one prompt.
-
-    LLM-first rather than pure label-substring matching so this also
-    catches paraphrased/synonym attribute mentions a literal-label check
-    would miss — same "don't guess with a fragile heuristic" reasoning
-    that moved earlier compound-detection work in this codebase
-    (_llm_split_compound_change_and_question) off deterministic splitting.
-
-    Scoped to `_relevant_intent_candidates`' own word-overlap narrowing
-    (fallback_to_full=False — if NOTHING plausibly overlaps, there's
-    nothing to split) so the prompt stays bounded on large catalogs and
-    this never even calls the LLM for an unrelated question. Returns None
-    when fewer than 2 real candidates overlap, or when the LLM's own
-    judgment says this isn't genuinely a multi-attribute question —
-    caller falls through to the existing single-attr fast path unchanged.
-    """
-    candidates = _relevant_intent_candidates(question, attrs, fallback_to_full=False)
-    if len(candidates) < 2:
-        return None
-    catalog_lines = "\n".join(
-        f"- \"{a.display_label}\" (variable_name={a.variable_name})"
-        for a in candidates
-    )
-    sys = (
-        "A customer asked a product-configuration assistant about the "
-        "available options for one or more attributes. Determine whether "
-        "the question asks about TWO OR MORE genuinely DIFFERENT "
-        "attributes from the CANDIDATE list below — not one attribute "
-        "whose own label happens to be ambiguous or shared by several "
-        "catalog entries (that is a separate disambiguation concern, not "
-        "a multi-attribute question). If it names 2+ different "
-        "attributes, split it into that many self-contained per-attribute "
-        "questions, each rephrased in the customer's own words. Never "
-        "invent an attribute that isn't named in the message."
-    )
-    user = (
-        f"CANDIDATE ATTRIBUTES:\n{catalog_lines}\n\n"
-        f"MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"is_multi_attr": true|false, '
-        '"questions": ["<self-contained question 1>", "<question 2>", ...]}'
-    )
-
-    def _validate(parsed: dict) -> list[str] | None:
-        if not parsed.get("is_multi_attr"):
-            return None
-        raw_qs = parsed.get("questions") or []
-        qs = [q.strip() for q in raw_qs if isinstance(q, str) and q.strip()]
-        return qs if len(qs) >= 2 else None
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
-
-
-def _llm_split_multi_attr_change_request(
-    question: str, attrs: list, workspace_id: int,
-    last_qa_variables: list[str] | None = None,
-) -> list[str] | None:
-    """LLM-first check: does this message set 2+ genuinely DIFFERENT
-    attributes' values at once (docs/config_consistency_issues_2026-07-30.md
-    Issue 12)?
-
-    Mirrors _llm_split_multi_attr_options_query's already-working pattern,
-    but for changes rather than options-questions. classify_intent's
-    GatewayIntentResult schema has exactly ONE variable_name/value_ref
-    slot — it structurally cannot represent two separate target+value
-    pairs, so a genuine two-change compound ("Add Frequency Bands as VHF
-    and Wireless Carrier as ATT/FirstNet") always collapsed to that
-    gateway's own "ambiguous" category (or an inconsistent single-target
-    guess), regardless of how well-formed the message was.
-    _llm_split_compound_change_and_question already splits a CHANGE +
-    QUESTION compound; this covers the CHANGE + CHANGE case its own
-    docstring assumed (incorrectly — confirmed live) was "already handled
-    by CHANGE_REQUESTS_MULTI": that category only ever corroborates a
-    single already-resolved variable_name, it never applies a second one.
-
-    last_qa_variables — the attributes the customer's immediately
-    preceding turn discussed (e.g. a compound options query just listed
-    both). Passed as context so the LLM recognizes "Add Frequency Bands
-    as VHF and Wireless Carrier as ATT/FirstNet" as directly continuing
-    that same topic, not a fresh, unrelated request — the same
-    conversational-recency signal build_candidate_bundles/_mutating_agrees
-    already use elsewhere, applied here to help produce a correct split
-    in the first place rather than only correcting a result after the
-    fact.
-
-    Each returned string is a self-contained "change X to Y" style
-    request, resolved the same way the sibling change+question splitter's
-    own change_text already is (`detect_change_request`) — no new
-    resolution machinery, this only adds the missing split step. Returns
-    None when fewer than 2 real candidates overlap, or when the LLM's own
-    judgment says this isn't genuinely a multi-attribute change — caller
-    falls through to the existing single-target gateway path unchanged.
-    """
-    candidates = _relevant_intent_candidates(question, attrs, fallback_to_full=False)
-    if len(candidates) < 2:
-        return None
-    catalog_lines = "\n".join(
-        f"- \"{a.display_label}\" (variable_name={a.variable_name})"
-        for a in candidates
-    )
-    recency_line = ""
-    if last_qa_variables:
-        _recent_labels = [
-            a.display_label for a in attrs if a.variable_name in last_qa_variables
-        ]
-        if _recent_labels:
-            recency_line = (
-                "\nThe customer's immediately preceding message already "
-                "discussed: " + ", ".join(_recent_labels) + " — a follow-up "
-                "naming these same attributes with values is very likely "
-                "setting both of them, not a fresh ambiguous request.\n"
-            )
-    sys = (
-        "A customer sent a message to a product-configuration assistant "
-        "trying to SET the value of one or more attributes. Determine "
-        "whether the message sets TWO OR MORE genuinely DIFFERENT "
-        "attributes from the CANDIDATE list below in one message — not a "
-        "single attribute change, and not a change combined with a "
-        "separate question (that is handled elsewhere). If it sets 2+ "
-        "different attributes, split it into that many self-contained "
-        "change requests, each phrased as \"change <attribute> to "
-        "<value>\" using the customer's own words for the attribute and "
-        "value. Never invent an attribute or value that isn't named in "
-        "the message."
-    )
-    user = (
-        f"CANDIDATE ATTRIBUTES:\n{catalog_lines}\n"
-        f"{recency_line}\n"
-        f"MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"is_multi_change": true|false, '
-        '"changes": ["<change request 1>", "<change request 2>", ...]}'
-    )
-
-    def _validate(parsed: dict) -> list[str] | None:
-        if not parsed.get("is_multi_change"):
-            return None
-        raw_cs = parsed.get("changes") or []
-        cs = [c.strip() for c in raw_cs if isinstance(c, str) and c.strip()]
-        return cs if len(cs) >= 2 else None
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+# Moved to ask_llm_split_multi_attr_options.py/ask_llm_split_multi_
+# attr_change.py (Phase 6/11-phase ask_api decomposition) -- re-exported
+# here so every existing caller/test keeps working unchanged.
+from aryx.api.ask_llm_split_multi_attr_change import (  # noqa: E402
+    _llm_split_multi_attr_change_request,
+)
+from aryx.api.ask_llm_split_multi_attr_options import (  # noqa: E402
+    _llm_split_multi_attr_options_query,
+)
 
 
 def _resolve_split_change_text(
@@ -1179,97 +988,10 @@ def _scoped_reask_response(
     }
 
 
-def _llm_classify_scope_reply(
-    reply: str, candidates: list[str], scope_label: str,
-    session: Any, workspace_id: int,
-) -> tuple[Literal["candidate", "skip", "family_only", "unrelated"], str | None]:
-    """LLM-first classification of a reply to a pending scope question
-    (product/family/attr-option disambiguation) — docs/CPQ_PRODUCT_
-    SCOPE_LLM_FIRST_PLAN_2026_08_13.md.
-
-    Runs BEFORE `resolve_against_scope`'s deterministic ladder, not
-    after: classifies the reply's INTENT (does it name one specific
-    option, ask to skip/defer this question, name only the broader
-    family/category with no specific variant, or neither) — never the
-    final value. The LLM's "candidate" guess is only ever a pointer;
-    `_resolve_scope_reply` is the only thing allowed to turn it into a
-    real answer, by independently confirming it against the actual
-    candidate list (never trusted verbatim — same discipline as every
-    other `_llm_*` fallback in this file).
-
-    Two live bugs this exists to close:
-    - "go further" replied to a pending "Product — choose one" question
-      got the same content-free "I didn't get X" re-ask as a garbled
-      product name — string-similarity alone has no way to recognize
-      "the customer wants to move past this question" as distinct from
-      "the customer tried and failed to name a product."
-    - "I want quote for APX Next radios" (names the family, no variant)
-      got the identical generic "I didn't get X" wording too, reading as
-      if the WHOLE message failed to match anything, when really the
-      customer is on-topic and just hasn't picked a specific product yet
-      — "family_only" gets a response that says so directly instead
-      (owner decision: never auto-pick a variant for them, just tell
-      them to choose one so the quote can proceed).
-
-    A variant NAMED anywhere in the reply — even embedded in a longer
-    sentence ("I want quote for the APX Next All Band radios") — must
-    still resolve as "candidate", never "family_only": the presence of
-    extra surrounding text is not itself a reason to treat the reply as
-    unspecific when it does specify one.
-    """
-    if not reply.strip() or not candidates:
-        return "unrelated", None
-    cand_lines = "\n".join(f"- {c}" for c in candidates)
-    sys = (
-        "You classify a user's reply to a pending multiple-choice "
-        f'question about "{scope_label}". Exactly one of four outcomes:\n'
-        '- "candidate": the reply clearly and specifically points at ONE '
-        'of the listed options (even indirectly, e.g. "the international '
-        'one", or embedded in a longer sentence, e.g. "I want quote for '
-        'the All Band radios") -- give your best-guess exact string from '
-        "the list. A specific variant mentioned ANYWHERE in the reply "
-        'always wins, no matter how much other text surrounds it.\n'
-        '- "skip": the reply is asking to move past, skip, or defer this '
-        'question rather than naming any option (e.g. "go further", '
-        '"skip this", "let\'s continue", "come back to this later").\n'
-        '- "family_only": the reply is clearly on-topic and about this '
-        'same product line, but names only the broader family/category '
-        '-- no specific option from the list is identifiable (e.g. "I '
-        'want a quote for APX Next radios" when the list is specific '
-        "APX NEXT variants).\n"
-        '- "unrelated": none of the above -- off-topic or a genuinely '
-        "different request.\n"
-        'Never guess when unsure -- prefer "unrelated" over a low-'
-        'confidence "candidate".'
-    )
-    user = (
-        f"OPTIONS:\n{cand_lines}\n\nUSER REPLY: {reply}\n\n"
-        'Reply ONLY as JSON: {"outcome": "candidate"|"skip"|"family_only"'
-        '|"unrelated", "guess": "<exact string from OPTIONS, or null>"}'
-    )
-
-    def _validate(
-        parsed: dict,
-    ) -> tuple[Literal["candidate", "skip", "family_only", "unrelated"], str | None]:
-        outcome = parsed.get("outcome")
-        if outcome not in ("candidate", "skip", "family_only", "unrelated"):
-            return "unrelated", None
-        if outcome == "candidate":
-            guess = parsed.get("guess")
-            if not isinstance(guess, str) or guess not in candidates:
-                return "unrelated", None
-            return "candidate", guess
-        return outcome, None
-
-    result = _llm_classify_intent_core(sys, user, workspace_id, _validate, role="answer")
-    if result is None:
-        # Reject-on-failure (Issues 6/7 discipline): an exception/timeout/
-        # malformed reply must never be treated as a confident answer —
-        # "unrelated" makes _resolve_scope_reply fall through to the
-        # unchanged deterministic ladder, exactly as if this call never
-        # happened.
-        return "unrelated", None
-    return result
+# Moved to ask_llm_classify_scope_reply.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_llm_classify_scope_reply import _llm_classify_scope_reply  # noqa: E402
 
 
 def _resolve_scope_reply(
@@ -1463,9 +1185,12 @@ from aryx.api.ask_handle_bulk_quantity_change import _handle_bulk_quantity_chang
 from aryx.api.ask_handle_cascade_multi import _handle_cascade_multi  # noqa: E402
 
 
-_LLM_INTENT_ATTRS_CAP_HARD = 500  # safety bound on relevance-scoring work, not a relevance cutoff
-_LLM_INTENT_RELEVANT_CAP = 10
-_WORD_RE = re.compile(r"[a-z0-9]+")
+# Moved to ask_relevant_intent_candidates.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_relevant_intent_candidates import (  # noqa: E402
+    _LLM_INTENT_ATTRS_CAP_HARD, _LLM_INTENT_RELEVANT_CAP, _WORD_RE,
+)
 
 # Decline detector for a pending change-target prompt (docs/CPQ_SESSION_
 # 2026_07_29_ISSUES_PLAN.md #2): "change product" -> "which value?" ->
@@ -1485,441 +1210,40 @@ _DECLINE_CHANGE_RE = re.compile(
 )
 
 
-def _relevant_intent_candidates(
-    question: str, candidates: list, fallback_to_full: bool = True,
-) -> list:
-    """Narrow the candidate list to the attrs the question is actually
-    plausibly about, by simple word overlap against display_label and
-    option display names.
-
-    Live-verified need (2026-07-22): handing the full ~40-attr candidate
-    list to the classifier — even one restricted to filled attrs — diluted
-    the signal enough that a phrase the model correctly classified in
-    isolation came back "none" once real catalog noise was mixed in.
-    Keeping only the attrs whose own vocabulary overlaps the question
-    keeps the prompt small and on-topic; falls back to the full (capped)
-    list only when nothing overlaps at all, so an unanticipated phrasing
-    still gets a chance rather than being silently starved to zero attrs.
-
-    fallback_to_full=False (Amendment 17, docs/CPQ_UNIFIED_INTENT_
-    CLASSIFIER_PLAN.md): a caller gating whether to make an LLM call at
-    all — not just narrowing an already-decided candidate list — needs
-    "nothing genuinely overlaps" to mean an empty result, not the full
-    list; the default behavior would make that gate fire on every turn.
-
-    Scored by rarity-weighted overlap, not a raw overlap COUNT
-    (2026-07-28 fix) — live-verified gap: "change the hardware type"
-    against a real 153-filled-attr session scored Hardware Version
-    (unique word "hardware") EQUAL to a dozen other "...Type"-suffixed
-    attrs (Order Type, Band Class Type, Service Type, etc., all sharing
-    the generic word "type") — with 10+ ties and a hard cap of 10, the
-    actual match got crowded out before the LLM ever saw it. Each
-    matched word now contributes 1/(how many candidates' own vocab
-    contains that word) instead of a flat 1 — a word only ONE attr owns
-    (like "hardware") scores far higher than one a dozen attrs share
-    (like "type"), so a genuinely distinctive match wins over generic
-    vocabulary noise regardless of how many attrs happen to share it.
-    """
-    q_words = set(_WORD_RE.findall(question.lower()))
-    if not q_words:
-        return candidates[:_LLM_INTENT_RELEVANT_CAP] if fallback_to_full else []
-    vocabs = []
-    for a in candidates:
-        vocab = set(_WORD_RE.findall(a.display_label.lower()))
-        for o in a.options:
-            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
-        vocabs.append(vocab)
-    doc_freq: dict[str, int] = {}
-    for vocab in vocabs:
-        for w in vocab:
-            doc_freq[w] = doc_freq.get(w, 0) + 1
-    scored = []
-    for a, vocab in zip(candidates, vocabs):
-        overlap_words = q_words & vocab
-        if overlap_words:
-            score = sum(1.0 / doc_freq[w] for w in overlap_words)
-            scored.append((score, a))
-    if not scored:
-        return candidates[:_LLM_INTENT_RELEVANT_CAP] if fallback_to_full else []
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [a for _score, a in scored[:_LLM_INTENT_RELEVANT_CAP]]
+# Moved to ask_relevant_intent_candidates.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_relevant_intent_candidates import _relevant_intent_candidates  # noqa: E402
 
 
-def _llm_resolve_pending_answer(
-    question: str, pending_attr: Any, workspace_id: int,
-) -> dict[str, Any] | None:
-    """LLM fallback for STEP 5's pending-answer path (Amendment 2 Gap A,
-    docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md), tried only after
-    apply_answer's fragment/word-boundary matching finds nothing.
-
-    Live-confirmed need (2026-07-26): a long, natural, multi-intent
-    sentence bundling the product name together with subscription type,
-    quantity, and package tier never fragment-matches any of a long
-    option list, even though a human reads the intended option
-    immediately. Scoped to ONLY the one pending attr's own real options —
-    never the full session or raw JSON — same never-guess discipline as
-    every other Tier-2 fallback in this file: a returned value outside the
-    attr's real option list is discarded, never trusted.
-
-    Confidence-gated (decided 2026-07-24): a sentence can be genuinely
-    ambiguous between two real, valid options in the same list — that's a
-    judgment error, not hallucination, and scoping alone can't catch it.
-    The prompt asks for a confidence signal alongside its pick; low
-    confidence returns the narrowed candidate list instead of the pick
-    itself, so the caller shows those for the customer to confirm rather
-    than silently committing to a guess between two valid options.
-
-    Returns {"iv": item_value, "disp": display_name, "confidence": "high"}
-    on a confident, validated pick; {"confidence": "low", "candidates":
-    [display_name, ...]} when the model itself signals low confidence;
-    None on any failure (no options, LLM error, invented value, etc).
-
-    Includes each option's internal item_value alongside its display_name
-    (Amendment 7 follow-up, decided 2026-07-26): some catalogs' real
-    option text is a marketing alias with no textual resemblance to what
-    a customer actually says (confirmed live — CommandCentral Aware
-    2024's own Product option displays as "Direct Streaming", the
-    item_value is "COMMANDCENTRAL AWARE2"). Showing only display_name
-    made a plainly-answerable sentence unresolvable in principle, not
-    just in practice — the model had no path to the right answer at all.
-    Matching either field is accepted; item_value is never itself shown
-    to the customer, only used to widen what the model can recognize.
-    """
-    if not pending_attr.options:
-        return None
-    opt_lines = "\n".join(
-        f"- {o.display_name} (internal code: {o.item_value})"
-        if o.item_value.lower() != o.display_name.lower() else f"- {o.display_name}"
-        for o in pending_attr.options[:200]
-    )
-    sys = (
-        "You extract which option a user's message names for a single "
-        "pending question, even when the message is a long sentence "
-        "bundling several unrelated details together. Some options show "
-        "an internal code in parentheses — the customer may say something "
-        "closer to that code than to the display name (e.g. a product's "
-        "internal/marketing name). Only pick from the OPTIONS list given "
-        "— never invent one. If the message could plausibly mean two or "
-        "more of the real options, set confidence to low and list the "
-        "ones it could be; only set confidence to high when exactly one "
-        "option is clearly named."
-    )
-    user = (
-        f"QUESTION BEING ANSWERED: {pending_attr.display_label}\n\n"
-        f"OPTIONS:\n{opt_lines}\n\n"
-        f"USER MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"value": "<exact display name from the list, or empty>", '
-        '"confidence": "high"|"low", '
-        '"candidates": ["<display name>", ...] (only when confidence is low)}'
-    )
-    valid_by_lower = {o.display_name.lower(): o for o in pending_attr.options}
-
-    def _validate(parsed: dict) -> dict[str, Any] | None:
-        confidence = parsed.get("confidence")
-        if confidence == "low":
-            raw_candidates = parsed.get("candidates") or []
-            candidates = [c for c in raw_candidates if isinstance(c, str) and c.lower() in valid_by_lower]
-            if len(candidates) < 2:
-                return None
-            return {"confidence": "low", "candidates": candidates}
-        value = parsed.get("value") or ""
-        opt = valid_by_lower.get(value.lower())
-        if confidence != "high" or opt is None:
-            return None
-        return {"confidence": "high", "iv": opt.item_value, "disp": opt.display_name}
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+# Moved to ask_llm_resolve_pending_answer.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_llm_resolve_pending_answer import _llm_resolve_pending_answer  # noqa: E402
 
 
-def _llm_classify_intent_core(
-    sys_prompt: str, user_prompt: str, workspace_id: int,
-    validate: Any, role: str = "answer",
-) -> Any:
-    """Shared skeleton for every Tier-2 LLM intent fallback in this file.
-
-    Factored out of `_llm_classify_change_intent` and
-    `_llm_resolve_label_collision` (both pre-existing, both already
-    following this exact shape): call the given tier's model, parse its
-    JSON reply, and hand the parsed dict to a caller-supplied `validate`
-    function that enforces the never-guess discipline specific to that
-    call site (only real attrs/options ever get trusted). Any exception —
-    LLM call failure, malformed JSON, missing braces — returns None rather
-    than raising, since every caller here is a fallback that must never
-    crash the turn.
-
-    `role` — "answer" (default) uses `llm_runtime`'s reasoning-capable
-    tier (backed by `llm_reason_model`) — despite the "answer" role name
-    (`llm_runtime.chat`'s only two roles are "menial" and "answer"),
-    it's genuinely the stronger model, needed for classifications that
-    require real judgment rather than pattern matching (e.g.
-    `_llm_classify_scope_reply` distinguishing "skip" vs "family_only"
-    vs a specific candidate named indirectly). Pass role="menial" to opt
-    a caller into the cheap/fast tier (`llm_menial_model`) instead, for
-    a classification simple enough not to need it.
-    """
-    try:
-        text, _it, _ot = llm_runtime.chat(role, sys_prompt, user_prompt, workspace_id=workspace_id)
-        s, e = text.find("{"), text.rfind("}")
-        parsed = json.loads(text[s:e + 1])
-    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
-        logger.debug("llm intent core: llm call or parse failed: %r", exc)
-        return None
-    return validate(parsed)
+# Moved to ask_llm_intent_core.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_llm_intent_core import _llm_classify_intent_core  # noqa: E402
 
 
-def _llm_classify_is_cpq_question(
-    question: str, workspace_id: int, prior_context: str = "",
-) -> bool:
-    """Amendment 16 Layer 1 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
-    Tier-2 intent gate, tried only when `CpqEngine.is_cpq_question`'s
-    Tier-1 regex-trigger/ingested-alias check already returned False.
-    Never replaces that check, only covers what it structurally can't (a
-    genuine request phrased without any trigger word or a recognizable
-    product name/alias). Two call sites with structurally different needs:
-
-    1. `run_ask`'s fresh-turn router — deciding whether to enter CPQ mode
-       at all, before any CPQ session/context exists. No `prior_context`
-       is passed here; this classification is, and must stay, the raw
-       sentence alone.
-    2. `_synthesise`'s mid-session Q&A scope check — deciding whether an
-       in-flight follow-up question is still in scope. Live-confirmed gap
-       (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14): "what
-       is the error" right after the CPQ engine's own gate error was
-       wrongly refused as out-of-scope, because classified alone it reads
-       as an unrelated tech-support question — the one fact that would
-       make it recognizably relevant (the prior turn WAS an error) was
-       never shown to the classifier. `prior_context` (the recent
-       conversation, already computed by the caller) fixes this for call
-       site 2 without changing call site 1's behavior at all.
-
-    Deliberately biased toward "quote" on anything but a confident "no":
-    live-confirmed twice this session (a missing regex plural, an
-    alias-fallback that only checked internal BOM codes) that a false
-    "no" here means a genuine CPQ request silently exits to the generic
-    LLM pipeline with no error — bypassing this engine's entire
-    "never guess" discipline. A false "yes" costs only Step 1's own
-    anchor-prompting asking a clarifying question, the same as any
-    ordinary first turn. An LLM-call failure (exception, malformed JSON)
-    is NOT covered by that bias — it returns False, the same default this
-    turn already had before this gate existed, since a failed call
-    provides no information at all, positive or negative.
-    """
-    sys = (
-        "You classify whether a customer's message is asking to "
-        "configure, quote, or order a product — a CPQ/configuration "
-        "request — versus a general question or something unrelated. "
-        "Bias toward \"quote\" whenever the message plausibly could be "
-        "about ordering or configuring something, even if phrased "
-        "unusually or missing an obvious trigger word; only classify as "
-        "\"not_quote\" when you are confident it is NOT that at all. "
-        "If RECENT CONTEXT is given, judge the message as a likely "
-        "follow-up to it — e.g. a question asking to explain, clarify, "
-        "or elaborate on something the assistant just said (including an "
-        "error or gate message from THIS product-configuration system) "
-        "counts as \"quote\", even if the bare message alone would look "
-        "like an unrelated general question."
-    )
-    context_block = (
-        f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
-        f"below, but consider whether it plausibly follows up on this):\n"
-        f"{prior_context}\n"
-        if prior_context.strip() else ""
-    )
-    user = (
-        f"{context_block}MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"classification": "quote"|"not_quote"}'
-    )
-
-    def _validate(parsed: dict) -> bool | None:
-        classification = parsed.get("classification")
-        if classification not in ("quote", "not_quote"):
-            return None
-        return classification == "quote"
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate) is True
+# Moved to ask_llm_classify_is_cpq_question.py (Phase 6/11-phase
+# ask_api decomposition) -- re-exported here so every existing caller/
+# test keeps working unchanged.
+from aryx.api.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question  # noqa: E402
 
 
-def _llm_classify_is_ask_in_scope(
-    question: str, workspace_id: int, prior_context: str = "",
-) -> bool:
-    """Scope gate for the general Ask synthesis path (`_synthesise`'s
-    call site only — NOT the CPQ-routing call site in `run_ask`, which
-    must keep using `_llm_classify_is_cpq_question`'s narrower,
-    quote-biased judgment).
-
-    `_llm_classify_is_cpq_question` was previously reused here, but that
-    function only ever answers "is this an order/configure/quote
-    request?" — confirmed live this caused the Ask feature to refuse
-    almost every question, including legitimate lookups against tracked
-    data (e.g. "what are the entities present in suppliers?"), because
-    most real questions aren't literally quote/order requests and so
-    correctly got `not_quote` from that classifier, which this call site
-    then wrongly treated as "off-topic."
-
-    This classifier answers the broader, actually-relevant question for
-    Ask: is this about product configuration/quoting OR the enterprise/
-    catalog data this system tracks at all? Only a question genuinely
-    unrelated to that domain (small talk, an unrelated topic) should
-    classify as out of scope.
-
-    `prior_context` (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
-    §14, ported from `_llm_classify_is_cpq_question` onto this broader
-    classifier since this — not that one — is the call site that gates
-    general Ask): the recent conversation, when the caller has it, so a
-    mid-session follow-up like "what is the error" can be recognized as
-    in-scope when the prior turn was the engine's own gate error, rather
-    than classified alone as an unrelated tech-support question.
-
-    Fails OPEN, not closed: `_llm_classify_intent_core` returns `None` on
-    a malformed reply or an LLM-call exception, same as every other
-    caller of that shared skeleton. Collapsing that `None` into `False`
-    (as an earlier version of this function did via `is True`) recreates
-    the exact bug this function exists to fix — a classification
-    failure would silently withhold valid graph facts and reproduce the
-    blanket "outside what I track" refusal, indistinguishable from a
-    genuine out-of-scope question. Only an explicit `out_of_scope`
-    result should count as out of scope; a failed or unparseable call
-    provides no information at all and must not be treated as evidence
-    either way, so it's treated as in-scope.
-    """
-    sys = (
-        "You classify whether a customer's message is in scope for a "
-        "product-configuration and enterprise-data assistant — meaning "
-        "it asks about product configuration, quoting/ordering, OR the "
-        "catalog/enterprise data this system tracks (entities, "
-        "attributes, relationships, records) in any way. "
-        "Bias toward \"in_scope\" whenever the message plausibly could be "
-        "asking about tracked data or product configuration, even if "
-        "phrased as a general question rather than a quote request; only "
-        "classify as \"out_of_scope\" when you are confident it is about "
-        "something else entirely (e.g. small talk, an unrelated topic)."
-    )
-    context_block = (
-        f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
-        f"below, but consider whether it plausibly follows up on this):\n"
-        f"{prior_context}\n"
-        if prior_context.strip() else ""
-    )
-    user = (
-        f"{context_block}MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"classification": "in_scope"|"out_of_scope"}'
-    )
-
-    def _validate(parsed: dict) -> bool | None:
-        classification = parsed.get("classification")
-        if classification not in ("in_scope", "out_of_scope"):
-            return None
-        return classification == "in_scope"
-
-    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
-    return result is not False
+# Moved to ask_llm_classify_is_ask_in_scope.py (Phase 6/11-phase
+# ask_api decomposition) -- re-exported here so every existing caller/
+# test keeps working unchanged.
+from aryx.api.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope  # noqa: E402
 
 
-def _llm_extract_multi_attr_hints(
-    question: str, candidates: list, workspace_id: int,
-) -> dict[str, str]:
-    """Amendment 17 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): map a
-    single dense, multi-fact sentence to several still-unresolved attrs at
-    once, instead of asking for each one individually.
-
-    Live-motivating scenario: "...standard subscription for 25 devices at
-    25 locations...package of 'Plus'...new solution type" — Tier-1's
-    extract_catalog_hints deliberately leaves this unresolved for two
-    separate, correct reasons (see engine.py's own docstring): (1) it
-    never guesses when the same value ("25") is valid for two sibling
-    attrs (devices vs. locations) — it can't use word ADJACENCY to tell
-    them apart, only per-attr option membership; (2) single-word values
-    ("Plus", "New") fall below its minimum-trust bar. Both are correct,
-    safe defaults for a regex — but leave a human-obvious multi-fact
-    sentence to be asked back one attr at a time.
-
-    Scoped to ONLY the candidates the caller already determined are
-    plausibly mentioned (via `_relevant_intent_candidates(...,
-    fallback_to_full=False)`) — never the full pending list, and the
-    caller never invokes this at all when fewer than 2 candidates
-    genuinely overlap the question, so this never fires on an ordinary
-    short reply.
-
-    Same never-guess discipline as every other Tier-2 fallback here: a
-    returned variable_name must be one of the given candidates; a
-    returned value must be a real option for THAT SPECIFIC attr (checked
-    per-attr, not globally — the same collision `extract_catalog_hints`
-    itself refuses to resolve must not be waved through here just because
-    an LLM is involved). Only "high" confidence mappings are kept — a
-    "low" confidence mapping is dropped silently, leaving that one attr
-    pending and asked normally next, exactly as if this function had
-    never run for it; this function only ever adds resolved facts, it
-    never blocks or re-asks anything the caller was already going to do.
-
-    A candidate with no fixed option list (free-text/numeric, e.g.
-    Amendment 12's device-count shape) has its stated value trusted as
-    typed — the same trust a normal user-typed reply to that same pending
-    question already gets elsewhere in this engine; this catalog's own
-    `apply_validation_rules` is the real safety net for those, unchanged.
-
-    Returns {variable_name: item_value} for every validated, high-
-    confidence mapping (possibly empty; never raises).
-    """
-    by_vn = {a.variable_name: a for a in candidates}
-    attr_lines = []
-    for a in candidates:
-        opts = ", ".join(
-            f"{o.display_name} (code: {o.item_value})"
-            if o.item_value.lower() != o.display_name.lower() else o.display_name
-            for o in a.options[:40]
-        ) if a.options else "(free text/number — no fixed option list)"
-        attr_lines.append(f"- {a.variable_name} — \"{a.display_label}\": {opts}")
-    sys = (
-        "You extract answers to SEVERAL still-open configuration questions "
-        "from one customer sentence that may bundle multiple facts "
-        "together (e.g. a quantity, a tier, a plan type, all in one "
-        "sentence). For each attribute below, decide whether the sentence "
-        "clearly states its value. Use word adjacency to tell apart "
-        "attributes that could share the same raw value (e.g. \"25 "
-        "devices\" vs \"25 locations\" — the number alone doesn't say "
-        "which attribute it answers, the nearby word does). Only map an "
-        "attribute when its value is unambiguous; when the same number or "
-        "word plausibly applies to more than one attribute here, or the "
-        "sentence doesn't mention an attribute at all, leave it out "
-        "entirely — do not guess, and never invent a value outside the "
-        "options given for that attribute."
-    )
-    user = (
-        "STILL-OPEN ATTRIBUTES:\n" + "\n".join(attr_lines) + "\n\n"
-        f"CUSTOMER SENTENCE: {question}\n\n"
-        'Reply ONLY as JSON: {"mappings": [{"variable_name": "<exact name '
-        'from the list>", "value": "<exact option display name or code, '
-        'or the stated number/text for a free-text attribute>", '
-        '"confidence": "high"|"low"}, ...]} — omit any attribute you are '
-        "not confident about rather than including it with low confidence."
-    )
-
-    def _validate(parsed: dict) -> dict[str, str]:
-        result: dict[str, str] = {}
-        for m in (parsed.get("mappings") or []):
-            if not isinstance(m, dict) or m.get("confidence") != "high":
-                continue
-            attr = by_vn.get(m.get("variable_name"))
-            if attr is None:
-                continue
-            val = str(m.get("value") or "").strip()
-            if not val:
-                continue
-            if attr.options:
-                match = next(
-                    (o for o in attr.options
-                     if o.display_name.lower() == val.lower()
-                     or o.item_value.lower() == val.lower()),
-                    None,
-                )
-                if match is None:
-                    continue
-                result[attr.variable_name] = match.item_value
-            else:
-                result[attr.variable_name] = val
-        return result
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate) or {}
+# Moved to ask_llm_extract_multi_attr_hints.py (Phase 6/11-phase
+# ask_api decomposition) -- re-exported here so every existing caller/
+# test keeps working unchanged.
+from aryx.api.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hints  # noqa: E402
 
 
 def _label_collision_for(
@@ -2141,118 +1465,10 @@ def _narrow_label_collision(question: str, collision: list) -> list:
     return narrowed
 
 
-def _llm_classify_change_intent(
-    question: str, attrs: list, session: Any, workspace_id: int,
-) -> "tuple[dict[str, str] | None, int, int]":
-    """LLM fallback for remove/change intent, tried only after every regex
-    detector (detect_multi_select_removal, detect_change_request(s_multi))
-    found nothing. Reuses the existing menial-tier model already wired for
-    term extraction (`_extract_terms`) — no new model config. Classify-only:
-    it never synthesizes prose, only picks {intent, variable_name, value}.
-
-    Same never-guess discipline as the regex path: any attribute name the
-    model returns that isn't one of the attrs actually present in the
-    current session is discarded. Live-verified finding (2026-07-22): two
-    real attrs in this catalog share the display_label "Mounting Type"
-    (mountType_viSoln, single, vs. mountingTypeArray_viSoln, multi) — the
-    label alone isn't enough to disambiguate, so the prompt keys on
-    variable_name + select_type + the attr's real option list, and the
-    returned value is re-validated against that specific attr's own
-    options before being trusted (a "remove" against a single-select attr,
-    or a value not in the target attr's option set, is discarded).
-    """
-    filled_candidates = [
-        a for a in attrs
-        if a.variable_name in session.filled or a.variable_name in session.filled_multi
-    ]
-    if not filled_candidates:
-        return None, 0, 0
-    # Relevance-score BEFORE capping — a catalog with dozens of filled
-    # attrs (promotions, accessories, etc.) can push the actually-relevant
-    # attr past a fixed positional cap if capped by catalog order first.
-    # Live-verified bug (2026-07-22): capping to the first 40 filled attrs
-    # by catalog order cut mountingTypeArray_viSoln out entirely before
-    # relevance scoring ever saw it, because dozens of unrelated
-    # promotion/accessory attrs came first in attrs' catalog order.
-    candidates = _relevant_intent_candidates(
-        question, filled_candidates[:_LLM_INTENT_ATTRS_CAP_HARD])
-    by_vn = {a.variable_name: a for a in candidates}
-    catalog_lines = []
-    for a in candidates:
-        current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
-        opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
-        catalog_lines.append(
-            f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
-            f"current={current!r}; options=[{opts}]"
-        )
-    sys = (
-        "You classify a user's message about an in-progress product configuration. "
-        "Decide if they want to REMOVE an already-selected option from a [multi] "
-        "attribute, or CHANGE a [single] attribute's value. Attributes can share the "
-        "same display label but are different fields — pick by variable_name, "
-        "select_type, and which one's current value or options actually match what "
-        "the user is talking about. Only use attribute names from the list given — "
-        "never invent one. If neither intent clearly applies, or you're unsure which "
-        "of two similarly-labeled attrs is meant, say none."
-    )
-    user = (
-        "ATTRIBUTES (variable_name [select_type] (label): current=...; options=[...]):\n"
-        + "\n".join(catalog_lines) +
-        f"\n\nUSER MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"intent": "remove"|"change"|"none", '
-        '"variable_name": "<exact name from list, or empty>", '
-        '"value": "<option text or new value, or empty>"}'
-    )
-    def _validate(parsed: dict) -> dict[str, str] | None:
-        intent = parsed.get("intent")
-        vn = parsed.get("variable_name") or ""
-        value = parsed.get("value") or ""
-        if intent not in ("remove", "change") or not vn:
-            return None
-        # "remove" genuinely needs a value (which option to remove) — but
-        # "change" with an empty value is a real, distinct outcome (the
-        # attribute WAS identified, just with no new value stated), not a
-        # failed classification — the caller routes it to a "which value
-        # would you like?" follow-up instead of discarding the match
-        # entirely (2026-07-28 fix, live-verified: "change the hardware
-        # type" correctly named hWVersion_astro with value="", previously
-        # thrown away here).
-        if intent == "remove" and not value:
-            return None
-        attr = by_vn.get(vn)
-        if attr is None:
-            logger.debug("llm intent fallback: model named vn %r not in candidates %r",
-                          vn, list(by_vn))
-            return None
-        if intent == "remove" and attr.select_type != "multi":
-            logger.debug("llm intent fallback: rejected remove on non-multi attr %r", vn)
-            return None
-        if value and attr.options:
-            valid_values = {o.display_name.lower() for o in attr.options} | {
-                o.item_value.lower() for o in attr.options
-            }
-            if value.lower() not in valid_values:
-                logger.debug("llm intent fallback: value %r not a real option for %r", value, vn)
-                return None
-        return {"intent": intent, "variable_name": vn, "value": value}
-
-    # Inlines _llm_classify_intent_core's call+parse shape rather than
-    # reusing it directly (2026-07-28): that shared helper's other 4 call
-    # sites return a bare bool/dict and never attach token usage to a
-    # user-visible response, so changing its signature to a 3-tuple would
-    # force pointless unpacking on all of them. This is the one caller
-    # whose result DOES reach a response with hardcoded "cpq-engine, 0
-    # tokens" usage (via the "change" + empty-value branch below) — same
-    # live-confirmed gap _llm_classify_intent_universal already fixed for
-    # the Phase 2 path.
-    try:
-        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
-        s, e = text.find("{"), text.rfind("}")
-        parsed = json.loads(text[s:e + 1])
-    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
-        logger.debug("llm intent fallback: llm call or parse failed: %r", exc)
-        return None, 0, 0
-    return _validate(parsed), _it, _ot
+# Moved to ask_llm_classify_change_intent.py (Phase 6/11-phase ask_api
+# decomposition) -- re-exported here so every existing caller/test keeps
+# working unchanged.
+from aryx.api.ask_llm_classify_change_intent import _llm_classify_change_intent  # noqa: E402
 
 
 # ── Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md — shadow-mode ──────
@@ -2261,156 +1477,10 @@ def _llm_classify_change_intent(
 # the Fix 4 `count_turn_intents` diagnostic this mirrors. See
 # _shadow_classify_cpq_turn's docstring for the call site and guarantee.
 
-_INTENT_CATEGORY_LIST = ", ".join(c.value for c in IntentCategory)
-
-
-def _llm_classify_intent_universal(
-    question: str, attrs: list, session: Any, workspace_id: int,
-) -> "tuple[IntentResult | None, int, int]":
-    """One structured classification call per the Phase 0 schema
-    (`aryx.cpq.intent_schema`).
-
-    Returns (result, prompt_tokens, completion_tokens) — 2026-07-28: token
-    counts are threaded through so callers that actually DISPATCH on this
-    classification (unlike Phase 1's shadow-mode logging, which only ever
-    reads `result`) can report real usage instead of the hardcoded
-    "cpq-engine, 0 tokens" every deterministic handler's response carries.
-    Live-confirmed UX gap: the LLM-first path was correctly classifying
-    and dispatching, but its response still showed 0 tokens/"cpq-engine",
-    making it indistinguishable from the pure deterministic path even
-    though a real LLM call drove the decision.
-
-    Reuses `_relevant_intent_candidates` (the existing pre-filter every
-    other `_llm_*` fallback in this file already relies on) to keep the
-    candidate list on-topic and bounded even against an 800+-attr catalog
-    (plan doc mitigation #6) — never the full attrs list unfiltered.
-
-    The LLM is never asked for a `variable_name`/`item_value` — only a
-    plain-language `target_description`/`new_value_description` per the
-    schema's own two-layer design; resolving that description to a real
-    catalog attr is `_resolve_target_description`'s job, not this
-    function's. Fails closed (returns None) on any LLM/parse error, same
-    discipline as every other Tier-2 fallback here.
-
-    Two fixes (2026-07-28) for a live-confirmed hallucination in shadow-
-    mode data: fed the bare reply "serviceType_astro" (answering a PRIOR
-    turn's label-collision question), the classifier invented a plausible-
-    sounding but nonexistent attribute ("Service Category") instead of
-    recognizing the literal reply.
-
-    1. Every pending-state tracker CpqSession carries — not just
-       `pending_variables[0]` — is surfaced to the prompt: a bare reply
-       almost always answers ONE of these, never a fresh, freestanding
-       request, and the model had no way to know that with only one line
-       of context.
-    2. The prompt now explicitly tells the model to check the message
-       against the CANDIDATES' OWN variable_name fields first when it
-       looks like a raw identifier (snake/camelCase, no spaces) rather
-       than natural language, and to prefer `ambiguous`/low confidence
-       over inventing a plausible-sounding label when nothing matches
-       literally — the same "never guess a real decision" discipline the
-       deterministic detectors already follow.
-    """
-    candidates = _relevant_intent_candidates(question, attrs)
-    catalog_lines = []
-    for a in candidates:
-        current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
-        opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
-        catalog_lines.append(
-            f"- \"{a.display_label}\" [{a.select_type}] (variable_name={a.variable_name}): "
-            f"current={current!r}; options=[{opts}]"
-        )
-    by_vn = {a.variable_name: a for a in attrs}
-
-    def _pending_desc(vn: str) -> str:
-        a = by_vn.get(vn)
-        return f"{a.display_label} (variable_name={vn})" if a else vn
-
-    pending_lines: list[str] = []
-    if session.pending_variables:
-        pending_lines.append(
-            f"- The system just asked about: {_pending_desc(session.pending_variables[0])}. "
-            "A short/bare reply is almost certainly answering THIS."
-        )
-    if session.pending_change_collision_vns:
-        _opts = ", ".join(_pending_desc(v) for v in session.pending_change_collision_vns)
-        pending_lines.append(
-            f"- The system just asked WHICH of these identically-labeled "
-            f"attributes was meant: {_opts}. A reply naming one of these "
-            "variable_names or an index number is answering THIS, not "
-            "requesting a change to something else."
-        )
-    if session.pending_change_no_value_vn:
-        pending_lines.append(
-            f"- The system just asked what NEW VALUE to set for: "
-            f"{_pending_desc(session.pending_change_no_value_vn)}. A short "
-            "reply is almost certainly that value, not a fresh request."
-        )
-    if session.pending_clarify_vns:
-        _opts = ", ".join(_pending_desc(v) for v in session.pending_clarify_vns)
-        pending_lines.append(
-            f"- The system just asked WHICH attribute was meant by a vague "
-            f"request ({session.pending_clarify_question!r}): {_opts}. "
-            "A short reply naming one of these labels, variable_names, or a "
-            "list index is answering THAT clarify — not a fresh lookup."
-        )
-    if session.pending_label_collision_vns:
-        _opts = ", ".join(_pending_desc(v) for v in session.pending_label_collision_vns)
-        pending_lines.append(
-            f"- The system just asked which of these identically-labeled "
-            f"attributes a QUESTION was about: {_opts}."
-        )
-    pending_block = (
-        "PENDING STATE — what the system just asked, before this message:\n"
-        + "\n".join(pending_lines) + "\n\n"
-        if pending_lines else ""
-    )
-    sys = (
-        "You classify a user's message in an in-progress product configuration "
-        "chatbot. Reply ONLY as JSON matching this exact schema (no other text):\n"
-        + json.dumps(INTENT_RESULT_JSON_SCHEMA, indent=1) + "\n\n"
-        f"Valid category values: {_INTENT_CATEGORY_LIST}.\n"
-        "NEVER invent or guess a catalog identifier — target_description and "
-        "new_value_description are PLAIN LANGUAGE descriptions of what the user "
-        "means, never a raw field code. If you cannot confidently name a single "
-        "clear target, or the message could plausibly mean 2+ different fields "
-        "in the list below, use category=\"ambiguous\" and give a specific "
-        "clarifying_question — never guess between plausible options.\n\n"
-        "If the message itself looks like a raw identifier — snake_case or "
-        "camelCase, no spaces, not a phrase a person would naturally type — "
-        "check it against the candidates' own variable_name values FIRST "
-        "(shown in parentheses below) before attempting any description. "
-        "Never invent a plausible-sounding attribute name to explain an "
-        "identifier you don't recognize; if it doesn't match any listed "
-        "variable_name and there's no PENDING STATE explaining it, use "
-        "confidence=\"low\" and category=\"ambiguous\" instead.\n\n"
-        "Use category=\"session_status_query\" ONLY when the message asks "
-        "about the CONVERSATION/PROCESS itself — e.g. \"what's next?\", "
-        "\"what is the next step?\", \"where am I?\", \"what should I do "
-        "now?\", \"what do you need from me?\" — never when it asks about "
-        "catalog content, even content that happens to use the word "
-        "\"next\" (e.g. \"what's the next hardware version model\" is "
-        "ATTR_QUERY/QA_QUESTION about the catalog, NOT session_status_query "
-        "— it names a real thing in the catalog, not the conversation "
-        "itself). If in doubt whether a message is about the process or "
-        "the catalog, prefer the catalog category (qa_question/ambiguous) "
-        "— session_status_query is deliberately narrow."
-    )
-    user = (
-        f"{pending_block}"
-        "ATTRIBUTES CURRENTLY RELEVANT (label [type] (variable_name=...): "
-        "current=...; options=[...]):\n"
-        + "\n".join(catalog_lines) +
-        f"\n\nUSER MESSAGE: {question}"
-    )
-    try:
-        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
-        s, e = text.find("{"), text.rfind("}")
-        parsed = json.loads(text[s:e + 1])
-    except Exception as exc:  # noqa: BLE001 — shadow call must never crash the turn
-        logger.debug("cpq_shadow_intent: llm call or parse failed: %r", exc)
-        return None, 0, 0
-    return parse_intent_result(parsed), _it, _ot
+# Moved to ask_llm_classify_intent_universal.py (Phase 6/11-phase
+# ask_api decomposition) -- re-exported here so every existing caller/
+# test keeps working unchanged.
+from aryx.api.ask_llm_classify_intent_universal import _llm_classify_intent_universal  # noqa: E402
 
 
 # Moved to ask_target_description.py (Phase 4/11-phase ask_api

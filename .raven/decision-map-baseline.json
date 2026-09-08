@@ -7903,322 +7903,287 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      596,
+      405,
       "_handle_cpq_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      781,
+      590,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      798,
+      607,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      861,
+      670,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      907,
+      716,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      927,
+      736,
       "_handle_cpq_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1634,
-      "_llm_classify_intent_core"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1660,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1667,
-      "_llm_classify_intent_core"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1982,
+      1306,
       "_compose_disambiguation_question"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2028,
+      1352,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2144,
-      "_llm_classify_change_intent"
+      1416,
+      "_narrow_label_collision"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2248,
-      "<try>"
+      1465,
+      "_narrow_label_collision"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2255,
-      "_llm_classify_change_intent"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2267,
-      "_llm_classify_intent_universal"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2406,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2413,
-      "_llm_classify_intent_universal"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      2516,
+      1586,
       "_llm_confirm_and_extract_quantity"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2574,
+      1644,
       "_llm_confirm_and_extract_quantity"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2610,
+      1680,
       "_llm_confirm_and_extract_country"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2673,
+      1743,
       "_llm_confirm_and_extract_country"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2676,
+      1746,
       "_gateway_to_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2725,
+      1795,
       "_gateway_to_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2827,
+      1897,
       "_dispatch_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3430,
+      2500,
       "_dispatch_intent_result"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3447,
+      2517,
       "_llm_first_gateway_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3557,
+      2627,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3843,
+      2913,
       "_llm_first_gateway_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4050,
+      3120,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4054,
+      3124,
       "_handle_decline"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4102,
+      3172,
       "_llm_resolve_bare_country_reply"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4148,
+      3218,
       "_validate"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4156,
+      3226,
       "_validate"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4158,
+      3228,
       "_llm_resolve_bare_country_reply"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4522,
+      3592,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4565,
+      3635,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4568,
+      3638,
       "_apply_real_llm_usage"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4626,
+      3696,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4684,
+      3754,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4924,
+      3994,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5294,
+      4364,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5632,
+      4702,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5778,
+      4848,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6418,
+      5488,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6437,
+      5507,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6588,
+      5658,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      6812,
+      5882,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      7503,
+      6573,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8120,
+      7190,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8137,
+      7207,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8158,
+      7228,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8227,
+      7297,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8253,
+      7323,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8345,
+      7415,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8379,
+      7449,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8420,
+      7490,
       "_attach_share_flags"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8588,
+      7658,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8646,
+      7716,
       "_route_qa"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8838,
+      7908,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8847,
+      7917,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8848,
+      7918,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8851,
+      7921,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8853,
+      7923,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      8855,
+      7925,
       "ask_router"
     ],
     [
@@ -8710,6 +8675,61 @@
       "src/aryx/api/ask_handle_multi_select_removal.py",
       141,
       "_handle_multi_select_removal"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_change_intent.py",
+      21,
+      "_llm_classify_change_intent"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_change_intent.py",
+      83,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_change_intent.py",
+      120,
+      "_validate"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_change_intent.py",
+      131,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_change_intent.py",
+      138,
+      "_llm_classify_change_intent"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_intent_universal.py",
+      25,
+      "_llm_classify_intent_universal"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_intent_universal.py",
+      121,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_llm_classify_intent_universal.py",
+      128,
+      "_llm_classify_intent_universal"
+    ],
+    [
+      "src/aryx/api/ask_llm_intent_core.py",
+      18,
+      "_llm_classify_intent_core"
+    ],
+    [
+      "src/aryx/api/ask_llm_intent_core.py",
+      44,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_llm_intent_core.py",
+      51,
+      "_llm_classify_intent_core"
     ],
     [
       "src/aryx/api/ask_multi_select_removal_qty_drop.py",
