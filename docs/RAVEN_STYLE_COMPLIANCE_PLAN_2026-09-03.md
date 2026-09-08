@@ -1371,6 +1371,24 @@ With P1 now an addressable unit (step 5) and P0/P2/P3 already externalized (step
 
 **Phase 4 is now fully complete for `cpq/engine.py`.** Remaining for Phase 4 overall: `api/ask_api.py`'s step 4 (`_run_cpq_turn_inner`'s stage split + the 314-mock.patch-site migration) — not started.
 
+### Phase 4 step 7 complete (2026-09-08): module-level helper/constant extraction beyond the 8 methods.
+
+With every oversized method gone, `engine.py`'s remaining bulk was module-level: ~40 helper functions plus their supporting regexes/dicts/frozensets sitting between the imports and the `CpqEngine` class body. None of these were individually over the 60/150-line limits, so this step is pure organization — smaller commits, same discipline as step 6 (re-export from `engine.py` so no external caller/test changes; grep every name for `monkeypatch.setattr`/`patch` targets before moving; preserve exact file position when a documented circular-import ordering constraint exists, e.g. names `auto_fill_resolve`/`turn_intent`/`constraint_rules` read back from `engine.py` at their own import time).
+
+Two docstring relocations (auto_fill's 182-line docstring to `auto_fill_run.py`, accepted as a second pragmatic-floor file since a single function's contract genuinely needs that much text; build_payload's 128-line docstring rewrapped to fit `payload_build.py`'s 150-line cap), then eleven module-level clusters extracted to new files: `label_matching.py`, `token_unit_matching.py`, `catalog_naming.py`, `quantity_patterns.py`/`quantity_word_numbers.py`/`quantity_hint_extraction.py`/`quantity_turn_detection.py`, `country_alias_data(_a/_b).py`/`country_helpers.py`, `hint_normalization.py`, `attr_type_classification.py`, `engine_caches.py`, `missing_data_table.py`, `fill_signature.py`, `blind_fill_constants.py`/`opt_out_and_duplicates.py`, `bml_util_substitution.py`, `summary_category_constants.py`/`region_and_noise_constants.py` — roughly 30 new files total, each verified `ast.parse`-clean and ≤150 lines.
+
+**Two real monkeypatch-safety bugs found and fixed while auditing every name any `cpq/*.py` module imports directly from `aryx.cpq.engine` (52 names checked) for whitebox-patch safety** — both pre-existing latent bugs from earlier in this same session's `load_product_config`/`apply_constraint_rules` extractions, not introduced by this step:
+- `get_cpq_rdb` — captured as a frozen direct import in `product_config_lookups.py` and (initially) the new `missing_data_table.py`; 14+ test files patch `aryx.cpq.engine.get_cpq_rdb` by dotted path, which a frozen import silently ignores. Fixed both to the established `from aryx.cpq import engine as _engine_module` whole-module-reference pattern.
+- `_cpq_model_candidates`/`dt_resolve_whitelist_values` — same problem in the new `bml_util_substitution.py`; caught because `test_cpq_substitute_util_get_constraint_vals_cache_2026_08_28.py` failed 5/5 before the fix and passed 5/5 after.
+
+Also dropped `_NEVER_SUPPRESS_FRAGMENTS`/`_CONFIRMED_DEAD_ATTRS` (confirmed dead — zero references anywhere, fully superseded by `data_table_bridge.attr_governance`'s own duplicated copies from an earlier extraction) and one genuinely unreachable trailing `return script` in `_substitute_util_get_constraint_vals` (dead code after the function's real `return _result`).
+
+**Verification, per extraction:** the same 84-test characterization suite run after every change, plus every test file directly referencing the moved names (100–170 tests per batch across the eleven clusters). Zero new regressions; every failure matched the established pre-existing baseline.
+
+`engine.py`: **2,371 → 2,251 lines** for this step alone; **4,486 → 2,251 lines** (~50% further reduction) combined with the docstring relocations. Combined with step 6's own reduction, the file has gone **14,469 → 2,251 lines** (~84%) since the top of Phase 4.
+
+**Revised pragmatic floor:** `engine.py` is now almost entirely the ~141 one-line class-method delegating wrappers (~1,088 lines total, Python's structural floor — every method must live in its class's own file) plus a handful of small module-level clusters deliberately left in place: `_GRID_QUANTITY_*` constants (needed in-place by `grid_quantity.py`'s own back-import), `_CPQ_TRIGGER`/`_HINT_PATTERNS`/`_COUNTRY_PREP`/`_REGION_PATTERNS`/fuzzy-match thresholds (read by several `nl_hint_extraction` submodules; moving them adds circular-import bookkeeping for a cluster already this small). A literal ~250-line country-alias data table was split into `country_alias_data_a.py`/`country_alias_data_b.py` (a mechanical line-count split, no semantic grouping) recombined by `country_alias_data.py` — the one place a pure data cap violation forced an arbitrary split rather than a natural one.
+
 ### Phase 5 — `shay_backend/` remediation
 
 ### Phase 5 progress log (started 2026-09-04)
