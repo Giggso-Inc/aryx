@@ -7988,107 +7988,107 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2303,
+      2304,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2361,
+      2362,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2601,
+      2602,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3258,
+      3110,
       "<try>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3277,
+      3129,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3428,
+      3280,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3652,
+      3504,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4343,
+      4195,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4960,
+      4812,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4977,
+      4829,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      4998,
+      4850,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5067,
+      4919,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5093,
+      4945,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5181,
+      5033,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5215,
+      5067,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5267,
+      5119,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5276,
+      5128,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5277,
+      5129,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5280,
+      5132,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5282,
+      5134,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      5284,
+      5136,
       "ask_router"
     ],
     [
@@ -8905,6 +8905,36 @@
       "src/aryx/api/ask_llm_intent_core.py",
       51,
       "_llm_classify_intent_core"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_ask_prompt.py",
+      20,
+      "_build_model_leaf_ask_prompt"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_ask_prompt.py",
+      44,
+      "_build_model_leaf_ask_prompt"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_pending_reply.py",
+      20,
+      "_resolve_pending_model_leaf_reply"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_pending_reply.py",
+      67,
+      "_resolve_pending_model_leaf_reply"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_resolve.py",
+      29,
+      "_resolve_model_leaf"
+    ],
+    [
+      "src/aryx/api/ask_model_leaf_resolve.py",
+      111,
+      "_resolve_model_leaf"
     ],
     [
       "src/aryx/api/ask_multi_select_removal_qty_drop.py",

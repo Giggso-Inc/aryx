@@ -2297,6 +2297,7 @@ from aryx.api.ask_turn_product_switch_anchor import (  # noqa: E402
     _handle_product_switch_pending_anchor,
 )
 from aryx.api.ask_turn_seed_product_anchor import _seed_product_select_from_anchor  # noqa: E402
+from aryx.api.ask_model_leaf_resolve import _resolve_model_leaf  # noqa: E402
 from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection  # noqa: E402
 
 
@@ -3048,163 +3049,14 @@ def _run_cpq_turn_inner(
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
 
-    # Seed the punch-in model context when the catalog's own bm_catalog
-    # tree makes it unambiguous (exactly one model leaf — SVX's vX650_BOM).
-    # BM injects _bm_model_variable_name at runtime; exports never carry
-    # it, which is why modelname_all (whose XML default POINTS at it)
-    # shipped the literal token in payloads (Issue 11). The hint fills the
-    # noise-prefixed context attr (feeds BML scripts, never the payload),
-    # and auto_fill's pointer post-pass resolves modelname_all from it.
-    # Ambiguous trees (APX Next: two model leaves) seed nothing.
-    model_vn = _cpq_engine.single_model_variable_name(
-        reader, req.workspace_id, catalog_prefix)
-    if model_vn:
-        hints.setdefault("_bm_model_variable_name", model_vn)
-        session.pending_model_leaf_candidates = []
-    elif not session.model_leaf_resolved:
-        # Live-confirmed bug (2026-08-13): this whole ambiguous-tree
-        # re-resolution block had no `model_leaf_resolved` short-circuit
-        # at all, unlike every other call site in this file that checks
-        # it (e.g. lines ~2073, ~2381). Once already resolved on an
-        # earlier turn, `_existing_hint` (from session.filled) keeps
-        # matching the same leaf every subsequent turn, re-hitting
-        # `if _resolved_leaf: ... clear_pending_scope(session)`
-        # unconditionally — silently wiping an UNRELATED pending_scope
-        # (e.g. a live "Product — choose one" disambiguation already in
-        # progress) on every turn regardless of what the turn's message
-        # was actually about. Confirmed live: "now set the product"
-        # replied to a pending Product question had its scope silently
-        # cleared here before ever reaching the Product-matching code,
-        # turning a should-be-scoped reask into a full-catalog one.
-        # Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
-        # catalog with 2+ model leaves (CommandCentral Aware:
-        # commandCentralAware2024_BOM, commandCentralAware2026_BOM,
-        # commandCentralDEMS_BOM, ...) has no single unambiguous leaf for
-        # single_model_variable_name to seed — until now this silently
-        # left _bm_model_variable_name unset and no question ever asked
-        # which one was meant, so the turn fell through to the unrelated
-        # "Product" attrs (which don't represent this identity in this
-        # catalog's own data at all).
-        _leaf_candidates = _cpq_engine.model_variable_candidates(
-            reader, req.workspace_id, catalog_prefix)
-        if _leaf_candidates:
-            def _norm_leaf(s: str) -> str:
-                n = re.sub(r"[^a-z0-9]", "", s.lower())
-                return n[:-3] if n.endswith("bom") else n
-
-            # A DIFFERENT, pre-existing mechanism (extract_flag_hints) can
-            # already set _bm_model_variable_name from a literal camelCase
-            # token in the text (e.g. "commandCentralAware2024") — but to
-            # a value that isn't actually one of this catalog's real
-            # bm_catalog leaves (missing the "_BOM" suffix, etc.), since
-            # that mechanism never validates against the tree at all.
-            # Live-confirmed regression (2026-07-26): this silently
-            # bypassed the disambiguation below entirely, since something
-            # was already "set" — just not to a real leaf. Validate
-            # whatever's already there first; only treat it as resolved
-            # when it genuinely normalizes to one of the real candidates.
-            _existing_hint = hints.get("_bm_model_variable_name") or session.filled.get("_bm_model_variable_name")
-            _resolved_leaf = next(
-                (leaf for leaf in _leaf_candidates if _existing_hint and _norm_leaf(leaf) == _norm_leaf(_existing_hint)),
-                None,
-            )
-            if _resolved_leaf:
-                session.model_leaf_resolved = True
-            elif session.pending_model_leaf_candidates:
-                # A prior turn already asked — this reply should answer it.
-                # LLM classifies first (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_
-                # PLAN_2026_08_13.md), deterministic ladder validates
-                # second; on miss, scoped re-ask (never Product 325).
-                # Supersedes the old ConfigAttr-wrapping
-                # _llm_resolve_label_collision fallback this call site
-                # used to awkwardly reuse — _resolve_scope_reply already
-                # covers that same job, natively, for plain strings.
-                _reply = req.question.strip()
-                _leaf_scope = list(session.pending_model_leaf_candidates)
-                _scope_reply = _resolve_scope_reply(
-                    _reply, _leaf_scope, "product line", session, req.workspace_id,
-                )
-                if _scope_reply == "skip":
-                    return _build_scope_skip_response(
-                        req, session, _leaf_scope, "product line",
-                    )
-                if _scope_reply == "family_only":
-                    return _build_scope_family_only_response(
-                        req, session, _leaf_scope, "product line",
-                    )
-                _sres = _scope_reply
-                if _sres.matched:
-                    _resolved_leaf = _sres.matched
-                if _resolved_leaf is None:
-                    # Keep model-leaf candidates AND pending_scope in sync
-                    set_pending_scope(
-                        session,
-                        kind="family_disambiguation",
-                        candidates=_leaf_scope,
-                        origin_question=req.question,
-                        attr_vn="",
-                        asked_turn=session.turn,
-                    )
-                    return _scoped_reask_response(
-                        req, session, _reply,
-                        scope_label="product line",
-                        tools_called="cpq_model_leaf_ambiguous()",
-                    )
-            else:
-                # First time seeing this ambiguity — try to auto-resolve
-                # from what the customer already said (this turn's text,
-                # plus the original switch-triggering text if a switch
-                # brought us here) before ever interrupting with a question.
-                _combined = (
-                    req.question + " " + (_switch_trigger_question or "")
-                    + " " + (session.product_anchor_question or "")
-                )
-                _combined_norm = _norm_leaf(_combined)
-                _text_matches = [
-                    leaf for leaf in _leaf_candidates
-                    if len(_norm_leaf(leaf)) >= 5 and _norm_leaf(leaf) in _combined_norm
-                ]
-                if len(_text_matches) == 1:
-                    _resolved_leaf = _text_matches[0]
-
-            if _resolved_leaf:
-                # Force-set, not setdefault: extract_flag_hints may have
-                # already put an unvalidated value here (e.g. missing the
-                # real leaf's "_BOM" suffix) — this is the validated,
-                # canonical leaf identifier and must win.
-                hints["_bm_model_variable_name"] = _resolved_leaf
-                session.pending_model_leaf_candidates = []
-                session.model_leaf_resolved = True
-                clear_pending_scope(session)
-            else:
-                session.pending_model_leaf_candidates = _leaf_candidates
-                set_pending_scope(
-                    session,
-                    kind="family_disambiguation",
-                    candidates=list(_leaf_candidates),
-                    origin_question=req.question,
-                    attr_vn="",
-                    asked_turn=session.turn,
-                )
-                _leaf_lines = "\n".join(f"{i+1}. {leaf}" for i, leaf in enumerate(_leaf_candidates))
-                _static_leaf_answer = (
-                    f"This family has more than one product line — which one are "
-                    f"you configuring?\n\n{_leaf_lines}"
-                )
-                _leaf_answer = _compose_disambiguation_question(
-                    req.question, "which specific product line/model they want",
-                    _leaf_candidates,
-                    {"Country": session.country, "Product": session.product_name},
-                    _static_leaf_answer, req.workspace_id,
-                )
-                _persist_cpq_history(req.workspace_id, req.question, _leaf_answer)
-                return {
-                    "answer": _leaf_answer, "terms": [],
-                    "tools_called": ["cpq_model_leaf_ambiguous()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
+    # Model-leaf disambiguation (Phase 10/11-phase ask_api decomposition):
+    # moved to ask_model_leaf_resolve.py and sibling ask_model_leaf_*.py
+    # files -- logic unchanged, see those modules' own docstrings.
+    _model_leaf_response = _resolve_model_leaf(
+        req, session, reader, hints, catalog_prefix, _switch_trigger_question,
+    )
+    if _model_leaf_response is not None:
+        return _model_leaf_response
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     # Each of these 4 calls now logs its own cpq_step start/done pair
