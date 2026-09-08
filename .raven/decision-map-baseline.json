@@ -7988,82 +7988,82 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      2320,
+      2324,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2378,
+      2382,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      2618,
+      2622,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3243,
+      2994,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3260,
+      3011,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3281,
+      3032,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3350,
+      3101,
       "<if>"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3376,
+      3127,
       "_run_cpq_turn_inner"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3464,
+      3215,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3498,
+      3249,
       "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3550,
+      3301,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3559,
+      3310,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3560,
+      3311,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3563,
+      3314,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3565,
+      3316,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      3567,
+      3318,
       "ask_router"
     ],
     [
@@ -9255,6 +9255,56 @@
       "src/aryx/api/ask_standard_pipeline/_terms.py",
       62,
       "_extract_terms"
+    ],
+    [
+      "src/aryx/api/ask_step10_blocked_removal.py",
+      25,
+      "_step10_blocked_removal_gap"
+    ],
+    [
+      "src/aryx/api/ask_step10_blocked_removal.py",
+      71,
+      "_step10_blocked_removal_gap"
+    ],
+    [
+      "src/aryx/api/ask_step10_commit_and_drain.py",
+      28,
+      "_step10_commit_and_drain"
+    ],
+    [
+      "src/aryx/api/ask_step10_commit_and_drain.py",
+      84,
+      "_step10_commit_and_drain"
+    ],
+    [
+      "src/aryx/api/ask_step10_recompute_pending.py",
+      26,
+      "_step10_recompute_pending"
+    ],
+    [
+      "src/aryx/api/ask_step10_recompute_pending.py",
+      74,
+      "_step10_recompute_pending"
+    ],
+    [
+      "src/aryx/api/ask_step10_rule_eval_loop.py",
+      27,
+      "_step10_run_rule_eval_loop"
+    ],
+    [
+      "src/aryx/api/ask_step10_rule_eval_loop.py",
+      80,
+      "_step10_run_rule_eval_loop"
+    ],
+    [
+      "src/aryx/api/ask_step10_sibling_and_multi_hint.py",
+      28,
+      "_step10_enforce_siblings_and_multi_hint"
+    ],
+    [
+      "src/aryx/api/ask_step10_sibling_and_multi_hint.py",
+      69,
+      "_step10_enforce_siblings_and_multi_hint"
     ],
     [
       "src/aryx/api/ask_step1_product_anchor.py",
