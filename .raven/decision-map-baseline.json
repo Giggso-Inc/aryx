@@ -7893,57 +7893,42 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      488,
+      388,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      531,
+      431,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      534,
-      "_apply_real_llm_usage"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      926,
-      "_beautify_mandatory_block"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      960,
-      "_beautify_mandatory_block"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      1012,
+      729,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1021,
+      738,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1022,
+      739,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1025,
+      742,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1027,
+      744,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      1029,
+      746,
       "ask_router"
     ],
     [
@@ -9022,6 +9007,26 @@
       "_llm_resolve_quantity_target"
     ],
     [
+      "src/aryx/api/ask_llm_switch_reply_and_compound_split.py",
+      24,
+      "_llm_classify_switch_reply"
+    ],
+    [
+      "src/aryx/api/ask_llm_switch_reply_and_compound_split.py",
+      56,
+      "_llm_classify_switch_reply"
+    ],
+    [
+      "src/aryx/api/ask_llm_switch_reply_and_compound_split.py",
+      59,
+      "_llm_split_compound_change_and_question"
+    ],
+    [
+      "src/aryx/api/ask_llm_switch_reply_and_compound_split.py",
+      99,
+      "_llm_split_compound_change_and_question"
+    ],
+    [
       "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
       24,
       "_llm_detect_pending_topic_switch"
@@ -9050,6 +9055,31 @@
       "src/aryx/api/ask_llm_topic_switch_and_change_decline.py",
       123,
       "_llm_detect_change_decline"
+    ],
+    [
+      "src/aryx/api/ask_llm_usage_and_new_request_detect.py",
+      28,
+      "_apply_real_llm_usage"
+    ],
+    [
+      "src/aryx/api/ask_llm_usage_and_new_request_detect.py",
+      49,
+      "_pending_reply_looks_like_new_request"
+    ],
+    [
+      "src/aryx/api/ask_llm_usage_and_new_request_detect.py",
+      61,
+      "_pending_reply_looks_like_new_request"
+    ],
+    [
+      "src/aryx/api/ask_mandatory_block_splice.py",
+      87,
+      "_beautify_mandatory_block"
+    ],
+    [
+      "src/aryx/api/ask_mandatory_block_splice.py",
+      104,
+      "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_model_leaf_ask_prompt.py",

@@ -368,51 +368,6 @@ from aryx.api.ask_pending_clarify_llm_classify import (  # noqa: E402
 from aryx.api.ask_pending_clarify_prompt import _grounded_clarify_prompt  # noqa: E402
 
 
-def _llm_classify_switch_reply(
-    question: str, candidate_product: str, current_product: str, workspace_id: int,
-) -> str:
-    """3-way classification of a reply to "switch to X?", tried only for
-    a genuinely ambiguous reply (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_
-    AUDIT_2026_08_12.md row 21) — the deterministic checks already catch
-    a clear "yes"/the product's own name (affirmative), a clear "no"/
-    "nope"/"never" (decline), and a reply naming a genuinely different
-    real product (handled separately, re-offers that product instead).
-    This only ever runs for what's left: "maybe", "I guess", "not sure"
-    and similar — mirrors `_llm_classify_pending_clarify_reply`'s exact
-    3-way contract and narrow-helper discipline.
-
-    Returns "accept", "decline", or "unclear" — "unclear" (including any
-    call/parse failure) must be treated by the caller exactly like
-    today's existing decline behavior (fail-safe: never completes a
-    switch on an ambiguous reply), just with the same already-stated
-    "OK — continuing with X" message, not a silent guess either way.
-    """
-    sys = (
-        "A customer was asked whether they want to switch their current "
-        "product-configuration session to a different product, e.g. "
-        "\"Switch to X? (yes/no)\". Classify their reply as exactly one "
-        'of: "accept" (they want to switch), "decline" (they want to '
-        'stay on the current product), or "unclear" (genuinely '
-        "ambiguous, doesn't clearly commit either way — e.g. \"maybe\", "
-        "\"I guess\", \"not sure\"). Never guess accept or decline for a "
-        "reply that doesn't actually commit."
-    )
-    user = (
-        f"CURRENT PRODUCT: {current_product}\n"
-        f"OFFERED SWITCH TO: {candidate_product}\n\n"
-        f"USER REPLY: {question}\n\n"
-        'Reply ONLY as JSON: {"decision": "accept" | "decline" | "unclear"}'
-    )
-
-    def _validate(parsed: dict) -> str | None:
-        decision = parsed.get("decision")
-        if decision not in ("accept", "decline", "unclear"):
-            return None
-        return decision
-
-    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
-    return result if result is not None else "unclear"
-
 
 # Moved to ask_pending_clarify_match.py/ask_pending_clarify_turn.py
 # (Phase 2/11-phase ask_api decomposition) -- re-exported here so every
@@ -422,61 +377,6 @@ from aryx.api.ask_pending_clarify_match import (  # noqa: E402
 )
 from aryx.api.ask_pending_clarify_turn import _handle_pending_clarify_turn  # noqa: E402
 
-
-def _llm_split_compound_change_and_question(
-    question: str, workspace_id: int,
-) -> tuple[str, str] | None:
-    """LLM-first check: does this message combine a change request AND a
-    separate question in one turn (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
-    CLARIFY_ISSUE.md §4)? If so, split into two self-contained strings so
-    each can be dispatched through its OWN existing pipeline in the same
-    turn — change applied first, then the question answered against the
-    post-change state. Never invents catalog IDs/values; only rephrases
-    the customer's own words into two standalone requests.
-
-    Returns None when the message is NOT genuinely compound (a single
-    change, a single question, or multiple changes with no separate
-    question — that last case is already handled by
-    CHANGE_REQUESTS_MULTI) — caller falls through to the existing
-    clarify/ambiguous path unchanged, so a wrong split can never happen
-    silently; it just means no split was applied.
-
-    Only called from the gateway's "clarify" path (not every turn), and
-    only after a cheap pre-check that the message contains a conjunction
-    at all — so this adds no cost to the common, already-successful
-    single-intent case.
-    """
-    sys = (
-        "A customer sent a message to a product configuration assistant. "
-        "Determine whether it combines TWO separate things: (1) a request "
-        "to CHANGE or SET one attribute's value, and (2) a genuinely "
-        "SEPARATE question asking about something else (a current value, "
-        "available options, etc.) that is not part of the same change. "
-        "If both are clearly present, split the message into two "
-        "self-contained requests, each rephrased in the customer's own "
-        "words as a complete standalone request. If the message is "
-        "really just ONE thing — a single change, a single question, or "
-        "multiple changes to different fields with no separate question "
-        "mixed in — say it is not compound. Never invent details that "
-        "weren't in the original message."
-    )
-    user = (
-        f"MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"is_compound": true|false, '
-        '"change_text": "<self-contained change request, or empty>", '
-        '"question_text": "<self-contained question, or empty>"}'
-    )
-
-    def _validate(parsed: dict) -> tuple[str, str] | None:
-        if not parsed.get("is_compound"):
-            return None
-        change_text = (parsed.get("change_text") or "").strip()
-        question_text = (parsed.get("question_text") or "").strip()
-        if not change_text or not question_text:
-            return None
-        return (change_text, question_text)
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
 # Moved to ask_pending_clarify_answer.py (Phase 2/11-phase ask_api
@@ -530,63 +430,6 @@ def _run_cpq_turn(
     _apply_real_llm_usage(result)
     return result
 
-
-def _apply_real_llm_usage(result: dict[str, Any]) -> None:
-    """Replace a CPQ turn response's usage dict with real totals, in place,
-    when llm_runtime recorded any actual LLM call during this turn.
-
-    A no-op when nothing was recorded (reset_turn_usage() was never
-    reached, or genuinely zero calls happened — the common, correct case
-    for a purely deterministic turn) or when `result` has no "usage" key
-    at all (an early-return shape, e.g. a gate-blocked response).
-    """
-    if not isinstance(result, dict) or "usage" not in result:
-        return
-    real = llm_runtime.get_turn_usage()
-    if not real or not real["calls"]:
-        return
-    models = ", ".join(real["models"]) or result["usage"].get("menial_model", "cpq-engine")
-    result["usage"] = {
-        "prompt_tokens": real["prompt_tokens"],
-        "completion_tokens": real["completion_tokens"],
-        "latency_ms": real["latency_ms"],
-        "menial_model": models,
-        "answer_model": models,
-    }
-
-
-def _pending_reply_looks_like_new_request(
-    question: str, pending_attr: Any, attrs: list, filled: dict, filled_multi: dict,
-) -> bool:
-    """True only if `question` has an explicit change-verb/arrow AND names
-    some OTHER real attr (never `pending_attr` itself) — i.e. a genuine new
-    request, not a bare reply meant to answer the currently-pending
-    question. Shared by STEP 5's own answer-lock and the LLM-first
-    gateway's pre-STEP-5 gate (docs/config_consistency_issues_2026-07-30.md
-    issue 4 follow-up): the gateway ran unconditionally BEFORE STEP 5 with
-    no awareness of `session.pending_variables` at all, so a bare reply
-    like "VHF" — meant to answer an actively-pending single-select
-    question — could be reclassified fresh by the gateway and dispatched
-    to a different, plausible-but-wrong sibling attribute (confirmed live:
-    "VHF" is a legal option on modelSelectionFrequencyBandMsl_astro too),
-    leaving the real pending attribute's stale value untouched and
-    producing the exact "asked the same question again" loop this doc's
-    Issue 4 already fixed one cause of.
-    """
-    if pending_attr is None:
-        return False
-    other_attrs = [a for a in attrs if a.variable_name != pending_attr.variable_name]
-    return bool(
-        (_cpq_engine._CHANGE_VERB_RE.search(question)
-         or _cpq_engine._ARROW_RE.search(question))
-        and (
-            _cpq_engine.detect_change_target_without_value(question, other_attrs, filled)
-            or _cpq_engine.detect_change_request(
-                question, other_attrs, filled, filled_multi=filled_multi)
-            or _cpq_engine.detect_change_requests_multi(
-                question, other_attrs, filled, filled_multi=filled_multi)
-        )
-    )
 
 
 # Moved to ask_turn_product_switch_anchor.py/ask_step1_product_anchor.py/
@@ -759,6 +602,20 @@ from aryx.api.ask_decline_reply_and_label_collision_llm import (  # noqa: E402
     _is_decline_reply,
     _llm_resolve_label_collision,
 )
+# Moved to ask_llm_switch_reply_and_compound_split.py (final sweep,
+# Phase 11/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_llm_switch_reply_and_compound_split import (  # noqa: E402
+    _llm_classify_switch_reply,
+    _llm_split_compound_change_and_question,
+)
+# Moved to ask_llm_usage_and_new_request_detect.py (final sweep, Phase
+# 11/11-phase ask_api decomposition) -- re-exported here so every
+# existing caller/test keeps working unchanged.
+from aryx.api.ask_llm_usage_and_new_request_detect import (  # noqa: E402
+    _apply_real_llm_usage,
+    _pending_reply_looks_like_new_request,
+)
 
 
 def _run_cpq_turn_inner(
@@ -847,166 +704,26 @@ def _run_cpq_turn_inner(
         validation_rules, bml_eval, catalog_prefix, mode_request,
     )
 # or the session has already reached review/approval regardless of count.
-_SHARE_READY_MIN_FILLED = 3
-
-# The closed set of "**Category:**" headers the summary's own category
-# grouping (categorized_summary_groups/_SUMMARY_CATEGORY_KEYS) can ever
-# emit, OTHER than Mandatory User Input itself. Raven review on PR #236
-# (H2): the original boundary regex treated ANY bold, colon-terminated
-# line as "the next category header" -- safe against beautify_text()'s
-# own trusted, machine-generated output, but not against free-form LLM
-# narration, where a stray aside like "**Note:**" inside the Mandatory
-# section's own body would be misread as a header and truncate the
-# match early. Anchoring to this known, closed set (plus the literal
-# Mandatory User Input header) means only a REAL category boundary ever
-# stops the match, regardless of what the LLM narrates around it.
-#
-# Derived from `SUMMARY_CATEGORY_NAMES`/`SUMMARY_FALLBACK_CATEGORY` (PR
-# #236 review, Medium follow-up) rather than duplicated as hardcoded
-# string literals here -- a renamed or newly-added category in engine.py
-# now updates this boundary automatically instead of silently
-# under-matching again until someone remembers to edit a second copy.
-_OTHER_SUMMARY_CATEGORY_HEADERS = SUMMARY_CATEGORY_NAMES + (SUMMARY_FALLBACK_CATEGORY,)
-
-# Trailing call-to-action the deterministic/LLM-narrated summary appends
-# after every category. Matched with flexible leading whitespace (PR #236
-# C1): the original pattern only recognized this trailer when preceded by
-# exactly "\n\n" -- any other whitespace (single newline, none, reordered
-# trailing content) meant NONE of the lookahead alternatives fired before
-# end-of-string, so the non-greedy body match was forced all the way to
-# \Z, silently deleting the trailer along with whatever it replaced.
-_CPQ_JSON_TRAILER_RE = re.compile(r"\n*Click \*\*JSON\*\*")
-
-_MANDATORY_HEADER = f"**{CpqEngine._BEAUTIFY_MANDATORY_SECTION}:**"
-# Matches the header (tolerant of stray trailing whitespace before its
-# newline, PR #236 C2) plus everything up to the next known category
-# header, the JSON trailer, or end of string -- used for BOTH detecting
-# whether a Mandatory User Input section already exists and replacing it,
-# so the two checks can never disagree (the original code used a plain
-# substring check to decide IF a section existed, then a separate, less
-# tolerant regex to actually replace it -- a header the substring check
-# found but the stricter regex didn't could fall through to the insert
-# path and leave two "Mandatory User Input:" sections in the same
-# message).
-_MANDATORY_SECTION_RE = re.compile(
-    re.escape(_MANDATORY_HEADER) + r"[ \t]*\n.*?"
-    r"(?=\n\*\*(?:" + "|".join(re.escape(c) for c in _OTHER_SUMMARY_CATEGORY_HEADERS) + r"):\*\*"
-    r"|\n*Click \*\*JSON\*\*|\Z)",
-    re.DOTALL,
-)
-
-# A narrower "- **Label** → value" bullet, as rendered by the LLM-narrated
-# or deterministic Product Name/Service Plan/Quantity & Duration
-# categories. Used to detect items already shown above the Mandatory User
-# Input section so the spliced Beautify block never repeats them (PR #236
-# H1). Captures the value too (PR #236 review, Low follow-up): `beautify_
-# rows` carries no attribute/variable_name identifier to dedupe against,
-# so keying on label text ALONE risked an incorrect exclusion if two
-# distinct attributes happened to share a display label across a large
-# catalog. Requiring the VALUE to match too makes that collision
-# vanishingly unlikely -- two unrelated attributes coincidentally sharing
-# both the same label and the same value in the same session -- without
-# needing a wider change to `beautify_rows`'s public row shape.
-_NAMED_CATEGORY_BULLET_RE = re.compile(r"^-\s+\*\*([^*\n]+)\*\*\s*→\s*(.+)$", re.MULTILINE)
-
-
-def _labels_already_shown(answer: str) -> set[tuple[str, str]]:
-    """(label, value) pairs already rendered as their own bullet somewhere
-    before the Mandatory User Input header (Product Name/Service Plan/
-    Quantity & Duration's own narrower content) -- both case-folded for a
-    tolerant compare against Beautify's row labels/values."""
-    idx = answer.find(_MANDATORY_HEADER)
-    prefix = answer[:idx] if idx != -1 else answer
-    return {
-        (m.group(1).strip().casefold(), m.group(2).strip().casefold())
-        for m in _NAMED_CATEGORY_BULLET_RE.finditer(prefix)
-    }
-
-
-def _beautify_mandatory_block(
-    beautify_rows: list[dict[str, str]], already_shown: set[tuple[str, str]],
-) -> str | None:
-    """Return an aligned "Label : Value" block (Beautify's own text
-    format, recomputed here since dropping rows changes the alignment
-    width) built from `beautify_rows`'s Mandatory User Input rows --
-    excluding any row whose (label, value) the summary already rendered
-    under a named category (PR #236 H1: without this, an attribute that
-    is both catalog-mandatory AND matches Product Name/Service Plan/
-    Quantity & Duration's own fragments — e.g. Base Model — would render
-    twice, in two different formats, in the same turn).
-
-    Works off the structured `beautify_rows()` output (not `beautify_
-    text()`'s rendered string) specifically so this filtering can key on
-    exact (label, value) pairs rather than re-parsing text Beautify
-    itself produced. Matching on the pair, not label alone (PR #236
-    review, Low follow-up), avoids an incorrect exclusion if two
-    distinct attributes happen to share a display label across a large
-    catalog — `beautify_rows` carries no attribute identifier this could
-    key on instead.
-
-    Returns `None` when there's nothing left to show — either no
-    Mandatory rows exist at all (`filled_source` wasn't supplied to
-    `beautify_rows`) or every one of them was already shown above.
-    """
-    rows = [
-        r for r in beautify_rows
-        if r.get("section") == CpqEngine._BEAUTIFY_MANDATORY_SECTION
-        and (r.get("label", "").strip().casefold(), r.get("value", "").strip().casefold())
-        not in already_shown
-    ]
-    if not rows:
-        return None
-    width = max(len(r["label"]) for r in rows)
-    return "\n".join(f"{r['label'].ljust(width)} : {r['value']}" for r in rows)
-
-
-def _splice_mandatory_block_into_summary(answer: str, mandatory_block: str) -> str:
-    """Live-confirmed ask (2026-08-20): whatever Beautify's own "Mandatory
-    User Input" section shows must be the SAME set shown under the
-    conversational summary's own "Mandatory User Input" heading —
-    verbatim, not the narrower subset the summary's own category
-    grouping (Product Name/Service Plan/Quantity & Duration claim their
-    own matching items first) would otherwise leave there. Rather than
-    trying to keep two independently-computed presentations in sync,
-    this forces the chat answer's own Mandatory User Input section to be
-    a byte-for-byte copy of the (already-deduplicated, see
-    `_beautify_mandatory_block`) Beautify rows, fenced as a code block to
-    preserve column alignment — the one thing guaranteed to never drift
-    from Beautify, because it IS Beautify's own data.
-
-    Replaces an existing "**Mandatory User Input:**" section (LLM-
-    narrated or the deterministic bullet fallback) up to the next known
-    category header or the trailing "Click **JSON**..." sentence,
-    whichever comes first (`_MANDATORY_SECTION_RE` — the SAME pattern
-    used to detect whether a section exists at all, so the two checks
-    can never disagree, PR #236 C2). If the answer has no such section
-    (e.g. this turn's narrowed summary had nothing left over for the
-    catch-all bucket), inserts one before the JSON trailer instead of
-    silently omitting Mandatory facts the customer can see in Beautify —
-    located via a whitespace-tolerant trailer match, not the exact
-    "\\n\\n" the original insert path assumed (PR #236 C1).
-    """
-    fenced = f"{_MANDATORY_HEADER}\n```\n{mandatory_block}\n```"
-    new_answer, count = _MANDATORY_SECTION_RE.subn(fenced, answer, count=1)
-    if count:
-        return new_answer
-    trailer_match = _CPQ_JSON_TRAILER_RE.search(answer)
-    if trailer_match:
-        before = answer[:trailer_match.start()].rstrip()
-        after = answer[trailer_match.start():].lstrip("\n")
-        return f"{before}\n\n{fenced}\n\n{after}"
-    return f"{answer.rstrip()}\n\n{fenced}"
-
-
-# Moved to ask_attach_share_flags.py/ask_finish_cpq_result.py/ask_route_
-# qa.py/ask_run_ask.py (Phase 9/11-phase ask_api decomposition) --
-# re-exported here so every existing caller/test keeps working unchanged.
-from aryx.api.ask_attach_share_flags import _attach_share_flags  # noqa: E402
 from aryx.api.ask_finish_cpq_result import (  # noqa: E402
     _deterministic_cpq_gate, _finish_cpq_result, _route_quote,
 )
 from aryx.api.ask_route_qa import _route_ambiguous, _route_qa  # noqa: E402
 from aryx.api.ask_run_ask import run_ask  # noqa: E402
+from aryx.api.ask_attach_share_flags import _attach_share_flags  # noqa: E402
+# Moved to ask_mandatory_block_splice.py (final sweep, Phase 11/11-phase
+# ask_api decomposition) -- re-exported here so every existing
+# caller/test keeps working unchanged.
+from aryx.api.ask_mandatory_block_splice import (  # noqa: E402
+    _CPQ_JSON_TRAILER_RE,
+    _MANDATORY_HEADER,
+    _MANDATORY_SECTION_RE,
+    _NAMED_CATEGORY_BULLET_RE,
+    _OTHER_SUMMARY_CATEGORY_HEADERS,
+    _SHARE_READY_MIN_FILLED,
+    _beautify_mandatory_block,
+    _labels_already_shown,
+    _splice_mandatory_block_into_summary,
+)
 
 
 def ask_router() -> APIRouter:
