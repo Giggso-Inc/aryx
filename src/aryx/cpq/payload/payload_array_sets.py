@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.cpq.payload_display import display_for
-from aryx.cpq.payload_state import PayloadContext
+from aryx.cpq.payload.payload_display import display_for
+from aryx.cpq.payload.payload_state import PayloadContext
 
 
 def group_array_set_rows(ctx: PayloadContext, attrs: list[Any] | None, filled: dict[str, str]) -> None:

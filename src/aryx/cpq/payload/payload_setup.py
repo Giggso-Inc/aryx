@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import ConfigAttr, logger
-from aryx.cpq.payload_state import PayloadContext
+from aryx.cpq.payload.payload_state import PayloadContext
 
 
 def build_context(

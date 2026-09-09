@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.payload_array_sets import group_array_set_rows
-from aryx.cpq.payload_multi import serialize_multi_attrs
-from aryx.cpq.payload_order import order_payload_keys
-from aryx.cpq.payload_scalar import serialize_scalar_attrs
-from aryx.cpq.payload_setup import build_context
+from aryx.cpq.payload.payload_array_sets import group_array_set_rows
+from aryx.cpq.payload.payload_multi import serialize_multi_attrs
+from aryx.cpq.payload.payload_order import order_payload_keys
+from aryx.cpq.payload.payload_scalar import serialize_scalar_attrs
+from aryx.cpq.payload.payload_setup import build_context
 
 
 def build_payload(

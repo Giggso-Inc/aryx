@@ -12842,6 +12842,26 @@
       "find_unresolvable_context_attrs"
     ],
     [
+      "src/aryx/cpq/payload/payload_order.py",
+      18,
+      "<if>"
+    ],
+    [
+      "src/aryx/cpq/payload/payload_order.py",
+      57,
+      "order_payload_keys"
+    ],
+    [
+      "src/aryx/cpq/payload/payload_setup.py",
+      16,
+      "build_context"
+    ],
+    [
+      "src/aryx/cpq/payload/payload_setup.py",
+      110,
+      "build_context"
+    ],
+    [
       "src/aryx/cpq/payload_building/anchor_exclusions.py",
       22,
       "_data_table_resolved_anchor_vns"
@@ -12860,26 +12880,6 @@
       "src/aryx/cpq/payload_building/mandatory_tiers.py",
       93,
       "mandatory_tier_c_vns"
-    ],
-    [
-      "src/aryx/cpq/payload_order.py",
-      18,
-      "<if>"
-    ],
-    [
-      "src/aryx/cpq/payload_order.py",
-      57,
-      "order_payload_keys"
-    ],
-    [
-      "src/aryx/cpq/payload_setup.py",
-      16,
-      "build_context"
-    ],
-    [
-      "src/aryx/cpq/payload_setup.py",
-      110,
-      "build_context"
     ],
     [
       "src/aryx/cpq/product_config_attrs.py",

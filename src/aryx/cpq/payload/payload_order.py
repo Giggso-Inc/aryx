@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.payload_state import PayloadContext
+from aryx.cpq.payload.payload_state import PayloadContext
 
 
 def order_payload_keys(
