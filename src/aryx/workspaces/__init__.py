@@ -21,8 +21,8 @@ from psycopg import sql
 from aryx.naming import ws_graph  # noqa: F401  re-exported for back-compat
 from aryx.queries import load
 from aryx.store.pool import get_pool
-from aryx.workspaces_crud import _WorkspaceCrudMixin
-from aryx.workspaces_partitions import _PARTITIONED, _WorkspacePartitionsMixin
+from aryx.workspaces.workspaces_crud import _WorkspaceCrudMixin
+from aryx.workspaces.workspaces_partitions import _PARTITIONED, _WorkspacePartitionsMixin
 
 __all__ = ["WorkspaceStore", "make_workspace_store", "ws_graph"]
 

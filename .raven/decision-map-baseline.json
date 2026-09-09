@@ -15167,42 +15167,42 @@
       "submit_to_oci_function"
     ],
     [
-      "src/aryx/workspaces.py",
+      "src/aryx/workspaces/__init__.py",
       51,
       "_drop_partitions_with_conn"
     ],
     [
-      "src/aryx/workspaces.py",
+      "src/aryx/workspaces/__init__.py",
       57,
       "nuke"
     ],
     [
-      "src/aryx/workspaces.py",
+      "src/aryx/workspaces/__init__.py",
       79,
       "nuke"
     ],
     [
-      "src/aryx/workspaces_crud.py",
+      "src/aryx/workspaces/workspaces_crud.py",
       45,
       "create"
     ],
     [
-      "src/aryx/workspaces_crud.py",
+      "src/aryx/workspaces/workspaces_crud.py",
       86,
       "update_metadata"
     ],
     [
-      "src/aryx/workspaces_partitions.py",
+      "src/aryx/workspaces/workspaces_partitions.py",
       30,
       "_attach_partitions"
     ],
     [
-      "src/aryx/workspaces_partitions.py",
+      "src/aryx/workspaces/workspaces_partitions.py",
       42,
       "purge_data"
     ],
     [
-      "src/aryx/workspaces_partitions.py",
+      "src/aryx/workspaces/workspaces_partitions.py",
       66,
       "purge_data"
     ]
