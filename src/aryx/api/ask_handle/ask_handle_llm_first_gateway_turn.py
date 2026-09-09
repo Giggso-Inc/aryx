@@ -15,10 +15,10 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_result
-from aryx.api.ask_gateway_compound_split import _try_compound_split_on_clarify
-from aryx.api.ask_gateway_defer_check import _should_defer_gateway_to_pending_answer
-from aryx.api.ask_gateway_resolve_or_reask import _resolve_or_reask_ambiguous
-from aryx.api.ask_gateway_to_intent_result import _gateway_to_intent_result
+from aryx.api.ask_gateway.ask_gateway_compound_split import _try_compound_split_on_clarify
+from aryx.api.ask_gateway.ask_gateway_defer_check import _should_defer_gateway_to_pending_answer
+from aryx.api.ask_gateway.ask_gateway_resolve_or_reask import _resolve_or_reask_ambiguous
+from aryx.api.ask_gateway.ask_gateway_to_intent_result import _gateway_to_intent_result
 from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pending_clarify
 from aryx.cpq.intent_gateway import classify_intent as gateway_classify_intent
 from aryx.cpq.intent_schema import IntentCategory
