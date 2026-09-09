@@ -6,7 +6,7 @@ feature 2. Each fired rule is written as its own small row in real time
 failure shape of the aryx_discovery incident, not a repeat of it), so a
 mid-session crash still leaves the partial trace durably saved.
 
-This store is the durable destination; aryx.cpq.rule_trace.RuleTrace also
+This store is the durable destination; aryx.cpq.rule_trace.rule_trace.RuleTrace also
 writes the same events to a local .jsonl file at the same time — neither
 depends on the other completing.
 """

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 
 
 

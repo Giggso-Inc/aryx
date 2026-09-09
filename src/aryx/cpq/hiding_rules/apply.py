@@ -8,7 +8,7 @@ package.
 
 from __future__ import annotations
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.engine import _condition_value_matches
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id

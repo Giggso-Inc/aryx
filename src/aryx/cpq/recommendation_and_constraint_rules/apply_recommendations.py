@@ -10,7 +10,7 @@ two former ``self.`` helpers are the plain functions in
 
 from __future__ import annotations
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import _valid, logger
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id

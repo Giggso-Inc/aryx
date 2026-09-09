@@ -3,7 +3,7 @@
 --
 -- One session (run_id) accumulates one row per fired rule across every
 -- ask-turn until the configuration is confirmed (session.complete becomes
--- True — see aryx.cpq.rule_trace's docstring for why "approved" was
+-- True — see aryx.cpq.rule_trace.rule_trace's docstring for why "approved" was
 -- rejected as the confirm signal: it is dead legacy code, never actually
 -- set; ask_api.py's real confirm handler sets session.complete = True and
 -- session.status = "post_approval" together at BOM-payload generation).

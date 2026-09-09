@@ -51,8 +51,8 @@ import json
 import logging
 
 from aryx.cpq.logging_context import get_run_id, install_run_id_logging
-from aryx.cpq.rule_trace_io import _trace_dir
-from aryx.cpq.rule_trace_state import (
+from aryx.cpq.rule_trace.rule_trace_io import _trace_dir
+from aryx.cpq.rule_trace.rule_trace_state import (
     _ctx_var,
     _lock,
     _open_sessions,

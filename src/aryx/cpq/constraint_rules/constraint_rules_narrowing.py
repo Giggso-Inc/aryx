@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
 from aryx.cpq.engine import _substitute_util_get_constraint_vals
 

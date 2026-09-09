@@ -20,7 +20,7 @@ from aryx.api.ask_approval_stale_violations import (
     _handle_approval_stale_reask,
 )
 from aryx.cpq.bom_gate.bom_gate import validate_before_payload
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 
 
 def _handle_approval(

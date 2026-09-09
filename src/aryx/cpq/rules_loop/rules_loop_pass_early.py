@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
