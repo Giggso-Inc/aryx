@@ -227,7 +227,7 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
 
 def test_n2_route_qa_read_only_product():
     from aryx.api.ask_api import AskRequest
-    from aryx.api.ask_route_qa import _route_qa
+    from aryx.api.ask_qa.ask_route_qa import _route_qa
 
     req = AskRequest(
         question="what are the options for product",

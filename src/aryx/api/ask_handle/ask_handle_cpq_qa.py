@@ -12,12 +12,12 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api.ask_qa_fast_path import _qa_fast_path_or_enumeration
-from aryx.api.ask_qa_graph_search import _qa_graph_search
-from aryx.api.ask_qa_label_collision import _qa_label_collision_response
-from aryx.api.ask_qa_multi_attr_options import _qa_multi_attr_options_response
-from aryx.api.ask_qa_resume_prompt import _build_qa_resume_prompt
-from aryx.api.ask_qa_status_shortcircuit import _qa_status_shortcircuit
+from aryx.api.ask_qa.ask_qa_fast_path import _qa_fast_path_or_enumeration
+from aryx.api.ask_qa.ask_qa_graph_search import _qa_graph_search
+from aryx.api.ask_qa.ask_qa_label_collision import _qa_label_collision_response
+from aryx.api.ask_qa.ask_qa_multi_attr_options import _qa_multi_attr_options_response
+from aryx.api.ask_qa.ask_qa_resume_prompt import _build_qa_resume_prompt
+from aryx.api.ask_qa.ask_qa_status_shortcircuit import _qa_status_shortcircuit
 
 
 def _handle_cpq_qa(
