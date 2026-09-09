@@ -16,8 +16,8 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from aryx.api.rest_ingest_job import _run_rest, _type_from_url
-from aryx.api.rest_ingest_models import RestIngestRequest, RestPreviewRequest
+from aryx.api.rest_ingest.rest_ingest_job import _run_rest, _type_from_url
+from aryx.api.rest_ingest.rest_ingest_models import RestIngestRequest, RestPreviewRequest
 from aryx.config import get_settings
 from aryx.connectors.rest_api import RestApiConnector
 from aryx.store.job_store import JobStore

@@ -41,7 +41,7 @@ from aryx.api.observability_api import observability_router
 from aryx.api.ontology_api import ontology_router
 from aryx.api.ontology_assist_api import ontology_assist_router
 from aryx.api.relationship_type_api import relationship_type_router
-from aryx.api.rest_ingest_api import rest_ingest_router
+from aryx.api.rest_ingest.rest_ingest_api import rest_ingest_router
 from aryx.api.rules_api import rules_router
 from aryx.api.shay_bridge_api import shay_bridge_router
 from aryx.api.share_config_api import share_config_router
