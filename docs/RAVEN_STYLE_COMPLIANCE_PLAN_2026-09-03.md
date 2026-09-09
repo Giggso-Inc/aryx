@@ -1862,6 +1862,65 @@ oversized files (3 — `cpq/intent_gateway/intent_gateway.py`,
 against the stricter 150-line bar, to be re-evaluated against the
 looser 250-line bar before assuming further splitting is needed).
 
+### Phase 8b `apps/web/` line-count backlog complete (2026-09-09)
+
+All 7 oversized `apps/web/` files from the Phase 8 audit are resolved —
+5 real container/hook splits, 2 reaffirmed Phase 3 stated exceptions.
+`apps/web` has no automated test coverage, so every split below was
+verified with `tsc --noEmit` (clean) and a full `next build` (clean,
+route sizes unchanged) rather than a test suite:
+
+- **`app/observability/page.tsx`** (261 → 87 lines, `a462c1b`): kept
+  the route entrypoint (data fetching + layout); extracted
+  `components/observability/`: `Metric.tsx`, `StatusDot.tsx`,
+  `JobsTable.tsx`, `LlmCallsTable.tsx`, `MetricsGrid.tsx` (+
+  `ModelConfigRow`), `format.ts`. Render order/markup preserved exactly.
+- **`components/shay/AdminUsersPage.tsx`** (335 → 62 lines, `a29bbda`):
+  a pure container (state/loading/filtering/mutations ending in one
+  large prop-passing render). Extracted `admin-users/useAdminUsersState.ts`
+  (197) and `useAdminUsersActions.ts` (148), composed by
+  `useAdminUsersPage.ts` (25).
+- **`components/shay/WorkspaceIndexPage.tsx`** (335 → 124 lines,
+  `ec06ed4`): extracted `workspace-index/useWorkspaceIndexPage.ts` (196:
+  state, filtering, mutations) and `useWorkspaceMetrics.ts` (85: the
+  per-workspace metrics-loading effect, split out on its own since it
+  was the single largest chunk).
+- **`components/data/DataExplorer.tsx`** (339 → 112 lines, `cdaa592`):
+  extracted `data-explorer/useDataExplorer.ts` (212: sources
+  state/loading/mutations) and `useDataExplorerAssetActions.ts` (103:
+  generated-asset download/preview/delete). Hit a real TS narrowing gap
+  the extraction introduced — TS doesn't narrow a hook-object member
+  like `s.activeSourceDetail` across a closure the way it narrows a
+  plain local variable — fixed by binding it to a local `const` before
+  use in two callbacks; caught immediately by `tsc --noEmit`.
+- **`components/shay/WorkspaceSettingsPage.tsx`** (403 → 137 lines,
+  `a3f0767`): extracted `workspace-settings/useWorkspaceSettingsState.ts`
+  (183: state, load(), derived member-list/permission values) and
+  `useWorkspaceSettingsActions.ts` (161: profile save + member
+  add/update/remove + purge/delete), composed by
+  `useWorkspaceSettingsPage.ts` (18).
+- **`components/graph/EntityGraph.tsx`** (474 lines) and **`app/page.tsx`**
+  (471 lines): both already carried Phase 3 stated exceptions —
+  tightly-coupled interactive state/closures (canvas node
+  selection/expansion/navigation for `EntityGraph`; the Ask page's
+  two-phase fetch-failure recovery poll for `page.tsx`), on a codebase
+  with zero test coverage. That reasoning is about closure/state
+  coupling risk, not about clearing a specific line-count bar — it
+  holds unchanged at the looser 250-line target, so both were
+  reaffirmed with no further splitting attempted.
+
+The pattern used throughout (state/load()/derived-values hook +
+separate mutations hook, composed by a thin top-level hook, consumed by
+a thin page/container component) mirrors the Python-side container
+pattern from `shay_backend/`'s `AdminUsersPage`-equivalents, adapted to
+React: splitting a stateful hook further (as with `DataExplorer` and
+`WorkspaceIndexPage`) was needed only when the whole-logic hook itself
+exceeded ~250 lines.
+
+This closes all of Phase 8b's known backlog (`shay_backend/` +
+`apps/web/`). Remaining Phase 8 scope: `src/aryx/`'s 24 oversized
+files.
+
 ---
 
 ## 8. How to reproduce or re-run this scan
