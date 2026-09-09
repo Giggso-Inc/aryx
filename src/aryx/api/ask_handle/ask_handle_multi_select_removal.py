@@ -20,8 +20,8 @@ from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
 from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
-from aryx.api.ask_multi_select_removal_qty_drop import _drop_related_quantity_attrs
-from aryx.api.ask_multi_select_removal_recompute import (
+from aryx.api.ask_attr_recompute.ask_multi_select_removal_qty_drop import _drop_related_quantity_attrs
+from aryx.api.ask_attr_recompute.ask_multi_select_removal_recompute import (
     _recompute_after_multi_select_removal,
 )
 from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_attr_text_helpers import _resolve_split_change_text
+from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _resolve_split_change_text
 from aryx.api.ask_change_decline_and_scope_memory import _is_change_value_decline
 from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
 from aryx.api.ask_llm.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request

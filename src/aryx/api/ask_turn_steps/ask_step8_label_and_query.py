@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_attr_query_and_classify_usage import _build_attr_query_response
+from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _build_attr_query_response
 from aryx.api.ask_label_collision_prompt_and_narrow import _narrow_label_collision
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 

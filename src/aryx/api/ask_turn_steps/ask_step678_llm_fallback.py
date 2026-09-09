@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
+from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module

@@ -7962,214 +7962,234 @@
       "_attach_share_flags"
     ],
     [
-      "src/aryx/api/ask_attr_activation_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_activation_recompute.py",
       25,
       "_recompute_after_attr_activation"
     ],
     [
-      "src/aryx/api/ask_attr_activation_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_activation_recompute.py",
       146,
       "_recompute_after_attr_activation"
     ],
     [
-      "src/aryx/api/ask_attr_clear_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_clear_recompute.py",
       19,
       "_recompute_after_attr_clear"
     ],
     [
-      "src/aryx/api/ask_attr_clear_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_clear_recompute.py",
       129,
       "_recompute_after_attr_clear"
     ],
     [
-      "src/aryx/api/ask_attr_query_and_classify_usage.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_query_and_classify_usage.py",
       25,
       "_build_attr_query_response"
     ],
     [
-      "src/aryx/api/ask_attr_query_and_classify_usage.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_query_and_classify_usage.py",
       54,
       "_build_attr_query_response"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       27,
       "_build_attr_options_text"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       51,
       "_build_attr_options_text"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       57,
       "_build_current_quote_attribute_listing_text"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       88,
       "_build_current_quote_attribute_listing_text"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       94,
       "_resolve_split_change_text"
     ],
     [
-      "src/aryx/api/ask_attr_text_helpers.py",
+      "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
       116,
       "_resolve_split_change_text"
     ],
     [
-      "src/aryx/api/ask_bulk_quantity_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_bulk_quantity_recompute.py",
       19,
       "_recompute_after_bulk_quantity_change"
     ],
     [
-      "src/aryx/api/ask_bulk_quantity_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_bulk_quantity_recompute.py",
       124,
       "_recompute_after_bulk_quantity_change"
     ],
     [
-      "src/aryx/api/ask_cascade_apply_value.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_apply_value.py",
       20,
       "_apply_cascade_new_value"
     ],
     [
-      "src/aryx/api/ask_cascade_apply_value.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_apply_value.py",
       48,
       "<if>"
     ],
     [
-      "src/aryx/api/ask_cascade_apply_value.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_apply_value.py",
       81,
       "_apply_cascade_new_value"
     ],
     [
-      "src/aryx/api/ask_cascade_invalidate_dependents.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_invalidate_dependents.py",
       19,
       "_invalidate_cascade_dependents"
     ],
     [
-      "src/aryx/api/ask_cascade_invalidate_dependents.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_invalidate_dependents.py",
       107,
       "_invalidate_cascade_dependents"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_apply.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_apply.py",
       19,
       "_apply_cascade_multi_changes"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_apply.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_apply.py",
       65,
       "<if>"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_apply.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_apply.py",
       110,
       "_apply_cascade_multi_changes"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_note.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_note.py",
       17,
       "_revert_overridden_multi_singles"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_note.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_note.py",
       55,
       "_revert_overridden_multi_singles"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_recompute.py",
       17,
       "_recompute_after_cascade_multi"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_recompute.py",
       114,
       "_recompute_after_cascade_multi"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       27,
       "_build_cascade_multi_response"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       48,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       53,
       "<if>"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       69,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       84,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_multi_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
       99,
       "_build_cascade_multi_response"
     ],
     [
-      "src/aryx/api/ask_cascade_note.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_note.py",
       17,
       "_build_cascade_note"
     ],
     [
-      "src/aryx/api/ask_cascade_note.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_note.py",
       67,
       "_build_cascade_note"
     ],
     [
-      "src/aryx/api/ask_cascade_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_recompute.py",
       21,
       "_recompute_after_cascade"
     ],
     [
-      "src/aryx/api/ask_cascade_recompute.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_recompute.py",
       132,
       "_recompute_after_cascade"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       28,
       "_build_cascade_response"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       50,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       64,
       "<if>"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       85,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       101,
       "<assign>"
     ],
     [
-      "src/aryx/api/ask_cascade_response.py",
+      "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
       116,
       "_build_cascade_response"
+    ],
+    [
+      "src/aryx/api/ask_attr_recompute/ask_multi_select_removal_qty_drop.py",
+      17,
+      "_drop_related_quantity_attrs"
+    ],
+    [
+      "src/aryx/api/ask_attr_recompute/ask_multi_select_removal_qty_drop.py",
+      41,
+      "_drop_related_quantity_attrs"
+    ],
+    [
+      "src/aryx/api/ask_attr_recompute/ask_multi_select_removal_recompute.py",
+      19,
+      "_recompute_after_multi_select_removal"
+    ],
+    [
+      "src/aryx/api/ask_attr_recompute/ask_multi_select_removal_recompute.py",
+      133,
+      "_recompute_after_multi_select_removal"
     ],
     [
       "src/aryx/api/ask_catalog_listing_scope.py",
@@ -8840,26 +8860,6 @@
       "src/aryx/api/ask_model_leaf_resolve.py",
       111,
       "_resolve_model_leaf"
-    ],
-    [
-      "src/aryx/api/ask_multi_select_removal_qty_drop.py",
-      17,
-      "_drop_related_quantity_attrs"
-    ],
-    [
-      "src/aryx/api/ask_multi_select_removal_qty_drop.py",
-      41,
-      "_drop_related_quantity_attrs"
-    ],
-    [
-      "src/aryx/api/ask_multi_select_removal_recompute.py",
-      19,
-      "_recompute_after_multi_select_removal"
-    ],
-    [
-      "src/aryx/api/ask_multi_select_removal_recompute.py",
-      133,
-      "_recompute_after_multi_select_removal"
     ],
     [
       "src/aryx/api/ask_pending_clarify/ask_pending_clarify_answer.py",

@@ -18,11 +18,11 @@ from typing import Any
 from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
 from aryx.api.ask_label_collision_detect_and_compose import _DECLINE_CHANGE_RE
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api.ask_cascade_apply_value import _apply_cascade_new_value
-from aryx.api.ask_cascade_invalidate_dependents import _invalidate_cascade_dependents
-from aryx.api.ask_cascade_note import _build_cascade_note
-from aryx.api.ask_cascade_recompute import _recompute_after_cascade
-from aryx.api.ask_cascade_response import _build_cascade_response
+from aryx.api.ask_attr_recompute.ask_cascade_apply_value import _apply_cascade_new_value
+from aryx.api.ask_attr_recompute.ask_cascade_invalidate_dependents import _invalidate_cascade_dependents
+from aryx.api.ask_attr_recompute.ask_cascade_note import _build_cascade_note
+from aryx.api.ask_attr_recompute.ask_cascade_recompute import _recompute_after_cascade
+from aryx.api.ask_attr_recompute.ask_cascade_response import _build_cascade_response
 
 
 def _handle_cascade(

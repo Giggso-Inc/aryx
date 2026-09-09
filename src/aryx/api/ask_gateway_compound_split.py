@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_attr_text_helpers import _resolve_split_change_text
+from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _resolve_split_change_text
 from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_split_compound_change_and_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module

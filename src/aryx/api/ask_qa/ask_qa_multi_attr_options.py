@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_attr_text_helpers import _build_attr_options_text
+from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_attr_options_text
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_llm import ask_llm_split_multi_attr_options as _ask_llm_split_multi_attr_options_module
 

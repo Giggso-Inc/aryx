@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest
-from aryx.api.ask_attr_text_helpers import _build_current_quote_attribute_listing_text
+from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_current_quote_attribute_listing_text
 from aryx.api.ask_catalog_listing_text import _build_catalog_attribute_listing_text
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
 from aryx.cpq.bml import BmlEvaluator
@@ -450,7 +450,7 @@ def test_list_attributes_question_uses_real_quote_state_once_a_quote_exists(monk
     with patch(
         "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_attr_text_helpers._build_current_quote_attribute_listing_text",
+        "aryx.api.ask_attr_recompute.ask_attr_text_helpers._build_current_quote_attribute_listing_text",
         return_value="Real quote attributes: ...",
     ) as mock_quote_build, patch(
         "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",

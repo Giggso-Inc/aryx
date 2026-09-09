@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
+from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_handle.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
 from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.engine import is_valid_product_quantity
