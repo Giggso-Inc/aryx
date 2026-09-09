@@ -13937,27 +13937,27 @@
       "resolve_run"
     ],
     [
-      "src/aryx/source_catalog_delete_download.py",
+      "src/aryx/source/source_catalog_delete_download.py",
       129,
       "xml_download_payload"
     ],
     [
-      "src/aryx/source_catalog_delete_download.py",
+      "src/aryx/source/source_catalog_delete_download.py",
       188,
       "xml_download_payload"
     ],
     [
-      "src/aryx/source_catalog_detail.py",
+      "src/aryx/source/source_catalog_detail.py",
       263,
       "<if>"
     ],
     [
-      "src/aryx/source_catalog_detail.py",
+      "src/aryx/source/source_catalog_detail.py",
       301,
       "build_source_detail_from_counts"
     ],
     [
-      "src/aryx/source_metrics.py",
+      "src/aryx/source/source_metrics.py",
       51,
       "apply_source_metrics"
     ],

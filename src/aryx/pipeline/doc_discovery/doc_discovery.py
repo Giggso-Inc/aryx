@@ -53,7 +53,7 @@ from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.ontology_store import OntologyStore
-from aryx.source_catalog import restore_generic_source_entry
+from aryx.source.source_catalog import restore_generic_source_entry
 
 __all__ = [
     "DATA_EXTS",

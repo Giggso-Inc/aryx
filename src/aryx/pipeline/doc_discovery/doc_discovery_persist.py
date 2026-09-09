@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from aryx.source_catalog import (
+from aryx.source.source_catalog import (
     upsert_xlsx_catalog_entry,
     upsert_xml_catalog_entry,
     xlsx_asset_record,

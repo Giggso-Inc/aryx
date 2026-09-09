@@ -9,7 +9,7 @@ import base64
 from datetime import UTC, datetime
 from typing import Any
 
-from aryx.source_catalog_meta import (
+from aryx.source.source_catalog_meta import (
     _CATALOG_KEY,
     _GENERIC_KEY,
     _XLSX_KEY,

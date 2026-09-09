@@ -27,7 +27,7 @@ from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
-from aryx.source_catalog import (
+from aryx.source.source_catalog import (
     restore_generic_source_entry,
     upsert_xlsx_catalog_entry,
     upsert_xml_catalog_entry,

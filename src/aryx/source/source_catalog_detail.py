@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from aryx.source_catalog_meta import (
+from aryx.source.source_catalog_meta import (
     _active_assets,
     _asset_rows,
     _display_kind,
@@ -21,7 +21,7 @@ from aryx.source_catalog_meta import (
     _xml_meta,
     source_actions,
 )
-from aryx.source_catalog_upsert import (
+from aryx.source.source_catalog_upsert import (
     _CATALOG_KEY,
     _XML_KEY,
     find_legacy_xml_row,

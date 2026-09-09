@@ -40,7 +40,7 @@ from aryx.api.data_api_pure import (
     _provenance_counts,
 )
 from aryx.config import get_settings
-from aryx.source_catalog import (
+from aryx.source.source_catalog import (
     build_source_catalog_from_counts,
     build_source_detail_from_counts,
     find_legacy_xml_row,
@@ -49,7 +49,7 @@ from aryx.source_catalog import (
     xlsx_download_payload,
     xml_download_payload,
 )
-from aryx.source_metrics import (
+from aryx.source.source_metrics import (
     apply_source_metrics,
     mapped_references,
     page_source_catalog,

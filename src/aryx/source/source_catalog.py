@@ -12,7 +12,7 @@ compatibility surface needed.
 """
 from __future__ import annotations
 
-from aryx.source_catalog_delete_download import (
+from aryx.source.source_catalog_delete_download import (
     mark_xlsx_asset_deleted,
     mark_xlsx_source_deleted,
     mark_xml_asset_deleted,
@@ -20,14 +20,14 @@ from aryx.source_catalog_delete_download import (
     xlsx_download_payload,
     xml_download_payload,
 )
-from aryx.source_catalog_detail import (
+from aryx.source.source_catalog_detail import (
     build_source_catalog,
     build_source_catalog_from_counts,
     build_source_detail,
     build_source_detail_from_counts,
 )
-from aryx.source_catalog_meta import _display_kind, source_actions
-from aryx.source_catalog_upsert import (
+from aryx.source.source_catalog_meta import _display_kind, source_actions
+from aryx.source.source_catalog_upsert import (
     find_generic_source_row,
     find_legacy_xml_row,
     generic_catalog_config,
