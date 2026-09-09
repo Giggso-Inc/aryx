@@ -357,6 +357,21 @@
       "_corrupt"
     ],
     [
+      "raven-core/project_link_common.py",
+      152,
+      "apply_asset_id_credentials"
+    ],
+    [
+      "raven-core/project_link_common.py",
+      280,
+      "<try>"
+    ],
+    [
+      "raven-core/secret-scan.py",
+      193,
+      "<try>"
+    ],
+    [
       "sales_streamlit/app.py",
       66,
       "_mcp_client"
