@@ -10147,67 +10147,67 @@
       "datasource_router"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       44,
       "doc_discover_router"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       71,
       "summary"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       73,
       "summary"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       85,
       "confirm"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       112,
       "confirm"
     ],
     [
-      "src/aryx/api/doc_discover_api.py",
+      "src/aryx/api/doc_discover/doc_discover_api.py",
       114,
       "doc_discover_router"
     ],
     [
-      "src/aryx/api/doc_discover_confirm_job.py",
+      "src/aryx/api/doc_discover/doc_discover_confirm_job.py",
       32,
       "_confirm_job"
     ],
     [
-      "src/aryx/api/doc_discover_confirm_job.py",
+      "src/aryx/api/doc_discover/doc_discover_confirm_job.py",
       36,
       "<try>"
     ],
     [
-      "src/aryx/api/doc_discover_read_job.py",
+      "src/aryx/api/doc_discover/doc_discover_read_job.py",
       31,
       "_build_read_progress"
     ],
     [
-      "src/aryx/api/doc_discover_read_job.py",
+      "src/aryx/api/doc_discover/doc_discover_read_job.py",
       51,
       "_on_progress"
     ],
     [
-      "src/aryx/api/doc_discover_read_job.py",
+      "src/aryx/api/doc_discover/doc_discover_read_job.py",
       68,
       "_build_read_progress"
     ],
     [
-      "src/aryx/api/doc_discover_read_job.py",
+      "src/aryx/api/doc_discover/doc_discover_read_job.py",
       71,
       "_read_job"
     ],
     [
-      "src/aryx/api/doc_discover_read_job.py",
+      "src/aryx/api/doc_discover/doc_discover_read_job.py",
       75,
       "<try>"
     ],

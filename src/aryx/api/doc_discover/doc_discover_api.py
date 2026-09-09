@@ -22,8 +22,8 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from pydantic import BaseModel
 
 from aryx import discoveries
-from aryx.api.doc_discover_confirm_job import _confirm_job
-from aryx.api.doc_discover_read_job import _read_job
+from aryx.api.doc_discover.doc_discover_confirm_job import _confirm_job
+from aryx.api.doc_discover.doc_discover_read_job import _read_job
 from aryx.config import get_settings
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
