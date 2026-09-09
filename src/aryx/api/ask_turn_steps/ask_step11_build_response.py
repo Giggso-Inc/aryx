@@ -15,13 +15,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api.ask_step11_completion_responses import (
+from aryx.api.ask_turn_steps.ask_step11_completion_responses import (
     _step11_completion_response,
     _step11_grid_gap_response,
     _step11_stale_reask_response,
 )
-from aryx.api.ask_step11_on_request_response import _step11_on_request_response
-from aryx.api.ask_step11_turn_cap_response import _step11_turn_cap_response
+from aryx.api.ask_turn_steps.ask_step11_on_request_response import _step11_on_request_response
+from aryx.api.ask_turn_steps.ask_step11_turn_cap_response import _step11_turn_cap_response
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 

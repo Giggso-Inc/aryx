@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_step8_label_and_query import _step8_label_collision_and_query
-from aryx.api.ask_step8_mid_config_change import _step8_mid_config_change
-from aryx.api.ask_step8_qa_and_collision import _step8_qa_and_pending_collision
+from aryx.api.ask_turn_steps.ask_step8_label_and_query import _step8_label_collision_and_query
+from aryx.api.ask_turn_steps.ask_step8_mid_config_change import _step8_mid_config_change
+from aryx.api.ask_turn_steps.ask_step8_qa_and_collision import _step8_qa_and_pending_collision
 
 
 
