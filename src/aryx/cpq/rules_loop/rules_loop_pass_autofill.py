@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from aryx.cpq.engine import logger
-from aryx.cpq.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
 
 
 def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopScope) -> None:

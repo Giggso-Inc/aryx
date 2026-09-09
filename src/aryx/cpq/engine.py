@@ -639,7 +639,7 @@ from aryx.cpq.region_and_noise_constants import (  # noqa: E402
 # -- this line must sit after both are already defined above (the last
 # being _substitute_util_get_constraint_vals, right above).
 from aryx.cpq.constraint_rules import constraint_rules  # noqa: E402
-from aryx.cpq import rules_loop  # noqa: E402
+from aryx.cpq.rules_loop import rules_loop  # noqa: E402
 from aryx.cpq.payload import payload_build  # noqa: E402
 from aryx.cpq.value_rules import value_rules_load  # noqa: E402
 

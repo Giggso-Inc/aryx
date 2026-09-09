@@ -12,9 +12,9 @@ import time
 from typing import Any
 
 from aryx.cpq.engine import logger
-from aryx.cpq.rules_loop_pass_early import run_early_pass
-from aryx.cpq.rules_loop_pass_late import run_late_pass
-from aryx.cpq.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
+from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
+from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
 
 _MAX_LOOPS = 8
 
