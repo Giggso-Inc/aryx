@@ -10,7 +10,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
 from aryx.api.ask_build_show_summary_response import _build_show_summary_response
 from aryx.api.ask_cpq_summary_text import _cpq_summary_text
-from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
+from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine, extract_quantity_hint
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route

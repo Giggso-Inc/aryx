@@ -10,24 +10,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_dispatch_ambiguous_and_scope import (
+from aryx.api.ask_dispatch.ask_dispatch_ambiguous_and_scope import (
     _dispatch_ambiguous,
     _dispatch_out_of_scope,
 )
-from aryx.api.ask_dispatch_attr_activation import _dispatch_attr_activation
-from aryx.api.ask_dispatch_attr_clear import _dispatch_attr_clear
-from aryx.api.ask_dispatch_bulk_quantity import _dispatch_bulk_quantity_change
-from aryx.api.ask_dispatch_change_request import (
+from aryx.api.ask_dispatch.ask_dispatch_attr_activation import _dispatch_attr_activation
+from aryx.api.ask_dispatch.ask_dispatch_attr_clear import _dispatch_attr_clear
+from aryx.api.ask_dispatch.ask_dispatch_bulk_quantity import _dispatch_bulk_quantity_change
+from aryx.api.ask_dispatch.ask_dispatch_change_request import (
     _dispatch_change_request,
     _dispatch_change_requests_multi,
     _dispatch_change_target_without_value,
 )
-from aryx.api.ask_dispatch_multi_select_removal import _dispatch_multi_select_removal
-from aryx.api.ask_dispatch_quantity_country import (
+from aryx.api.ask_dispatch.ask_dispatch_multi_select_removal import _dispatch_multi_select_removal
+from aryx.api.ask_dispatch.ask_dispatch_quantity_country import (
     _dispatch_country_change,
     _dispatch_quantity_change,
 )
-from aryx.api.ask_dispatch_query_approval_decline import (
+from aryx.api.ask_dispatch.ask_dispatch_query_approval_decline import (
     _dispatch_approval,
     _dispatch_attr_query,
     _dispatch_decline,
