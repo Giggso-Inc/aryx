@@ -1598,7 +1598,37 @@ Run a dedicated naming-convention scan (§8) across `src/aryx/*.py` for `snake_c
 - **Low risk, mechanical** (11 total): `BCrypt_AVAILABLE` → `BCRYPT_AVAILABLE` (2 occurrences, `app/core/auth/passwords.py`, module-local); 2 camelCase function names (`updateAzureOpenAiChat`, `updateOpenAiChat` in `app/services/llm_validation_service/{azure,openai_chat}.py`); 5 camelCase local variables in `app/routes/token_details/validation*.py` (`llmType`, `apiKey`×2, `deploymentName`×2, `apiVersion`×2, `userPrompt`) — none referenced outside their own function.
 - **Needs a call-site check before touching** (~33 total): 8 `@property` methods on the Settings class named like constants (`FRONTEND_URL`, `PLATFORM_URL`, `APP_URL`, `BASE_URL`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`, `ALLOWED_FILE_TYPES`, `SHAY_BE_PUBLIC_URL` in `app/core/config.py`) — almost certainly accessed as `settings.FRONTEND_URL` throughout the app, so a rename needs every call site found first; ~25 camelCase FastAPI route/service parameters (`isValidationRequired`, `userId`, `channelId`, `apiKey`, `deploymentName`, `apiVersion`, `hostedPageId`, `subCategory`, `openaiToken`, `accessToken`, scattered across `app/routes/` and `app/services/llm_validation_service/`) — several likely bind directly to camelCase JSON keys the frontend sends, so a rename needs a Pydantic alias or explicit body-field mapping to avoid silently breaking request parsing, not just a caller-reference check.
 
-**Not yet done:** actually applying any of the above renames (deferred pending a decision on the two risky categories — held off per session direction, not fixed in this pass); the `apps/web/` function-length audit this section originally deferred (§3.3's tooling gap) is now unblocked by the same TypeScript-compiler-API script, since it already walks every function node — just needs a length check added, not yet written.
+### Phase 6 low-risk renames applied (2026-09-09, `8e9595b`)
+
+All 11 low-risk mechanical renames applied: `BCrypt_AVAILABLE` →
+`BCRYPT_AVAILABLE`; `updateAzureOpenAiChat`/`updateOpenAiChat` →
+`update_azure_openai_chat`/`update_openai_chat` plus their
+`openaiToken`/`deploymentName`/`apiVersion`/`apiKey` parameters →
+snake_case; `validate_gemini`'s `apiKey` → `api_key`; the matching
+local variable names through the `app/routes/token_details/
+validation*.py` call chain (`llmType`/`apiKey`/`deploymentName`/
+`apiVersion`/`userPrompt` → snake_case) — deliberately leaving
+untouched every occurrence of these same words where they're Pydantic
+schema fields or wire-format dict keys mirroring the external ML API
+contract (a different, deliberate naming decision outside this audit's
+scope). Verified: 65 tests across the 3 directly affected test files
+pass; zero remaining references to any old name anywhere in the repo.
+
+**`apps/web/lib/shay-api/auth.ts`'s `email_id` re-evaluated, not a
+violation**: it turned out to be part of a consistent
+snake_case-mirrors-the-backend convention across that whole API client
+file — renaming it alone would make it *less* consistent, not more.
+Resolved as no-fix-needed, not deferred.
+
+**Still not done:** the ~33 higher-risk renames (8 `Settings`
+`@property` methods named like constants; ~25 camelCase FastAPI route/
+service parameters that may bind directly to camelCase JSON keys the
+frontend sends) — each needs a call-site check or a Pydantic alias/
+explicit body-field mapping before a rename is safe, not a plain
+rename. The `apps/web/` function-length audit (§3.3's original tooling
+gap) is unblocked by the same TypeScript-compiler-API script (it
+already walks every function node) but the length check itself hasn't
+been written yet.
 
 ### Phase 7 — Keep it compliant going forward
 
