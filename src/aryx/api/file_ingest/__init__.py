@@ -1,44 +1,23 @@
-"""File-ingest API package (Phase 8a folder restructuring,
-docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md). Split out of
-`api/file_ingest_*.py`'s flat files in `src/aryx/api/` into their own
-package; every name re-exported here so any caller that imports from
-the package root instead of a specific submodule keeps working.
-"""
+"""File-ingest API package (Phase 8a folder restructuring). Lazy re-exports (PEP 562) to avoid circular-import chains across sibling Phase 8a packages."""
 
-from aryx.api.file_ingest.file_ingest_api import (
-    file_ingest_router,
-    shutdown_executor,
-    _get_executor,
-)
-from aryx.api.file_ingest.file_ingest_limits import (
-    _ALL,
-    _DATA_EXTS,
-    _DOC_EXTS,
-    _FK_REQUIRED_KEYS,
-    _MAX_FILE,
-    _MAX_FILES,
-    _MAX_TOTAL,
-)
-from aryx.api.file_ingest.file_ingest_run import (
-    _chunk_csv_bytes,
-    _make_should_stop,
-    _run_files,
-    _save_tmp,
-)
+import importlib
 
-__all__ = [
-    "file_ingest_router",
-    "shutdown_executor",
-    "_get_executor",
-    "_ALL",
-    "_DATA_EXTS",
-    "_DOC_EXTS",
-    "_FK_REQUIRED_KEYS",
-    "_MAX_FILE",
-    "_MAX_FILES",
-    "_MAX_TOTAL",
-    "_chunk_csv_bytes",
-    "_make_should_stop",
-    "_run_files",
-    "_save_tmp",
-]
+_EXPORTS = {
+    "_chunk_csv_bytes": "file_ingest_run",
+    "_get_executor": "file_ingest_api",
+    "_make_should_stop": "file_ingest_run",
+    "_run_files": "file_ingest_run",
+    "_save_tmp": "file_ingest_run",
+    "file_ingest_router": "file_ingest_api",
+    "shutdown_executor": "file_ingest_api",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    mod_name = _EXPORTS.get(name)
+    if mod_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod = importlib.import_module(f"aryx.api.file_ingest.{mod_name}")
+    return getattr(mod, name)

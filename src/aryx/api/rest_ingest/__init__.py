@@ -1,18 +1,21 @@
-"""REST API ingest package (Phase 8a folder restructuring,
-docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md). Split out of
-`api/rest_ingest_*.py`'s flat files in `src/aryx/api/` into their own
-package; every name re-exported here so any caller that imports from
-the package root instead of a specific submodule keeps working.
-"""
+"""Rest-ingest API package (Phase 8a folder restructuring). Lazy re-exports (PEP 562) to avoid circular-import chains across sibling Phase 8a packages."""
 
-from aryx.api.rest_ingest.rest_ingest_api import rest_ingest_router
-from aryx.api.rest_ingest.rest_ingest_job import _run_rest, _type_from_url
-from aryx.api.rest_ingest.rest_ingest_models import RestIngestRequest, RestPreviewRequest
+import importlib
 
-__all__ = [
-    "rest_ingest_router",
-    "_run_rest",
-    "_type_from_url",
-    "RestIngestRequest",
-    "RestPreviewRequest",
-]
+_EXPORTS = {
+    "RestIngestRequest": "rest_ingest_models",
+    "RestPreviewRequest": "rest_ingest_models",
+    "_run_rest": "rest_ingest_job",
+    "_type_from_url": "rest_ingest_job",
+    "rest_ingest_router": "rest_ingest_api",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    mod_name = _EXPORTS.get(name)
+    if mod_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod = importlib.import_module(f"aryx.api.rest_ingest.{mod_name}")
+    return getattr(mod, name)

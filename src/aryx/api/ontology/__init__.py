@@ -1,41 +1,29 @@
-"""Ontology API package (Phase 8a folder restructuring,
-docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md). Split out of
-`api/ontology_*.py`'s flat files in `src/aryx/api/` into their own
-package; every name re-exported here so any caller that imports from
-the package root instead of a specific submodule keeps working.
-"""
+"""Ontology API package (Phase 8a folder restructuring). Lazy re-exports (PEP 562) to avoid circular-import chains across sibling Phase 8a packages."""
 
-from aryx.api.ontology.ontology_api import ontology_router
-from aryx.api.ontology.ontology_api_export import _load_bundle, export_graph_response
-from aryx.api.ontology.ontology_api_models import (
-    OntologyConfigRequest,
-    OntologyImportRequest,
-)
-from aryx.api.ontology.ontology_assist_api import (
-    SuggestAttrsRequest,
-    ontology_assist_router,
-)
-from aryx.api.ontology.ontology_browse import (
-    add_type,
-    approve,
-    delete_type,
-    import_doc,
-    list_browse,
-    set_parent,
-)
+import importlib
 
-__all__ = [
-    "ontology_router",
-    "_load_bundle",
-    "export_graph_response",
-    "OntologyConfigRequest",
-    "OntologyImportRequest",
-    "SuggestAttrsRequest",
-    "ontology_assist_router",
-    "add_type",
-    "approve",
-    "delete_type",
-    "import_doc",
-    "list_browse",
-    "set_parent",
-]
+_EXPORTS = {
+    "OntologyConfigRequest": "ontology_api_models",
+    "OntologyImportRequest": "ontology_api_models",
+    "SuggestAttrsRequest": "ontology_assist_api",
+    "_load_bundle": "ontology_api_export",
+    "add_type": "ontology_browse",
+    "approve": "ontology_browse",
+    "delete_type": "ontology_browse",
+    "export_graph_response": "ontology_api_export",
+    "import_doc": "ontology_browse",
+    "list_browse": "ontology_browse",
+    "ontology_assist_router": "ontology_assist_api",
+    "ontology_router": "ontology_api",
+    "set_parent": "ontology_browse",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    mod_name = _EXPORTS.get(name)
+    if mod_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod = importlib.import_module(f"aryx.api.ontology.{mod_name}")
+    return getattr(mod, name)
