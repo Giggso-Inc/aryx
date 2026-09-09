@@ -6894,12 +6894,12 @@
     [
       "shay_backend/app/services/llm_validation_service/azure.py",
       48,
-      "updateAzureOpenAiChat"
+      "update_azure_openai_chat"
     ],
     [
       "shay_backend/app/services/llm_validation_service/openai_chat.py",
       41,
-      "updateOpenAiChat"
+      "update_openai_chat"
     ],
     [
       "shay_backend/app/services/ml_service/delete.py",
