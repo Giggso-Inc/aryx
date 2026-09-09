@@ -14,22 +14,22 @@ across `pending_scope_state.py` (set/clear + candidate building),
 `pending_scope_resolve.py` (the exact/partial/fuzzy matching ladder, kept
 whole for cohesion), and `pending_scope_messages.py` (re-ask phrasing +
 logging), all re-imported here. Zero whitebox test patches exist anywhere
-against `aryx.cpq.pending_scope.*` (confirmed via grep).
+against `aryx.cpq.pending_scope.pending_scope.*` (confirmed via grep).
 """
 from __future__ import annotations
 
-from aryx.cpq.pending_scope_messages import (
+from aryx.cpq.pending_scope.pending_scope_messages import (
     format_did_you_mean,
     log_scope_lost,
     log_scope_retained,
 )
-from aryx.cpq.pending_scope_resolve import (
+from aryx.cpq.pending_scope.pending_scope_resolve import (
     ScopeResolve,
     is_confident_scope_suggestion,
     resolve_against_scope,
     scope_loop_exit_threshold,
 )
-from aryx.cpq.pending_scope_state import (
+from aryx.cpq.pending_scope.pending_scope_state import (
     ScopeKind,
     candidates_from_attr_options,
     clear_pending_scope,

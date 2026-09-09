@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import DECISION_REQUIRED_KEYS
-from aryx.cpq.pending_scope import clear_pending_scope
+from aryx.cpq.pending_scope.pending_scope import clear_pending_scope
 from aryx.cpq.session_guard.session_guard import push_snapshot
 
 from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import _invalidate_stale_base_model

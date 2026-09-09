@@ -15,7 +15,7 @@ from typing import Any
 
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _compose_disambiguation_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.cpq.pending_scope import set_pending_scope
+from aryx.cpq.pending_scope.pending_scope import set_pending_scope
 
 
 def _build_model_leaf_ask_prompt(

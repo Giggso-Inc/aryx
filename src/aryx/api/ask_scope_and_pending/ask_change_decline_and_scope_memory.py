@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.cpq.pending_scope import candidates_from_attr_options, set_pending_scope
+from aryx.cpq.pending_scope.pending_scope import candidates_from_attr_options, set_pending_scope
 from aryx.cpq.replacement_clause import extract_replacement_clause
 
 

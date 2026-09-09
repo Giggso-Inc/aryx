@@ -4,7 +4,7 @@ from __future__ import annotations
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.bml.bml import BmlEvaluator
-from aryx.cpq.pending_scope import (
+from aryx.cpq.pending_scope.pending_scope import (
     candidates_from_attr_options,
     clear_pending_scope,
     format_did_you_mean,
