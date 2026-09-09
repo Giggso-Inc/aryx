@@ -15,7 +15,7 @@ from tempfile import NamedTemporaryFile
 from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
-from aryx.pipeline.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
+from aryx.pipeline.doc_discovery.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
 from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)

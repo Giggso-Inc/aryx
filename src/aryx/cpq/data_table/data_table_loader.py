@@ -88,7 +88,7 @@ def _load_all_tables(
     the CPQ engine's workspace-scoping convention, but doesn't affect
     exact-type lookups here -- CSV-derived ontology_types never carry a
     catalog_prefix the way XML-derived rule/attr types do (see
-    aryx.pipeline.doc_discovery._stem_type), so there is nothing for it to
+    aryx.pipeline.doc_discovery.doc_discovery._stem_type), so there is nothing for it to
     filter on for Data Tables specifically.
 
     `cache`, when passed, is a plain dict the CALLER owns (typically for the

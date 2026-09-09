@@ -16,7 +16,7 @@ import io
 import logging
 import re
 
-from aryx.pipeline.doc_discovery_types import _id_like_names, _key_suffixes, _name_like_names, _singular
+from aryx.pipeline.doc_discovery.doc_discovery_types import _id_like_names, _key_suffixes, _name_like_names, _singular
 
 logger = logging.getLogger(__name__)
 

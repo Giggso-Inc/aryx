@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from openpyxl import Workbook
 
-from aryx.pipeline.doc_discovery import _sheet_slug, _stem_type, _xlsx_to_csvs
+from aryx.pipeline.doc_discovery.doc_discovery import _sheet_slug, _stem_type, _xlsx_to_csvs
 
 
 def _workbook_bytes(sheets: dict[str, list[list]], hidden: set[str] | None = None) -> bytes:

@@ -19,7 +19,7 @@ import csv
 import io
 
 from aryx.cpq.bml.bml import parse_array_iteration
-from aryx.pipeline.doc_discovery import _detect_script_data_flow_links
+from aryx.pipeline.doc_discovery.doc_discovery import _detect_script_data_flow_links
 
 _BOOLEAN_VARIANT_SCRIPT = (
     'arrayRange = range(mountingArrayControl_viSoln);\n'
@@ -159,7 +159,7 @@ def test_detect_script_data_flow_links_returns_empty_without_a_bm_function_plan(
 
 
 def test_ingestion_links_merge_with_fk_links_without_duplication():
-    from aryx.pipeline.doc_discovery import _detect_fk_links
+    from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links
 
     plans = [
         _fn_plan([["1", _BOOLEAN_VARIANT_SCRIPT], ["2", _UNRELATED_SCRIPT]]),

@@ -13757,97 +13757,97 @@
       "_normalize"
     ],
     [
-      "src/aryx/pipeline/doc_discovery.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery.py",
       128,
       "<try>"
     ],
     [
-      "src/aryx/pipeline/doc_discovery.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery.py",
       144,
       "read_files"
     ],
     [
-      "src/aryx/pipeline/doc_discovery.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery.py",
       330,
       "<if>"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_types.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_types.py",
       118,
       "_infer_type"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_types.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_types.py",
       130,
       "<try>"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       21,
       "_xml_to_csvs"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       58,
       "_extract_field"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       79,
       "_extract_field"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       81,
       "_elem_id"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       92,
       "_elem_id"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       94,
       "_is_entity"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       109,
       "_is_entity"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       111,
       "<try>"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       148,
       "_check_name"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       167,
       "_walk"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       199,
       "_collect_tag"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       236,
       "_collect_tag"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       249,
       "<if>"
     ],
     [
-      "src/aryx/pipeline/doc_discovery_xml.py",
+      "src/aryx/pipeline/doc_discovery/doc_discovery_xml.py",
       297,
       "_xml_to_csvs"
     ],

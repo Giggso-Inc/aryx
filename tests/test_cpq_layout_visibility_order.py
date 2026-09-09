@@ -161,7 +161,7 @@ def test_local_dir_source_no_match_returns_none(tmp_path):
 
 def test_local_dir_source_matches_the_real_filename_derived_catalog_prefix(tmp_path):
     """Live bug (2026-08-08): the real ingested catalog_prefix is whatever
-    aryx.pipeline.doc_discovery._stem_type derived from the source XML's
+    aryx.pipeline.doc_discovery.doc_discovery._stem_type derived from the source XML's
     OWN filename ("ApxnextCnofigdata", from "APXNext_CnofigData.xml",
     typo included) -- a completely different naming scheme than the
     human-authored layout export's filename ("Config Layout APX Next.

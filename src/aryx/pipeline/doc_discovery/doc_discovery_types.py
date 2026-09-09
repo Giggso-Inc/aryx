@@ -3,7 +3,7 @@ column-name conventions.
 
 Split out of `pipeline/doc_discovery.py` (Raven Style Compliance Plan,
 Phase 2a, 2026-09-03). `_infer_type` is directly whitebox-patched
-(`aryx.pipeline.doc_discovery._infer_type` in `test_doc_discovery.py`) —
+(`aryx.pipeline.doc_discovery.doc_discovery._infer_type` in `test_doc_discovery.py`) —
 its only caller, `read_files`, stays in `doc_discovery.py` and imports it
 from here, so the patch keeps intercepting it unchanged.
 """

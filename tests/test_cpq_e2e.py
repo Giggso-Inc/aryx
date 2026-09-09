@@ -61,7 +61,7 @@ def _falkor_available() -> bool:
 
 def test_s1_extraction_counts_match_raw_xml(truth):
     from aryx.config import get_settings
-    from aryx.pipeline.doc_discovery import _xml_to_csvs
+    from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
     import csv as _csv
     import io
 
@@ -1105,7 +1105,7 @@ def test_s15_fk_compound_column_detection(apx_truth):
     """Phase G regression guard: a FK column whose stem is a MULTI-word
     trailing run of the target type's de-camelCased name (not just the last
     word, e.g. attr_set_id -> BmConfigAttrSet) must still resolve to an edge."""
-    from aryx.pipeline.doc_discovery import _detect_fk_links
+    from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links
     import csv
     import io
 

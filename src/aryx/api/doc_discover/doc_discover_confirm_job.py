@@ -11,7 +11,7 @@ import logging
 from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
-from aryx.pipeline.doc_discovery import ingest_confirmed
+from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 

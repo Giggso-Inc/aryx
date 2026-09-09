@@ -14,7 +14,7 @@ doc_discovery_persist` — all re-imported here. `read_files` and `ingest_
 confirmed` stay in this hub because they are the sole callers of several
 directly whitebox-patched names (`_infer_type`, `_detect_fk_links`, `_detect_
 script_data_flow_links`, `_detect_fk_links_workspace`, `_persist_tabular_
-sources` — patched as `aryx.pipeline.doc_discovery.<name>` across `test_doc_
+sources` — patched as `aryx.pipeline.doc_discovery.doc_discovery.<name>` across `test_doc_
 discovery.py`, `test_ingest_confirmed_fk_detection_progress.py`, and `test_
 ingest_confirmed_mentions_batching.py`); importing the real implementations
 here and calling them by bare name keeps every one of those patches
@@ -38,16 +38,16 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
-from aryx.pipeline.doc_discovery_csv import _consolidate_csv_names
-from aryx.pipeline.doc_discovery_fk import (
+from aryx.pipeline.doc_discovery.doc_discovery_csv import _consolidate_csv_names
+from aryx.pipeline.doc_discovery.doc_discovery_fk import (
     _detect_fk_links,
     _detect_fk_links_workspace,
     _detect_script_data_flow_links,
 )
-from aryx.pipeline.doc_discovery_persist import _persist_tabular_sources
-from aryx.pipeline.doc_discovery_types import _infer_type, _singular, _stem_type
-from aryx.pipeline.doc_discovery_xlsx import _sheet_slug, _xlsx_to_csvs
-from aryx.pipeline.doc_discovery_xml import _xml_to_csvs
+from aryx.pipeline.doc_discovery.doc_discovery_persist import _persist_tabular_sources
+from aryx.pipeline.doc_discovery.doc_discovery_types import _infer_type, _singular, _stem_type
+from aryx.pipeline.doc_discovery.doc_discovery_xlsx import _sheet_slug, _xlsx_to_csvs
+from aryx.pipeline.doc_discovery.doc_discovery_xml import _xml_to_csvs
 from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore

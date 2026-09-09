@@ -113,7 +113,7 @@ class PostgresCpqRdb:
         Used to discover ingested Data Table CSVs by CONTENT (column shape)
         rather than by a hardcoded name — a CSV's ontology_type is whatever
         the ingestion pipeline derived from its filename (see
-        aryx.pipeline.doc_discovery._stem_type), which varies per upload and
+        aryx.pipeline.doc_discovery.doc_discovery._stem_type), which varies per upload and
         is never assumed here.
         """
         types: list[str] = []

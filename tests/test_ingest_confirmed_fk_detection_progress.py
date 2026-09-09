@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline.doc_discovery import ingest_confirmed
+from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
 
 
 def _csv_plan(filename: str, otype: str) -> dict:
@@ -35,16 +35,16 @@ def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=No
         if detect_dynamic_fk_links_impl is not None
         else {"return_value": []}
     )
-    with patch("aryx.pipeline.doc_discovery.get_settings") as mock_settings, \
-         patch("aryx.pipeline.doc_discovery.DatasourceStore", return_value=MagicMock()), \
-         patch("aryx.pipeline.doc_discovery.run_pipeline"), \
-         patch("aryx.pipeline.doc_discovery.OntologyStore", return_value=MagicMock()), \
-         patch("aryx.pipeline.doc_discovery._detect_fk_links", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._detect_script_data_flow_links", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._detect_fk_links_workspace", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._persist_tabular_sources"), \
-         patch("aryx.pipeline.doc_discovery.restore_generic_source_entry"), \
-         patch("aryx.pipeline.doc_discovery.detect_dynamic_fk_links", **dfk_kwargs):
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings") as mock_settings, \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.DatasourceStore", return_value=MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.run_pipeline"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.OntologyStore", return_value=MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links_workspace", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._persist_tabular_sources"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.restore_generic_source_entry"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.detect_dynamic_fk_links", **dfk_kwargs):
         settings_mock = MagicMock()
         settings_mock.rdb_dsn = "postgresql://x"
         settings_mock.graph_url = "redis://x"

@@ -3,8 +3,8 @@ import csv
 import io
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline import doc_discovery
-from aryx.pipeline.doc_discovery import _xml_to_csvs, ingest_confirmed
+from aryx.pipeline.doc_discovery import doc_discovery
+from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs, ingest_confirmed
 
 
 def _rows(data: bytes) -> list[dict]:
@@ -105,10 +105,10 @@ def test_xml_derived_plans_get_text_match_key():
     mock_settings.embed_dim = 1536
 
     # _infer_type would normally return ["name"] as fallback — the override must win.
-    with patch("aryx.pipeline.doc_discovery.get_settings", return_value=mock_settings), \
-         patch("aryx.pipeline.doc_discovery._infer_type",
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings", return_value=mock_settings), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._infer_type",
                return_value={"ontology_type": "Product", "match_keys": ["name"]}):
-        from aryx.pipeline.doc_discovery import read_files
+        from aryx.pipeline.doc_discovery.doc_discovery import read_files
         result = read_files(
             doc_paths=[],
             tabular=[(xml, "catalogue.xml")],

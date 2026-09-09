@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from aryx.config import get_settings
-    from aryx.pipeline.doc_discovery import _xml_to_csvs
+    from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("xml_file", help="Source XML file the workspace was ingested from")
