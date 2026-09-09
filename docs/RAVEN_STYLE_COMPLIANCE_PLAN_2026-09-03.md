@@ -1698,6 +1698,116 @@ module-alias imports before moving, one cluster = one commit, lazy
 `__getattr__` re-exports in every new `__init__.py` from the start (no
 retrofit needed this time, learned from the `api/` side).
 
+### Phase 8a `src/aryx/cpq/` side complete (2026-09-09)
+
+All 17 planned clusters done, one commit each: `bml/` (9), `bom_gate/`
+(6), `rdb/` (4), `intent_schema/` (4), `intent_queue/` (3), `payload/`
+(8), `constraint_rules/` (5), `value_rules/` (9), `rules_loop/` (5),
+`session_guard/` (4), `product_config/` (8), `data_table/` (10, excludes
+the pre-existing `data_table_bridge/`), `country/` (4), `rule_export/`
+(3), `rule_trace/` (3), `pending_scope/` (4), `intent_gateway/` (4,
+handled last per the risk flag) — **78 files moved**.
+
+Recurring pattern found in several clusters: a short module sharing its
+exact name with the destination package (`bml.py` → `bml/`, `bom_gate.py`
+→ `bom_gate/`, `rdb.py` → `rdb/`, `constraint_rules.py`, `rules_loop.py`,
+`rule_export.py`, `rule_trace.py`) is a literal string prefix of its own
+siblings — running that module's sed replacement *after* the longer
+sibling names re-matches the already-inserted package prefix, producing
+`aryx.cpq.bml.bml.bml_X`. Fixed reactively the first time (`bml/`), then
+applied proactively (process the short name's collapse-fix immediately)
+for every cluster after.
+
+Also caught and fixed a second real gap: `benchmarks/cpq_intent/
+run_bench.py` and `run_regression.py`'s custom `_load_mod()` helper loads
+CPQ modules by hardcoded relative file path (to dodge `aryx.cpq.__init__`
+pulling in engine/psycopg) — these path strings are invisible to a
+grep-based coupling analysis since they're not Python import statements.
+4 earlier clusters (`intent_schema/`, `intent_queue/`, `session_guard/`,
+`pending_scope/`) left stale paths there, caught only when
+`test_cpq_regression_suite.py` started failing during the
+`intent_gateway/` cluster. Fixed the stale paths, and a deeper bug the
+fix exposed: `_load_mod`'s fake namespace-parent stand-ins (plain
+`types.ModuleType`, no `__path__`) can't resolve a moved module's own
+internal sibling imports — fixed by giving each fake parent a real
+`__path__` pointing at its actual directory.
+
+### Phase 8a `src/aryx/pipeline/` cluster complete (2026-09-09)
+
+5 clusters, one commit each: `doc_discovery/` (7), `ingest_validation/`
+(4), `enrich/` (5), `dimension_link/` (3), `dynamic_fk/` (2) — **21 files
+moved**. `doc_discovery/`'s move carried ~19 dotted-path whitebox-patch
+occurrences across 11 names in 3 test files (all fixed); `enrich/` and
+`dimension_link/` each carried real dotted-path patches too
+(`infer_relationship`, `get_settings`), all retargeted successfully.
+Remaining pipeline files (`clean*.py`, `orchestrate.py`, `run.py`,
+`stages.py`, `tag.py`, `pii.py`, `embed.py`, `profile.py`,
+`schema_agent.py`, `fk_edges.py`, `cooccurrence_link.py`,
+`value_normalize.py`) stay flat as planned — each is a standalone
+concern, no multi-file cluster to group.
+
+### Phase 8a `src/aryx/` top-level clusters complete (2026-09-09)
+
+`config/` (12 files), `llm/` (10 files), `source/` (6 files), plus two
+more the user asked to fold in afterward: `workspaces/` (2 files: `workspaces_crud.py`,
+`workspaces_partitions.py`) and `project/` (2 files: `project_full.py`,
+`project_incremental.py`) — **32 files moved total**.
+
+**Real design correction discovered mid-move**, applying to `config/`,
+`llm/`, `state/` (cpq/), `workspaces/`, and `project/` alike: the doc's
+original plan assumed `config.py` (singular) stayed a separate, untouched
+file alongside the new `config/` package — this is impossible. A package
+directory and a module file cannot share the same import name
+(`aryx.config` must resolve to exactly one of them; confirmed empirically
+via `ModuleNotFoundError`/`ImportError` the first time this was tried).
+Every one of these 5 shims (`config.py`, `llm.py`, `state.py`,
+`workspaces.py`, `project.py`) was itself a Phase 2 re-export hub — fixed
+by merging the shim's content into the new package's `__init__.py`
+instead of leaving it flat, which is zero-behavior-change for every
+external caller (a package's `__init__.py` namespace behaves identically
+to a module's for every import form in use: plain `from X import Y`,
+`import X as alias`, and dotted whitebox-patch strings). `state.py` had
+the largest blast radius of the session by far — 247 files reference
+`aryx.cpq.state`, but 245 of them needed zero changes since the
+package-root import path stayed valid; only 2 test files that bypassed
+the shim to import `state_rules` directly needed a path fix.
+
+Also traced the session's recurring `datetime.UTC`/Python-3.10 collection
+error to its true root during the `source/` move:
+`source_catalog_upsert.py`'s own `from datetime import UTC, datetime` —
+present unchanged since before this session (Python 3.10 lacks
+`datetime.UTC`, a 3.11 addition). Out of scope for a folder-restructuring
+commit; a real fix (swap to `timezone.utc`, or bump the environment) is a
+separate, deliberate follow-up.
+
+**Known follow-up, deliberately left as-is per the user's explicit
+choice:** `tests/test_oci_backends.py` still has one stale
+`from aryx.llm_providers import` line (from the `llm/` move) — Raven's
+secret scanner blocks any commit touching that file, flagging 3
+pre-existing fixture lines (a fake test password, a truncated placeholder
+RSA key) as hardcoded secrets. The global rules forbid overriding that
+guard even with authorization, so this file was excluded from the `llm/`
+commit and left broken for anyone who runs it directly.
+
+**Process lesson reconfirmed** (4th occurrence this session, after
+`rest_ingest/`, `ask_llm/`, `ask_pending_clarify/`): editing a file with
+`sed` *after* `git mv` already staged it requires an explicit follow-up
+`git add` — `git mv`'s auto-staged snapshot goes stale the moment the
+file is edited again, and a pre-commit verification that reads from the
+working tree (not the index) will pass even when the actual staged
+content is broken. The `project/` cluster's first commit (`0527470`)
+shipped this exact bug — both internal imports still pointed at the
+deleted flat `project_full.py`/`project_incremental.py` modules — caught
+only via a disposable `git worktree` check of the pushed HEAD, fixed with
+a follow-up commit (`98d0cad`), then re-verified via a second worktree
+check before pushing again.
+
+This closes 8a's `src/aryx/` top-level scope. `src/aryx/cpq/` still has
+no other flat file sharing a name with an existing package after this
+round — remaining flat files (`engine.py`, `logging_context.py`,
+`telemetry.py`, `layout_source.py`, `catalog_hints*.py`, etc.) are
+confirmed genuine singleton concerns, not missed clusters.
+
 ---
 
 ## 8. How to reproduce or re-run this scan
