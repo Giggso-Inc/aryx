@@ -12487,12 +12487,12 @@
       "_format_candidates_for_prompt"
     ],
     [
-      "src/aryx/cpq/intent_queue.py",
+      "src/aryx/cpq/intent_queue/intent_queue.py",
       107,
       "<if>"
     ],
     [
-      "src/aryx/cpq/intent_queue.py",
+      "src/aryx/cpq/intent_queue/intent_queue.py",
       144,
       "audit_intent_conservation"
     ],

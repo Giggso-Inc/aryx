@@ -7,7 +7,7 @@
 - Unresolved-turn counter (max 5 → offer deterministic guided mode).
 - Conversational orphan-question invariant.
 
-Intent queue / conservation lives in ``aryx.cpq.intent_queue`` (re-exported
+Intent queue / conservation lives in ``aryx.cpq.intent_queue.intent_queue`` (re-exported
 here for call-site stability).
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), this module
@@ -20,7 +20,7 @@ split was purely mechanical.
 """
 from __future__ import annotations
 
-from aryx.cpq.intent_queue import (  # noqa: F401 — re-export public API
+from aryx.cpq.intent_queue.intent_queue import (  # noqa: F401 — re-export public API
     INTENT_QUEUE_CAP,
     IntentAuditResult,
     audit_intent_conservation,

@@ -8,7 +8,7 @@ Keeps session_guard under the style line cap while owning:
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `intent_queue_ops.py` (queue enqueue/pop/drain/clear) and
 `intent_queue_notices.py` (user-visible notices), both re-imported here.
-Zero whitebox test patches exist anywhere against `aryx.cpq.intent_queue.*`
+Zero whitebox test patches exist anywhere against `aryx.cpq.intent_queue.intent_queue.*`
 (confirmed via grep), so the split was purely mechanical.
 `intent_dropped_count`/`reset_intent_dropped_count`/
 `audit_intent_conservation` stay together here since they share the
@@ -20,8 +20,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from aryx.cpq.intent_queue_notices import format_dropped_intent_notice, format_queue_overflow_notice
-from aryx.cpq.intent_queue_ops import (
+from aryx.cpq.intent_queue.intent_queue_notices import format_dropped_intent_notice, format_queue_overflow_notice
+from aryx.cpq.intent_queue.intent_queue_ops import (
     clear_queue_vn,
     drain_intent_queue_into_pending,
     enqueue_intent_targets,
@@ -29,7 +29,7 @@ from aryx.cpq.intent_queue_ops import (
 )
 from aryx.cpq.state import INTENT_QUEUE_CAP, CpqSession
 
-# Re-export for `from aryx.cpq.intent_queue import INTENT_QUEUE_CAP`
+# Re-export for `from aryx.cpq.intent_queue.intent_queue import INTENT_QUEUE_CAP`
 __all__ = [
     "INTENT_QUEUE_CAP",
     "IntentAuditResult",
