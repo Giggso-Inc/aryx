@@ -20,8 +20,8 @@ from typing import Any
 from aryx.cpq.country_helpers import detect_country_change_request
 
 from aryx.api.ask_build_country_change_response import _build_country_change_response
-from aryx.api.ask_llm_confirm_extract_country import _llm_confirm_and_extract_country
-from aryx.api.ask_llm_confirm_extract_quantity import _build_llm_call_failed_response
+from aryx.api.ask_llm.ask_llm_confirm_extract_country import _llm_confirm_and_extract_country
+from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _build_llm_call_failed_response
 
 
 def _preamble_country_change_gate(

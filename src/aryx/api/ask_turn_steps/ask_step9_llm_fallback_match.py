@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_module
+from aryx.api.ask_llm import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_module
 
 
 def _step9_llm_fallback_match(

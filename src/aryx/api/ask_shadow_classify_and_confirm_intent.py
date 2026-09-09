@@ -22,7 +22,7 @@ from typing import Any
 from aryx.cpq.intent_schema import IntentCategory
 
 from aryx.api.ask_target_description import _resolve_target_description
-from aryx.api import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
+from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 
 
 def _shadow_classify_cpq_turn(

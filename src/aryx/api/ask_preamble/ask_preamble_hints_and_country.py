@@ -24,7 +24,7 @@ from typing import Any
 
 from aryx.cpq.intent_gateway import soft_quote_heuristic
 
-from aryx.api.ask_llm_extract_quantity_and_country_reply import _llm_resolve_bare_country_reply
+from aryx.api.ask_llm.ask_llm_extract_quantity_and_country_reply import _llm_resolve_bare_country_reply
 
 
 def _preamble_extract_hints_and_resolve_country(

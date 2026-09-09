@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from aryx.api.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
+from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api import ask_finish_cpq_result as _ask_finish_cpq_result_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module

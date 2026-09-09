@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hints
+from aryx.api.ask_llm.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hints
 from aryx.api.ask_relevant_intent_candidates import _relevant_intent_candidates
 from aryx.api.ask_turn_steps.ask_step10_recompute_pending import _step10_recompute_pending
 

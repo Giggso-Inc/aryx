@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_llm_resolve_quantity_target import _llm_resolve_quantity_target, _quantity_message_might_name_candidate
+from aryx.api.ask_llm.ask_llm_resolve_quantity_target import _llm_resolve_quantity_target, _quantity_message_might_name_candidate
 
 
 def _preamble_resolve_quantity_target(

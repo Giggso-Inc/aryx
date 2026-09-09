@@ -23,7 +23,7 @@ from aryx.cpq.quantity_patterns import is_valid_product_quantity
 from aryx.cpq.quantity_turn_detection import question_mentions_quantity, quantity_turn_precheck
 
 from aryx.api.ask_core_helpers import _safe_detect_product_mention
-from aryx.api.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
+from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 

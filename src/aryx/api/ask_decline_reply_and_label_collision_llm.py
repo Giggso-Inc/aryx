@@ -19,8 +19,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
-from aryx.api.ask_llm_topic_switch_and_change_decline import _llm_detect_change_decline
+from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
+from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _llm_detect_change_decline
 
 # Cheap pre-filter, gating the LLM fallback below — NOT itself a
 # decline decision. Live regression caught during this fix: without a

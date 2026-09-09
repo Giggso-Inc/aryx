@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope
+from aryx.api.ask_llm.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope
 
 
 def test_in_scope_classification_returns_true():

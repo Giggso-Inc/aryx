@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
+from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 from aryx.cpq.intent_schema import Confidence, IntentCategory
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_llm_intent_core import _llm_classify_intent_core
+from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
 
 
 def _llm_classify_pending_clarify_reply(

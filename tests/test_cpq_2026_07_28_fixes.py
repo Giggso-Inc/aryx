@@ -2311,7 +2311,7 @@ def test_qa_ambiguity_check_asks_clarifying_question_instead_of_answering(monkey
         clarifying_question="Did you mean Hardware Version or Housing?",
         rationale="both plausible",
     )
-    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(result, 40, 8)), \
          patch("aryx.api.ask_standard_pipeline._synthesise") as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
@@ -2334,7 +2334,7 @@ def test_qa_ambiguity_check_falls_back_to_synthesis_when_not_ambiguous(monkeypat
                       session_data=session.to_dict(), history=[])
     result = IntentResult(category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
                            rationale="clear Q&A")
-    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                return_value=(result, 40, 8)), \
          patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Advantage includes 24/7 support.", 20, 15, 0)) as mock_synth:
@@ -2350,7 +2350,7 @@ def test_qa_ambiguity_check_never_calls_the_llm_when_disabled(monkeypatch):
     session = _qa_session()
     req = AskRequest(question="what about the hardware", workspace_id=1,
                       session_data=session.to_dict(), history=[])
-    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal") as mock_classify, \
+    with patch("aryx.api.ask_llm.ask_llm_classify_intent_universal._llm_classify_intent_universal") as mock_classify, \
          patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Here's what the graph shows.", 20, 15, 0)) as mock_synth:
         resp = _handle_cpq_qa(req, session, [], object())
@@ -2441,7 +2441,7 @@ def test_qa_ambiguity_check_failure_falls_back_to_synthesis_safely(monkeypatch):
     session = _qa_session()
     req = AskRequest(question="what about the hardware", workspace_id=1,
                       session_data=session.to_dict(), history=[])
-    with patch("aryx.api.ask_llm_classify_intent_universal._llm_classify_intent_universal",
+    with patch("aryx.api.ask_llm.ask_llm_classify_intent_universal._llm_classify_intent_universal",
                side_effect=RuntimeError("llm unavailable")), \
          patch("aryx.api.ask_standard_pipeline._synthesise",
                return_value=("Fallback answer.", 20, 15, 0)) as mock_synth:

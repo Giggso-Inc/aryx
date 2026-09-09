@@ -366,7 +366,7 @@ def test_list_attributes_question_answers_from_attrs_not_the_graph(monkeypatch):
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ) as mock_detect, \
          patch(
              "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
@@ -400,7 +400,7 @@ def test_list_attributes_question_uses_human_readable_product_name(monkeypatch):
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
         "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
@@ -422,7 +422,7 @@ def test_list_attributes_question_uses_product_hint_when_no_session_product_name
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
         "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
@@ -448,7 +448,7 @@ def test_list_attributes_question_uses_real_quote_state_once_a_quote_exists(monk
         session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
         "aryx.api.ask_attr_text_helpers._build_current_quote_attribute_listing_text",
         return_value="Real quote attributes: ...",
@@ -475,7 +475,7 @@ def test_non_enumeration_options_question_still_uses_the_generic_fallback(monkey
         workspace_id=1, session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=False,
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=False,
     ) as mock_detect, \
          patch("aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text") as mock_build, \
          patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 0, 0, 0)), \
@@ -500,7 +500,7 @@ def test_question_without_any_options_keyword_never_calls_the_llm_classifier(mon
         question="tell me a joke", workspace_id=1, session_data=session.to_dict(),
     )
     with patch(
-        "aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query",
+        "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query",
     ) as mock_detect, \
          patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 0, 0, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
@@ -534,7 +534,7 @@ def test_specific_attribute_question_is_unaffected_by_the_new_matcher(monkeypatc
         question="what are the wireless carrier options",
         workspace_id=1, session_data=session.to_dict(),
     )
-    with patch("aryx.api.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query") as mock_detect:
+    with patch("aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query") as mock_detect:
         result = _handle_cpq_qa(req, session, [attr], reader=object())
 
     mock_detect.assert_not_called()

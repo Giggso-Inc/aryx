@@ -12,7 +12,7 @@ from fastapi import APIRouter  # noqa: E402
 
 from aryx import llm_runtime
 from aryx.api.ask_core_helpers import _validate_workspace
-from aryx.api.ask_llm_usage_and_new_request_detect import _apply_real_llm_usage
+from aryx.api.ask_llm.ask_llm_usage_and_new_request_detect import _apply_real_llm_usage
 from aryx.api.ask_request_models import AskRequest, LlmConfigRequest, Turn  # noqa: E402,F401 — Turn re-exported
 from aryx.api.ask_run_ask import run_ask
 from aryx.api.ask_turn_dispatch import _dispatch_cpq_turn_steps

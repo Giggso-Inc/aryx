@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.api.ask_llm_switch_reply_and_compound_split import _llm_classify_switch_reply
+from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_classify_switch_reply
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_turn_switch.ask_turn_confirm_switch_decline import _handle_confirm_switch_decline
 from aryx.api.ask_turn_country_available_for import _country_available_for

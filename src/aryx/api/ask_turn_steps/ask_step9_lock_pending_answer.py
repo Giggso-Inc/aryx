@@ -31,7 +31,7 @@ from aryx.api.ask_turn_steps.ask_step9_miss_response import (
 )
 from aryx.api.ask_turn_steps.ask_step9_scope_setup import _step9_scope_and_constraint_setup
 
-from aryx.api.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
+from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
 
 
 def _step9_lock_pending_answer(

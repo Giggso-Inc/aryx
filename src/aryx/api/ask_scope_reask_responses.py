@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from aryx.api.ask_llm_classify_scope_reply import _llm_classify_scope_reply
+from aryx.api.ask_llm.ask_llm_classify_scope_reply import _llm_classify_scope_reply
 from aryx.cpq.pending_scope import (
     ScopeResolve,
     format_did_you_mean,

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
-from aryx.api.ask_llm_usage_and_new_request_detect import _pending_reply_looks_like_new_request
+from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
+from aryx.api.ask_llm.ask_llm_usage_and_new_request_detect import _pending_reply_looks_like_new_request
 
 _BARE_REPLY_MAX_WORDS = 6
 
