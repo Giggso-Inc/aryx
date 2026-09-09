@@ -1808,6 +1808,60 @@ round — remaining flat files (`engine.py`, `logging_context.py`,
 `telemetry.py`, `layout_source.py`, `catalog_hints*.py`, etc.) are
 confirmed genuine singleton concerns, not missed clusters.
 
+### Phase 8b `shay_backend/` line-count backlog complete (2026-09-09)
+
+All 6 oversized `shay_backend/` production files from the Phase 8
+audit are now resolved — 2 real file splits, 3 reaffirmed stated
+exceptions, 1 dead-code removal:
+
+- **`scripts/setup_templates.py`** (497 → 137 lines, `9b1335a`): zero
+  importers/tests, invoked only via `python scripts/setup_templates.py`
+  — can't become a package without breaking that CLI contract. Kept the
+  original filename as a thin entrypoint; extracted
+  `setup_templates_content.py` (template dir + sample-file content),
+  `setup_templates_db.py` (engine/table/record helpers),
+  `setup_templates_docs.py` (usage printout). Added `scripts/__init__.py`
+  (previously absent — required so the entrypoint's dotted
+  `from scripts.X import ...` imports resolve, since its own
+  `sys.path.insert` targets `shay_backend/`, not `scripts/`).
+- **`app/core/config.py`** (444 lines): already carried a Phase 5a stated
+  exception (Pydantic MRO/field-resolution risk from splitting
+  `Settings`, independent of any line-count target) — reaffirmed, no
+  change.
+- **`app/services/vault_data_builder/credentials.py`** (379 lines):
+  already carried a Phase 5a stated exception (`build_vault_credentials`
+  stays one function — branches share one signature/contract) —
+  reaffirmed, no change.
+- **`scripts/migration_examples.py`** (282 → 119 lines, `e3107a6`): same
+  shape as `setup_templates.py` — zero importers, standalone CLI script.
+  Split into `migration_examples_scenarios.py` (the four scenario
+  walkthroughs) and `migration_examples_docs.py` (reference
+  command/CI-CD printouts); original top-level imports preserved
+  unchanged in the entrypoint to avoid any import-time behavior change.
+- **`app/services/vault_data_builder/metadata.py`** (265 lines): already
+  carried a Phase 5a stated exception mirroring `credentials.py`'s
+  reasoning — reaffirmed, no change.
+- **`app/schemas/__init__.py`** (256 → 138 lines, `9b43ad2`): pure
+  re-export hub; grep confirmed zero callers import from it directly or
+  via `import *` (every real caller imports from the specific
+  submodule), and no ruff/flake8 F401 config needs the list for
+  lint-suppression. Asked the user how to handle the dead 116-line
+  `__all__` (per the no-deletion-without-approval rule) — chose to
+  remove it; the 13 `from .X import (...)` re-export blocks are
+  untouched.
+
+Each commit's actual committed content (not just the working tree) was
+verified via a disposable `git worktree add --detach HEAD` checkout
+before pushing, per the process lesson from the `project/` incident
+above.
+
+Remaining Phase 8 backlog: `apps/web/`'s 7 oversized files (no automated
+test coverage — manual smoke-test required) and `src/aryx/`'s 24
+oversized files (3 — `cpq/intent_gateway/intent_gateway.py`,
+`api/data_api.py`, `cpq/bml/bml.py` — already carry stated exceptions
+against the stricter 150-line bar, to be re-evaluated against the
+looser 250-line bar before assuming further splitting is needed).
+
 ---
 
 ## 8. How to reproduce or re-run this scan
