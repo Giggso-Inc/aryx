@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api.ask_model_leaf_resolve import _resolve_model_leaf
+from aryx.api.ask_model_leaf.ask_model_leaf_resolve import _resolve_model_leaf
 from aryx.api.ask_turn_steps.ask_step2_anchor_gates import _step2_resolve_product_and_gates
 from aryx.api.ask_turn_steps.ask_step2_catalog_hints import _step2_catalog_hints_and_negation
 from aryx.api.ask_turn_steps.ask_step2_pending_change_no_value import _resolve_pending_change_no_value

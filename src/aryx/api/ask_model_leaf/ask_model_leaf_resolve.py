@@ -19,9 +19,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
-from aryx.api.ask_model_leaf_norm import _norm_leaf
-from aryx.api.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
+from aryx.api.ask_model_leaf.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
+from aryx.api.ask_model_leaf.ask_model_leaf_norm import _norm_leaf
+from aryx.api.ask_model_leaf.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
 from aryx.cpq.pending_scope import clear_pending_scope
 
 
