@@ -7812,43 +7812,43 @@
       "create_example_model"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      69,
-      "get_database_engine"
-    ],
-    [
-      "shay_backend/scripts/setup_templates.py",
-      83,
+      "shay_backend/scripts/setup_templates_content.py",
+      14,
       "setup_template_directory"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      202,
+      "shay_backend/scripts/setup_templates_content.py",
+      133,
       "setup_template_directory"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      298,
+      "shay_backend/scripts/setup_templates_content.py",
+      136,
       "test_template_files"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      302,
+      "shay_backend/scripts/setup_templates_content.py",
+      140,
       "<try>"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      331,
+      "shay_backend/scripts/setup_templates_db.py",
+      15,
+      "get_database_engine"
+    ],
+    [
+      "shay_backend/scripts/setup_templates_db.py",
+      122,
       "create_sample_template_record"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      335,
+      "shay_backend/scripts/setup_templates_db.py",
+      126,
       "<try>"
     ],
     [
-      "shay_backend/scripts/setup_templates.py",
-      387,
+      "shay_backend/scripts/setup_templates_docs.py",
+      10,
       "show_usage_examples"
     ],
     [
