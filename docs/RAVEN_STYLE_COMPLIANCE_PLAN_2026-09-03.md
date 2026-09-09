@@ -1637,6 +1637,58 @@ Once Phases 1–2 close the backlog for everything except the two mega-files:
 2. Any new file in `src/aryx/` starts under 150 lines and stays there by construction, since the hook blocks non-compliant commits going forward — the backlog in this plan should not recur once Phases 1–2 are done.
 3. Re-run the full scan (§8) quarterly (or after any large merge, the way this plan followed the `dev-rv-msi` → `dev_oci` merge) to catch drift early, since a large feature-branch merge is exactly the kind of event that reintroduces a backlog.
 
+### Phase 7 item 1 verified — **enforcement is NOT actually wired** (2026-09-09)
+
+This check was flagged twice in this doc (line 26, line 477 — "worth
+five minutes to check... before investing weeks in Phases 2–6") as the
+one thing that should happen *before* any splitting work started. It
+never was — until now, after the fact. The result changes the framing
+of everything Phases 1–8 did:
+
+**Read the real `.git/hooks/pre-commit`** (not the `style-enforcer`
+agent's own prompt file, which describes itself as "called by
+pre-commit hook... all style violations become hard blocks" — that's
+the agent's own claim about itself, not a wired invocation). The
+actual hook runs, in order: `secret-scan.py` (blocking),
+`guardrail-scan-gate.py` (non-blocking), `decision-map-gate.py`
+(blocking, but only on NEW un-baselined findings — a different check
+entirely, about decision-log coverage not line count),
+`contribute-precommit.py` (non-blocking), an advisory full-repo
+decision-map report, and `asset-inventory-commit.py`. **No line-count,
+naming-convention, docstring, or type-hint check appears anywhere in
+this chain.** `.raven/manifest.json` itself has no `style` section, no
+`max_lines`, no `enforce_at` key at all — the config the `style-
+enforcer` agent's prompt file says it reads from doesn't exist in this
+repo's manifest.
+
+**Empirically confirmed**: on a throwaway branch, committed a
+deliberately oversized 401-line dummy file (`src/aryx/_raven_hook_test_
+dummy.py`, zero docstrings, zero type hints) with the real pre-commit
+hook active. **The commit succeeded with no line-count-related output
+at all** — only the secret-scan/decision-map-gate/asset-inventory
+steps ran, all passed trivially since the dummy file has no secrets
+and no decision-log-relevant symbols. Branch and dummy file deleted
+immediately after (never pushed, never merged).
+
+**What this means for Phases 1–8's work**: every split performed in
+this plan was still the right call on its own merits (readability,
+whitebox-patch hygiene, reduced blast radius per file) — none of that
+value depended on hook enforcement. But the premise that "the backlog
+should not recur once Phases 1–2 are done" (item 2 above) is currently
+**false**: a new 2,000-line file could be committed to this repo today
+with zero resistance from tooling. The manifest's `style-enforcer`
+agent only fires when a Claude Code session proactively invokes it
+during coding (advisory) — there is no enforcement layer independent
+of an AI session choosing to check.
+
+**Not yet done, now the actual open item**: either (a) wire a real
+line-count check into `.git/hooks/pre-commit` (a small script, same
+shape as `secret-scan.py`, checking staged files against the 150/250
+thresholds and exiting non-zero over the limit), or (b) explicitly
+decide enforcement stays advisory-only and drop the "stays under 150
+by construction" claim from this plan. This is a judgment call for the
+user, not something to silently pick either way.
+
 ### Phase 8 — Remaining oversized-file backlog + `src/aryx/api/`/`src/aryx/cpq/` folder restructuring (planned 2026-09-09, not yet started)
 
 A fresh line-count audit (2026-09-09, excluding test files) found the backlog below still remains, on top of everything Phases 1–7 already closed. Target: **≤150 lines, with ≤250 as a fallback floor** (not a new permanent target — 150 is still preferred; a file landing between 150–250 after a genuine best-effort split is acceptable, matching `cpq/engine.py`'s existing precedent, rather than forcing an arbitrary further cut).
