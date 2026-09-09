@@ -16,7 +16,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from aryx.api.admin_api import _local_broker
-from aryx.api.file_ingest_limits import _DATA_EXTS, _DOC_EXTS
+from aryx.api.file_ingest.file_ingest_limits import _DATA_EXTS, _DOC_EXTS
 from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector

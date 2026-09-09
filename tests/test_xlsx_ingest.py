@@ -153,7 +153,7 @@ def two_sheet_xlsx_bytes():
 def test_run_files_xlsx_branch_ingests_one_sheet_per_dataset(two_sheet_xlsx_bytes, monkeypatch):
     """Each worksheet must go through its own run_pipeline() call, exactly
     like the existing multi-file-CSV and multi-type-XML paths."""
-    import aryx.api.file_ingest_run as m
+    import aryx.api.file_ingest.file_ingest_run as m
 
     mock_cfg = MagicMock()
     mock_cfg.rdb_dsn = "postgresql://x"
@@ -196,7 +196,7 @@ def test_run_files_xlsx_branch_ingests_one_sheet_per_dataset(two_sheet_xlsx_byte
 def test_run_files_xlsx_branch_auto_detects_cross_sheet_fk(monkeypatch):
     """Customers + Orders sharing a customer_id column must produce an
     auto-detected FK link, same as two related CSV files would."""
-    import aryx.api.file_ingest_run as m
+    import aryx.api.file_ingest.file_ingest_run as m
 
     data = _workbook_bytes({
         "Customers": [["customer_id", "name"], [1, "Acme"]],
@@ -238,7 +238,7 @@ def test_run_files_xlsx_skips_hidden_sheet_end_to_end(monkeypatch):
     run_pipeline() call — the hidden sheet never reaches the pipeline at
     all. (A workbook can't have ALL sheets hidden — Excel itself forbids a
     workbook with zero visible sheets — so this is the real-world case.)"""
-    import aryx.api.file_ingest_run as m
+    import aryx.api.file_ingest.file_ingest_run as m
 
     data = _workbook_bytes(
         {"Visible": [["id"], [1]], "Secret": [["id"], [2]]},
@@ -285,7 +285,7 @@ def test_run_files_detects_fk_link_across_two_separate_workbooks(monkeypatch):
     nodes: Material.xlsx (a lookup workbook) and Transactions.xlsx (a separate
     workbook) share a customer_id-style column. Column-name FK detection must
     see both workbooks together, not just each workbook's own sheets."""
-    import aryx.api.file_ingest_run as m
+    import aryx.api.file_ingest.file_ingest_run as m
 
     material_wb = _workbook_bytes({
         "Materials": [["id", "description"], [1, "Widget"], [2, "Gadget"]],
@@ -335,7 +335,7 @@ def test_run_files_dynamic_stage_also_spans_multiple_workbooks(monkeypatch):
     column-name pass can match (Sheet1.code vs Sheet1.material_ref) — only
     the dynamic value-overlap + LLM judge stage can find this, and it must
     also run across the whole batch, not per workbook."""
-    import aryx.api.file_ingest_run as m
+    import aryx.api.file_ingest.file_ingest_run as m
 
     material_wb = _workbook_bytes({
         "Materials": [["code", "description"], ["M1", "Widget"], ["M2", "Gadget"]],

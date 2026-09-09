@@ -11,7 +11,7 @@ lives in `api.file_ingest_run` -- both re-imported here so `main.py`'s
 existing import, `_run_files`'s external callers, and direct imports of the
 helpers keep working unchanged. Whitebox patches on `_run_files`'s OWN
 internal dependencies (DatasourceStore, JobStore, run_pipeline, etc.) were
-retargeted to `aryx.api.file_ingest_run.*` in the affected tests, since those
+retargeted to `aryx.api.file_ingest.file_ingest_run.*` in the affected tests, since those
 calls now resolve via that module's namespace, not this one. The executor
 singleton (`_get_executor`/`shutdown_executor`) stays in this module because
 its own `get_settings()` call is patched via THIS module's namespace in
@@ -29,8 +29,8 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from aryx.api.file_ingest_limits import _ALL, _FK_REQUIRED_KEYS, _MAX_FILE, _MAX_FILES, _MAX_TOTAL
-from aryx.api.file_ingest_run import _chunk_csv_bytes, _make_should_stop, _run_files, _save_tmp
+from aryx.api.file_ingest.file_ingest_limits import _ALL, _FK_REQUIRED_KEYS, _MAX_FILE, _MAX_FILES, _MAX_TOTAL
+from aryx.api.file_ingest.file_ingest_run import _chunk_csv_bytes, _make_should_stop, _run_files, _save_tmp
 from aryx.config import get_settings
 from aryx.store.job_store import JobStore
 
