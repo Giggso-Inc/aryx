@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_preamble_run import _preamble_run
+from aryx.api.ask_preamble.ask_preamble_run import _preamble_run
 from aryx.api.ask_step1_product_anchor import _step1_resolve_product_anchor
 from aryx.api.ask_step2_resolve_and_load import _step2_resolve_and_load
 from aryx.api.ask_step678_review_status import _handle_review_status_routing

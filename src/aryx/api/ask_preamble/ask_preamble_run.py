@@ -15,14 +15,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_preamble_country_change import _preamble_country_change_gate
-from aryx.api.ask_preamble_hints_and_country import _preamble_extract_hints_and_resolve_country
-from aryx.api.ask_preamble_quantity_background import (
+from aryx.api.ask_preamble.ask_preamble_country_change import _preamble_country_change_gate
+from aryx.api.ask_preamble.ask_preamble_hints_and_country import _preamble_extract_hints_and_resolve_country
+from aryx.api.ask_preamble.ask_preamble_quantity_background import (
     _preamble_capture_quantity_background,
     _preamble_quantity_no_quote_gate,
 )
-from aryx.api.ask_preamble_quantity_gate import _preamble_dedicated_quantity_gate
-from aryx.api.ask_preamble_session_and_shortcuts import (
+from aryx.api.ask_preamble.ask_preamble_quantity_gate import _preamble_dedicated_quantity_gate
+from aryx.api.ask_preamble.ask_preamble_session_and_shortcuts import (
     _preamble_init_session,
     _preamble_shortcut_gates,
     _preamble_undo_gate,

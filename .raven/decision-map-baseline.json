@@ -9087,77 +9087,77 @@
       "resolve_hard_excluded_attr"
     ],
     [
-      "src/aryx/api/ask_preamble_hints_and_country.py",
+      "src/aryx/api/ask_preamble/ask_preamble_hints_and_country.py",
       30,
       "_preamble_extract_hints_and_resolve_country"
     ],
     [
-      "src/aryx/api/ask_preamble_hints_and_country.py",
+      "src/aryx/api/ask_preamble/ask_preamble_hints_and_country.py",
       80,
       "_preamble_extract_hints_and_resolve_country"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_background.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_background.py",
       55,
       "_preamble_quantity_no_quote_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_background.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_background.py",
       80,
       "_preamble_quantity_no_quote_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_gate.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_gate.py",
       31,
       "_preamble_dedicated_quantity_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_gate.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_gate.py",
       114,
       "_preamble_dedicated_quantity_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_target_resolve.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_target_resolve.py",
       26,
       "_preamble_resolve_quantity_target"
     ],
     [
-      "src/aryx/api/ask_preamble_quantity_target_resolve.py",
+      "src/aryx/api/ask_preamble/ask_preamble_quantity_target_resolve.py",
       81,
       "_preamble_resolve_quantity_target"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       36,
       "_preamble_init_session"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       58,
       "_preamble_init_session"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       61,
       "_preamble_undo_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       77,
       "<if>"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       82,
       "_preamble_undo_gate"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       90,
       "_preamble_shortcut_gates"
     ],
     [
-      "src/aryx/api/ask_preamble_session_and_shortcuts.py",
+      "src/aryx/api/ask_preamble/ask_preamble_session_and_shortcuts.py",
       119,
       "_preamble_shortcut_gates"
     ],
