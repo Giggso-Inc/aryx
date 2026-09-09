@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
-from aryx.api.ask_label_collision_detect_and_compose import _DECLINE_CHANGE_RE
+from aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm import _is_decline_reply
+from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _DECLINE_CHANGE_RE
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_attr_recompute.ask_cascade_apply_value import _apply_cascade_new_value
 from aryx.api.ask_attr_recompute.ask_cascade_invalidate_dependents import _invalidate_cascade_dependents

@@ -8277,16 +8277,6 @@
       "_reask_confirmed_data_table_conflict"
     ],
     [
-      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
-      61,
-      "_llm_resolve_label_collision"
-    ],
-    [
-      "src/aryx/api/ask_decline_reply_and_label_collision_llm.py",
-      99,
-      "_llm_resolve_label_collision"
-    ],
-    [
       "src/aryx/api/ask_dispatch/ask_dispatch_ambiguous_and_scope.py",
       19,
       "_dispatch_ambiguous"
@@ -8682,32 +8672,42 @@
       "_handle_decline"
     ],
     [
-      "src/aryx/api/ask_label_collision_detect_and_compose.py",
+      "src/aryx/api/ask_label_collision/ask_decline_reply_and_label_collision_llm.py",
+      61,
+      "_llm_resolve_label_collision"
+    ],
+    [
+      "src/aryx/api/ask_label_collision/ask_decline_reply_and_label_collision_llm.py",
+      99,
+      "_llm_resolve_label_collision"
+    ],
+    [
+      "src/aryx/api/ask_label_collision/ask_label_collision_detect_and_compose.py",
       71,
       "_compose_disambiguation_question"
     ],
     [
-      "src/aryx/api/ask_label_collision_detect_and_compose.py",
+      "src/aryx/api/ask_label_collision/ask_label_collision_detect_and_compose.py",
       105,
       "<try>"
     ],
     [
-      "src/aryx/api/ask_label_collision_prompt_and_narrow.py",
+      "src/aryx/api/ask_label_collision/ask_label_collision_prompt_and_narrow.py",
       27,
       "_label_collision_prompt"
     ],
     [
-      "src/aryx/api/ask_label_collision_prompt_and_narrow.py",
+      "src/aryx/api/ask_label_collision/ask_label_collision_prompt_and_narrow.py",
       54,
       "_label_collision_prompt"
     ],
     [
-      "src/aryx/api/ask_label_collision_prompt_and_narrow.py",
+      "src/aryx/api/ask_label_collision/ask_label_collision_prompt_and_narrow.py",
       63,
       "_narrow_label_collision"
     ],
     [
-      "src/aryx/api/ask_label_collision_prompt_and_narrow.py",
+      "src/aryx/api/ask_label_collision/ask_label_collision_prompt_and_narrow.py",
       90,
       "_narrow_label_collision"
     ],

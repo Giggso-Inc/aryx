@@ -17,7 +17,7 @@ from typing import Any
 
 from aryx.api.ask_intent_queue_text_helpers import _queue_followup_note
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
+from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 
 

@@ -13,7 +13,7 @@ only a sibling the engine would actually ask next counts as a collision.
 """
 from __future__ import annotations
 
-from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
+from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _label_collision_for
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 

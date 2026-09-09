@@ -157,7 +157,7 @@ def test_unrelated_reply_does_not_misbind():
     cands = [_hw_version(), _system_key()]
     session = _session()
     with patch(
-        "aryx.api.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision",
+        "aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision",
         return_value=None,
     ):
         status, vn = _match_pending_clarify_reply(
@@ -238,7 +238,7 @@ def test_pending_clarify_miss_reprompts_without_binding():
         session_data=session.to_dict(),
     )
     with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
-        "aryx.api.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision", return_value=None,
+        "aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision", return_value=None,
     ):
         resp = _handle_pending_clarify_turn(
             req, session, attrs,

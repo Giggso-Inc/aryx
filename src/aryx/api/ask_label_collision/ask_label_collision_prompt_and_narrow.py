@@ -21,7 +21,7 @@ from typing import Any
 
 from aryx.api.ask_catalog.ask_relevant_intent_candidates import _WORD_RE
 
-from aryx.api.ask_label_collision_detect_and_compose import _compose_disambiguation_question
+from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _compose_disambiguation_question
 
 
 def _label_collision_prompt(

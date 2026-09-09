@@ -46,7 +46,7 @@ from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
-from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_test_module
+from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_test_module
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_test_module
 from aryx.api.ask_llm import ask_llm_classify_change_intent as _ask_llm_classify_change_intent_test_module
 from aryx.api.ask_llm import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_test_module

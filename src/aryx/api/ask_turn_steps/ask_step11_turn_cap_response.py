@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_label_collision_detect_and_compose import _label_collision_for
-from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
+from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _label_collision_for
+from aryx.api.ask_label_collision.ask_label_collision_prompt_and_narrow import _label_collision_prompt
 
 
 def _step11_turn_cap_response(
