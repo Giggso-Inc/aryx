@@ -13877,22 +13877,22 @@
       "discover_mappings"
     ],
     [
-      "src/aryx/project_full.py",
+      "src/aryx/project/project_full.py",
       92,
       "<if>"
     ],
     [
-      "src/aryx/project_full.py",
+      "src/aryx/project/project_full.py",
       112,
       "<if>"
     ],
     [
-      "src/aryx/project_full.py",
+      "src/aryx/project/project_full.py",
       124,
       "<if>"
     ],
     [
-      "src/aryx/project_full.py",
+      "src/aryx/project/project_full.py",
       141,
       "project_graph"
     ],
