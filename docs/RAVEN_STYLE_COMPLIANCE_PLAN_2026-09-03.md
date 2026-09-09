@@ -1630,6 +1630,74 @@ A fresh line-count audit (2026-09-09, excluding test files) found the backlog be
 
 **Not yet started:** neither 8a nor 8b has begun; this section records the confirmed plan only.
 
+### Phase 8a `src/aryx/api/` side complete (2026-09-09)
+
+All 20 planned `src/aryx/api/` clusters done, one commit each, in this order:
+`ask_preamble/` (7), `doc_discover/` (3), `rest_ingest/` (3), `file_ingest/` (3),
+`ontology/` (5), `ask_turn_steps/` (37), `ask_turn_switch/` (11), `ask_llm/` (19),
+`ask_pending_clarify/` (9), `ask_handle/` (9), `ask_dispatch/` (9), `ask_qa/` (7),
+`ask_response_building/` (9), `ask_stale_constraint/` (5), `ask_attr_recompute/`
+(17), `ask_model_leaf/` (4), `ask_catalog/` (5), `ask_label_collision/` (3),
+`ask_scope_and_pending/` (5), `ask_gateway/` (4) — **184 files moved total**.
+
+Two process issues surfaced and were fixed:
+- A `git stash push -u`/pop cycle (used to isolate pre-existing test hangs
+  against a clean baseline) twice silently dropped either a freshly-created
+  untracked `__init__.py` or already-staged file deletions, producing an
+  incomplete commit each time (caught via `git ls-files` still tracking a
+  moved-away old path, or `git status`'s leading column showing an unstaged
+  `D`) — fixed with a follow-up commit both times. Mitigation adopted for
+  every cluster after: verify pre-existing hangs via a disposable
+  `git worktree add --detach HEAD` checkout instead of stashing the working
+  tree at all.
+- The eager `from .submodule import (names)` re-export pattern in every
+  package's `__init__.py` caused a real `ImportError` once enough packages
+  existed to complete an import cycle (`ask_dispatch` → `ask_pending_clarify`
+  → `ask_handle` → back to `ask_dispatch`) — entering any one package via a
+  submodule import forces Python to run that package's `__init__.py` first,
+  which eagerly imported every sibling. Fixed by converting every package's
+  `__init__.py` (all 10 existing at the time, plus every one created after)
+  to a PEP 562 lazy `__getattr__` re-export — entering a package no longer
+  loads its siblings, only accessing a specific re-exported name does.
+
+Remaining `src/aryx/api/` files (~52 `.py` files) stay flat at `api/` root
+per the plan, plus the pre-existing `ask_standard_pipeline/` subpackage from
+Phase 4 (left untouched — predates this session's Phase 8a work).
+
+### Phase 8a scope expansion (confirmed with the user 2026-09-09): `pipeline/`, `config/`, `llm/`, `source/`
+
+After `src/aryx/cpq/`'s 17 planned clusters complete, extend the same
+folder-restructuring pattern to:
+- **`src/aryx/pipeline/`** (35 flat files, e.g. `doc_discovery*.py`,
+  `dynamic_fk*.py`, `enrich*.py`, `ingest_validation*.py`, `dimension_link*.py`,
+  `clean*.py`, `orchestrate.py`, `run.py`, `stages.py`, `tag.py`, `pii.py`,
+  `embed.py`, `profile.py`, `schema_agent.py`, `fk_edges.py`,
+  `cooccurrence_link.py`, `value_normalize.py`) — cluster by concern the same
+  way the `api/` and `cpq/` sides were (grep-before-move, one commit per
+  cluster); exact clusters to be worked out when this starts, following the
+  established discipline.
+- **`src/aryx/config_*.py` → `src/aryx/config/`** (12 files: `config_core.py`,
+  `config_relate.py`, `config_resolution.py`, `config_graph.py`,
+  `config_ontology.py`, `config_cpq_intent.py`, `config_oci.py`,
+  `config_ingest.py`, `config_llm.py`, `config_documents.py`,
+  `config_dimension.py`, `config_fk_detection.py`).
+- **`src/aryx/llm_*.py` → `src/aryx/llm/`** (10 files: `llm_providers_anthropic.py`,
+  `llm_providers_oci.py`, `llm_runtime.py`, `llm_normalize.py`,
+  `llm_oci_route.py`, `llm_providers.py`, `llm_text.py`,
+  `llm_runtime_state.py`, `llm_json.py`, `llm_call_log.py`).
+- **`src/aryx/source_*.py` → `src/aryx/source/`** (6 files: `source_catalog_meta.py`,
+  `source_metrics.py`, `source_catalog_upsert.py`, `source_catalog_detail.py`,
+  `source_catalog_delete_download.py`, `source_catalog.py`).
+
+Note `src/aryx/config.py` (singular, the `get_settings()`/`Settings` module)
+is a *separate* file from the `config_*.py` prefix group above and is
+**not** part of this move — only the `config_*` prefixed files relocate.
+Same monkeypatch-safety discipline applies: grep every moved name for
+`patch(...)`/`monkeypatch.setattr(...)` dotted-path targets and
+module-alias imports before moving, one cluster = one commit, lazy
+`__getattr__` re-exports in every new `__init__.py` from the start (no
+retrofit needed this time, learned from the `api/` side).
+
 ---
 
 ## 8. How to reproduce or re-run this scan
