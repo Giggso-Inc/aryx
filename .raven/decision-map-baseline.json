@@ -12942,12 +12942,12 @@
       "apply_override_redirection"
     ],
     [
-      "src/aryx/cpq/quantity_word_numbers.py",
+      "src/aryx/cpq/quantity/quantity_word_numbers.py",
       137,
       "_normalize_quantity_text"
     ],
     [
-      "src/aryx/cpq/quantity_word_numbers.py",
+      "src/aryx/cpq/quantity/quantity_word_numbers.py",
       147,
       "_normalize_quantity_text"
     ],

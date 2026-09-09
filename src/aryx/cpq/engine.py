@@ -325,17 +325,17 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # quantity_hint_extraction.py/quantity_turn_detection.py (Phase 4 module-
 # level extraction) -- re-exported here so every existing `from
 # aryx.cpq.engine import <name>` caller/test keeps working unchanged.
-from aryx.cpq.quantity_patterns import (  # noqa: E402
+from aryx.cpq.quantity.quantity_patterns import (  # noqa: E402
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, is_valid_product_quantity,
 )
-from aryx.cpq.quantity_word_numbers import (  # noqa: E402
+from aryx.cpq.quantity.quantity_word_numbers import (  # noqa: E402
     _normalize_quantity_text, _substitute_number_words, _words_to_number,
 )
-from aryx.cpq.quantity_hint_extraction import (  # noqa: E402
+from aryx.cpq.quantity.quantity_hint_extraction import (  # noqa: E402
     _is_year_shaped_model_quantity, extract_quantity_decimal_hint,
     extract_quantity_hint,
 )
-from aryx.cpq.quantity_turn_detection import (  # noqa: E402
+from aryx.cpq.quantity.quantity_turn_detection import (  # noqa: E402
     find_catalog_quantity_attrs, question_mentions_quantity, quantity_turn_precheck,
 )
 

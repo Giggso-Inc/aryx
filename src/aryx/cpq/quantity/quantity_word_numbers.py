@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from aryx.cpq.quantity_patterns import _THOUSANDS_SEPARATOR_RE
+from aryx.cpq.quantity.quantity_patterns import _THOUSANDS_SEPARATOR_RE
 
 
 # Spelled-out quantities ("I want ten APX Next", "twenty-five units") --

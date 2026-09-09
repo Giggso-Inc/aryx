@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.quantity_turn_detection import question_mentions_quantity, quantity_turn_precheck
+from aryx.cpq.quantity.quantity_turn_detection import question_mentions_quantity, quantity_turn_precheck
 
 from aryx.api.ask_preamble.ask_preamble_quantity_target_resolve import _preamble_resolve_quantity_target
 

@@ -9,10 +9,10 @@ working unchanged. Logic unchanged from the original inline definitions.
 
 from __future__ import annotations
 
-from aryx.cpq.quantity_patterns import (
+from aryx.cpq.quantity.quantity_patterns import (
     _MODEL_QUANTITY_PATTERN, _QUANTITY_DECIMAL_PATTERNS, _QUANTITY_PATTERNS,
 )
-from aryx.cpq.quantity_word_numbers import _normalize_quantity_text, _substitute_number_words
+from aryx.cpq.quantity.quantity_word_numbers import _normalize_quantity_text, _substitute_number_words
 
 def extract_quantity_decimal_hint(text: str) -> str | None:
     """The exact decimal substring (e.g. "10.0", "-3.5") when a decimal

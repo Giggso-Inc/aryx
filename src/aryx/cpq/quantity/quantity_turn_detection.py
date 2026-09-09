@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx.cpq.quantity_hint_extraction import extract_quantity_decimal_hint, extract_quantity_hint
+from aryx.cpq.quantity.quantity_hint_extraction import extract_quantity_decimal_hint, extract_quantity_hint
 from aryx.cpq.state import ConfigAttr
 
 
