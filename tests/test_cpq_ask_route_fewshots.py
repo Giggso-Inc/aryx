@@ -230,7 +230,7 @@ def test_run_ask_llm_first_off_topic_goes_standard():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std, \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq:
         gs.return_value.cpq_intent_mode = "llm_first"
@@ -263,7 +263,7 @@ def test_run_ask_llm_first_quote_uses_cpq_turn():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "llm_first"
@@ -295,7 +295,7 @@ def test_run_ask_shadow_follows_deterministic_not_llm():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std:
@@ -332,7 +332,7 @@ def test_run_ask_llm_first_gateway_error_surfaces_a_customer_facing_error():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "llm_first"
@@ -362,7 +362,7 @@ def test_run_ask_shadow_mode_gateway_error_still_uses_the_old_escape_hatch():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "shadow"

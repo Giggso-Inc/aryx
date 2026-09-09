@@ -39,7 +39,7 @@ from __future__ import annotations
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest
 from aryx.api.ask_attach_share_flags import _attach_share_flags
-from aryx.api.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _OTHER_SUMMARY_CATEGORY_HEADERS, _splice_mandatory_block_into_summary
+from aryx.api.ask_response_building.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _OTHER_SUMMARY_CATEGORY_HEADERS, _splice_mandatory_block_into_summary
 from aryx.cpq.engine import SUMMARY_CATEGORY_NAMES, SUMMARY_FALLBACK_CATEGORY
 from aryx.cpq.state import ConfigAttr, MenuOption
 

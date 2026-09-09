@@ -204,7 +204,7 @@ def test_llm_first_product_quantity_change_dispatches_a_valid_value(monkeypatch)
     _dispatch_intent_result -- this pins the plain success path: a valid,
     in-range positive quantity is applied to session.product_quantity."""
     monkeypatch.setattr("aryx.api.ask_core_helpers._persist_cpq_history", lambda *a, **k: None)
-    monkeypatch.setattr("aryx.api.ask_build_show_summary_response._build_show_summary_response", lambda *a, **k: None)
+    monkeypatch.setattr("aryx.api.ask_response_building.ask_build_show_summary_response._build_show_summary_response", lambda *a, **k: None)
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", product_quantity=10)
     req = AskRequest(question="change the quantity to 25", workspace_id=1,
                       session_data=session.to_dict())

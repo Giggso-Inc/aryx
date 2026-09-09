@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
-from aryx.api.ask_build_show_summary_response import _build_show_summary_response
-from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_response_building.ask_build_show_summary_response import _build_show_summary_response
+from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine, extract_quantity_hint
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
-from aryx.api import ask_build_show_summary_response as _ask_build_show_summary_response_test_module
+from aryx.api.ask_response_building import ask_build_show_summary_response as _ask_build_show_summary_response_test_module
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
@@ -653,7 +653,7 @@ def test_llm_first_router_failure_surfaces_a_customer_facing_error():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
@@ -681,7 +681,7 @@ def test_shadow_mode_strips_quantity_and_country_before_the_turn(monkeypatch):
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0

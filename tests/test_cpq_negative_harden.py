@@ -210,7 +210,7 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api.soft_quote_heuristic", return_value=False), \
          patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline",
@@ -281,7 +281,7 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
     with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \

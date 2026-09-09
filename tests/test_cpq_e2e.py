@@ -1744,7 +1744,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     merge."""
     from aryx.api import ask_api
     from aryx.api.ask_core_helpers import _CPQ_SEGMENT_DELIM
-    from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+    from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
     from aryx.cpq.state import ConfigAttr, MenuOption
 
     attrs = [

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api.ask_build_show_summary_response import _build_show_summary_response
+from aryx.api.ask_response_building.ask_build_show_summary_response import _build_show_summary_response
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, is_valid_product_quantity,
 )

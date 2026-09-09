@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _splice_mandatory_block_into_summary
+from aryx.api.ask_response_building.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _splice_mandatory_block_into_summary
 from aryx.cpq.state import CpqSession
 
 _SHARE_READY_MIN_FILLED = 3

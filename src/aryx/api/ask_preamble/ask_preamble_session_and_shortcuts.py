@@ -29,7 +29,7 @@ from aryx.cpq.session_guard_snapshot import (
 from aryx.cpq.state import CpqSession
 
 from aryx.api.ask_core_helpers import _mine_history_for_cpq_context, _safe_detect_product_mention
-from aryx.api import ask_build_show_summary_response as _ask_build_show_summary_response_module
+from aryx.api.ask_response_building import ask_build_show_summary_response as _ask_build_show_summary_response_module
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 

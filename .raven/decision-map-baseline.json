@@ -8022,56 +8022,6 @@
       "_resolve_split_change_text"
     ],
     [
-      "src/aryx/api/ask_build_country_change_response.py",
-      23,
-      "_build_country_change_response"
-    ],
-    [
-      "src/aryx/api/ask_build_country_change_response.py",
-      91,
-      "_build_country_change_response"
-    ],
-    [
-      "src/aryx/api/ask_build_no_value_response.py",
-      21,
-      "_build_no_value_response"
-    ],
-    [
-      "src/aryx/api/ask_build_no_value_response.py",
-      98,
-      "_build_no_value_response"
-    ],
-    [
-      "src/aryx/api/ask_build_product_quantity_response.py",
-      21,
-      "_build_product_quantity_change_response"
-    ],
-    [
-      "src/aryx/api/ask_build_product_quantity_response.py",
-      102,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_build_product_quantity_response.py",
-      123,
-      "_build_product_quantity_change_response"
-    ],
-    [
-      "src/aryx/api/ask_build_show_summary_response.py",
-      18,
-      "_build_show_summary_response"
-    ],
-    [
-      "src/aryx/api/ask_build_show_summary_response.py",
-      86,
-      "<if>"
-    ],
-    [
-      "src/aryx/api/ask_build_show_summary_response.py",
-      105,
-      "_build_show_summary_response"
-    ],
-    [
       "src/aryx/api/ask_bulk_quantity_recompute.py",
       19,
       "_recompute_after_bulk_quantity_change"
@@ -8287,31 +8237,6 @@
       "<try>"
     ],
     [
-      "src/aryx/api/ask_cpq_summary_narrate.py",
-      25,
-      "_narrate_cpq_summary"
-    ],
-    [
-      "src/aryx/api/ask_cpq_summary_narrate.py",
-      49,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_cpq_summary_narrate.py",
-      112,
-      "_narrate_cpq_summary"
-    ],
-    [
-      "src/aryx/api/ask_cpq_summary_text.py",
-      18,
-      "_cpq_summary_text"
-    ],
-    [
-      "src/aryx/api/ask_cpq_summary_text.py",
-      123,
-      "_cpq_summary_text"
-    ],
-    [
       "src/aryx/api/ask_data_table_conflict_reask.py",
       20,
       "_reask_confirmed_data_table_conflict"
@@ -8460,41 +8385,6 @@
       "src/aryx/api/ask_dispatch/ask_dispatch_query_approval_decline.py",
       131,
       "_dispatch_decline"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      22,
-      "_finish_cpq_result"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      33,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      51,
-      "_finish_cpq_result"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      54,
-      "_deterministic_cpq_gate"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      63,
-      "_deterministic_cpq_gate"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      68,
-      "_route_quote"
-    ],
-    [
-      "src/aryx/api/ask_finish_cpq_result.py",
-      77,
-      "_route_quote"
     ],
     [
       "src/aryx/api/ask_gateway_compound_split.py",
@@ -8932,16 +8822,6 @@
       "_pending_reply_looks_like_new_request"
     ],
     [
-      "src/aryx/api/ask_mandatory_block_splice.py",
-      87,
-      "_beautify_mandatory_block"
-    ],
-    [
-      "src/aryx/api/ask_mandatory_block_splice.py",
-      104,
-      "_beautify_mandatory_block"
-    ],
-    [
       "src/aryx/api/ask_model_leaf_ask_prompt.py",
       21,
       "_build_model_leaf_ask_prompt"
@@ -9245,6 +9125,126 @@
       "src/aryx/api/ask_qa/ask_route_qa.py",
       82,
       "_route_qa"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_country_change_response.py",
+      23,
+      "_build_country_change_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_country_change_response.py",
+      91,
+      "_build_country_change_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_no_value_response.py",
+      21,
+      "_build_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_no_value_response.py",
+      98,
+      "_build_no_value_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_product_quantity_response.py",
+      21,
+      "_build_product_quantity_change_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_product_quantity_response.py",
+      102,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_product_quantity_response.py",
+      123,
+      "_build_product_quantity_change_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_show_summary_response.py",
+      18,
+      "_build_show_summary_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_show_summary_response.py",
+      86,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_build_show_summary_response.py",
+      105,
+      "_build_show_summary_response"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_cpq_summary_narrate.py",
+      25,
+      "_narrate_cpq_summary"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_cpq_summary_narrate.py",
+      49,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_cpq_summary_narrate.py",
+      112,
+      "_narrate_cpq_summary"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_cpq_summary_text.py",
+      18,
+      "_cpq_summary_text"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_cpq_summary_text.py",
+      123,
+      "_cpq_summary_text"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      22,
+      "_finish_cpq_result"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      33,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      51,
+      "_finish_cpq_result"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      54,
+      "_deterministic_cpq_gate"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      63,
+      "_deterministic_cpq_gate"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      68,
+      "_route_quote"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_finish_cpq_result.py",
+      77,
+      "_route_quote"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_mandatory_block_splice.py",
+      87,
+      "_beautify_mandatory_block"
+    ],
+    [
+      "src/aryx/api/ask_response_building/ask_mandatory_block_splice.py",
+      104,
+      "_beautify_mandatory_block"
     ],
     [
       "src/aryx/api/ask_run_ask.py",

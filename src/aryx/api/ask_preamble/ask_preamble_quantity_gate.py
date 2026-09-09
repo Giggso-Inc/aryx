@@ -22,7 +22,7 @@ from aryx.cpq.quantity_turn_detection import question_mentions_quantity, quantit
 
 from aryx.api.ask_preamble.ask_preamble_quantity_target_resolve import _preamble_resolve_quantity_target
 
-from aryx.api.ask_build_product_quantity_response import _build_product_quantity_change_response
+from aryx.api.ask_response_building.ask_build_product_quantity_response import _build_product_quantity_change_response
 from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.api.ask_llm.ask_llm_extract_quantity_and_country_reply import _llm_extract_quantity
 from aryx.api import ask_core_helpers as _ask_core_helpers_module

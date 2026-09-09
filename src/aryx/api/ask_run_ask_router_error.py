@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
-from aryx.api.ask_finish_cpq_result import _route_quote
+from aryx.api.ask_response_building.ask_finish_cpq_result import _route_quote
 from aryx.cpq.intent_gateway import AskRouteDecision
 
 

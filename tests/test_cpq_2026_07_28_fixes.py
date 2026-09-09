@@ -18,7 +18,7 @@ import pytest
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
-from aryx.api.ask_build_country_change_response import _build_country_change_response
+from aryx.api.ask_response_building.ask_build_country_change_response import _build_country_change_response
 from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa

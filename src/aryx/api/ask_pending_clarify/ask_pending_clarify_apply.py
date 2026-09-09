@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.cpq.session_guard import clear_clarify

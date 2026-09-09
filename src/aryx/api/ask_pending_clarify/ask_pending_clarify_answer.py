@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
-from aryx.api.ask_build_no_value_response import _build_no_value_response
+from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import (
     _apply_pending_clarify_resolution,

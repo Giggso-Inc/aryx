@@ -15,7 +15,7 @@ import pytest
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import _run_cpq_turn
-from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_llm.ask_llm_resolve_quantity_target import (
     _llm_resolve_quantity_target,
     _quantity_message_might_name_candidate,

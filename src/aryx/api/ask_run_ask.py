@@ -16,9 +16,9 @@ from typing import Any
 
 from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_finish_cpq_result as _ask_finish_cpq_result_module
+from aryx.api.ask_response_building import ask_finish_cpq_result as _ask_finish_cpq_result_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
-from aryx.api.ask_finish_cpq_result import _route_quote
+from aryx.api.ask_response_building.ask_finish_cpq_result import _route_quote
 from aryx.api.ask_request_models import AskRequest
 from aryx.api.ask_qa.ask_route_qa import _route_ambiguous, _route_qa
 from aryx.api.ask_run_ask_router_error import _handle_router_error

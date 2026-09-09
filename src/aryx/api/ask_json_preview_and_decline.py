@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 

@@ -10,8 +10,8 @@ via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
-from aryx.api.ask_cpq_summary_narrate import _narrate_cpq_summary
-from aryx.api.ask_cpq_summary_prompt import _build_summary_narration_user_prompt
+from aryx.api.ask_response_building.ask_cpq_summary_narrate import _narrate_cpq_summary
+from aryx.api.ask_response_building.ask_cpq_summary_prompt import _build_summary_narration_user_prompt
 from aryx.cpq.state import ConfigAttr
 
 
