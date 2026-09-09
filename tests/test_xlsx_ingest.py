@@ -166,7 +166,7 @@ def test_run_files_xlsx_branch_ingests_one_sheet_per_dataset(two_sheet_xlsx_byte
     mock_datasource_store = MagicMock()
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=mock_jobs), \
          patch.object(m, "DatasourceStore", return_value=mock_datasource_store), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -211,7 +211,7 @@ def test_run_files_xlsx_branch_auto_detects_cross_sheet_fk(monkeypatch):
     mock_cfg.fk_dynamic_detection_enabled = False
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -253,7 +253,7 @@ def test_run_files_xlsx_skips_hidden_sheet_end_to_end(monkeypatch):
     mock_cfg.fk_dynamic_detection_enabled = False
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -299,7 +299,7 @@ def test_run_files_detects_fk_link_across_two_separate_workbooks(monkeypatch):
     mock_cfg.fk_dynamic_detection_enabled = False  # isolate the column-name-pass fix
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -354,8 +354,8 @@ def test_run_files_dynamic_stage_also_spans_multiple_workbooks(monkeypatch):
     mock_cfg.fk_max_estimated_fanout = 5000
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
-         patch("aryx.pipeline.dynamic_fk.complete_json",
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
                return_value={"linked": True, "reason": "shared material code across workbooks"}), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \

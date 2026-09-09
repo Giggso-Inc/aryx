@@ -22,7 +22,7 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
-from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
+from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore

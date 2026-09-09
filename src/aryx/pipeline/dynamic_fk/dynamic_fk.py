@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.llm import complete_json
-from aryx.pipeline.dynamic_fk_sampling import (
+from aryx.pipeline.dynamic_fk.dynamic_fk_sampling import (
     _candidate_columns,
     _headers,
     estimate_join_fanout,

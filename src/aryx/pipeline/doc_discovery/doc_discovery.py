@@ -48,7 +48,7 @@ from aryx.pipeline.doc_discovery.doc_discovery_persist import _persist_tabular_s
 from aryx.pipeline.doc_discovery.doc_discovery_types import _infer_type, _singular, _stem_type
 from aryx.pipeline.doc_discovery.doc_discovery_xlsx import _sheet_slug, _xlsx_to_csvs
 from aryx.pipeline.doc_discovery.doc_discovery_xml import _xml_to_csvs
-from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
+from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore

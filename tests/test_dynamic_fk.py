@@ -17,7 +17,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from aryx.pipeline.dynamic_fk import (
+from aryx.pipeline.dynamic_fk.dynamic_fk import (
     detect_dynamic_fk_links,
     estimate_join_fanout,
     generate_candidate_pairs,
@@ -143,7 +143,7 @@ def test_high_fanout_category_column_is_rejected_despite_good_overlap_ratio():
         {"ontology_type": "A", "data": _csv_bytes(["matl_group"], rows_a)},
         {"ontology_type": "B", "data": _csv_bytes(["matl_group"], rows_b)},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings",
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
                return_value=_settings(fk_max_estimated_fanout=500)):
         candidates = generate_candidate_pairs(plans)
     assert candidates == [], "non-selective category column must be rejected, not passed to Stage 2"
@@ -159,7 +159,7 @@ def test_selective_join_key_survives_the_fanout_guard():
         {"ontology_type": "A", "data": _csv_bytes(["id"], rows_a)},
         {"ontology_type": "B", "data": _csv_bytes(["ref_id"], rows_b)},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings",
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
                return_value=_settings(fk_max_estimated_fanout=500)):
         candidates = generate_candidate_pairs(plans)
     assert len(candidates) == 1
@@ -178,7 +178,7 @@ def test_finds_candidate_between_overlapping_columns_across_types():
             "data": _csv_bytes(["code"], [["M1"], ["M2"], ["M9"]]),
         },
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         candidates = generate_candidate_pairs(plans)
     pairs = {(c["type_a"], c["col_a"], c["type_b"], c["col_b"]) for c in candidates}
     assert ("Transaction", "material_code", "Material", "code") in pairs
@@ -189,7 +189,7 @@ def test_self_type_pairs_are_never_candidates():
         {"ontology_type": "Same", "data": _csv_bytes(["c"], [["A"], ["B"]])},
         {"ontology_type": "Same", "data": _csv_bytes(["c"], [["A"], ["B"]])},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         candidates = generate_candidate_pairs(plans)
     assert candidates == []
 
@@ -199,10 +199,10 @@ def test_already_linked_pairs_are_skipped():
         {"ontology_type": "A", "data": _csv_bytes(["x"], [["1"], ["2"]])},
         {"ontology_type": "B", "data": _csv_bytes(["y"], [["1"], ["2"]])},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         candidates = generate_candidate_pairs(plans, already_linked={("A", "B")})
     assert candidates == []
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         candidates_reverse_direction = generate_candidate_pairs(plans, already_linked={("B", "A")})
     assert candidates_reverse_direction == []
 
@@ -212,7 +212,7 @@ def test_constant_column_excluded_as_not_a_real_key():
         {"ontology_type": "A", "data": _csv_bytes(["const"], [["X"], ["X"], ["X"]])},
         {"ontology_type": "B", "data": _csv_bytes(["const"], [["X"], ["X"]])},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         candidates = generate_candidate_pairs(plans)
     assert candidates == []
 
@@ -223,10 +223,10 @@ def test_below_threshold_pairs_excluded():
         {"ontology_type": "B", "data": _csv_bytes(["y"], [["1"], ["9"], ["10"], ["11"], ["12"]])},
     ]
     # overlap ratio = 1/5 = 0.2 for the smaller side; set threshold above that.
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_value_overlap_threshold=0.5)):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_value_overlap_threshold=0.5)):
         candidates = generate_candidate_pairs(plans)
     assert candidates == []
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_value_overlap_threshold=0.1)):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_value_overlap_threshold=0.1)):
         candidates = generate_candidate_pairs(plans)
     assert len(candidates) == 1
 
@@ -243,8 +243,8 @@ def _candidate(i: int) -> dict:
 
 def test_accepted_verdict_produces_a_link():
     candidates = [_candidate(0)]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.complete_json",
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
                return_value={"linked": True, "reason": "same code space"}):
         links = judge_candidates_with_llm(candidates, broker=object())
     assert len(links) == 1
@@ -255,8 +255,8 @@ def test_accepted_verdict_produces_a_link():
 
 def test_rejected_verdict_produces_no_link():
     candidates = [_candidate(0)]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.complete_json",
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
                return_value={"linked": False, "reason": "coincidental overlap"}):
         links = judge_candidates_with_llm(candidates, broker=object())
     assert links == []
@@ -271,8 +271,8 @@ def test_llm_failure_on_one_candidate_does_not_drop_others():
             raise RuntimeError("provider error")
         return {"linked": True, "reason": "ok"}
 
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.complete_json", side_effect=side_effect):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
         links = judge_candidates_with_llm(candidates, broker=object())
     assert len(links) == 1
     assert links[0]["source_type"] == "TypeA1"
@@ -290,8 +290,8 @@ def test_no_hardcoded_cap_every_candidate_is_judged():
         call_count["n"] += 1
         return {"linked": False, "reason": "no"}
 
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=4)), \
-         patch("aryx.pipeline.dynamic_fk.complete_json", side_effect=side_effect):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=4)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
         judge_candidates_with_llm(candidates, broker=object())
     assert call_count["n"] == 57
 
@@ -307,8 +307,8 @@ def test_judge_workers_setting_bounds_concurrency_not_coverage():
             call_count["n"] += 1
             return {"linked": False, "reason": "no"}
 
-        with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=workers)), \
-             patch("aryx.pipeline.dynamic_fk.complete_json", side_effect=side_effect):
+        with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=workers)), \
+             patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
             judge_candidates_with_llm(candidates, broker=object())
         assert call_count["n"] == 10
 
@@ -321,8 +321,8 @@ def test_judge_workers_setting_bounds_concurrency_not_coverage():
 def test_on_progress_called_once_per_candidate_with_final_totals():
     candidates = [_candidate(i) for i in range(6)]
     calls: list[tuple[int, int]] = []
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=3)), \
-         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=3)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
         judge_candidates_with_llm(candidates, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
     assert len(calls) == 6
     assert all(total == 6 for _done, total in calls)
@@ -337,8 +337,8 @@ def test_on_progress_exception_does_not_break_judging():
     def _bad_progress(done, total):
         raise RuntimeError("job store unavailable")
 
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=2)), \
-         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": True, "reason": "yes"}):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=2)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": True, "reason": "yes"}):
         links = judge_candidates_with_llm(candidates, broker=object(), on_progress=_bad_progress)
     assert len(links) == 4
 
@@ -351,8 +351,8 @@ def test_detect_dynamic_fk_links_threads_on_progress_through():
          "data": _csv_bytes(["y"], [[str(i)] for i in range(20)])},
     ]
     calls: list[tuple[int, int]] = []
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
         detect_dynamic_fk_links(plans, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
     assert calls, "on_progress must fire when detect_dynamic_fk_links actually judges candidates"
 
@@ -364,14 +364,14 @@ def test_disabled_via_config_returns_no_links():
         {"ontology_type": "A", "data": _csv_bytes(["x"], [["1"], ["2"]])},
         {"ontology_type": "B", "data": _csv_bytes(["y"], [["1"], ["2"]])},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_detection_enabled=False)):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_detection_enabled=False)):
         links = detect_dynamic_fk_links(plans, broker=object())
     assert links == []
 
 
 def test_fewer_than_two_plans_returns_no_links():
     plans = [{"ontology_type": "A", "data": _csv_bytes(["x"], [["1"]])}]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()):
         links = detect_dynamic_fk_links(plans, broker=object())
     assert links == []
 
@@ -381,8 +381,8 @@ def test_end_to_end_finds_and_judges_a_real_relationship():
         {"ontology_type": "Transaction", "data": _csv_bytes(["material_code"], [["M1"], ["M2"]])},
         {"ontology_type": "Material", "data": _csv_bytes(["code"], [["M1"], ["M2"], ["M9"]])},
     ]
-    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.complete_json",
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
                return_value={"linked": True, "reason": "shared material code space"}):
         links = detect_dynamic_fk_links(plans, broker=object())
     assert len(links) == 1
