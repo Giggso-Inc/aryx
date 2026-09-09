@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import Relationship
-from aryx.pipeline.enrich_drain import _drain_with_timeout
+from aryx.pipeline.enrich.enrich_drain import _drain_with_timeout
 from aryx.relationships import infer_relationship
 from aryx.store.entity_store import EntityStore
 

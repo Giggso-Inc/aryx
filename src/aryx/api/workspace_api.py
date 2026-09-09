@@ -28,7 +28,7 @@ from aryx.config import get_settings
 from aryx.graph import FalkorStore
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.project import project_graph
-from aryx.pipeline.enrich import _build_type_ancestors
+from aryx.pipeline.enrich.enrich import _build_type_ancestors
 from aryx.relationships import infer_fk_links
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore

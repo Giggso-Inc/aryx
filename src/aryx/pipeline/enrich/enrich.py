@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import logging
 
-from aryx.pipeline.enrich_drain import _drain_with_timeout
-from aryx.pipeline.enrich_relate import _relate
-from aryx.pipeline.enrich_relate_isolated import _relate_isolated
-from aryx.pipeline.enrich_schema_fk import _infer_schema_fk_links
+from aryx.pipeline.enrich.enrich_drain import _drain_with_timeout
+from aryx.pipeline.enrich.enrich_relate import _relate
+from aryx.pipeline.enrich.enrich_relate_isolated import _relate_isolated
+from aryx.pipeline.enrich.enrich_schema_fk import _infer_schema_fk_links
 from aryx.store.ontology_store import OntologyStore
 
 __all__ = [

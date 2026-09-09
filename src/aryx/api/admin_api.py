@@ -23,7 +23,7 @@ from aryx.api.admin_models import EntityCreateRequest, EntityUpdateRequest, FkLi
 from aryx.config import get_settings
 from aryx.connectors.postgres import PostgresConnector
 from aryx.graph import FalkorStore
-from aryx.pipeline.enrich import _build_type_ancestors
+from aryx.pipeline.enrich.enrich import _build_type_ancestors
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.project import project_graph
 from aryx.store.entity_store import EntityStore

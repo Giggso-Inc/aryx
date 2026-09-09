@@ -20,7 +20,7 @@ from aryx.naming import ws_graph
 from aryx.models import OntologyType
 from aryx.pipeline.cooccurrence_link import detect_and_link_cooccurrence
 from aryx.pipeline.dimension_link import detect_and_link_dimensions
-from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
+from aryx.pipeline.enrich.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
