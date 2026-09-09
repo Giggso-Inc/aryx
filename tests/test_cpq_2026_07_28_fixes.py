@@ -22,7 +22,7 @@ from aryx.api.ask_build_country_change_response import _build_country_change_res
 from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.api.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_handle_cpq_qa import _handle_cpq_qa
-from aryx.api.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
 from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
@@ -30,7 +30,7 @@ from aryx.cpq.intent_gateway import clear_gateway_cache
 from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
-from aryx.api import ask_pending_clarify_llm_classify as _ask_pending_clarify_llm_classify_test_module
+from aryx.api.ask_pending_clarify import ask_pending_clarify_llm_classify as _ask_pending_clarify_llm_classify_test_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_test_module
 
 

@@ -19,12 +19,12 @@ from unittest.mock import patch
 
 from aryx.api.ask_api import AskRequest
 from aryx.api.ask_change_decline_and_scope_memory import _is_global_change_decline
-from aryx.api.ask_pending_clarify_answer import _set_pending_clarify_and_answer
-from aryx.api.ask_pending_clarify_apply import _clear_pending_clarify
-from aryx.api.ask_pending_clarify_grounding import _ground_clarify_candidates
-from aryx.api.ask_pending_clarify_match import _match_pending_clarify_reply
-from aryx.api.ask_pending_clarify_prompt import _grounded_clarify_prompt
-from aryx.api.ask_pending_clarify_turn import _handle_pending_clarify_turn
+from aryx.api.ask_pending_clarify.ask_pending_clarify_answer import _set_pending_clarify_and_answer
+from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pending_clarify
+from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates
+from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_pending_clarify.ask_pending_clarify_prompt import _grounded_clarify_prompt
+from aryx.api.ask_pending_clarify.ask_pending_clarify_turn import _handle_pending_clarify_turn
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 
@@ -283,7 +283,7 @@ def test_pending_clarify_global_change_decline_is_noop():
     )
 
     with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
-        "aryx.api.ask_pending_clarify_match._match_pending_clarify_reply",
+        "aryx.api.ask_pending_clarify.ask_pending_clarify_match._match_pending_clarify_reply",
         return_value=("resolved", "update"),
     ) as match_reply:
         resp = _handle_pending_clarify_turn(
@@ -317,7 +317,7 @@ def test_pending_clarify_candidate_decline_keeps_existing_guidance():
     )
 
     with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
-        "aryx.api.ask_pending_clarify_match._match_pending_clarify_reply",
+        "aryx.api.ask_pending_clarify.ask_pending_clarify_match._match_pending_clarify_reply",
         return_value=("decline", None),
     ):
         resp = _handle_pending_clarify_turn(

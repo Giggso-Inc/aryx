@@ -29,8 +29,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from aryx.api.ask_api import AskRequest
-from aryx.api.ask_pending_clarify_apply import _apply_pending_clarify_resolution
-from aryx.api.ask_pending_clarify_grounding import _ground_clarify_candidates
+from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _apply_pending_clarify_resolution
+from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates
 from aryx.cpq.engine import (
     CpqEngine,
     _is_ordered_abbreviation,

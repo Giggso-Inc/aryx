@@ -16,8 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
-from aryx.api.ask_pending_clarify_answer import _set_pending_clarify_and_answer
-from aryx.api.ask_pending_clarify_apply import _apply_pending_clarify_resolution
+from aryx.api.ask_pending_clarify.ask_pending_clarify_answer import _set_pending_clarify_and_answer
+from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _apply_pending_clarify_resolution
 
 
 def _resolve_or_reask_ambiguous(
