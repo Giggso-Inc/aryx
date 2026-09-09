@@ -10,7 +10,7 @@ import csv
 import io
 from pathlib import Path
 
-from aryx.pipeline.ingest_validation_types import DatasetTruth, FkTruth, GroundTruth
+from aryx.pipeline.ingest_validation.ingest_validation_types import DatasetTruth, FkTruth, GroundTruth
 
 _ID_COLUMNS = ("id", "guid", "uuid")
 

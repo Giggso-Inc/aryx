@@ -426,7 +426,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # Best-effort by contract — validation surfaces problems, never fails the job.
     if valid_plans:
         try:
-            from aryx.pipeline.ingest_validation import (
+            from aryx.pipeline.ingest_validation.ingest_validation import (
                 ground_truth_from_tabular, validate_workspace,
             )
             gt = ground_truth_from_tabular(valid_plans)

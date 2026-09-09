@@ -1180,7 +1180,7 @@ def test_s15_fk_compound_column_detection(apx_truth):
 def test_s16_dangling_fk_sentinel_exclusion():
     """Phase H: BM's "-1" not-set convention must never count as a dangling
     FK value. Pure unit test — synthetic minimal plans, not sample-derived."""
-    from aryx.pipeline.ingest_validation import ground_truth_from_tabular
+    from aryx.pipeline.ingest_validation.ingest_validation import ground_truth_from_tabular
 
     parent_csv = b"id,name,_element_type\n1,Alpha,parent\n2,Beta,parent\n"
     child_csv = (b"id,name,parent_id,_element_type\n"

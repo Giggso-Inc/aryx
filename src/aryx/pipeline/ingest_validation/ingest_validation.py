@@ -13,7 +13,7 @@ Two ground-truth tiers:
   cap truncation as a WARNING.
 
 Usage (standalone):
-    python -m aryx.pipeline.ingest_validation <xml-file> <workspace_id>
+    python -m aryx.pipeline.ingest_validation.ingest_validation <xml-file> <workspace_id>
 
 As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), this module
 is a thin re-export hub plus the CLI entry point -- the dataclasses live in
@@ -27,13 +27,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aryx.pipeline.ingest_validation_checks import (
+from aryx.pipeline.ingest_validation.ingest_validation_checks import (
     _check_projection_parity,
     _dataset_type_map,
     validate_workspace,
 )
-from aryx.pipeline.ingest_validation_ground_truth import _parse_csv, ground_truth_from_tabular
-from aryx.pipeline.ingest_validation_types import (
+from aryx.pipeline.ingest_validation.ingest_validation_ground_truth import _parse_csv, ground_truth_from_tabular
+from aryx.pipeline.ingest_validation.ingest_validation_types import (
     CheckResult,
     DatasetTruth,
     FkTruth,

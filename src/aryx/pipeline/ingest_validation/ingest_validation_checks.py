@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.pipeline.ingest_validation_types import CheckResult, GroundTruth, ValidationReport
+from aryx.pipeline.ingest_validation.ingest_validation_types import CheckResult, GroundTruth, ValidationReport
 from aryx.store.pool import get_pool
 
 _SAMPLE_CAP = 10  # max dangling values echoed per FK check

@@ -4,7 +4,7 @@ Uses synthetic in-test XML/CSV data — never the sample file (no hardcoding).
 """
 from __future__ import annotations
 
-from aryx.pipeline.ingest_validation import (
+from aryx.pipeline.ingest_validation.ingest_validation import (
     CheckResult,
     GroundTruth,
     ValidationReport,
@@ -66,7 +66,7 @@ def test_ground_truth_endswith_tag_fallback() -> None:
 
 def test_empty_ground_truth_aborts_not_passes() -> None:
     """Zero expectations must abort as ground_truth_empty, never vacuous PASS."""
-    from aryx.pipeline.ingest_validation import validate_workspace
+    from aryx.pipeline.ingest_validation.ingest_validation import validate_workspace
     report = validate_workspace(1, GroundTruth(), dsn="postgresql://unused")
     assert not report.passed
     assert report.checks[0].actual == "ground_truth_empty"
