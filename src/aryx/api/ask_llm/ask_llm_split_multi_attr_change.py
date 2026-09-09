@@ -7,7 +7,7 @@ original inline definition.
 from __future__ import annotations
 
 from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
-from aryx.api.ask_relevant_intent_candidates import _relevant_intent_candidates
+from aryx.api.ask_catalog.ask_relevant_intent_candidates import _relevant_intent_candidates
 
 
 def _llm_split_multi_attr_change_request(

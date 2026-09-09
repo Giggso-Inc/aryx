@@ -14,8 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
-from aryx.api.ask_catalog_listing_reconcile import _reconcile_catalog_listing_groups
-from aryx.api.ask_catalog_listing_scope import _scope_catalog_listing_labels
+from aryx.api.ask_catalog.ask_catalog_listing_reconcile import _reconcile_catalog_listing_groups
+from aryx.api.ask_catalog.ask_catalog_listing_scope import _scope_catalog_listing_labels
 
 
 def _build_catalog_attribute_listing_text(

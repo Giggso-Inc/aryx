@@ -24,7 +24,7 @@ from unittest.mock import patch
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest
 from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_current_quote_attribute_listing_text
-from aryx.api.ask_catalog_listing_text import _build_catalog_attribute_listing_text
+from aryx.api.ask_catalog.ask_catalog_listing_text import _build_catalog_attribute_listing_text
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession
@@ -369,7 +369,7 @@ def test_list_attributes_question_answers_from_attrs_not_the_graph(monkeypatch):
         "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ) as mock_detect, \
          patch(
-             "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
+             "aryx.api.ask_catalog.ask_catalog_listing_text._build_catalog_attribute_listing_text",
              return_value="Here are the attributes: ...",
          ) as mock_build, \
          patch("aryx.api.ask_standard_pipeline._extract_terms") as mock_extract, \
@@ -402,7 +402,7 @@ def test_list_attributes_question_uses_human_readable_product_name(monkeypatch):
     with patch(
         "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
         _handle_cpq_qa(req, session, attrs, reader=object())
 
@@ -424,7 +424,7 @@ def test_list_attributes_question_uses_product_hint_when_no_session_product_name
     with patch(
         "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=True,
     ), patch(
-        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_build:
         _handle_cpq_qa(
             req, session, attrs, reader=object(), product_hint="APX Next",
@@ -453,7 +453,7 @@ def test_list_attributes_question_uses_real_quote_state_once_a_quote_exists(monk
         "aryx.api.ask_attr_recompute.ask_attr_text_helpers._build_current_quote_attribute_listing_text",
         return_value="Real quote attributes: ...",
     ) as mock_quote_build, patch(
-        "aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text",
+        "aryx.api.ask_catalog.ask_catalog_listing_text._build_catalog_attribute_listing_text",
     ) as mock_catalog_build:
         result = _handle_cpq_qa(req, session, attrs, reader=object())
 
@@ -477,7 +477,7 @@ def test_non_enumeration_options_question_still_uses_the_generic_fallback(monkey
     with patch(
         "aryx.api.ask_llm.ask_llm_catalog_enumeration._llm_detect_catalog_enumeration_query", return_value=False,
     ) as mock_detect, \
-         patch("aryx.api.ask_catalog_listing_text._build_catalog_attribute_listing_text") as mock_build, \
+         patch("aryx.api.ask_catalog.ask_catalog_listing_text._build_catalog_attribute_listing_text") as mock_build, \
          patch("aryx.api.ask_standard_pipeline._extract_terms", return_value=([], 0, 0, 0)), \
          patch("aryx.api.ask_api.gather", return_value=([], [])), \
          patch("aryx.api.ask_standard_pipeline._enrich_with_attributes", lambda entities, *a, **k: entities), \

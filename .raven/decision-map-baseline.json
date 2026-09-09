@@ -8192,22 +8192,22 @@
       "_recompute_after_multi_select_removal"
     ],
     [
-      "src/aryx/api/ask_catalog_listing_scope.py",
+      "src/aryx/api/ask_catalog/ask_catalog_listing_scope.py",
       25,
       "_reaches_json_payload"
     ],
     [
-      "src/aryx/api/ask_catalog_listing_scope.py",
+      "src/aryx/api/ask_catalog/ask_catalog_listing_scope.py",
       36,
       "_reaches_json_payload"
     ],
     [
-      "src/aryx/api/ask_catalog_listing_scope.py",
+      "src/aryx/api/ask_catalog/ask_catalog_listing_scope.py",
       44,
       "_scope_catalog_listing_labels"
     ],
     [
-      "src/aryx/api/ask_catalog_listing_scope.py",
+      "src/aryx/api/ask_catalog/ask_catalog_listing_scope.py",
       90,
       "_scope_catalog_listing_labels"
     ],

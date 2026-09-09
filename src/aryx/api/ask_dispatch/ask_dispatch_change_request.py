@@ -15,7 +15,7 @@ from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _with_
 from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi
-from aryx.api.ask_target_description import _resolve_target_description
+from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 
 
 def _dispatch_change_request(

@@ -14,7 +14,7 @@ from typing import Any
 
 from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_attr_options_text
 from aryx.api.ask_attr_recompute import ask_attr_text_helpers as _ask_attr_text_helpers_module
-from aryx.api import ask_catalog_listing_text as _ask_catalog_listing_text_module
+from aryx.api.ask_catalog import ask_catalog_listing_text as _ask_catalog_listing_text_module
 from aryx.api.ask_llm import ask_llm_catalog_enumeration as _ask_llm_catalog_enumeration_module
 
 

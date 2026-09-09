@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from aryx import llm_runtime
-from aryx.api.ask_relevant_intent_candidates import (
+from aryx.api.ask_catalog.ask_relevant_intent_candidates import (
     _LLM_INTENT_ATTRS_CAP_HARD,
     _relevant_intent_candidates,
 )

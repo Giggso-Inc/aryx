@@ -21,7 +21,7 @@ from typing import Any
 
 from aryx.cpq.intent_schema import IntentCategory
 
-from aryx.api.ask_target_description import _resolve_target_description
+from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 
 

@@ -19,7 +19,7 @@ from aryx.api.ask_json_preview_and_decline import _build_json_preview_response
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api import ask_json_preview_and_decline as _ask_json_preview_and_decline_module
 from aryx.api.ask_handle.ask_handle_approval import _handle_approval
-from aryx.api.ask_target_description import _resolve_target_description
+from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.cpq.intent_schema import Confidence
 
 
