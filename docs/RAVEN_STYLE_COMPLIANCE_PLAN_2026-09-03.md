@@ -1921,6 +1921,79 @@ This closes all of Phase 8b's known backlog (`shay_backend/` +
 `apps/web/`). Remaining Phase 8 scope: `src/aryx/`'s 24 oversized
 files.
 
+### Phase 8 `src/aryx/` backlog closed — all 24 files already covered by existing Phase 2a stated exceptions (2026-09-09)
+
+A fresh audit confirmed all 24 files from the original Phase 8 list are
+unchanged in line count after Phase 8a's folder moves (pure
+relocations, as expected) and re-confirmed the full list (`cpq/engine.py`
+excluded — its own separate Phase 4 exception):
+
+`cpq/intent_gateway/intent_gateway.py` (1023), `api/data_api.py` (897),
+`cpq/bml/bml.py` (714), `cpq/rdb/rdb_postgres.py` (527),
+`pipeline/doc_discovery/doc_discovery.py` (510),
+`store/entity_store.py` (463), `pipeline/doc_discovery/doc_discovery_fk.py`
+(457), `store/ask_thread_store.py` (446), `api/file_ingest/file_ingest_run.py`
+(404), `cpq/state/__init__.py` (401), `cpq/bml/bml_branches.py` (364),
+`source/source_catalog_upsert.py` (336), `cpq/rdb/rdb_oracle.py` (322),
+`cpq/intent_schema/intent_schema_gateway.py` (320),
+`pipeline/dynamic_fk/dynamic_fk.py` (315), `source/source_catalog_detail.py`
+(301), `pipeline/doc_discovery/doc_discovery_xml.py` (297),
+`pipeline/orchestrate.py` (291), `store/shay_workspace_bridge.py` (288),
+`resolution/run.py` (287), `api/ask_thread_api.py` (280),
+`pipeline/ingest_validation/ingest_validation_checks.py` (263),
+`store/shay_chat_bridge.py` (257), `cpq/bml/bml_tier1.py` (257).
+
+Checked every one of these 24 against the plan's own earlier Phase 2a
+entries (§ the per-file split tables above) rather than re-deriving
+reasoning from scratch: **every single file already carries a detailed,
+specific, previously-verified stated exception** — none of it "not
+gotten to yet." The reasoning falls into a small number of genuine
+risk categories, none of which are tied to the 150-line bar
+specifically, so all of them hold unchanged at the looser 250-line
+target:
+
+- **Whitebox-patch density** (`intent_gateway.py`, `data_api.py`,
+  `file_ingest_run.py`, `ask_thread_store.py`, `doc_discovery.py`,
+  `doc_discovery_fk.py`, `orchestrate.py`, `resolution/run.py`,
+  `ask_thread_api.py`) — the remaining functions are directly
+  whitebox-patched by name across multiple test files and are each
+  other's only callers; moving them would mean retargeting patches
+  with real odds of an undetected miss for no behavior-visible benefit.
+- **One cohesive algorithm, no clean sub-boundary**
+  (`bml_branches.py`, `doc_discovery_xml.py`, `bml_tier1.py`'s
+  `BmlEvaluator`) — a single parsing/evaluation algorithm whose steps
+  share threaded local state.
+- **A dataclass/class kept whole for a real serialization or
+  class-identity contract** (`cpq/state/__init__.py`'s `CpqSession` —
+  134 files depend on its flat `to_dict()`/`from_dict()` shape;
+  `entity_store.py`'s `EntityStore`; `rdb_postgres.py`/`rdb_oracle.py`'s
+  14/11-method classes, one hand-written SQL query per method).
+  `shay_workspace_bridge.py`/`shay_chat_bridge.py` are the same shape:
+  mixins whose methods share `self._pool`/backend-branching state.
+- **Load-bearing, non-filler content** (`intent_schema_gateway.py`'s
+  LLM-facing JSON-Schema dict with per-field prompt-engineering
+  descriptions; `bml_tier1.py`'s incident-history docstrings) — the
+  size *is* the content, not padding.
+- **Shared single-cursor/connection scoping**
+  (`ingest_validation_checks.py`'s `validate_workspace` running 7
+  checks against one DB cursor; `source_catalog_upsert.py`/
+  `source_catalog_detail.py`'s config-builder/read-side helpers, zero
+  patches but genuinely one coherent concern each).
+- **`dynamic_fk.py`** (315, already reduced from 472 in Phase 2a) —
+  same whitebox-patch reasoning, config/LLM-coupled functions kept
+  together after the pure sampling helpers were already extracted.
+
+No code was changed for this pass — every file was a reaffirmation of
+existing, already-verified reasoning, the same judgment call made for
+`shay_backend/`'s `config.py`/`credentials.py`/`metadata.py` and
+`apps/web/`'s `EntityGraph.tsx`/`app/page.tsx` earlier in Phase 8b.
+
+**Phase 8 is now fully closed**: all three sub-scopes — `src/aryx/`
+folder restructuring (Phase 8a), `shay_backend/` + `apps/web/`
+line-count reduction (Phase 8b), and `src/aryx/`'s own line-count
+backlog (this pass) — are resolved, either by a verified split or by a
+reaffirmed, specifically-reasoned stated exception.
+
 ---
 
 ## 8. How to reproduce or re-run this scan
