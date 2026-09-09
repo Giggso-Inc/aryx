@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import logger
-from aryx.cpq.value_rules_state import RuleLoadState
+from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
 # Sentinel returned when the rule has no usable condition and the caller
 # must `continue` to the next fetched row, exactly as the original inline

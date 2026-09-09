@@ -641,7 +641,7 @@ from aryx.cpq.region_and_noise_constants import (  # noqa: E402
 from aryx.cpq.constraint_rules import constraint_rules  # noqa: E402
 from aryx.cpq import rules_loop  # noqa: E402
 from aryx.cpq.payload import payload_build  # noqa: E402
-from aryx.cpq import value_rules_load  # noqa: E402
+from aryx.cpq.value_rules import value_rules_load  # noqa: E402
 
 
 # Moved to attr_type_classification.py (Phase 4 module-level

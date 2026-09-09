@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.cpq.value_rules_state import RuleLoadState
+from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
 logger = logging.getLogger(__name__)
 

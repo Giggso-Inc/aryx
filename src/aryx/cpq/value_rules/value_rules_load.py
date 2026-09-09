@@ -11,8 +11,8 @@ import time
 from typing import Any
 
 from aryx.cpq.engine import logger
-from aryx.cpq.value_rules_row import process_value_rule_row
-from aryx.cpq.value_rules_state import RuleLoadState
+from aryx.cpq.value_rules.value_rules_row import process_value_rule_row
+from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
 
 def load_value_rules(

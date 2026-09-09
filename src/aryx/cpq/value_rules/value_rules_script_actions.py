@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import ConstraintRule, RecommendationRule, logger
-from aryx.cpq.value_rules_state import RuleLoadState
+from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
 
 def process_script_backed_actions(

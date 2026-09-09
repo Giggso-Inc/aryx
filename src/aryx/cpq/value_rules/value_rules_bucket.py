@@ -7,8 +7,8 @@ unchanged from the original inline block.
 
 from __future__ import annotations
 
-from aryx.cpq.value_rules_ambiguous import resolve_ambiguous_multivalue_action
-from aryx.cpq.value_rules_state import RuleLoadState
+from aryx.cpq.value_rules.value_rules_ambiguous import resolve_ambiguous_multivalue_action
+from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
 
 def bucket_declarative_actions(
