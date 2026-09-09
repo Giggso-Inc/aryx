@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline.dimension_link import (
+from aryx.pipeline.dimension_link.dimension_link import (
     _candidate_columns,
     _dimension_groups,
     _is_dimension_column,
@@ -136,7 +136,7 @@ def test_detect_and_link_dimensions_links_the_surplus_style_case():
         (13, "Scrap", {"State": "CA", "id_col": "c4"}),
     ]
     store = _store(entities)
-    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings", return_value=_settings()):
         edges = detect_and_link_dimensions(store)
 
     assert edges > 0
@@ -157,7 +157,7 @@ def test_detect_and_link_dimensions_links_the_surplus_style_case():
 
 def test_detect_and_link_dimensions_noop_when_disabled():
     store = _store([(1, "Surplus", {"State": "PA"}), (2, "WashPost", {"State": "PA"})])
-    with patch("aryx.pipeline.dimension_link.get_settings",
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings",
                return_value=_settings(dimension_link_enabled=False)):
         assert detect_and_link_dimensions(store) == 0
     store.create_entity.assert_not_called()
@@ -165,7 +165,7 @@ def test_detect_and_link_dimensions_noop_when_disabled():
 
 def test_detect_and_link_dimensions_noop_on_no_entities():
     store = _store([])
-    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings", return_value=_settings()):
         assert detect_and_link_dimensions(store) == 0
 
 
@@ -180,7 +180,7 @@ def test_detect_and_link_dimensions_noop_when_no_shared_dimension_exists():
         (4, "B", {"unique_id": "b2"}),
     ]
     store = _store(entities)
-    with patch("aryx.pipeline.dimension_link.get_settings",
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings",
                return_value=_settings(dimension_max_cardinality_ratio=0.1)):
         assert detect_and_link_dimensions(store) == 0
     store.create_entity.assert_not_called()
@@ -202,7 +202,7 @@ def test_detect_and_link_dimensions_stops_when_should_stop_reports_cancelled():
         calls["n"] += 1
         return calls["n"] > 2  # let a couple of hub creations through, then cancel
 
-    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings", return_value=_settings()):
         edges = detect_and_link_dimensions(store, should_stop=should_stop)
 
     # Must have stopped well short of the full ~40-entity linking pass.
@@ -234,7 +234,7 @@ def test_detect_and_link_dimensions_should_stop_none_behaves_as_before():
         (13, "Scrap", {"State": "CA", "id_col": "c4"}),
     ]
     store = _store(entities)
-    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings", return_value=_settings()):
         edges = detect_and_link_dimensions(store)
     assert edges > 0
 
@@ -250,7 +250,7 @@ def test_detect_and_link_dimensions_caps_edges_per_dimension_group():
         (102, "WashPost", {"State": "CA"}), (103, "WashPost", {"State": "PA"}),
     ]
     store = _store(entities)
-    with patch("aryx.pipeline.dimension_link.get_settings",
+    with patch("aryx.pipeline.dimension_link.dimension_link.get_settings",
                return_value=_settings(dimension_max_edges_per_group=2)):
         edges = detect_and_link_dimensions(store)
     assert edges == 2

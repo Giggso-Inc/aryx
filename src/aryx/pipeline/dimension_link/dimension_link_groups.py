@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from aryx.pipeline.dimension_link_columns import CandidateKey, ValueMap
+from aryx.pipeline.dimension_link.dimension_link_columns import CandidateKey, ValueMap
 
 
 def _find(parent: dict[CandidateKey, CandidateKey], key: CandidateKey) -> CandidateKey:

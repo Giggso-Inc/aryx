@@ -25,7 +25,7 @@ As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `dimension_link_columns.py` (candidate-column extraction/filtering) and
 `dimension_link_groups.py` (union-find clustering), both re-imported
 here. Neither calls `get_settings()` nor is itself patched — the one
-patch on this module (`aryx.pipeline.dimension_link.get_settings`, from
+patch on this module (`aryx.pipeline.dimension_link.dimension_link.get_settings`, from
 `tests/test_dimension_link.py`) is called only inside
 `detect_and_link_dimensions`, which stays here.
 """
@@ -37,13 +37,13 @@ from collections.abc import Callable
 
 from aryx.config import get_settings
 from aryx.models import Relationship
-from aryx.pipeline.dimension_link_columns import (
+from aryx.pipeline.dimension_link.dimension_link_columns import (
     CandidateKey,
     ValueMap,
     _candidate_columns,
     _is_dimension_column,
 )
-from aryx.pipeline.dimension_link_groups import _dimension_groups
+from aryx.pipeline.dimension_link.dimension_link_groups import _dimension_groups
 from aryx.pipeline.value_normalize import normalize_value
 from aryx.store.entity_store import EntityStore
 
