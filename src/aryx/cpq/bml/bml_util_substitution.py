@@ -20,7 +20,7 @@ import re
 import time
 
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.data_table_cache import _cache_write_if_marker_unchanged, _invalidate_on_marker_change
+from aryx.cpq.data_table.data_table_cache import _cache_write_if_marker_unchanged, _invalidate_on_marker_change
 from aryx.cpq.engine import (
     _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE,
     _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE_LAST_SEEN_MARKER,

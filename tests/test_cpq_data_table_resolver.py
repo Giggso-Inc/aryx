@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_loader, data_table_resolver
-from aryx.cpq.data_table_resolver import resolve_product_cpq_model_family
+from aryx.cpq.data_table import data_table_loader, data_table_resolver
+from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_model_family
 
 
 @pytest.fixture(autouse=True)
@@ -689,7 +689,7 @@ def test_module_cache_still_expires_eventually():
 # behavior before any split touches them.
 
 def test_governed_required_attr_names_for_base_model_returns_only_R_flagged(monkeypatch):
-    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+    from aryx.cpq.data_table.data_table_resolver import governed_required_attr_names_for_base_model
 
     _patch_rdb(monkeypatch, _TABLES)
     required = governed_required_attr_names_for_base_model(
@@ -699,7 +699,7 @@ def test_governed_required_attr_names_for_base_model_returns_only_R_flagged(monk
 
 
 def test_governed_required_attr_names_for_base_model_none_when_no_sequence_coverage(monkeypatch):
-    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+    from aryx.cpq.data_table.data_table_resolver import governed_required_attr_names_for_base_model
 
     _patch_rdb(monkeypatch, _TABLES)
     result = governed_required_attr_names_for_base_model(
@@ -709,7 +709,7 @@ def test_governed_required_attr_names_for_base_model_none_when_no_sequence_cover
 
 
 def test_governed_required_attr_names_for_base_model_accepts_ALL_base_model(monkeypatch):
-    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+    from aryx.cpq.data_table.data_table_resolver import governed_required_attr_names_for_base_model
 
     rows = [
         {"CPQModel": "TESTMODEL", "BaseModel": "ALL",
@@ -735,7 +735,7 @@ _REGION_RULE_ROWS = [
 
 
 def test_resolve_region_allow_value_returns_the_single_region_match(monkeypatch):
-    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
 
     _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
     value = resolve_region_allow_value(
@@ -746,7 +746,7 @@ def test_resolve_region_allow_value_returns_the_single_region_match(monkeypatch)
 
 
 def test_resolve_region_allow_value_country_override_wins_over_region_default(monkeypatch):
-    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
 
     _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
     value = resolve_region_allow_value(
@@ -757,7 +757,7 @@ def test_resolve_region_allow_value_country_override_wins_over_region_default(mo
 
 
 def test_resolve_region_allow_value_none_on_no_match(monkeypatch):
-    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
 
     _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
     value = resolve_region_allow_value(
@@ -776,7 +776,7 @@ _PRODUCT_CONSTRAINT_ROWS = [
 
 
 def test_resolve_product_cpq_models_from_rows_distinguishes_similarly_named_products(monkeypatch):
-    from aryx.cpq.data_table_resolver import resolve_product_cpq_models_from_rows
+    from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_models_from_rows
 
     _patch_rdb(monkeypatch, {"WhitelistTest": _PRODUCT_CONSTRAINT_ROWS})
     assert resolve_product_cpq_models_from_rows(
@@ -788,7 +788,7 @@ def test_resolve_product_cpq_models_from_rows_distinguishes_similarly_named_prod
 
 
 def test_resolve_product_cpq_models_from_rows_empty_tuple_when_unmatched(monkeypatch):
-    from aryx.cpq.data_table_resolver import resolve_product_cpq_models_from_rows
+    from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_models_from_rows
 
     _patch_rdb(monkeypatch, {"WhitelistTest": _PRODUCT_CONSTRAINT_ROWS})
     assert resolve_product_cpq_models_from_rows(

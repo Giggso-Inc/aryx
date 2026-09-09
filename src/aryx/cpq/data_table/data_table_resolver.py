@@ -30,30 +30,30 @@ exists for backward compatibility, not as the place to add new logic.
 """
 from __future__ import annotations
 
-from aryx.cpq.data_table_consistency import (
+from aryx.cpq.data_table.data_table_consistency import (
     discover_cpq_models_for_base_model,
     find_inconsistent_filled_pairs,
     find_inconsistent_filled_pairs_detailed,
 )
-from aryx.cpq.data_table_governance import (
+from aryx.cpq.data_table.data_table_governance import (
     attr_ever_governed_for_cpq_model,
     attribute_applies,
     governed_attr_names_for_base_model,
     governed_required_attr_names_for_base_model,
 )
-from aryx.cpq.data_table_loader import (
+from aryx.cpq.data_table.data_table_loader import (
     _clear_tables_cache,
     _load_all_tables,
     _TABLES_CACHE_TTL_SECONDS,
 )
-from aryx.cpq.data_table_product import (
+from aryx.cpq.data_table.data_table_product import (
     resolve_product_cpq_model_family,
     resolve_product_cpq_models_from_rows,
     resolve_region_allow_value,
 )
-from aryx.cpq.data_table_stale_models import _is_stale_cpq_model
-from aryx.cpq.data_table_variant import resolve_invalid_product_variant
-from aryx.cpq.data_table_whitelist import _row_conditions_match, resolve_whitelist_values
+from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
+from aryx.cpq.data_table.data_table_variant import resolve_invalid_product_variant
+from aryx.cpq.data_table.data_table_whitelist import _row_conditions_match, resolve_whitelist_values
 
 __all__ = [
     "attr_ever_governed_for_cpq_model",

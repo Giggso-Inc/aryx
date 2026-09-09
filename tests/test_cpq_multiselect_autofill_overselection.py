@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_loader, data_table_resolver
+from aryx.cpq.data_table import data_table_loader, data_table_resolver
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
 

@@ -6,8 +6,8 @@ Phase 2a, 2026-09-03).
 """
 from __future__ import annotations
 
-from aryx.cpq.data_table_loader import _load_all_tables
-from aryx.cpq.data_table_shapes import _attr_op_val_triples, _normalize_label
+from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.cpq.data_table.data_table_shapes import _attr_op_val_triples, _normalize_label
 
 
 def resolve_invalid_product_variant(

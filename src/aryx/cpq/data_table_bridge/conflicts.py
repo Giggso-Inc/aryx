@@ -8,7 +8,7 @@ calls.
 from __future__ import annotations
 
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
-from aryx.cpq.data_table_resolver import (
+from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs,
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
     resolve_whitelist_values as dt_resolve_whitelist_values,

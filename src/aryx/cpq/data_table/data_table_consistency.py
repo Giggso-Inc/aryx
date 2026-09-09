@@ -8,8 +8,8 @@ Phase 2a, 2026-09-03).
 """
 from __future__ import annotations
 
-from aryx.cpq.data_table_loader import _load_all_tables
-from aryx.cpq.data_table_stale_models import _is_stale_cpq_model
+from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 
 
 def discover_cpq_models_for_base_model(

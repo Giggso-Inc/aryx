@@ -1,7 +1,7 @@
 -- 0039 -- Case-insensitive ontology_type lookup index for aryx_entity.
 --
 -- aryx.cpq.rdb.rdb.fetch_entities_by_exact_type() (backing the Data Table
--- resolver, see aryx.cpq.data_table_resolver) filters on
+-- resolver, see aryx.cpq.data_table.data_table_resolver) filters on
 -- lower(ontology_type) = lower($2). The existing idx_entity_ws_type index
 -- from 0009_workspaces.sql is on the plain (workspace_id, ontology_type)
 -- columns and cannot serve a lower()-wrapped predicate, so every call fell

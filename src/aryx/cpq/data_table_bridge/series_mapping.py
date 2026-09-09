@@ -7,7 +7,7 @@ calls.
 
 from __future__ import annotations
 
-from aryx.cpq.data_table_resolver import (
+from aryx.cpq.data_table.data_table_resolver import (
     resolve_invalid_product_variant as dt_resolve_invalid_product_variant,
 )
 from aryx.cpq.state import ConfigAttr

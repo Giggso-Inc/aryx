@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.data_table_cache import (
+from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
 )

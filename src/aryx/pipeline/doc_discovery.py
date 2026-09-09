@@ -456,7 +456,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # Best-effort — an import failure or clear() bug must never fail an
     # otherwise-successful ingest.
     try:
-        from aryx.cpq.data_table_resolver import _clear_tables_cache
+        from aryx.cpq.data_table.data_table_resolver import _clear_tables_cache
         from aryx.cpq.engine import (
             _clear_data_table_forced_vns_cache,
             _clear_rule_join_data_cache,

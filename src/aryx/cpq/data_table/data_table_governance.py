@@ -7,7 +7,7 @@ Phase 2a, 2026-09-03).
 """
 from __future__ import annotations
 
-from aryx.cpq.data_table_loader import _load_all_tables
+from aryx.cpq.data_table.data_table_loader import _load_all_tables
 
 
 def governed_attr_names_for_base_model(

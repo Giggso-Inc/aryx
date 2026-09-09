@@ -36,9 +36,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import aryx.cpq.data_table_cache as dtc
-import aryx.cpq.data_table_loader as dtl
-import aryx.cpq.data_table_resolver as dtr
+import aryx.cpq.data_table.data_table_cache as dtc
+import aryx.cpq.data_table.data_table_loader as dtl
+import aryx.cpq.data_table.data_table_resolver as dtr
 
 
 def setup_function(_fn):

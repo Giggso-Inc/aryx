@@ -6,7 +6,7 @@ wrapper over already-external ``data_table_resolver`` calls.
 
 from __future__ import annotations
 
-from aryx.cpq.data_table_resolver import (
+from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,

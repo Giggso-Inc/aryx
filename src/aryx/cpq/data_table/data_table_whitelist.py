@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.data_table_loader import _load_all_tables
-from aryx.cpq.data_table_shapes import _attr_val_col_pairs
+from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs
 
 
 def _row_conditions_match(

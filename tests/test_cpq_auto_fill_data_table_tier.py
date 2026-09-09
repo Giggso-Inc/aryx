@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_resolver
+from aryx.cpq.data_table import data_table_resolver
 from aryx.cpq.engine import CpqEngine, _cpq_model_candidates
 from aryx.cpq.state import ConfigAttr, MenuOption
 
@@ -41,7 +41,7 @@ class _FakeRdb:
 
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
-    from aryx.cpq import data_table_loader
+    from aryx.cpq.data_table import data_table_loader
     monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
 
 

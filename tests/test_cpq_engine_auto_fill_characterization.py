@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_loader
+from aryx.cpq.data_table import data_table_loader
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, MenuOption
 from aryx.cpq.state_rules import ConstraintRule, HidingRule, RecommendationRule

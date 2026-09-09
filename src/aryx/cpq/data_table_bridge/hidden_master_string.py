@@ -8,7 +8,7 @@ wrapper over already-external ``data_table_resolver`` calls.
 from __future__ import annotations
 
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
-from aryx.cpq.data_table_resolver import (
+from aryx.cpq.data_table.data_table_resolver import (
     governed_attr_names_for_base_model as dt_governed_attr_names_for_base_model,
 )
 from aryx.cpq.state import ConfigAttr
