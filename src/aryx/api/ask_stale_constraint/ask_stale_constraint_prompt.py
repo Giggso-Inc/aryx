@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.pending_scope import set_pending_scope
-from aryx.cpq.session_guard import push_snapshot
+from aryx.cpq.session_guard.session_guard import push_snapshot
 
 
 def build_stale_reask_prompt(session: Any, attrs: list, stale: list) -> str:

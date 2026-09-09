@@ -5,7 +5,7 @@ from aryx.cpq.bom_gate.bom_gate import (
     check_provenance, find_missing_required_fields, recheck_constraints,
     validate_before_payload,
 )
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     CLARIFY_STREAK_MAX,
     HISTORY_CAP,
     detect_undo,

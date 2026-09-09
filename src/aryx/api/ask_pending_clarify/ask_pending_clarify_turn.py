@@ -21,7 +21,7 @@ from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import (
 from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
 from aryx.api.ask_pending_clarify.ask_pending_clarify_prompt import _grounded_clarify_prompt
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     guided_mode_offer_message,
     note_clarify,
     should_force_numbered_options,

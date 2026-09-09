@@ -13067,12 +13067,12 @@
       "run_late_pass"
     ],
     [
-      "src/aryx/cpq/session_guard_snapshot.py",
+      "src/aryx/cpq/session_guard/session_guard_snapshot.py",
       48,
       "restore_last_snapshot"
     ],
     [
-      "src/aryx/cpq/session_guard_snapshot.py",
+      "src/aryx/cpq/session_guard/session_guard_snapshot.py",
       68,
       "restore_last_snapshot"
     ],

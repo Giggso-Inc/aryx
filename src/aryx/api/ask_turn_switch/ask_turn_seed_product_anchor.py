@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.session_guard import push_snapshot
+from aryx.cpq.session_guard.session_guard import push_snapshot
 
 
 def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:

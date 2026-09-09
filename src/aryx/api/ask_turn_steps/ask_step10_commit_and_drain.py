@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.cpq.session_guard import clear_queue_vn, drain_intent_queue_into_pending
+from aryx.cpq.session_guard.session_guard import clear_queue_vn, drain_intent_queue_into_pending
 
 
 

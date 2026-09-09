@@ -20,7 +20,7 @@ from aryx.api.ask_attr_recompute.ask_cascade_multi_note import (
 )
 from aryx.api.ask_attr_recompute.ask_cascade_multi_recompute import _recompute_after_cascade_multi
 from aryx.api.ask_attr_recompute.ask_cascade_multi_response import _build_cascade_multi_response
-from aryx.cpq.session_guard import drain_intent_queue_into_pending, push_snapshot
+from aryx.cpq.session_guard.session_guard import drain_intent_queue_into_pending, push_snapshot
 
 
 def _handle_cascade_multi(

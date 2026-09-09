@@ -22,7 +22,7 @@ from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import (
 from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates
 from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _reply_matches_attr_option
 from aryx.api.ask_pending_clarify.ask_pending_clarify_prompt import _grounded_clarify_prompt
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     guided_mode_offer_message,
     note_clarify,
     should_force_numbered_options,

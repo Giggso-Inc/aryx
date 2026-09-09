@@ -19,8 +19,8 @@ import uuid
 from typing import Any
 
 from aryx.cpq.logging_context import set_run_id
-from aryx.cpq.session_guard_loop import detect_guided_mode_accept, record_utterance
-from aryx.cpq.session_guard_snapshot import (
+from aryx.cpq.session_guard.session_guard_loop import detect_guided_mode_accept, record_utterance
+from aryx.cpq.session_guard.session_guard_snapshot import (
     detect_undo,
     restore_last_snapshot,
     undo_empty_message,

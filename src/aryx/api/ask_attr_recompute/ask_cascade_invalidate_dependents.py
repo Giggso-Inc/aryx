@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import _invalidate_stale_base_model
-from aryx.cpq.session_guard import clear_clarify, push_snapshot
+from aryx.cpq.session_guard.session_guard import clear_clarify, push_snapshot
 
 
 def _invalidate_cascade_dependents(

@@ -14,7 +14,7 @@ from aryx.cpq.intent_gateway import (
     _cache_key,
     clear_gateway_cache,
 )
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     CLARIFY_STREAK_MAX,
     note_clarify,
     should_force_numbered_options,

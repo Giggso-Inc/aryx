@@ -22,7 +22,7 @@ from aryx.api.ask_gateway.ask_gateway_to_intent_result import _gateway_to_intent
 from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pending_clarify
 from aryx.cpq.intent_gateway import classify_intent as gateway_classify_intent
 from aryx.cpq.intent_schema.intent_schema import IntentCategory
-from aryx.cpq.session_guard import clear_clarify
+from aryx.cpq.session_guard.session_guard import clear_clarify
 
 
 def _llm_first_gateway_turn(

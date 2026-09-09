@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_attr_recompute.ask_cascade_user_value_precedence import _revert_overridden_user_value
-from aryx.cpq.session_guard import clear_queue_vn, drain_intent_queue_into_pending
+from aryx.cpq.session_guard.session_guard import clear_queue_vn, drain_intent_queue_into_pending
 
 
 def _recompute_after_cascade(

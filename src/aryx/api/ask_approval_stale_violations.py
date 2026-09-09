@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.cpq.session_guard import push_snapshot
+from aryx.cpq.session_guard.session_guard import push_snapshot
 
 
 def _handle_approval_gate_conflict(

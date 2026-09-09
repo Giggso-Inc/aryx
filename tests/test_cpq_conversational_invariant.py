@@ -8,7 +8,7 @@ pending_change_no_value_vn, pending_switch_*, …). This makes the
 """
 from __future__ import annotations
 
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     answer_is_config_question,
     assert_conversational_invariant,
     enforce_conversational_invariant,

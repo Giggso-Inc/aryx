@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     audit_intent_conservation,
     enqueue_intent_targets,
     format_dropped_intent_notice,

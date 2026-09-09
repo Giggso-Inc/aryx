@@ -15,7 +15,7 @@ from typing import Any
 
 from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _apply_intent_conservation, _queue_followup_note, _scan_and_enqueue_remaining_targets
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.cpq.session_guard import clear_queue_vn
+from aryx.cpq.session_guard.session_guard import clear_queue_vn
 
 
 def _build_no_value_response(

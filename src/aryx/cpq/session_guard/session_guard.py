@@ -15,7 +15,7 @@ is split across three focused files by concern — `session_guard_snapshot.py`
 (history/undo), `session_guard_loop.py` (clarify-streak counters and
 loop-exit prompts), `session_guard_invariant.py` (orphan-question
 guardrail) — all re-imported here. Zero whitebox test patches exist
-anywhere against `aryx.cpq.session_guard.*` (confirmed via grep), so the
+anywhere against `aryx.cpq.session_guard.session_guard.*` (confirmed via grep), so the
 split was purely mechanical.
 """
 from __future__ import annotations
@@ -33,13 +33,13 @@ from aryx.cpq.intent_queue.intent_queue import (  # noqa: F401 — re-export pub
     pop_intent_queue_head,
     reset_intent_dropped_count,
 )
-from aryx.cpq.session_guard_invariant import (
+from aryx.cpq.session_guard.session_guard_invariant import (
     answer_is_config_question,
     assert_conversational_invariant,
     enforce_conversational_invariant,
     has_consumable_pending_state,
 )
-from aryx.cpq.session_guard_loop import (
+from aryx.cpq.session_guard.session_guard_loop import (
     CLARIFY_STREAK_MAX,
     UNRESOLVED_TURNS_MAX,
     UTTERANCE_CAP,
@@ -54,7 +54,7 @@ from aryx.cpq.session_guard_loop import (
     should_force_numbered_options,
     should_offer_guided_mode,
 )
-from aryx.cpq.session_guard_snapshot import (
+from aryx.cpq.session_guard.session_guard_snapshot import (
     HISTORY_CAP,
     detect_undo,
     push_snapshot,

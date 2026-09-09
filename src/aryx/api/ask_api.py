@@ -28,7 +28,7 @@ from aryx.cpq.intent_gateway import (
     top_level_route_used,
 )
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
-from aryx.cpq.session_guard import (  # noqa: E402
+from aryx.cpq.session_guard.session_guard import (  # noqa: E402
     detect_guided_mode_accept,
     detect_undo,
     enforce_conversational_invariant,

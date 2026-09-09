@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from aryx.cpq.pending_scope import set_pending_scope
-from aryx.cpq.session_guard import push_snapshot
+from aryx.cpq.session_guard.session_guard import push_snapshot
 
 logger = logging.getLogger(__name__)
 

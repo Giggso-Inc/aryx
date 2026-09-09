@@ -12,7 +12,7 @@ from aryx.cpq.pending_scope import (
     resolve_against_scope,
     set_pending_scope,
 )
-from aryx.cpq.session_guard import has_consumable_pending_state
+from aryx.cpq.session_guard.session_guard import has_consumable_pending_state
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
