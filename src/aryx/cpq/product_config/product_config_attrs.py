@@ -16,7 +16,7 @@ from aryx.cpq.engine import (
     classify_select_type,
     logger,
 )
-from aryx.cpq.product_config_lookups import ArraySetLookups
+from aryx.cpq.product_config.product_config_lookups import ArraySetLookups
 
 
 def build_config_attrs(

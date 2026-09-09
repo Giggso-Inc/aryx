@@ -12882,62 +12882,62 @@
       "mandatory_tier_c_vns"
     ],
     [
-      "src/aryx/cpq/product_config_attrs.py",
+      "src/aryx/cpq/product_config/product_config_attrs.py",
       22,
       "build_config_attrs"
     ],
     [
-      "src/aryx/cpq/product_config_attrs.py",
+      "src/aryx/cpq/product_config/product_config_attrs.py",
       135,
       "build_config_attrs"
     ],
     [
-      "src/aryx/cpq/product_config_entities.py",
+      "src/aryx/cpq/product_config/product_config_entities.py",
       18,
       "load_attr_entities"
     ],
     [
-      "src/aryx/cpq/product_config_entities.py",
+      "src/aryx/cpq/product_config/product_config_entities.py",
       28,
       "<try>"
     ],
     [
-      "src/aryx/cpq/product_config_entities.py",
+      "src/aryx/cpq/product_config/product_config_entities.py",
       78,
       "load_attr_entities"
     ],
     [
-      "src/aryx/cpq/product_config_lookups.py",
+      "src/aryx/cpq/product_config/product_config_lookups.py",
       23,
       "build_array_set_lookups"
     ],
     [
-      "src/aryx/cpq/product_config_lookups.py",
+      "src/aryx/cpq/product_config/product_config_lookups.py",
       43,
       "build_array_set_lookups"
     ],
     [
-      "src/aryx/cpq/product_config_menu_base.py",
+      "src/aryx/cpq/product_config/product_config_menu_base.py",
       15,
       "collect_base_menu_neighbors"
     ],
     [
-      "src/aryx/cpq/product_config_menu_base.py",
+      "src/aryx/cpq/product_config/product_config_menu_base.py",
       37,
       "<try>"
     ],
     [
-      "src/aryx/cpq/product_config_menu_base.py",
+      "src/aryx/cpq/product_config/product_config_menu_base.py",
       44,
       "<try>"
     ],
     [
-      "src/aryx/cpq/product_config_menu_base.py",
+      "src/aryx/cpq/product_config/product_config_menu_base.py",
       86,
       "collect_base_menu_neighbors"
     ],
     [
-      "src/aryx/cpq/product_config_menu_override.py",
+      "src/aryx/cpq/product_config/product_config_menu_override.py",
       15,
       "apply_override_redirection"
     ],

@@ -11,13 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import ConfigAttr
-from aryx.cpq.product_config_attrs import build_config_attrs
-from aryx.cpq.product_config_entities import load_attr_entities
-from aryx.cpq.product_config_lookups import build_array_set_lookups, compute_rule_target_ids
-from aryx.cpq.product_config_menu_base import collect_base_menu_neighbors
-from aryx.cpq.product_config_menu_build import build_menu_by_attr
-from aryx.cpq.product_config_menu_orphan_fk import resolve_orphan_menu_items
-from aryx.cpq.product_config_menu_override import apply_override_redirection
+from aryx.cpq.product_config.product_config_attrs import build_config_attrs
+from aryx.cpq.product_config.product_config_entities import load_attr_entities
+from aryx.cpq.product_config.product_config_lookups import build_array_set_lookups, compute_rule_target_ids
+from aryx.cpq.product_config.product_config_menu_base import collect_base_menu_neighbors
+from aryx.cpq.product_config.product_config_menu_build import build_menu_by_attr
+from aryx.cpq.product_config.product_config_menu_orphan_fk import resolve_orphan_menu_items
+from aryx.cpq.product_config.product_config_menu_override import apply_override_redirection
 
 
 def load_product_config(

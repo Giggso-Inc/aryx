@@ -727,7 +727,7 @@ class FillScope:
 # module, so it must be placed after both class definitions above.
 from aryx.cpq import auto_fill_run  # noqa: E402
 from aryx.cpq import auto_fill_setup  # noqa: E402
-from aryx.cpq import product_config_load  # noqa: E402
+from aryx.cpq.product_config import product_config_load  # noqa: E402
 
 
 class CpqEngine:

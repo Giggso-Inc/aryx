@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.engine import _catalog_prefix, logger
-from aryx.cpq.product_config_entities import _norm
+from aryx.cpq.product_config.product_config_entities import _norm
 
 
 def apply_override_redirection(
