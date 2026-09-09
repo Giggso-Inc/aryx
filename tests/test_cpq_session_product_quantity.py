@@ -14,7 +14,12 @@ from unittest.mock import patch
 import pytest
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import _cpq_summary_text, _llm_resolve_quantity_target, _run_cpq_turn
+from aryx.api.ask_api import _run_cpq_turn
+from aryx.api.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_llm_resolve_quantity_target import (
+    _llm_resolve_quantity_target,
+    _quantity_message_might_name_candidate,
+)
 from aryx.api.ask_api import AskRequest
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY,
@@ -761,10 +766,10 @@ def test_quantity_message_might_name_candidate_is_permissively_inclusive():
         display_label="Quantity for Tier 2 Bundle", required=False,
         default_value="", select_type="integer", options=[],
     )
-    assert api._quantity_message_might_name_candidate(
+    assert _quantity_message_might_name_candidate(
         "please change the quantity to 2", tier2_bundle,
     ) is True
-    assert api._quantity_message_might_name_candidate(
+    assert _quantity_message_might_name_candidate(
         "can you change that quantity to 5", tier2_bundle,
     ) is False
 

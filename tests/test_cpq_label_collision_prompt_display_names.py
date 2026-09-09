@@ -12,7 +12,7 @@ test fixtures below deliberately use a NON-SVX label pair.
 """
 from __future__ import annotations
 
-from aryx.api.ask_api import _label_collision_prompt
+from aryx.api.ask_label_collision_prompt_and_narrow import _label_collision_prompt
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 

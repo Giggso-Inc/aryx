@@ -17,16 +17,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import (
-    AskRequest,
-    _clear_pending_clarify,
-    _ground_clarify_candidates,
-    _grounded_clarify_prompt,
-    _handle_pending_clarify_turn,
-    _is_global_change_decline,
-    _match_pending_clarify_reply,
-    _set_pending_clarify_and_answer,
-)
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_change_decline_and_scope_memory import _is_global_change_decline
+from aryx.api.ask_pending_clarify_answer import _set_pending_clarify_and_answer
+from aryx.api.ask_pending_clarify_apply import _clear_pending_clarify
+from aryx.api.ask_pending_clarify_grounding import _ground_clarify_candidates
+from aryx.api.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_pending_clarify_prompt import _grounded_clarify_prompt
+from aryx.api.ask_pending_clarify_turn import _handle_pending_clarify_turn
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 

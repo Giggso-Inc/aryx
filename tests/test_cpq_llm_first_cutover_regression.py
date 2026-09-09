@@ -10,14 +10,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_api import (
-    _is_change_value_decline,
-    _llm_classify_is_cpq_question,
-    _llm_split_compound_change_and_question,
-    _llm_split_multi_attr_change_request,
-    _llm_split_multi_attr_options_query,
-    _resolve_split_change_text,
-)
+from aryx.api.ask_attr_text_helpers import _resolve_split_change_text
+from aryx.api.ask_change_decline_and_scope_memory import _is_change_value_decline
+from aryx.api.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
+from aryx.api.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request
+from aryx.api.ask_llm_split_multi_attr_options import _llm_split_multi_attr_options_query
+from aryx.api.ask_llm_switch_reply_and_compound_split import _llm_split_compound_change_and_question
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
@@ -266,7 +264,7 @@ def test_change_value_decline_does_not_match_bare_no_or_real_values():
 # match; the phrasings pinned are unchanged.
 
 def test_extract_replacement_clause_cuts_trailing_contrastive_word():
-    from aryx.api.ask_api import _extract_replacement_clause
+    from aryx.api.ask_change_decline_and_scope_memory import _extract_replacement_clause
     assert _extract_replacement_clause("prefer Premium over Standard")[0] == "Premium"
     assert _extract_replacement_clause("rather Premium than Standard")[0] == "Premium"
     assert _extract_replacement_clause(
@@ -275,7 +273,7 @@ def test_extract_replacement_clause_cuts_trailing_contrastive_word():
 
 
 def test_extract_replacement_clause_unaffected_without_contrast():
-    from aryx.api.ask_api import _extract_replacement_clause
+    from aryx.api.ask_change_decline_and_scope_memory import _extract_replacement_clause
     assert _extract_replacement_clause(
         "I don't want Standard, use Premium",
     )[0] == "Premium"
@@ -284,7 +282,7 @@ def test_extract_replacement_clause_unaffected_without_contrast():
 
 
 def test_extract_replacement_clause_handles_reversed_instead_of_phrasing():
-    from aryx.api.ask_api import _extract_replacement_clause
+    from aryx.api.ask_change_decline_and_scope_memory import _extract_replacement_clause
     assert _extract_replacement_clause(
         "instead of Standard, prefer Premium",
     )[0] == "Premium"

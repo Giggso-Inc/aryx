@@ -13,12 +13,8 @@ from __future__ import annotations
 import pytest
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import (
-    AskRequest,
-    _constrain_excluding_rejected,
-    _extract_replacement_clause,
-    _run_cpq_turn,
-)
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module

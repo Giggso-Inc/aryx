@@ -23,12 +23,9 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import (
-    AskRequest,
-    _is_decline_reply,
-    _llm_detect_change_decline,
-    _run_cpq_turn,
-)
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
+from aryx.api.ask_llm_topic_switch_and_change_decline import _llm_detect_change_decline
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module

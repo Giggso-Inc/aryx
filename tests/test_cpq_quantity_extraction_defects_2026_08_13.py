@@ -8,7 +8,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _llm_confirm_and_extract_quantity, _run_cpq_turn
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.cpq.engine import extract_quantity_hint
 from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import (

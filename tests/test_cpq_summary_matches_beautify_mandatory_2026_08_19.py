@@ -22,7 +22,8 @@ selection, a genuinely different concern).
 from __future__ import annotations
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _build_show_summary_response
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_build_show_summary_response import _build_show_summary_response
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module

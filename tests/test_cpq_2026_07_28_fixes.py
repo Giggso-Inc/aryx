@@ -16,16 +16,14 @@ from unittest.mock import patch
 import pytest
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import (
-    AskRequest,
-    _build_country_change_response,
-    _dispatch_intent_result,
-    _handle_cascade,
-    _handle_cpq_qa,
-    _resolve_target_description,
-    _run_cpq_turn,
-    _with_classify_usage,
-)
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
+from aryx.api.ask_build_country_change_response import _build_country_change_response
+from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
+from aryx.api.ask_handle_cascade import _handle_cascade
+from aryx.api.ask_handle_cpq_qa import _handle_cpq_qa
+from aryx.api.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import clear_gateway_cache
@@ -496,7 +494,7 @@ def test_match_pending_clarify_reply_stays_ambiguous_without_an_anchor():
     session = CpqSession(mode="cpq")
     with patch.object(_ask_pending_clarify_llm_classify_test_module, "_llm_classify_pending_clarify_reply", return_value=("unclear", None),
     ) as mock_llm:
-        status, vn = api._match_pending_clarify_reply("VHF", [bands, primary], session, 1)
+        status, vn = _match_pending_clarify_reply("VHF", [bands, primary], session, 1)
     assert (status, vn) == ("unclear", None)
     mock_llm.assert_called_once()
 
@@ -508,7 +506,7 @@ def test_match_pending_clarify_reply_resolves_unique_value_without_an_anchor():
     carry = _attr(2, "beltClipType_astro", "Carry Type",
                    options=_opt("Plastic Holster", "Hard Leather Case"))
     session = CpqSession(mode="cpq")
-    status, vn = api._match_pending_clarify_reply("VHF", [bands, carry], session, 1)
+    status, vn = _match_pending_clarify_reply("VHF", [bands, carry], session, 1)
     assert (status, vn) == ("resolved", "modelSelectionFrequencyBands_astro")
 
 

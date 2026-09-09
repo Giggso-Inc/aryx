@@ -194,7 +194,8 @@ def test_n9_cache_key_includes_model_and_pid():
 
 def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
     import logging
-    from aryx.api.ask_api import AskRequest, run_ask
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_run_ask import run_ask
     from aryx.cpq.intent_gateway import AskRouteDecision
 
     req = AskRequest(
@@ -225,7 +226,8 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
 # ── N2 cold QA does not set product on empty session ─────────────────────────
 
 def test_n2_route_qa_read_only_product():
-    from aryx.api.ask_api import AskRequest, _route_qa
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_route_qa import _route_qa
 
     req = AskRequest(
         question="what are the options for product",
@@ -263,7 +265,8 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
     failure there is a real outage worth surfacing, not masking. Shadow
     mode (test_cpq_ask_route_fewshots.py) is where the old escape-hatch
     fallback still lives, since it's observe-only by design."""
-    from aryx.api.ask_api import AskRequest, run_ask
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_run_ask import run_ask
     from aryx.cpq.intent_gateway import AskRouteDecision
 
     req = AskRequest(

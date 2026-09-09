@@ -12,11 +12,13 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
+import aryx.api.ask_core_helpers as _ask_core_helpers_module
+from aryx.api.ask_core_helpers import _current_turn_usage_dict, _persist_cpq_history
 
 
 def test_default_usage_when_no_real_calls_recorded():
     with patch("aryx.api.ask_api.llm_runtime.get_turn_usage", lambda: None):
-        usage = api._current_turn_usage_dict()
+        usage = _current_turn_usage_dict()
     assert usage == {
         "prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
         "menial_model": "cpq-engine", "answer_model": "cpq-engine",
@@ -27,7 +29,7 @@ def test_default_usage_when_zero_calls_recorded():
     fake = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
             "calls": 0, "models": []}
     with patch("aryx.api.ask_api.llm_runtime.get_turn_usage", lambda: fake):
-        usage = api._current_turn_usage_dict()
+        usage = _current_turn_usage_dict()
     assert usage["menial_model"] == "cpq-engine"
     assert usage["prompt_tokens"] == 0
 
@@ -36,7 +38,7 @@ def test_real_usage_when_calls_recorded():
     fake = {"prompt_tokens": 181, "completion_tokens": 38, "latency_ms": 4149,
             "calls": 1, "models": ["gemini-3.5-flash"]}
     with patch("aryx.api.ask_api.llm_runtime.get_turn_usage", lambda: fake):
-        usage = api._current_turn_usage_dict()
+        usage = _current_turn_usage_dict()
     assert usage == {
         "prompt_tokens": 181, "completion_tokens": 38, "latency_ms": 4149,
         "menial_model": "gemini-3.5-flash", "answer_model": "gemini-3.5-flash",
@@ -61,9 +63,9 @@ def test_persist_cpq_history_writes_real_usage_to_the_store(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(api, "AskHistoryStore", _FakeStore)
+    monkeypatch.setattr(_ask_core_helpers_module, "AskHistoryStore", _FakeStore)
 
-    api._persist_cpq_history(1, "whichever plan you decide", "1 Year or 2 Year?")
+    _persist_cpq_history(1, "whichever plan you decide", "1 Year or 2 Year?")
 
     assert captured["usage"] == {
         "prompt_tokens": 382, "completion_tokens": 66, "latency_ms": 6595,
@@ -87,9 +89,9 @@ def test_persist_cpq_history_falls_back_to_default_when_no_real_calls(monkeypatc
         def close(self):
             pass
 
-    monkeypatch.setattr(api, "AskHistoryStore", _FakeStore)
+    monkeypatch.setattr(_ask_core_helpers_module, "AskHistoryStore", _FakeStore)
 
-    api._persist_cpq_history(1, "1", "SmartConnect — choose one: 1 Year, 2 Year")
+    _persist_cpq_history(1, "1", "SmartConnect — choose one: 1 Year, 2 Year")
 
     assert captured["usage"] == {
         "prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

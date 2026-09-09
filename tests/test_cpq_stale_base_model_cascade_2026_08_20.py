@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import _BASE_MODEL_VN, _invalidate_stale_base_model
+from aryx.api.ask_invalidate_stale_base_model import _BASE_MODEL_VN, _invalidate_stale_base_model
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 

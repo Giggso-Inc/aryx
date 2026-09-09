@@ -16,10 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import (
-    _llm_detect_pending_topic_switch,
-    _pending_reply_is_topic_switch,
-)
+from aryx.api.ask_llm_topic_switch_and_change_decline import _llm_detect_pending_topic_switch, _pending_reply_is_topic_switch
 from aryx.cpq.state import ConfigAttr, MenuOption
 
 

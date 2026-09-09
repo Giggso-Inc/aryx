@@ -1743,6 +1743,8 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     bullet summary instead of blocking the flow or showing a malformed
     merge."""
     from aryx.api import ask_api
+    from aryx.api.ask_core_helpers import _CPQ_SEGMENT_DELIM
+    from aryx.api.ask_cpq_summary_text import _cpq_summary_text
     from aryx.cpq.state import ConfigAttr, MenuOption
 
     attrs = [
@@ -1763,7 +1765,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         ),
     ]
     display_filled = {"region": "NA", "ruggedized": "Yes", "quantitySpareUnits": "1"}
-    delim = ask_api._CPQ_SEGMENT_DELIM
+    delim = _CPQ_SEGMENT_DELIM
 
     captured: dict[str, str] = {}
 
@@ -1777,7 +1779,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         ), 10, 20
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", fake_chat)
-    text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2, 3}, "APX NEXT", 1)
+    text = _cpq_summary_text(display_filled, attrs, {1, 2, 3}, "APX NEXT", 1)
     assert text == (
         "Your configuration is complete.\n\n"
         "**Quantity & Duration:**\n- **Spare Units** → 1\n\n"
@@ -1794,7 +1796,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         return "The radio is configured for the NA region.", 10, 20
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", malformed_chat)
-    malformed_fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    malformed_fallback = _cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert "Key decisions" in malformed_fallback and "Region" in malformed_fallback, (
         "a reply that doesn't match the expected segment count must fall back")
 
@@ -1802,13 +1804,13 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
-    fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    fallback = _cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert "Key decisions" in fallback and "Region" in fallback, (
         "LLM failure must fall back to the deterministic bullet summary")
 
     # Nothing survives filtering → no LLM call, empty string.
     monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
-    assert ask_api._cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
+    assert _cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
 
 
 def test_s32_change_request_full_option_name_outranks_coarse_hint():

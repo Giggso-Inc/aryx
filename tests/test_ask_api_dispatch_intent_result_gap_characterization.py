@@ -73,7 +73,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import AskRequest, _dispatch_intent_result
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption

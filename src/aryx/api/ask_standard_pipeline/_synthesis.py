@@ -3,14 +3,10 @@
 Split out of `ask_api.py` per
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md Phase 4 step 1.
 
-`_llm_classify_is_ask_in_scope` stays defined in `ask_api.py` (it is not
-part of this extraction). It is looked up via a deferred, call-time import
-of the `aryx.api.ask_api` module (not a top-level `from ... import`) for
-two reasons: (1) `ask_api.py` imports THIS module at its own top level to
-re-export the moved names, so a top-level import back the other way would
-be a circular import; (2) going through the module object at call time
-means `mock.patch("aryx.api.ask_api._llm_classify_is_ask_in_scope", ...)`
-still takes effect, exactly as it did before the split.
+`_llm_classify_is_ask_in_scope`'s true home is
+`ask_llm_classify_is_ask_in_scope.py` (docs/RAVEN_STYLE_COMPLIANCE_PLAN_
+2026-09-03.md's ask_api.py external-import-site rewrite) -- imported
+directly, since no test patches it by dotted path.
 """
 from __future__ import annotations
 
@@ -18,6 +14,7 @@ import logging
 import time
 
 from aryx import llm_runtime
+from aryx.api.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope
 from aryx.api.ask_request_models import Turn
 from aryx.api.ask_standard_pipeline._rewrite import _MAX_ANSWER_LINES, _enforce_plain_answer
 from aryx.api.ask_standard_pipeline._text_utils import _recent, _strip_think
@@ -66,8 +63,7 @@ def _synthesise(question: str, context: str, overview: str = "",
     # catalog questions, not just quote/order intent); see that function's
     # own docstring for why reusing the narrow classifier here caused Ask
     # to refuse almost every question.
-    from aryx.api import ask_api as _ask_api  # deferred: see module docstring
-    is_cpq_relevant = _ask_api._llm_classify_is_ask_in_scope(
+    is_cpq_relevant = _llm_classify_is_ask_in_scope(
         question, workspace_id, prior_context=conv,
     )
     logger.info(

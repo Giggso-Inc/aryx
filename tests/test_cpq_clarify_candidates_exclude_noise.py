@@ -16,7 +16,7 @@ Two independent causes, both fixed:
 """
 from __future__ import annotations
 
-from aryx.api.ask_api import _ground_clarify_candidates
+from aryx.api.ask_pending_clarify_grounding import _ground_clarify_candidates
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 

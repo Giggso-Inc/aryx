@@ -7893,42 +7893,42 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      388,
+      45,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      431,
+      57,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      729,
+      67,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      738,
+      76,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      739,
+      77,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      742,
+      80,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      744,
+      82,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      746,
+      84,
       "ask_router"
     ],
     [
@@ -9408,17 +9408,17 @@
     ],
     [
       "src/aryx/api/ask_standard_pipeline/_synthesis.py",
-      28,
+      25,
       "_synthesise"
     ],
     [
       "src/aryx/api/ask_standard_pipeline/_synthesis.py",
-      87,
+      83,
       "<if>"
     ],
     [
       "src/aryx/api/ask_standard_pipeline/_synthesis.py",
-      139,
+      135,
       "_synthesise"
     ],
     [
@@ -9925,6 +9925,16 @@
       "src/aryx/api/ask_turn_country_available_for.py",
       68,
       "_country_available_for"
+    ],
+    [
+      "src/aryx/api/ask_turn_dispatch.py",
+      25,
+      "_dispatch_cpq_turn_steps"
+    ],
+    [
+      "src/aryx/api/ask_turn_dispatch.py",
+      101,
+      "_dispatch_cpq_turn_steps"
     ],
     [
       "src/aryx/api/ask_turn_intent_diagnostics.py",

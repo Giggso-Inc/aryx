@@ -20,7 +20,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _llm_confirm_deterministic_intent, _run_cpq_turn_inner
+from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
+from aryx.api.ask_shadow_classify_and_confirm_intent import _llm_confirm_deterministic_intent
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
