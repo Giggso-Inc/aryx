@@ -17,18 +17,18 @@ from functools import lru_cache
 
 from pydantic_settings import SettingsConfigDict
 
-from aryx.config_core import CoreSettingsMixin
-from aryx.config_cpq_intent import CpqIntentSettingsMixin
-from aryx.config_dimension import DimensionSettingsMixin
-from aryx.config_documents import DocumentSettingsMixin
-from aryx.config_fk_detection import FkDetectionSettingsMixin
-from aryx.config_graph import GraphSettingsMixin
-from aryx.config_ingest import IngestSettingsMixin
-from aryx.config_llm import LlmSettingsMixin
-from aryx.config_oci import OciSettingsMixin
-from aryx.config_ontology import OntologySettingsMixin
-from aryx.config_relate import RelateSettingsMixin
-from aryx.config_resolution import ResolutionSettingsMixin
+from aryx.config.config_core import CoreSettingsMixin
+from aryx.config.config_cpq_intent import CpqIntentSettingsMixin
+from aryx.config.config_dimension import DimensionSettingsMixin
+from aryx.config.config_documents import DocumentSettingsMixin
+from aryx.config.config_fk_detection import FkDetectionSettingsMixin
+from aryx.config.config_graph import GraphSettingsMixin
+from aryx.config.config_ingest import IngestSettingsMixin
+from aryx.config.config_llm import LlmSettingsMixin
+from aryx.config.config_oci import OciSettingsMixin
+from aryx.config.config_ontology import OntologySettingsMixin
+from aryx.config.config_relate import RelateSettingsMixin
+from aryx.config.config_resolution import ResolutionSettingsMixin
 
 
 class Settings(
