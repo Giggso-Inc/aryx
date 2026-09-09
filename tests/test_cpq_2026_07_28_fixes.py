@@ -20,8 +20,8 @@ from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_build_country_change_response import _build_country_change_response
 from aryx.api.ask_dispatch_intent_result import _dispatch_intent_result
-from aryx.api.ask_handle_cascade import _handle_cascade
-from aryx.api.ask_handle_cpq_qa import _handle_cpq_qa
+from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
+from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
 from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
 from aryx.api.ask_target_description import _resolve_target_description
 from aryx.cpq.bml import BmlEvaluator, evaluate_tier1
@@ -534,7 +534,7 @@ def test_llm_first_qa_question_dispatches_on_high_confidence_with_reader():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -563,7 +563,7 @@ def test_llm_first_qa_question_medium_confidence_falls_through():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.MEDIUM,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         resp = _dispatch_intent_result(
             req, session, [], result, [], [], [], None, reader=object(),
         )
@@ -582,7 +582,7 @@ def test_llm_first_qa_question_never_dispatches_without_a_reader():
         category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
         rationale="graph question",
     )
-    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
     mock_qa.assert_not_called()
     assert resp is None
@@ -691,7 +691,7 @@ def test_llm_first_attr_activation_dispatches_an_eligible_attr():
         rationale="activation",
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules", return_value=({}, {}, set())), \
-         patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+         patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         mock_activate.return_value = {
             "answer": "stub activation", "terms": [], "tools_called": ["cpq_attr_activation()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -717,7 +717,7 @@ def test_llm_first_attr_activation_never_reactivates_an_already_filled_attr():
         target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -735,7 +735,7 @@ def test_llm_first_attr_activation_never_reactivates_a_required_attr():
         target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [required_attr], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -755,7 +755,7 @@ def test_llm_first_attr_activation_never_reactivates_a_still_hidden_attr():
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules",
                return_value=({}, {}, {"extendedBattery_astro"})), \
-         patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+         patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -779,7 +779,7 @@ def test_llm_first_attr_clear_dispatches_an_eligible_attr():
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules", return_value={}), \
-         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         mock_clear.return_value = {
             "answer": "stub clear", "terms": [], "tools_called": ["cpq_attr_clear()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -804,7 +804,7 @@ def test_llm_first_attr_clear_never_clears_an_unfilled_attr():
         target=ChangeTarget(target_description="Device Color", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -827,7 +827,7 @@ def test_llm_first_attr_clear_refuses_when_a_recommendation_would_immediately_re
     )
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules",
                return_value={"deviceColor_astro": "Black"}), \
-         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -1359,7 +1359,7 @@ def test_question_mark_during_config_routes_to_qa_not_treated_as_an_answer(monke
                          status="configuring", turn=2)
     req = AskRequest(question="what does extended battery mean?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+    with patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

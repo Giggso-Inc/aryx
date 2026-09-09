@@ -234,7 +234,7 @@ def test_n2_route_qa_read_only_product():
         workspace_id=1, history=[], session_data={},
     )
     with patch("aryx.api.ask_api._cpq_engine") as eng, \
-         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa, \
+         patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa, \
          patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_api.set_run_id"):
         eng.extract_hints.return_value = {}

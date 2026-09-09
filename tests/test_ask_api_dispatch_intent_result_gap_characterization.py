@@ -290,7 +290,7 @@ def test_llm_first_attr_clear_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -310,7 +310,7 @@ def test_llm_first_attr_clear_never_clears_a_required_attr():
         target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [hw], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -331,7 +331,7 @@ def test_llm_first_attr_clear_never_clears_a_multi_select_attr():
         target=ChangeTarget(target_description="Mounting Type", new_value_description=None),
         rationale="clear",
     )
-    with patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+    with patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -357,7 +357,7 @@ def test_llm_first_attr_clear_refuses_when_a_constraint_would_narrow_to_one_opti
     with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
          patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules",
                return_value={1: ["Black"]}), \
-         patch("aryx.api.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
+         patch("aryx.api.ask_handle.ask_handle_attr_clear._handle_attr_clear") as mock_clear:
         resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
     mock_clear.assert_not_called()
     assert resp is None
@@ -375,7 +375,7 @@ def test_llm_first_attr_activation_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -396,7 +396,7 @@ def test_llm_first_attr_activation_never_reactivates_an_attr_already_in_filled_m
         target=ChangeTarget(target_description="Mounting Type", new_value_description=None),
         rationale="activation",
     )
-    with patch("aryx.api.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
+    with patch("aryx.api.ask_handle.ask_handle_attr_activation._handle_attr_activation") as mock_activate:
         resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
     mock_activate.assert_not_called()
     assert resp is None
@@ -416,7 +416,7 @@ def test_llm_first_multi_select_removal_unresolvable_target_falls_through():
         target=ChangeTarget(target_description="Product", new_value_description="A"),
         rationale="removal",
     )
-    with patch("aryx.api.ask_handle_multi_select_removal._handle_multi_select_removal") as mock_remove:
+    with patch("aryx.api.ask_handle.ask_handle_multi_select_removal._handle_multi_select_removal") as mock_remove:
         resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
     mock_remove.assert_not_called()
     assert resp is None

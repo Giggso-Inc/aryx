@@ -20,7 +20,7 @@ import time
 from typing import Any
 
 from aryx.api.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
-from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_turn_steps.ask_step1_product_family_prompt import _build_product_family_prompt_or_resolve
 from aryx.cpq.pending_scope import clear_pending_scope, resolve_against_scope
 

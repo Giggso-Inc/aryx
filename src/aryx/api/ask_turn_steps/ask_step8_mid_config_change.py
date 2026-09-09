@@ -22,10 +22,10 @@ from typing import Any
 from aryx.cpq.intent_schema_enums import IntentCategory
 
 from aryx.api.ask_build_no_value_response import _build_no_value_response
-from aryx.api.ask_handle_cascade_multi import _handle_cascade_multi
+from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi
 from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _scan_and_enqueue_remaining_targets
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 

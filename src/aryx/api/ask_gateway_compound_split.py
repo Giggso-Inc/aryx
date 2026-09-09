@@ -15,8 +15,8 @@ from typing import Any
 from aryx.api.ask_attr_text_helpers import _resolve_split_change_text
 from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_split_compound_change_and_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
-from aryx.api.ask_handle_cascade import _handle_cascade
+from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_llm.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_finish_cpq_result import _finish_cpq_result
 from aryx.cpq.intent_gateway import AskRouteDecision

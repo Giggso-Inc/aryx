@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
-from aryx.api.ask_handle_multi_select_removal import _handle_multi_select_removal
+from aryx.api.ask_handle.ask_handle_multi_select_removal import _handle_multi_select_removal
 from aryx.api.ask_target_description import _resolve_target_description
 
 

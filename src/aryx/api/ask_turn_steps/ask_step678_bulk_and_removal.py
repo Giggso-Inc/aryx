@@ -17,8 +17,8 @@ from typing import Any
 
 from aryx.cpq.intent_schema_enums import IntentCategory
 
-from aryx.api.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
-from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
+from aryx.api.ask_handle.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
 
 

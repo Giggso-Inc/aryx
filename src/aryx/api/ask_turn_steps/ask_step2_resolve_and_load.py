@@ -27,7 +27,7 @@ from aryx.api.ask_turn_steps.ask_step2_pending_change_no_value import _resolve_p
 from aryx.api.ask_turn_steps.ask_step2_rule_consistency import _step2_log_rule_consistency_and_array_grid
 from aryx.api.ask_pending_clarify.ask_pending_clarify_turn import _handle_pending_clarify_turn
 
-from aryx.api.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
+from aryx.api.ask_handle.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
 
 
 def _step2_resolve_and_load(

@@ -45,7 +45,7 @@ def test_question_while_pending_product_anchor_is_not_swallowed_as_anchor():
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "stub")), \
-         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
@@ -73,7 +73,7 @@ def test_plain_family_reply_still_anchors_normally():
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "aSTRO25_bom")), \
          patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=["aSTRO25_bom"]), \
          patch("aryx.api.ask_core_helpers._persist_cpq_history"), \
-         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         _run_cpq_turn(req, _reader())
 
     mock_qa.assert_not_called()
@@ -153,7 +153,7 @@ def test_question_about_family_relationships_routes_to_qa_not_anchor():
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "stub")), \
-         patch("aryx.api.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
+         patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa:
         mock_qa.return_value = {
             "answer": "stub", "terms": [], "tools_called": ["cpq_qa()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,

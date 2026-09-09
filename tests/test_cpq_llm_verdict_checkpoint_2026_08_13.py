@@ -27,10 +27,10 @@ from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
-from aryx.api import ask_handle_attr_activation as _ask_handle_attr_activation_test_module
-from aryx.api import ask_handle_attr_clear as _ask_handle_attr_clear_test_module
-from aryx.api import ask_handle_cascade as _ask_handle_cascade_test_module
-from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
+from aryx.api.ask_handle import ask_handle_attr_activation as _ask_handle_attr_activation_test_module
+from aryx.api.ask_handle import ask_handle_attr_clear as _ask_handle_attr_clear_test_module
+from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_test_module
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:

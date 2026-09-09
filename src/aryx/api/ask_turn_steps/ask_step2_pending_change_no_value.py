@@ -19,7 +19,7 @@ from aryx.api.ask_change_decline_and_scope_memory import _constrain_excluding_re
 from aryx.api.ask_decline_reply_and_label_collision_llm import _is_decline_reply
 from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
-from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 
 
 def _resolve_pending_change_no_value(

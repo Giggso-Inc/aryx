@@ -29,8 +29,8 @@ from aryx.api.ask_turn_steps.ask_step678_llm_fallback import _step6_llm_fallback
 from aryx.api.ask_turn_steps.ask_step678_no_value_and_nudge import _step6_no_value_or_nudge
 from aryx.api.ask_turn_steps.ask_step678_options_collision import _resolve_pending_options_collision
 
-from aryx.api.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
-from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api.ask_handle.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
+from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 
 
 def _handle_review_status_routing(

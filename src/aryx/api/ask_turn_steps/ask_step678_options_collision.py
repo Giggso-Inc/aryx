@@ -18,7 +18,7 @@ from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
-from aryx.api import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 
 
 def _resolve_pending_options_collision(

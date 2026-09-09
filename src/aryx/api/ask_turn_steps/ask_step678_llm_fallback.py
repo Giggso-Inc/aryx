@@ -18,8 +18,8 @@ from typing import Any
 
 from aryx.api.ask_attr_query_and_classify_usage import _with_classify_usage
 from aryx.api.ask_build_no_value_response import _build_no_value_response
-from aryx.api import ask_handle_cascade as _ask_handle_cascade_module
-from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
+from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
 from aryx.api.ask_llm import ask_llm_classify_change_intent as _ask_llm_classify_change_intent_module
 
 

@@ -25,7 +25,7 @@ from aryx.cpq.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
-from aryx.api import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
 from aryx.api.ask_llm import ask_llm_topic_switch_and_change_decline as _ask_llm_topic_switch_and_change_decline_test_module
 
 

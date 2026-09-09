@@ -130,7 +130,7 @@ def test_pending_clarify_resolution_prefers_the_current_reply_value():
     )
 
     with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
-        "aryx.api.ask_handle_cascade._handle_cascade",
+        "aryx.api.ask_handle.ask_handle_cascade._handle_cascade",
     ) as mock_cascade:
         mock_cascade.return_value = {"tools_called": ["stubbed"]}
         _apply_pending_clarify_resolution(
@@ -159,7 +159,7 @@ def test_pending_clarify_resolution_falls_back_to_original_utterance_value():
     )
 
     with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
-        "aryx.api.ask_handle_cascade._handle_cascade",
+        "aryx.api.ask_handle.ask_handle_cascade._handle_cascade",
     ) as mock_cascade:
         mock_cascade.return_value = {"tools_called": ["stubbed"]}
         _apply_pending_clarify_resolution(

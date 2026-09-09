@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_handle_approval import _handle_approval
+from aryx.api.ask_handle.ask_handle_approval import _handle_approval
 from aryx.api.ask_json_preview_and_decline import _build_json_preview_response
 
 
