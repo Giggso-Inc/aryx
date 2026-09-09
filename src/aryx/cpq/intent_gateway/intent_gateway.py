@@ -24,7 +24,7 @@ intent_gateway_cache`) live in their own modules and are re-imported here.
 `classify_ask_route` all stay together in this hub: every one of them
 either calls `_pinned_chat` directly or is `_pinned_chat` itself, and
 `test_cpq_intent_gateway.py`/`test_cpq_ask_route_fewshots.py` patch
-`aryx.cpq.intent_gateway._pinned_chat`/`.get_settings` directly — moving
+`aryx.cpq.intent_gateway.intent_gateway._pinned_chat`/`.get_settings` directly — moving
 any of these apart would require every caller to access `_pinned_chat` via
 a full module-attribute reference (`intent_gateway._pinned_chat(...)`
 instead of a bound `from...import`) to keep the patch intercepting it,
@@ -45,19 +45,19 @@ from typing import Any, Literal
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.intent_gateway_agreement import (
+from aryx.cpq.intent_gateway.intent_gateway_agreement import (
     MUTATING_CATEGORIES,
     _deterministic_mutating_signals,
     _mutating_agrees,
 )
-from aryx.cpq.intent_gateway_cache import (
+from aryx.cpq.intent_gateway.intent_gateway_cache import (
     _cache_key,
     _CACHE,
     _store_cache,
     clear_gateway_cache,
     session_state_hash,
 )
-from aryx.cpq.intent_gateway_candidates import (
+from aryx.cpq.intent_gateway.intent_gateway_candidates import (
     AttrCandidateBundle,
     ValueCandidate,
     _ATTR_CAP,

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from aryx.cpq.bom_gate.bom_gate import check_provenance
 from aryx.cpq.engine import CpqEngine, _COUNTRY_PREP
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     hard_off_topic,
     mark_top_level_route_used,
     soft_quote_heuristic,
@@ -91,7 +91,7 @@ def test_n10_hard_off_topic_astrology():
 def test_n4_top_level_route_marks_contextvar():
     # ContextVar default false; mark then true
     # Note: may be dirty from prior tests in same process — set explicitly
-    from aryx.cpq import intent_gateway as gw
+    from aryx.cpq.intent_gateway import intent_gateway as gw
     token = gw._top_level_route_used.set(False)
     try:
         assert top_level_route_used() is False
@@ -196,7 +196,7 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
     import logging
     from aryx.api.ask_api import AskRequest
     from aryx.api.ask_run_ask import run_ask
-    from aryx.cpq.intent_gateway import AskRouteDecision
+    from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
     req = AskRequest(
         question="random unrelated chatter",
@@ -267,7 +267,7 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
     fallback still lives, since it's observe-only by design."""
     from aryx.api.ask_api import AskRequest
     from aryx.api.ask_run_ask import run_ask
-    from aryx.cpq.intent_gateway import AskRouteDecision
+    from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
     req = AskRequest(
         question="I want to order APX Next radios for destination country United States",

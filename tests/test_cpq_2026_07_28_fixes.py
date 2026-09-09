@@ -26,7 +26,7 @@ from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pendin
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.intent_gateway import clear_gateway_cache
+from aryx.cpq.intent_gateway.intent_gateway import clear_gateway_cache
 from aryx.cpq.intent_schema.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
@@ -2207,7 +2207,7 @@ def test_llm_first_gate_calls_the_llm_and_dispatches_when_enabled(monkeypatch):
         '"evidence_span": "change solution type to CloudRC", '
         '"rationale": "named attr + value"}'
     )
-    # The LLM-first gateway (aryx.cpq.intent_gateway.classify_intent) calls
+    # The LLM-first gateway (aryx.cpq.intent_gateway.intent_gateway.classify_intent) calls
     # aryx.llm.complete_text directly, not llm_runtime.chat -- confirmed by
     # tracing a live call: intent_gateway.py imports `complete_text` from
     # aryx.llm and never touches llm_runtime at all, so patching
@@ -2215,7 +2215,7 @@ def test_llm_first_gate_calls_the_llm_and_dispatches_when_enabled(monkeypatch):
     # letting a real, unmocked LLM call resolve the turn underneath the
     # test and masking the fact that the mock was never exercised.
     with patch(
-        "aryx.cpq.intent_gateway.complete_text", return_value=(fake_reply, 700, 30),
+        "aryx.cpq.intent_gateway.intent_gateway.complete_text", return_value=(fake_reply, 700, 30),
     ) as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_chat.assert_called_once()
@@ -2237,7 +2237,7 @@ def test_llm_first_gate_never_calls_the_llm_when_disabled(monkeypatch):
                          status="awaiting_approval", turn=3)
     req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.cpq.intent_gateway.complete_text") as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway.complete_text") as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_chat.assert_not_called()
     # The deterministic regex path alone must still resolve this —
@@ -2263,7 +2263,7 @@ def test_llm_first_gate_falls_through_to_deterministic_on_unparseable_reply(monk
     req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
                       session_data=session.to_dict())
     with patch(
-        "aryx.cpq.intent_gateway.complete_text", return_value=("not json at all", 5, 0),
+        "aryx.cpq.intent_gateway.intent_gateway.complete_text", return_value=("not json at all", 5, 0),
     ):
         resp = _run_cpq_turn(req, object())
     assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"

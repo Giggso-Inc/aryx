@@ -21,7 +21,7 @@ from unittest.mock import patch
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
 from aryx.cpq.bml.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
@@ -48,7 +48,7 @@ def _setup(monkeypatch, *, universal_enabled: bool, llm_first_enabled: bool = Tr
     # test run in the same thread, making the "N4: skip when top-level
     # already ran this turn" gate wrongly short-circuit. Reset explicitly
     # per test rather than relying on suite-wide ordering.
-    from aryx.cpq.intent_gateway import _top_level_route_used
+    from aryx.cpq.intent_gateway.intent_gateway import _top_level_route_used
     _token = _top_level_route_used.set(False)
     monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())

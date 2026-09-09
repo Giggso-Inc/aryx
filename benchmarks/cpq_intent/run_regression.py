@@ -134,12 +134,12 @@ def run_offline(cases: list[dict[str, str]]) -> tuple[list[str], int]:
         errors.append(f"CPQ-REG-002: parse error duplicate ids: {sorted(dupes)}")
         exit_hint = EXIT_PARSE
 
-    schema = _load_mod("aryx.cpq.intent_schema", "aryx/cpq/intent_schema.py")
+    schema = _load_mod("aryx.cpq.intent_schema.intent_schema", "aryx/cpq/intent_schema/intent_schema.py")
     known = {c.value for c in schema.IntentCategory}
     _load_mod("aryx.cpq.state", "aryx/cpq/state.py")
     # intent_queue is a sibling module; load before session_guard re-exports it.
-    _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
-    guard = _load_mod("aryx.cpq.session_guard", "aryx/cpq/session_guard.py")
+    _load_mod("aryx.cpq.intent_queue.intent_queue", "aryx/cpq/intent_queue/intent_queue.py")
+    guard = _load_mod("aryx.cpq.session_guard.session_guard", "aryx/cpq/session_guard/session_guard.py")
     soft_quote, off_topic = SOFT_QUOTE, OFF_TOPIC
 
     for c in cases:
@@ -307,8 +307,8 @@ def run_dialogues_offline(
         )
 
     state = _load_mod("aryx.cpq.state", "aryx/cpq/state.py")
-    _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
-    guard = _load_mod("aryx.cpq.session_guard", "aryx/cpq/session_guard.py")
+    _load_mod("aryx.cpq.intent_queue.intent_queue", "aryx/cpq/intent_queue/intent_queue.py")
+    guard = _load_mod("aryx.cpq.session_guard.session_guard", "aryx/cpq/session_guard/session_guard.py")
     guard.reset_intent_dropped_count()  # type: ignore[attr-defined]
 
     # Catalog stubs
@@ -594,8 +594,8 @@ def run_dialogues_offline(
             elif did == "D08":
                 # PROMPT 7: constrained product scope survives mismatch.
                 scope = _load_mod(
-                    "aryx.cpq.pending_scope",
-                    "aryx/cpq/pending_scope.py",
+                    "aryx.cpq.pending_scope.pending_scope",
+                    "aryx/cpq/pending_scope/pending_scope.py",
                 )
                 PROD = "productSelectionProduct_all"
                 SCOPED = [

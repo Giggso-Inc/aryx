@@ -18,7 +18,7 @@ from aryx.api.ask_run_ask import run_ask
 from aryx.api.ask_turn_dispatch import _dispatch_cpq_turn_steps
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine  # noqa: E402
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     AskRouteDecision,
     classify_ask_route,
     classify_intent as gateway_classify_intent,

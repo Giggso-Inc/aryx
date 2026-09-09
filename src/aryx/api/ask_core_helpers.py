@@ -85,7 +85,7 @@ def _mine_history_for_cpq_context(
     if not texts:
         return
 
-    from aryx.cpq.intent_gateway import soft_quote_heuristic
+    from aryx.cpq.intent_gateway.intent_gateway import soft_quote_heuristic
 
     order_candidates = [
         t for t in texts

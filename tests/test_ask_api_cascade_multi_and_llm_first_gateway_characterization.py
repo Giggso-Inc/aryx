@@ -27,7 +27,7 @@ from aryx.api.ask_api import AskRequest
 from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi
 from aryx.api.ask_handle.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
 from aryx.cpq.bml.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema.intent_schema import (
     Confidence,
     GatewayIntentResult,

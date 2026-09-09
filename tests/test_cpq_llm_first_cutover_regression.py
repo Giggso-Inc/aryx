@@ -16,7 +16,7 @@ from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_c
 from aryx.api.ask_llm.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request
 from aryx.api.ask_llm.ask_llm_split_multi_attr_options import _llm_split_multi_attr_options_query
 from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_split_compound_change_and_question
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
     classify_intent,
@@ -92,7 +92,7 @@ def test_t9_multi_fact_adjacency_delegates_to_deterministic_multi_detector():
         '"rationale":"names one of the two facts"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(

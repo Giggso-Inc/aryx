@@ -13,7 +13,7 @@ from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_tex
 from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_result
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine, extract_quantity_hint
-from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
+from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
 from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api.ask_response_building import ask_build_show_summary_response as _ask_build_show_summary_response_test_module
@@ -491,8 +491,8 @@ def test_extract_hints_country_succeeds_without_the_article():
 
 
 def test_route_schema_has_quantity_and_country_fields():
-    from aryx.cpq.intent_gateway import GATEWAY_INTENT_JSON_SCHEMA  # noqa: F401 sanity import
-    from aryx.cpq.intent_gateway import _ROUTE_SCHEMA
+    from aryx.cpq.intent_gateway.intent_gateway import GATEWAY_INTENT_JSON_SCHEMA  # noqa: F401 sanity import
+    from aryx.cpq.intent_gateway.intent_gateway import _ROUTE_SCHEMA
     assert "quantity" in _ROUTE_SCHEMA["properties"]
     assert "country" in _ROUTE_SCHEMA["properties"]
 

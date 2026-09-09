@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     _ROUTE_FEW_SHOTS,
     AskRouteDecision,
     _parse_route,
@@ -111,7 +111,7 @@ def test_classify_order_apx_returns_quote():
         '"rationale":"full order APX with US destination"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -130,7 +130,7 @@ def test_classify_astrology_off_topic():
         '"rationale":"astrology not product config"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -147,7 +147,7 @@ def test_classify_options_for_product_is_qa_not_quote():
         '"rationale":"options question not family switch"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -165,7 +165,7 @@ def test_timeout_escape_hatch():
 
     # Force ThreadPoolExecutor.result to raise TimeoutError by patching
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         side_effect=lambda *a, **k: (_ for _ in ()).throw(
             concurrent.futures.TimeoutError()
         ),

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     MUTATING_CATEGORIES,
     AttrCandidateBundle,
     ValueCandidate,
@@ -215,7 +215,7 @@ def test_classify_fallback_when_llm_returns_garbage():
     engine.detect_multi_select_removal.return_value = None
     engine.detect_bulk_quantity_change.return_value = None
 
-    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=("not json", 1, 1)):
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", return_value=("not json", 1, 1)):
         decision = classify_intent(
             "change hardware to H45", attrs, session, engine, workspace_id=1,
         )
@@ -243,7 +243,7 @@ def test_classify_clarify_on_mutating_disagreement():
         '"evidence_span":"change hardware","rationale":"llm only"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -275,7 +275,7 @@ def test_classify_dispatch_when_mutating_agrees():
         '"evidence_span":"change hardware","rationale":"agreed"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -312,7 +312,7 @@ def test_activation_clear_stay_unprobed_without_rule_context():
         '"evidence_span":"add extended battery","rationale":"llm only"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -347,7 +347,7 @@ def test_activation_dispatches_when_real_probing_agrees():
         '"evidence_span":"add extended battery","rationale":"agreed"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -382,7 +382,7 @@ def test_clear_dispatches_when_real_probing_agrees():
         '"evidence_span":"clear device color","rationale":"agreed"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -422,7 +422,7 @@ def test_activation_never_dispatches_via_last_qa_variables_shortcut_alone():
         '"evidence_span":"what does that even mean","rationale":"guess"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(ambiguous_json, 10, 5),
     ):
         decision = classify_intent(
@@ -457,7 +457,7 @@ def test_clear_never_dispatches_via_last_qa_variables_shortcut_alone():
         '"evidence_span":"what does that even mean","rationale":"guess"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(ambiguous_json, 10, 5),
     ):
         decision = classify_intent(
@@ -520,7 +520,7 @@ def test_classify_dispatch_when_last_qa_variable_corroborates():
         '"rationale":"customer just asked about this attribute"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -566,7 +566,7 @@ def test_classify_still_clarifies_when_last_qa_variable_points_elsewhere():
         '"evidence_span":"make it ATT/FirstNet","rationale":"llm only"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ):
         decision = classify_intent(
@@ -614,7 +614,7 @@ def test_classify_intent_still_calls_the_llm_with_empty_attrs():
         '"evidence_span":"change country to Canada","rationale":"llm only"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(good_json, 10, 5),
     ) as mock_chat:
         decision = classify_intent(
@@ -630,7 +630,7 @@ def test_classify_intent_empty_question_still_bails_without_calling_the_llm():
     clear_gateway_cache()
     session = CpqSession()
     engine = MagicMock()
-    with patch("aryx.cpq.intent_gateway._pinned_chat") as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat") as mock_chat:
         decision = classify_intent("   ", [], session, engine, workspace_id=1)
     mock_chat.assert_not_called()
     assert decision.action == "fallback"
@@ -653,9 +653,9 @@ def test_classify_intent_timeout_falls_through_to_fallback():
         _time.sleep(0.5)
         return ("{}", 0, 0)
 
-    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", side_effect=_slow_chat):
         with patch("aryx.config.get_settings") as mock_settings, \
-             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+             patch("aryx.cpq.intent_gateway.intent_gateway.get_settings") as mock_settings2:
             for m in (mock_settings, mock_settings2):
                 m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
                 m.return_value.cpq_intent_classify_timeout_s = 0.05
@@ -686,9 +686,9 @@ def test_classify_intent_timeout_actually_returns_promptly_not_after_the_slow_ca
         _time.sleep(2.0)
         return ("{}", 0, 0)
 
-    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", side_effect=_slow_chat):
         with patch("aryx.config.get_settings") as mock_settings, \
-             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+             patch("aryx.cpq.intent_gateway.intent_gateway.get_settings") as mock_settings2:
             for m in (mock_settings, mock_settings2):
                 m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
                 m.return_value.cpq_intent_classify_timeout_s = 0.1
@@ -719,7 +719,7 @@ def test_pending_attr_prompt_includes_display_label():
     attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
     bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
     ) as mock_chat:
         _llm_classify_once(
@@ -741,7 +741,7 @@ def test_pending_attr_conflation_rule_present_in_system_prompt():
     attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
     bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
     ) as mock_chat:
         _llm_classify_once(
@@ -765,7 +765,7 @@ def test_product_quantity_change_rule_present_in_system_prompt():
     attrs = []
     bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
     ) as mock_chat:
         _llm_classify_once(
@@ -792,9 +792,9 @@ def test_unrelated_pending_attr_does_not_block_correct_classification():
         '"variable_name": null, "value_ref": null, '
         '"evidence_span": "change that quantity to 5", "quantity_text": "5"}'
     )
-    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(fake_reply, 5, 3)) as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", return_value=(fake_reply, 5, 3)) as mock_chat:
         with patch("aryx.config.get_settings") as mock_settings, \
-             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+             patch("aryx.cpq.intent_gateway.intent_gateway.get_settings") as mock_settings2:
             for m in (mock_settings, mock_settings2):
                 m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
                 m.return_value.cpq_intent_classify_timeout_s = 5.0
@@ -842,7 +842,7 @@ def test_pending_attr_reply_still_resolves_when_genuinely_relevant():
         '"variable_name":"hWVersion_astro","value_ref":1,'
         '"evidence_span":"make it the 4G LTE Only one"}'
     )
-    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
         decision = classify_intent(
             "make it the 4G LTE Only one", attrs, session, engine, workspace_id=1,
         )
@@ -880,7 +880,7 @@ def test_customer_last_asked_about_still_resolves_a_short_followup():
         '"variable_name":"batteryType_astro","value_ref":0,'
         '"evidence_span":"make it standard"}'
     )
-    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
         decision = classify_intent(
             "make it standard", attrs, session, engine, workspace_id=1,
         )
@@ -919,7 +919,7 @@ def test_genuinely_quantity_shaped_pending_attr_still_allowed_to_compete():
         '"variable_name":"quantityVX650ItemType_astro","value_ref":null,'
         '"evidence_span":"change the quantity to 3","quantity_text":"3"}'
     )
-    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
+    with patch("aryx.cpq.intent_gateway.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)) as mock_chat:
         decision = classify_intent(
             "change the quantity to 3", attrs, session, engine, workspace_id=1,
         )

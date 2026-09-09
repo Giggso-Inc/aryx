@@ -32,7 +32,7 @@ from aryx.cpq.engine import (
     quantity_turn_precheck,
 )
 from aryx.cpq.bml.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
 from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
@@ -368,7 +368,7 @@ def test_quantity_question_answers_from_session_with_no_competing_attribute(monk
     session = _base_session(product_quantity=5)
     req = AskRequest(question="what's my quantity", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.cpq.intent_gateway.complete_text") as mock_llm:
+    with patch("aryx.cpq.intent_gateway.intent_gateway.complete_text") as mock_llm:
         resp = _run_cpq_turn(req, object())
     mock_llm.assert_not_called()
     assert "5" in resp["answer"]
@@ -874,7 +874,7 @@ def test_unselected_catalog_quantity_attrs_are_never_offered_as_candidates(monke
     # never selected any of these accessories.
     req = AskRequest(question="where is the quantity?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.cpq.intent_gateway.complete_text") as mock_llm, \
+    with patch("aryx.cpq.intent_gateway.intent_gateway.complete_text") as mock_llm, \
          patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_llm.assert_not_called()

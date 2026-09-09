@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_gateway import soft_quote_heuristic
+from aryx.cpq.intent_gateway.intent_gateway import soft_quote_heuristic
 
 from aryx.api.ask_llm.ask_llm_extract_quantity_and_country_reply import _llm_resolve_bare_country_reply
 

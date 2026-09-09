@@ -16,7 +16,7 @@ from typing import Any
 
 from aryx.api import ask_attach_share_flags as _ask_attach_share_flags_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
-from aryx.cpq.intent_gateway import AskRouteDecision
+from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
 
 def _finish_cpq_result(
