@@ -18,7 +18,7 @@ As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `rule_export_tree.py` (product tree materialization) and
 `rule_export_classify.py` (per-rule scope classification), both
 re-imported here. Zero whitebox test patches exist anywhere against
-`aryx.cpq.rule_export.*` (confirmed via grep), so the split was purely
+`aryx.cpq.rule_export.rule_export.*` (confirmed via grep), so the split was purely
 mechanical. `export_rules_json` — the orchestrator tying tree + rules
 together — stays here.
 """
@@ -29,8 +29,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aryx.cpq.rdb.rdb import get_cpq_rdb
-from aryx.cpq.rule_export_classify import UNSCOPED, _rule_dict, classify_rule_scope
-from aryx.cpq.rule_export_tree import TreeNode, _name_index, _normalize
+from aryx.cpq.rule_export.rule_export_classify import UNSCOPED, _rule_dict, classify_rule_scope
+from aryx.cpq.rule_export.rule_export_tree import TreeNode, _name_index, _normalize
 from aryx.cpq.state import ConstraintRule, HidingRule, RecommendationRule
 
 __all__ = [

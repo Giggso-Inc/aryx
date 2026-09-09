@@ -4,7 +4,7 @@ rule-catalog export.
 Split out of `cpq/rule_export.py` (Raven Style Compliance Plan, Phase 2b,
 2026-09-03). `build_product_tree` itself stays in the hub — it calls
 `get_cpq_rdb()`, and `tests/test_cpq_rule_export.py` patches
-`aryx.cpq.rule_export.get_cpq_rdb`.
+`aryx.cpq.rule_export.rule_export.get_cpq_rdb`.
 """
 from __future__ import annotations
 

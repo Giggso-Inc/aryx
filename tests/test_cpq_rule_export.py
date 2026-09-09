@@ -1,11 +1,11 @@
-"""Tests for aryx.cpq.rule_export (docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md,
+"""Tests for aryx.cpq.rule_export.rule_export (docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md,
 Tier 1). Fake reader/rdb -- no DB, no real catalog fixtures.
 """
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.cpq.rule_export import (
+from aryx.cpq.rule_export.rule_export import (
     UNSCOPED,
     build_product_tree,
     classify_rule_scope,
@@ -36,7 +36,7 @@ def _cat_ent(entity_id: int, native_id: str, parent_id: str, name: str) -> dict:
 def _patch_fetch_entity_attributes(entities: list[dict]):
     attrs_by_id = {e["id"]: e["_attrs"] for e in entities}
     return patch(
-        "aryx.cpq.rule_export.get_cpq_rdb",
+        "aryx.cpq.rule_export.rule_export.get_cpq_rdb",
         return_value=type("R", (), {"fetch_entity_attributes": staticmethod(
             lambda ids, ws: {i: attrs_by_id[i] for i in ids if i in attrs_by_id}
         )})(),

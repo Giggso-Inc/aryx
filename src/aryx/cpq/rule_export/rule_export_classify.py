@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.rule_export_tree import TreeNode, _leaf_names, _normalize
+from aryx.cpq.rule_export.rule_export_tree import TreeNode, _leaf_names, _normalize
 from aryx.cpq.state import ConstraintRule, HidingRule, RecommendationRule
 
 UNSCOPED = "unscoped_or_unresolved"
