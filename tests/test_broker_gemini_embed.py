@@ -34,7 +34,7 @@ def test_embed_dispatches_to_gemini_when_backend_configured() -> None:
     fake_response = {"embeddings": [{"values": [0.1] * 768}, {"values": [0.2] * 768}]}
 
     with patch("aryx.config.get_settings") as mock_get_settings, \
-         patch("aryx.llm_providers.post_json", return_value=fake_response) as mock_post:
+         patch("aryx.llm.llm_providers.post_json", return_value=fake_response) as mock_post:
         mock_get_settings.return_value = SimpleNamespace(
             effective_embed_backend=lambda: "gemini", **vars(settings),
         )
@@ -65,7 +65,7 @@ def test_embed_discards_a_short_gemini_batch_instead_of_misaligning() -> None:
     fake_response = {"embeddings": [{"values": [0.1] * 768}, {"values": [0.2] * 768}]}
 
     with patch("aryx.config.get_settings") as mock_get_settings, \
-         patch("aryx.llm_providers.post_json", return_value=fake_response):
+         patch("aryx.llm.llm_providers.post_json", return_value=fake_response):
         mock_get_settings.return_value = SimpleNamespace(
             effective_embed_backend=lambda: "gemini", **vars(settings),
         )
@@ -104,7 +104,7 @@ def test_gemini_embed_defaults_model_when_no_override() -> None:
     fake_response = {"embeddings": [{"values": [0.0] * 768}]}
 
     with patch("aryx.config.get_settings") as mock_get_settings, \
-         patch("aryx.llm_providers.post_json", return_value=fake_response) as mock_post:
+         patch("aryx.llm.llm_providers.post_json", return_value=fake_response) as mock_post:
         mock_get_settings.return_value = SimpleNamespace(
             effective_embed_backend=lambda: "gemini", **vars(settings),
         )
@@ -121,7 +121,7 @@ def test_gemini_embed_respects_model_override() -> None:
     fake_response = {"embeddings": [{"values": [0.0] * 768}]}
 
     with patch("aryx.config.get_settings") as mock_get_settings, \
-         patch("aryx.llm_providers.post_json", return_value=fake_response) as mock_post:
+         patch("aryx.llm.llm_providers.post_json", return_value=fake_response) as mock_post:
         mock_get_settings.return_value = SimpleNamespace(
             effective_embed_backend=lambda: "gemini", **vars(settings),
         )

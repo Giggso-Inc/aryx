@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 logger = logging.getLogger(__name__)
 

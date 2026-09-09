@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import os
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 
 
 def _local_broker() -> Broker:
     """Pipeline broker — honours Settings → LLM Provider (live, no restart).
 
-    Reads aryx.llm_runtime.status() so the doc ingest pipeline + the Ask API
+    Reads aryx.llm.llm_runtime.status() so the doc ingest pipeline + the Ask API
     share ONE config. Switching provider/model in the Settings panel now
     drives both. `embed_config` below is always Ollama-shaped (model +
     endpoint) — harmless when ARYX_EMBED_BACKEND is "oci" or "gemini",

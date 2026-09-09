@@ -21,11 +21,11 @@ split was purely mechanical.
 """
 from __future__ import annotations
 
-from aryx.llm_call_log import _log_llm_call
-from aryx.llm_json import complete_json
-from aryx.llm_oci_route import _oci_model_for, _use_oci_for
-from aryx.llm_providers import anthropic_json, ollama_json, openai_json, post_json
-from aryx.llm_text import complete_text
+from aryx.llm.llm_call_log import _log_llm_call
+from aryx.llm.llm_json import complete_json
+from aryx.llm.llm_oci_route import _oci_model_for, _use_oci_for
+from aryx.llm.llm_providers import anthropic_json, ollama_json, openai_json, post_json
+from aryx.llm.llm_text import complete_text
 
 __all__ = [
     "_anthropic_json",

@@ -114,7 +114,7 @@ class _BrokerMixin:
         docs/LLM_GEMINI_MIGRATION_PLAN.md §4.3 for why this is pinned rather
         than widening the column.
         """
-        from aryx.llm_providers import post_json  # noqa: PLC0415
+        from aryx.llm.llm_providers import post_json  # noqa: PLC0415
 
         key = getattr(settings, "llm_api_key", "") or ""
         if not key:

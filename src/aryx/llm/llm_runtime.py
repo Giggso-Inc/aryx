@@ -10,7 +10,7 @@ config state and turn-usage tracking (`reset_turn_usage`/`get_turn_usage`/
 `_RuntimeSecrets`/`_broker_for`/`set_config`/`status`) moved to
 `llm_runtime_state.py` (zero patch risk). `_log_call`/`chat` stay here as
 a deliberate exception: `complete_text` is directly whitebox-patched
-(`aryx.llm_runtime.complete_text`) by `tests/test_llm_runtime_turn_usage.py`
+(`aryx.llm.llm_runtime.complete_text`) by `tests/test_llm_runtime_turn_usage.py`
 and `get_settings`/`get_pool`/`load` are directly patched by
 `tests/test_llm_runtime_log_call_dsn.py`, both called only from these two
 functions.
@@ -23,7 +23,7 @@ import time
 from aryx.cpq.logging_context import get_run_id
 from aryx.config import get_settings
 from aryx.llm import complete_text
-from aryx.llm_runtime_state import (
+from aryx.llm.llm_runtime_state import (
     _broker_for,
     _KEY_REF,
     _RuntimeSecrets,

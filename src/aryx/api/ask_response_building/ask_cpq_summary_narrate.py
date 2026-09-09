@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Callable
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_response_building.ask_cpq_summary_prompt import _CPQ_SEGMENT_DELIM
 from aryx.api.ask_standard_pipeline import _strip_think
 from aryx.cpq.engine import SUMMARY_FALLBACK_CATEGORY

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_overview import build as build_overview
 from aryx.api.ask_request_models import AskRequest
 from aryx.api.ask_standard_pipeline._enrichment import _enrich_with_attributes

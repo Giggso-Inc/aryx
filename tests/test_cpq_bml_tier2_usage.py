@@ -39,7 +39,7 @@ def _block_real_rdb_access(monkeypatch):
 
 def test_hide_for_script_tier2_records_real_token_usage():
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat", _fake_chat('{"hide": true}', 120, 15)):
+    with patch("aryx.llm.llm_runtime.chat", _fake_chat('{"hide": true}', 120, 15)):
         result = ev.hide_for_script("if (x==\"unparseable by tier1\") { hide=true; }", {"x": "y"})
     assert result is True
     assert ev.stats["prompt_tokens"] == 120
@@ -48,7 +48,7 @@ def test_hide_for_script_tier2_records_real_token_usage():
 
 def test_condition_holds_tier2_records_real_token_usage():
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat", _fake_chat('{"condition_true": false}', 80, 10)):
+    with patch("aryx.llm.llm_runtime.chat", _fake_chat('{"condition_true": false}', 80, 10)):
         result = ev.condition_holds("some genuinely unparseable script body", {"x": "y"})
     assert result is False
     assert ev.stats["prompt_tokens"] == 80
@@ -57,7 +57,7 @@ def test_condition_holds_tier2_records_real_token_usage():
 
 def test_allowed_values_for_script_tier2_records_real_token_usage():
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat",
+    with patch("aryx.llm.llm_runtime.chat",
                _fake_chat('{"allowed_values": ["A", "B"]}', 200, 25)):
         result = ev.allowed_values_for_script("unparseable script body", {"x": "y"})
     assert result == ["A", "B"]
@@ -70,9 +70,9 @@ def test_usage_accumulates_across_multiple_tier2_calls_in_one_turn():
     must accumulate across every Tier-2 call made during that turn, not
     just reflect the last one."""
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat", _fake_chat('{"hide": true}', 100, 10)):
+    with patch("aryx.llm.llm_runtime.chat", _fake_chat('{"hide": true}', 100, 10)):
         ev.hide_for_script("unparseable script one", {"x": "y"})
-    with patch("aryx.llm_runtime.chat", _fake_chat('{"condition_true": true}', 50, 5)):
+    with patch("aryx.llm.llm_runtime.chat", _fake_chat('{"condition_true": true}', 50, 5)):
         ev.condition_holds("unparseable script two", {"x": "y"})
     assert ev.stats["prompt_tokens"] == 150
     assert ev.stats["completion_tokens"] == 15
@@ -83,7 +83,7 @@ def test_llm_call_exception_records_no_usage():
     cost nothing recoverable — must not add phantom usage, and must still
     resolve to the same safe 'unknown' outcome as before."""
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat", side_effect=RuntimeError("provider unavailable")):
+    with patch("aryx.llm.llm_runtime.chat", side_effect=RuntimeError("provider unavailable")):
         result = ev.hide_for_script("unparseable script", {"x": "y"})
     assert result is None
     assert ev.stats["prompt_tokens"] == 0
@@ -92,7 +92,7 @@ def test_llm_call_exception_records_no_usage():
 
 def test_ask_worthy_tier2_records_real_token_usage():
     ev = BmlEvaluator(scripts={}, use_llm=True, workspace_id=1, tier2_max_per_turn=10)
-    with patch("aryx.llm_runtime.chat", _fake_chat('{"ask_worthy": true}', 60, 8)):
+    with patch("aryx.llm.llm_runtime.chat", _fake_chat('{"ask_worthy": true}', 60, 8)):
         result = ev.classify_ask_worthy(
             attr_label="Domain Name", rule_message="must be set",
             rule_script="return validate(domainName);", attr_key=42,

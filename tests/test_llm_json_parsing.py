@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aryx.llm_providers import _parse_llm_json, ollama_json, openai_json
+from aryx.llm.llm_providers import _parse_llm_json, ollama_json, openai_json
 from aryx.broker.specs import ModelSpec
 
 
@@ -62,7 +62,7 @@ def test_openai_json_survives_trailing_extra_data() -> None:
         }}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
     }
-    with patch("aryx.llm_providers.post_json", return_value=fake_response):
+    with patch("aryx.llm.llm_providers.post_json", return_value=fake_response):
         data, pt, ct = openai_json(spec, "system", "user", "key")
     assert data == {"related": True, "name": "rel", "confidence": 0.9}
     assert (pt, ct) == (10, 5)
@@ -75,7 +75,7 @@ def test_ollama_json_survives_trailing_extra_data() -> None:
         "message": {"content": '{"related": false}\ntrailing commentary'},
         "prompt_eval_count": 8, "eval_count": 3,
     }
-    with patch("aryx.llm_providers.post_json", return_value=fake_response):
+    with patch("aryx.llm.llm_providers.post_json", return_value=fake_response):
         data, pt, ct = ollama_json(spec, "system", "user")
     assert data == {"related": False}
     assert (pt, ct) == (8, 3)

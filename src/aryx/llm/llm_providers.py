@@ -8,7 +8,7 @@ As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), the
 Anthropic and OCI GenAI providers moved to `llm_providers_anthropic.py`/
 `llm_providers_oci.py` (zero patch risk, confirmed via grep). `post_json`
 stays here with `ollama_json`/`openai_json` because it is directly
-whitebox-patched (`aryx.llm_providers.post_json`) by
+whitebox-patched (`aryx.llm.llm_providers.post_json`) by
 `tests/test_llm_json_parsing.py` and `tests/test_broker_gemini_embed.py`,
 and both callers reach it by bare name within this module.
 """
@@ -24,8 +24,8 @@ from typing import Any
 
 from aryx.broker.specs import ModelSpec
 from aryx.config import get_settings
-from aryx.llm_providers_anthropic import anthropic_json
-from aryx.llm_providers_oci import _oci_chat_raw, oci_genai_json, oci_genai_text
+from aryx.llm.llm_providers_anthropic import anthropic_json
+from aryx.llm.llm_providers_oci import _oci_chat_raw, oci_genai_json, oci_genai_text
 
 __all__ = [
     "anthropic_json",

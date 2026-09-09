@@ -14,7 +14,7 @@ import logging
 import re
 import time
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_standard_pipeline._text_utils import _strip_think
 
 logger = logging.getLogger(__name__)

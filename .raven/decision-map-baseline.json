@@ -13387,47 +13387,47 @@
       "add_entities_batch"
     ],
     [
-      "src/aryx/llm_providers_anthropic.py",
+      "src/aryx/llm/llm_providers_anthropic.py",
       14,
       "anthropic_json"
     ],
     [
-      "src/aryx/llm_providers_anthropic.py",
+      "src/aryx/llm/llm_providers_anthropic.py",
       28,
       "anthropic_json"
     ],
     [
-      "src/aryx/llm_providers_oci.py",
+      "src/aryx/llm/llm_providers_oci.py",
       17,
       "_oci_chat_raw"
     ],
     [
-      "src/aryx/llm_providers_oci.py",
+      "src/aryx/llm/llm_providers_oci.py",
       55,
       "<if>"
     ],
     [
-      "src/aryx/llm_providers_oci.py",
+      "src/aryx/llm/llm_providers_oci.py",
       62,
       "_oci_chat_raw"
     ],
     [
-      "src/aryx/llm_runtime.py",
+      "src/aryx/llm/llm_runtime.py",
       81,
       "chat"
     ],
     [
-      "src/aryx/llm_runtime.py",
+      "src/aryx/llm/llm_runtime.py",
       110,
       "chat"
     ],
     [
-      "src/aryx/llm_text.py",
+      "src/aryx/llm/llm_text.py",
       23,
       "complete_text"
     ],
     [
-      "src/aryx/llm_text.py",
+      "src/aryx/llm/llm_text.py",
       80,
       "complete_text"
     ],

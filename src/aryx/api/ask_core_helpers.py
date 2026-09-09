@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_request_models import Turn
 from aryx.api.ask_standard_pipeline import _user_texts_from_history
 from aryx.config import get_settings

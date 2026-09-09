@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_llm.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope
 from aryx.api.ask_request_models import Turn
 from aryx.api.ask_standard_pipeline._rewrite import _MAX_ANSWER_LINES, _enforce_plain_answer

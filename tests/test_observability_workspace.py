@@ -47,11 +47,17 @@ sys.modules.setdefault("psycopg_pool", MagicMock(ConnectionPool=_mock_cp))
 sys.modules["psycopg.types.json"].Json = lambda x: x
 
 # Stub aryx modules that call get_settings() at import time or pull in
-# heavy deps — must be in sys.modules before aryx.llm_runtime is first imported.
-for _mod in ("aryx.llm_providers", "aryx.llm"):
+# heavy deps — must be in sys.modules before aryx.llm.llm_runtime is first imported.
+# aryx.llm itself is NOT stubbed (unlike before the Phase 8a folder move):
+# it's a real package now, and stubbing it flat as a MagicMock breaks
+# submodule access (`aryx.llm.llm_runtime` etc. — "aryx.llm is not a
+# package"). Its own __init__ only needs aryx.llm.llm_providers (stubbed
+# below), aryx.broker/aryx.broker.specs (stubbed above), and aryx.config
+# (get_settings, patched below) — all lightweight once those are stubbed.
+for _mod in ("aryx.llm.llm_providers",):
     sys.modules.setdefault(_mod, MagicMock())
 
-# aryx.broker is imported by aryx.llm_runtime; stub it with proper attributes
+# aryx.broker is imported by aryx.llm.llm_runtime; stub it with proper attributes
 # so `from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor` works.
 if "aryx.broker" not in sys.modules:
     _broker_mod = _types.ModuleType("aryx.broker")
@@ -62,7 +68,7 @@ if "aryx.broker" not in sys.modules:
     sys.modules["aryx.broker"] = _broker_mod
 sys.modules.setdefault("aryx.broker.specs", MagicMock())
 
-# Patch get_settings BEFORE aryx.llm_runtime is first imported so the
+# Patch get_settings BEFORE aryx.llm.llm_runtime is first imported so the
 # module-level `_cfg = get_settings()` call gets a safe mock instead of
 # reading the .env file (which has extra fields that pydantic rejects).
 import aryx.config as _aryx_config  # safe: no module-level Settings() call
@@ -185,10 +191,10 @@ class TestLogCallWorkspaceId:
         mock_pool.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("aryx.llm_runtime.get_pool", return_value=mock_pool), \
-             patch("aryx.llm_runtime.load", return_value="INSERT ..."), \
+        with patch("aryx.llm.llm_runtime.get_pool", return_value=mock_pool), \
+             patch("aryx.llm.llm_runtime.load", return_value="INSERT ..."), \
              patch.dict("os.environ", {"ARYX_RDB_DSN": "postgresql://x"}):
-            from aryx.llm_runtime import _log_call
+            from aryx.llm.llm_runtime import _log_call
             _log_call("answer", "llama3.2:3b", 100, 200, 500, "", workspace_id=7)
 
         params = mock_cur.execute.call_args[0][1]
@@ -203,10 +209,10 @@ class TestLogCallWorkspaceId:
         mock_pool.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("aryx.llm_runtime.get_pool", return_value=mock_pool), \
-             patch("aryx.llm_runtime.load", return_value="INSERT ..."), \
+        with patch("aryx.llm.llm_runtime.get_pool", return_value=mock_pool), \
+             patch("aryx.llm.llm_runtime.load", return_value="INSERT ..."), \
              patch.dict("os.environ", {"ARYX_RDB_DSN": "postgresql://x"}):
-            from aryx.llm_runtime import _log_call
+            from aryx.llm.llm_runtime import _log_call
             _log_call("menial", "llama3.2:3b", 50, 80, 100, "")  # no workspace_id
 
         params = mock_cur.execute.call_args[0][1]
@@ -217,7 +223,7 @@ class TestLogCallWorkspaceId:
         with patch.dict("os.environ", {}, clear=True):
             import os
             os.environ.pop("ARYX_RDB_DSN", None)
-            from aryx.llm_runtime import _log_call
+            from aryx.llm.llm_runtime import _log_call
             _log_call("answer", "model", 1, 1, 1, "", workspace_id=2)
         # No exception = pass
 
@@ -235,9 +241,9 @@ class TestChatWorkspaceThreading:
         def fake_log(role, model, pt, ct, ms, err, workspace_id=1):
             captured["workspace_id"] = workspace_id
 
-        with patch("aryx.llm_runtime.complete_text", return_value=("answer", 10, 20)), \
-             patch("aryx.llm_runtime._log_call", side_effect=fake_log):
-            from aryx.llm_runtime import chat
+        with patch("aryx.llm.llm_runtime.complete_text", return_value=("answer", 10, 20)), \
+             patch("aryx.llm.llm_runtime._log_call", side_effect=fake_log):
+            from aryx.llm.llm_runtime import chat
             chat("answer", "sys", "user", workspace_id=42)
 
         assert captured.get("workspace_id") == 42
@@ -248,9 +254,9 @@ class TestChatWorkspaceThreading:
         def fake_log(role, model, pt, ct, ms, err, workspace_id=1):
             captured["workspace_id"] = workspace_id
 
-        with patch("aryx.llm_runtime.complete_text", return_value=("answer", 10, 20)), \
-             patch("aryx.llm_runtime._log_call", side_effect=fake_log):
-            from aryx.llm_runtime import chat
+        with patch("aryx.llm.llm_runtime.complete_text", return_value=("answer", 10, 20)), \
+             patch("aryx.llm.llm_runtime._log_call", side_effect=fake_log):
+            from aryx.llm.llm_runtime import chat
             chat("answer", "sys", "user")  # no workspace_id
 
         assert captured.get("workspace_id") == 1

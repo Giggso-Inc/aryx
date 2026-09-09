@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 

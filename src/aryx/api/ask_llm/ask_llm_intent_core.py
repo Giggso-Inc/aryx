@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 def _llm_classify_intent_core(

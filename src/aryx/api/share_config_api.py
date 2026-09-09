@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from aryx.api.ssrf_guard import BLOCKED_HEADERS, check_outbound_headers, check_outbound_url
-from aryx.llm_providers import post_json
+from aryx.llm.llm_providers import post_json
 
 logger = logging.getLogger(__name__)
 

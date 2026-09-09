@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 # Decline detector for a pending change-target prompt (docs/CPQ_SESSION_

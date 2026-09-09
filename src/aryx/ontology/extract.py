@@ -5,7 +5,7 @@ any mention whose name is absent from its cited span is rejected before it
 can reach resolution or the graph.
 
 Provider-shape quirks (Gemini's bare-list envelope, field renames like
-entity_type / verbatim_span) are absorbed by aryx.llm_normalize at the
+entity_type / verbatim_span) are absorbed by aryx.llm.llm_normalize at the
 complete_json boundary — this module sees the canonical schema shape only.
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into

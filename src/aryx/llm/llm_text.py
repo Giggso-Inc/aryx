@@ -9,13 +9,13 @@ import logging
 import time as _time
 from typing import Any
 
-import aryx.llm_providers as oci_providers
+import aryx.llm.llm_providers as oci_providers
 from aryx.broker import Broker
 from aryx.broker.specs import ModelSpec, Tier
 from aryx.config import get_settings
-from aryx.llm_call_log import _log_llm_call
-from aryx.llm_oci_route import _oci_model_for, _use_oci_for
-from aryx.llm_providers import post_json
+from aryx.llm.llm_call_log import _log_llm_call
+from aryx.llm.llm_oci_route import _oci_model_for, _use_oci_for
+from aryx.llm.llm_providers import post_json
 
 logger = logging.getLogger(__name__)
 

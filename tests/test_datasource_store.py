@@ -58,8 +58,8 @@ def _stub_falkordb() -> None:
 
 
 def _stub_llm_providers() -> None:
-    """Stub aryx.llm_providers to avoid the module-level get_settings() call."""
-    key = "aryx.llm_providers"
+    """Stub aryx.llm.llm_providers to avoid the module-level get_settings() call."""
+    key = "aryx.llm.llm_providers"
     if key in sys.modules:
         return
     mod = types.ModuleType(key)
@@ -72,8 +72,8 @@ def _stub_llm_providers() -> None:
 
 
 def _stub_llm_runtime() -> None:
-    """Stub aryx.llm_runtime — it calls get_settings() at module level (_cfg = ...)."""
-    key = "aryx.llm_runtime"
+    """Stub aryx.llm.llm_runtime — it calls get_settings() at module level (_cfg = ...)."""
+    key = "aryx.llm.llm_runtime"
     if key in sys.modules:
         return
     mod = types.ModuleType(key)

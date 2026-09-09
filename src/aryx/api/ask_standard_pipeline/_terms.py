@@ -9,7 +9,7 @@ import json
 import re
 import time
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_request_models import Turn
 from aryx.api.ask_standard_pipeline._text_utils import _recent
 

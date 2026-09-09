@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.api.ask_core_helpers import _reader
 from aryx.api.ask_standard_pipeline import _extract_terms, _strip_think, _synthesise
 from aryx.api.ask_overview import build as build_overview

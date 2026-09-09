@@ -1,6 +1,6 @@
 """Anthropic (Claude) structured-JSON completion path.
 
-Split out of `aryx.llm_providers` (Raven Style Compliance Plan, Phase 2b,
+Split out of `aryx.llm.llm_providers` (Raven Style Compliance Plan, Phase 2b,
 2026-09-03). Zero test patches against this function — confirmed via grep.
 """
 from __future__ import annotations

@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.config import get_settings
 
 logger = logging.getLogger(__name__)
