@@ -21,7 +21,7 @@ from aryx.cpq.engine import DECISION_REQUIRED_KEYS
 from aryx.cpq.pending_scope import clear_pending_scope
 from aryx.cpq.session_guard import push_snapshot
 
-from aryx.api.ask_invalidate_stale_base_model import _invalidate_stale_base_model
+from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import _invalidate_stale_base_model
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 

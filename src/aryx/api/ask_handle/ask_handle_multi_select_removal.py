@@ -24,7 +24,7 @@ from aryx.api.ask_multi_select_removal_qty_drop import _drop_related_quantity_at
 from aryx.api.ask_multi_select_removal_recompute import (
     _recompute_after_multi_select_removal,
 )
-from aryx.api.ask_stale_constraint_reask import _reask_stale_constraint_violations
+from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
 
 
 def _handle_multi_select_removal(

@@ -16,9 +16,9 @@ import logging
 from typing import Any
 
 from aryx.api.ask_data_table_conflict_reask import _reask_confirmed_data_table_conflict
-from aryx.api.ask_stale_constraint_conflicted import handle_conflicted_violations
-from aryx.api.ask_stale_constraint_prompt import build_stale_reask_prompt
-from aryx.api.ask_stale_constraint_silent_resolve import silently_reresolve_hard_excluded
+from aryx.api.ask_stale_constraint.ask_stale_constraint_conflicted import handle_conflicted_violations
+from aryx.api.ask_stale_constraint.ask_stale_constraint_prompt import build_stale_reask_prompt
+from aryx.api.ask_stale_constraint.ask_stale_constraint_silent_resolve import silently_reresolve_hard_excluded
 from aryx.cpq.bom_gate import find_missing_required_fields, recheck_constraints
 
 logger = logging.getLogger(__name__)

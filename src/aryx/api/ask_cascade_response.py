@@ -22,7 +22,7 @@ from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_pending_exclusion import _hard_exclude_from_pending
 from aryx.api.ask_singleton_pending import _auto_resolve_singleton_pending
-from aryx.api.ask_stale_constraint_reask import _reask_stale_constraint_violations
+from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
 
 
 def _build_cascade_response(
