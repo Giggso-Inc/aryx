@@ -153,10 +153,10 @@ class TestListBrowseAutoHeal:
     def _patch_browse(self, type_rows, entity_rows, rel_rows=None):
         """Context manager tuple for patching OntologyStore + EntityStore."""
         return (
-            patch("aryx.api.ontology_browse.get_settings",
+            patch("aryx.api.ontology.ontology_browse.get_settings",
                   return_value=MagicMock(rdb_dsn="postgresql://x")),
-            patch("aryx.api.ontology_browse.OntologyStore"),
-            patch("aryx.api.ontology_browse.EntityStore"),
+            patch("aryx.api.ontology.ontology_browse.OntologyStore"),
+            patch("aryx.api.ontology.ontology_browse.EntityStore"),
         )
 
     def test_autoheal_seeds_types_when_registry_empty_but_entities_exist(self):
@@ -187,11 +187,11 @@ class TestListBrowseAutoHeal:
         ])
         mock_entity_store.list_relationships.return_value = iter([])
 
-        with patch("aryx.api.ontology_browse.get_settings",
+        with patch("aryx.api.ontology.ontology_browse.get_settings",
                    return_value=MagicMock(rdb_dsn="postgresql://x")), \
-             patch("aryx.api.ontology_browse.OntologyStore", return_value=mock_onto), \
-             patch("aryx.api.ontology_browse.EntityStore", return_value=mock_entity_store):
-            from aryx.api.ontology_browse import list_browse
+             patch("aryx.api.ontology.ontology_browse.OntologyStore", return_value=mock_onto), \
+             patch("aryx.api.ontology.ontology_browse.EntityStore", return_value=mock_entity_store):
+            from aryx.api.ontology.ontology_browse import list_browse
             result = list_browse(workspace_id=1)
 
         mock_onto.seed_types.assert_called_once()
@@ -213,11 +213,11 @@ class TestListBrowseAutoHeal:
         ])
         mock_entity_store.list_relationships.return_value = iter([])
 
-        with patch("aryx.api.ontology_browse.get_settings",
+        with patch("aryx.api.ontology.ontology_browse.get_settings",
                    return_value=MagicMock(rdb_dsn="postgresql://x")), \
-             patch("aryx.api.ontology_browse.OntologyStore", return_value=mock_onto), \
-             patch("aryx.api.ontology_browse.EntityStore", return_value=mock_entity_store):
-            from aryx.api.ontology_browse import list_browse
+             patch("aryx.api.ontology.ontology_browse.OntologyStore", return_value=mock_onto), \
+             patch("aryx.api.ontology.ontology_browse.EntityStore", return_value=mock_entity_store):
+            from aryx.api.ontology.ontology_browse import list_browse
             result = list_browse(workspace_id=1)
 
         assert result["entity_count"] == 2
@@ -231,11 +231,11 @@ class TestListBrowseAutoHeal:
         mock_entity_store.list_entities.return_value = iter([])
         mock_entity_store.list_relationships.return_value = iter([])
 
-        with patch("aryx.api.ontology_browse.get_settings",
+        with patch("aryx.api.ontology.ontology_browse.get_settings",
                    return_value=MagicMock(rdb_dsn="postgresql://x")), \
-             patch("aryx.api.ontology_browse.OntologyStore", return_value=mock_onto), \
-             patch("aryx.api.ontology_browse.EntityStore", return_value=mock_entity_store):
-            from aryx.api.ontology_browse import list_browse
+             patch("aryx.api.ontology.ontology_browse.OntologyStore", return_value=mock_onto), \
+             patch("aryx.api.ontology.ontology_browse.EntityStore", return_value=mock_entity_store):
+            from aryx.api.ontology.ontology_browse import list_browse
             result = list_browse(workspace_id=1)
 
         mock_onto.seed_types.assert_not_called()
@@ -254,12 +254,12 @@ class TestListBrowseAutoHeal:
         ])
         mock_entity_store.list_relationships.return_value = iter([])
 
-        with patch("aryx.api.ontology_browse.get_settings",
+        with patch("aryx.api.ontology.ontology_browse.get_settings",
                    return_value=MagicMock(rdb_dsn="postgresql://x")), \
-             patch("aryx.api.ontology_browse.OntologyStore", return_value=mock_onto), \
-             patch("aryx.api.ontology_browse.EntityStore", return_value=mock_entity_store), \
-             patch("aryx.api.ontology_browse.logger") as mock_log:
-            from aryx.api.ontology_browse import list_browse
+             patch("aryx.api.ontology.ontology_browse.OntologyStore", return_value=mock_onto), \
+             patch("aryx.api.ontology.ontology_browse.EntityStore", return_value=mock_entity_store), \
+             patch("aryx.api.ontology.ontology_browse.logger") as mock_log:
+            from aryx.api.ontology.ontology_browse import list_browse
             result = list_browse(workspace_id=1)
 
         assert result["types"] == []
@@ -281,11 +281,11 @@ class TestListBrowseAutoHeal:
         mock_entity_store.list_entities.return_value = iter([_make_entity_row("Customer")])
         mock_entity_store.list_relationships.return_value = iter([])
 
-        with patch("aryx.api.ontology_browse.get_settings",
+        with patch("aryx.api.ontology.ontology_browse.get_settings",
                    return_value=MagicMock(rdb_dsn="postgresql://x")), \
-             patch("aryx.api.ontology_browse.OntologyStore", return_value=mock_onto), \
-             patch("aryx.api.ontology_browse.EntityStore", return_value=mock_entity_store):
-            from aryx.api.ontology_browse import list_browse
+             patch("aryx.api.ontology.ontology_browse.OntologyStore", return_value=mock_onto), \
+             patch("aryx.api.ontology.ontology_browse.EntityStore", return_value=mock_entity_store):
+            from aryx.api.ontology.ontology_browse import list_browse
             list_browse(workspace_id=1)
 
         mock_onto.seed_types.assert_not_called()

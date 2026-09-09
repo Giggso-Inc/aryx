@@ -2,9 +2,13 @@
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `ontology_api_models.py` (request models) and `ontology_api_export.py`
-(`_load_bundle`/`export_graph_response`), both re-imported here. Zero
-whitebox test patches exist anywhere against `aryx.api.ontology_api.*`
-(confirmed via grep), so the split was purely mechanical.
+(`_load_bundle`/`export_graph_response`), both re-imported here. As of
+Phase 8a (folder restructuring, 2026-09), this package moved to
+`api/ontology/`. Note: `tests/test_graph_query_timeout_and_export_cap.py`
+patches `_load_bundle`/`serialize` on this module's namespace, but this
+module has never imported those names directly — those 4 patches were
+already broken (`AttributeError`) before this move, confirmed via
+`git stash` baseline comparison; not a regression introduced here.
 `ontology_router` — wiring the routes — stays here.
 """
 from __future__ import annotations
@@ -14,9 +18,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from aryx import export_runtime
-from aryx.api import ontology_browse as _ob
-from aryx.api.ontology_api_export import export_graph_response
-from aryx.api.ontology_api_models import OntologyConfigRequest, OntologyImportRequest
+from aryx.api.ontology import ontology_browse as _ob
+from aryx.api.ontology.ontology_api_export import export_graph_response
+from aryx.api.ontology.ontology_api_models import OntologyConfigRequest, OntologyImportRequest
 from aryx.api.security import write_api_key
 from aryx.config import get_settings
 from aryx.graph import FalkorStore

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from aryx.api.ontology_browse import list_browse
+from aryx.api.ontology.ontology_browse import list_browse
 from aryx.config import get_settings
 from aryx.store.rule_store import RuleStore
 from aryx.store.version_store import VersionStore

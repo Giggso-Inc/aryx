@@ -38,8 +38,8 @@ from aryx.api.main_mcp import _authenticate_mcp, _bearer_ok, _mount_mcp
 from aryx.api.main_middleware import _RequestTimingMiddleware
 from aryx.api.mcp_tokens_api import mcp_tokens_router
 from aryx.api.observability_api import observability_router
-from aryx.api.ontology_api import ontology_router
-from aryx.api.ontology_assist_api import ontology_assist_router
+from aryx.api.ontology.ontology_api import ontology_router
+from aryx.api.ontology.ontology_assist_api import ontology_assist_router
 from aryx.api.relationship_type_api import relationship_type_router
 from aryx.api.rest_ingest.rest_ingest_api import rest_ingest_router
 from aryx.api.rules_api import rules_router

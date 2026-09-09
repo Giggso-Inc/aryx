@@ -10317,112 +10317,112 @@
       "observability_router"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      32,
+      "src/aryx/api/ontology/ontology_api.py",
+      36,
       "ontology_router"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      37,
+      "src/aryx/api/ontology/ontology_api.py",
+      41,
       "get_config"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      39,
+      "src/aryx/api/ontology/ontology_api.py",
+      43,
       "get_config"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      42,
+      "src/aryx/api/ontology/ontology_api.py",
+      46,
       "set_config"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      49,
+      "src/aryx/api/ontology/ontology_api.py",
+      53,
       "set_config"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      57,
+      "src/aryx/api/ontology/ontology_api.py",
+      61,
       "list_types"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      59,
+      "src/aryx/api/ontology/ontology_api.py",
+      63,
       "list_types"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      62,
+      "src/aryx/api/ontology/ontology_api.py",
+      66,
       "approve_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      65,
+      "src/aryx/api/ontology/ontology_api.py",
+      69,
       "approve_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      68,
+      "src/aryx/api/ontology/ontology_api.py",
+      72,
       "set_parent"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      73,
-      "set_parent"
-    ],
-    [
-      "src/aryx/api/ontology_api.py",
+      "src/aryx/api/ontology/ontology_api.py",
       77,
+      "set_parent"
+    ],
+    [
+      "src/aryx/api/ontology/ontology_api.py",
+      81,
       "add_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      79,
+      "src/aryx/api/ontology/ontology_api.py",
+      83,
       "add_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      85,
+      "src/aryx/api/ontology/ontology_api.py",
+      89,
       "delete_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      98,
+      "src/aryx/api/ontology/ontology_api.py",
+      102,
       "delete_type"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      106,
+      "src/aryx/api/ontology/ontology_api.py",
+      110,
       "import_ontology"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      111,
+      "src/aryx/api/ontology/ontology_api.py",
+      115,
       "<try>"
     ],
     [
-      "src/aryx/api/ontology_api.py",
-      117,
+      "src/aryx/api/ontology/ontology_api.py",
+      121,
       "ontology_router"
     ],
     [
-      "src/aryx/api/ontology_api_export.py",
+      "src/aryx/api/ontology/ontology_api_export.py",
       45,
       "export_graph_response"
     ],
     [
-      "src/aryx/api/ontology_api_export.py",
+      "src/aryx/api/ontology/ontology_api_export.py",
       79,
       "export_graph_response"
     ],
     [
-      "src/aryx/api/ontology_browse.py",
+      "src/aryx/api/ontology/ontology_browse.py",
       27,
       "approve"
     ],
     [
-      "src/aryx/api/ontology_browse.py",
+      "src/aryx/api/ontology/ontology_browse.py",
       109,
       "delete_type"
     ],
