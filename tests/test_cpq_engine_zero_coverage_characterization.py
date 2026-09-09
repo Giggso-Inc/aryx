@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 from aryx.cpq.engine import CpqEngine, detect_country_change_request
 from aryx.cpq.state import ConfigAttr, MenuOption
-from aryx.cpq.state_rules import ConstraintRule, HidingRule, RecommendationRule
+from aryx.cpq.state.state_rules import ConstraintRule, HidingRule, RecommendationRule
 
 
 def _menu(*vals: str) -> list[MenuOption]:

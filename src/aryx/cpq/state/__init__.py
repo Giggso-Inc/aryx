@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from aryx.cpq.state_config_attr import ConfigAttr, MenuOption
-from aryx.cpq.state_rules import (
+from aryx.cpq.state.state_config_attr import ConfigAttr, MenuOption
+from aryx.cpq.state.state_rules import (
     ConstraintRule,
     HidingRule,
     RecommendationRule,
