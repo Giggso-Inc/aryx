@@ -634,11 +634,11 @@ from aryx.cpq.region_and_noise_constants import (  # noqa: E402
     _NOISE_VAR_FRAGMENTS,
 )
 
-# aryx.cpq.constraint_rules's submodules import _substitute_util_get_
+# aryx.cpq.constraint_rules.constraint_rules's submodules import _substitute_util_get_
 # constraint_vals/_condition_value_matches BACK from this module by name
 # -- this line must sit after both are already defined above (the last
 # being _substitute_util_get_constraint_vals, right above).
-from aryx.cpq import constraint_rules  # noqa: E402
+from aryx.cpq.constraint_rules import constraint_rules  # noqa: E402
 from aryx.cpq import rules_loop  # noqa: E402
 from aryx.cpq.payload import payload_build  # noqa: E402
 from aryx.cpq import value_rules_load  # noqa: E402

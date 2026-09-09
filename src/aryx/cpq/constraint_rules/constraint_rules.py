@@ -17,9 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.constraint_rules_apply import apply_rules
-from aryx.cpq.constraint_rules_fallback import resolve_empty_intersections
-from aryx.cpq.constraint_rules_narrowing import apply_narrowing_rec_rules
+from aryx.cpq.constraint_rules.constraint_rules_apply import apply_rules
+from aryx.cpq.constraint_rules.constraint_rules_fallback import resolve_empty_intersections
+from aryx.cpq.constraint_rules.constraint_rules_narrowing import apply_narrowing_rec_rules
 from aryx.cpq.engine import logger
 
 

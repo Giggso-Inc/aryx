@@ -10827,27 +10827,27 @@
       "find_negated_vns"
     ],
     [
-      "src/aryx/cpq/constraint_rules.py",
+      "src/aryx/cpq/constraint_rules/constraint_rules.py",
       26,
       "apply_constraint_rules"
     ],
     [
-      "src/aryx/cpq/constraint_rules.py",
+      "src/aryx/cpq/constraint_rules/constraint_rules.py",
       122,
       "apply_constraint_rules"
     ],
     [
-      "src/aryx/cpq/constraint_rules_apply.py",
+      "src/aryx/cpq/constraint_rules/constraint_rules_apply.py",
       20,
       "apply_rules"
     ],
     [
-      "src/aryx/cpq/constraint_rules_fallback.py",
+      "src/aryx/cpq/constraint_rules/constraint_rules_fallback.py",
       32,
       "resolve_empty_intersections"
     ],
     [
-      "src/aryx/cpq/constraint_rules_narrowing.py",
+      "src/aryx/cpq/constraint_rules/constraint_rules_narrowing.py",
       29,
       "apply_narrowing_rec_rules"
     ],
