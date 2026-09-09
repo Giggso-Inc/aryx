@@ -7803,12 +7803,12 @@
     ],
     [
       "shay_backend/scripts/migration_examples.py",
-      40,
+      57,
       "create_example_model"
     ],
     [
       "shay_backend/scripts/migration_examples.py",
-      52,
+      69,
       "create_example_model"
     ],
     [
