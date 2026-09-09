@@ -28,8 +28,8 @@ this combining module concatenates them back into one public constant.
 
 from __future__ import annotations
 
-from aryx.cpq.country_alias_data_a import _COUNTRY_ALIAS_GROUPS_A
-from aryx.cpq.country_alias_data_b import _COUNTRY_ALIAS_GROUPS_B
+from aryx.cpq.country.country_alias_data_a import _COUNTRY_ALIAS_GROUPS_A
+from aryx.cpq.country.country_alias_data_b import _COUNTRY_ALIAS_GROUPS_B
 
 _COUNTRY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
     _COUNTRY_ALIAS_GROUPS_A + _COUNTRY_ALIAS_GROUPS_B

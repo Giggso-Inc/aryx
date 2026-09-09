@@ -244,8 +244,8 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
 # country_alias_data_b.py/country_helpers.py (Phase 4 module-level
 # extraction) -- re-exported here so every existing `from
 # aryx.cpq.engine import <name>` caller/test keeps working unchanged.
-from aryx.cpq.country_alias_data import _COUNTRY_ALIAS_GROUPS  # noqa: E402
-from aryx.cpq.country_helpers import (  # noqa: E402
+from aryx.cpq.country.country_alias_data import _COUNTRY_ALIAS_GROUPS  # noqa: E402
+from aryx.cpq.country.country_helpers import (  # noqa: E402
     _country_alias_group, _country_canonical_name, _normalize_country_candidate,
     detect_country_change_request,
 )

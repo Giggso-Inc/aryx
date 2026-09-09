@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from aryx.cpq.country_alias_data import _COUNTRY_ALIAS_GROUPS
+from aryx.cpq.country.country_alias_data import _COUNTRY_ALIAS_GROUPS
 
 
 def _country_alias_group(value: str) -> frozenset[str] | None:
