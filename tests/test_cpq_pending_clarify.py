@@ -18,7 +18,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from aryx.api.ask_api import AskRequest
-from aryx.api.ask_change_decline_and_scope_memory import _is_global_change_decline
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _is_global_change_decline
 from aryx.api.ask_pending_clarify.ask_pending_clarify_answer import _set_pending_clarify_and_answer
 from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pending_clarify
 from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_change_decline_and_scope_memory import _is_global_change_decline
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _is_global_change_decline
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import (
     _apply_pending_clarify_resolution,

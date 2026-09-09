@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
+from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
 from aryx.cpq.pending_scope import set_pending_scope
 
 

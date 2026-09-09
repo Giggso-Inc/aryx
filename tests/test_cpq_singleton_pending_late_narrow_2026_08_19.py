@@ -15,7 +15,7 @@ pending[0]'s constraints right before it would be asked.
 """
 from __future__ import annotations
 
-from aryx.api.ask_singleton_pending import _auto_resolve_singleton_pending
+from aryx.api.ask_scope_and_pending.ask_singleton_pending import _auto_resolve_singleton_pending
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
 

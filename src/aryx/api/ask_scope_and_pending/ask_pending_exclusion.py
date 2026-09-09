@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api.ask_pending_exclusion_resolve import resolve_hard_excluded_attr
+from aryx.api.ask_scope_and_pending.ask_pending_exclusion_resolve import resolve_hard_excluded_attr
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api.ask_pending_exclusion import _NEVER_ASK_RECOMMENDED_ONLY_VNS
+from aryx.api.ask_scope_and_pending.ask_pending_exclusion import _NEVER_ASK_RECOMMENDED_ONLY_VNS
 
 logger = logging.getLogger(__name__)
 

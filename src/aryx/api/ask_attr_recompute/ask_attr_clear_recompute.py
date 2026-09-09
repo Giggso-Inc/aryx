@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_pending_exclusion import _hard_exclude_from_pending
-from aryx.api.ask_singleton_pending import _auto_resolve_singleton_pending
+from aryx.api.ask_scope_and_pending.ask_pending_exclusion import _hard_exclude_from_pending
+from aryx.api.ask_scope_and_pending.ask_singleton_pending import _auto_resolve_singleton_pending
 
 
 def _recompute_after_attr_clear(

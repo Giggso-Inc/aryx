@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause
 
 
 def _apply_cascade_new_value(

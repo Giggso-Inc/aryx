@@ -19,9 +19,9 @@ from typing import Any
 
 from aryx.cpq.pending_scope import log_scope_lost, set_pending_scope
 
-from aryx.api.ask_change_decline_and_scope_memory import _remember_attr_scope
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _remember_attr_scope
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _compose_disambiguation_question
-from aryx.api.ask_scope_reask_responses import _scoped_reask_response
+from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _scoped_reask_response
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 
 

@@ -8212,16 +8212,6 @@
       "_scope_catalog_listing_labels"
     ],
     [
-      "src/aryx/api/ask_change_decline_and_scope_memory.py",
-      111,
-      "_constrain_excluding_rejected"
-    ],
-    [
-      "src/aryx/api/ask_change_decline_and_scope_memory.py",
-      139,
-      "_constrain_excluding_rejected"
-    ],
-    [
       "src/aryx/api/ask_core_helpers.py",
       55,
       "_safe_detect_product_mention"
@@ -8947,26 +8937,6 @@
       "_handle_pending_clarify_turn"
     ],
     [
-      "src/aryx/api/ask_pending_exclusion_resolve.py",
-      19,
-      "resolve_hard_excluded_attr"
-    ],
-    [
-      "src/aryx/api/ask_pending_exclusion_resolve.py",
-      46,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_pending_exclusion_resolve.py",
-      69,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_pending_exclusion_resolve.py",
-      89,
-      "resolve_hard_excluded_attr"
-    ],
-    [
       "src/aryx/api/ask_preamble/ask_preamble_hints_and_country.py",
       30,
       "_preamble_extract_hints_and_resolve_country"
@@ -9267,34 +9237,79 @@
       "_handle_router_error"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_change_decline_and_scope_memory.py",
+      111,
+      "_constrain_excluding_rejected"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_change_decline_and_scope_memory.py",
+      139,
+      "_constrain_excluding_rejected"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_pending_exclusion_resolve.py",
+      19,
+      "resolve_hard_excluded_attr"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_pending_exclusion_resolve.py",
+      46,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_pending_exclusion_resolve.py",
+      69,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_pending_exclusion_resolve.py",
+      89,
+      "resolve_hard_excluded_attr"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       36,
       "_scoped_reask_response"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       73,
       "_scoped_reask_response"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       99,
       "_build_scope_skip_response"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       115,
       "_build_scope_skip_response"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       123,
       "_build_scope_family_only_response"
     ],
     [
-      "src/aryx/api/ask_scope_reask_responses.py",
+      "src/aryx/api/ask_scope_and_pending/ask_scope_reask_responses.py",
       140,
       "_build_scope_family_only_response"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_singleton_pending.py",
+      20,
+      "_auto_resolve_singleton_pending"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_singleton_pending.py",
+      61,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_scope_and_pending/ask_singleton_pending.py",
+      91,
+      "_auto_resolve_singleton_pending"
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
@@ -9320,21 +9335,6 @@
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
       93,
       "_llm_confirm_deterministic_intent"
-    ],
-    [
-      "src/aryx/api/ask_singleton_pending.py",
-      20,
-      "_auto_resolve_singleton_pending"
-    ],
-    [
-      "src/aryx/api/ask_singleton_pending.py",
-      61,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_singleton_pending.py",
-      91,
-      "_auto_resolve_singleton_pending"
     ],
     [
       "src/aryx/api/ask_stale_constraint/ask_stale_constraint_conflicted.py",
