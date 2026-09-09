@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.bom_gate_types import StaleConstraintViolation
+from aryx.cpq.bom_gate.bom_gate_types import StaleConstraintViolation
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 

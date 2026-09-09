@@ -19,7 +19,7 @@ from aryx.api.ask_approval_stale_violations import (
     _handle_approval_gate_conflict,
     _handle_approval_stale_reask,
 )
-from aryx.cpq.bom_gate import validate_before_payload
+from aryx.cpq.bom_gate.bom_gate import validate_before_payload
 from aryx.cpq import rule_trace
 
 

@@ -7,7 +7,7 @@ confirmed via grep.
 """
 from __future__ import annotations
 
-from aryx.cpq.bom_gate_noise import _is_noise_var, _SYNTHETIC_ENGINE_VARS
+from aryx.cpq.bom_gate.bom_gate_noise import _is_noise_var, _SYNTHETIC_ENGINE_VARS
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 # Sources that count as user-confirmed (may keep free-text / none-like codes).

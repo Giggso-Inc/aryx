@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from unittest.mock import MagicMock, patch
 
-from aryx.cpq.bom_gate import check_provenance
+from aryx.cpq.bom_gate.bom_gate import check_provenance
 from aryx.cpq.engine import CpqEngine, _COUNTRY_PREP
 from aryx.cpq.intent_gateway import (
     hard_off_topic,

@@ -7,7 +7,7 @@ confirmed via grep.
 """
 from __future__ import annotations
 
-from aryx.cpq.bom_gate_noise import _is_noise_var
+from aryx.cpq.bom_gate.bom_gate_noise import _is_noise_var
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 

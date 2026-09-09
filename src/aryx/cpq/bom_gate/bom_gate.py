@@ -12,7 +12,7 @@ across `bom_gate_types.py` (result dataclasses), `bom_gate_noise.py`
 (shared noise-var detection), `bom_gate_provenance.py` (check_provenance),
 `bom_gate_required.py` (find_missing_required_fields), and
 `bom_gate_constraints.py` (recheck_constraints) — all re-imported here.
-Zero whitebox test patches exist anywhere against `aryx.cpq.bom_gate.*`
+Zero whitebox test patches exist anywhere against `aryx.cpq.bom_gate.bom_gate.*`
 (confirmed via grep; every caller uses direct-name imports), so the split
 was purely mechanical. `validate_before_payload` — the Step-8 orchestrator
 tying all of the above together — stays here.
@@ -22,10 +22,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.cpq.bom_gate_constraints import recheck_constraints
-from aryx.cpq.bom_gate_provenance import check_provenance
-from aryx.cpq.bom_gate_required import find_missing_required_fields
-from aryx.cpq.bom_gate_types import BomGateResult, StaleConstraintViolation
+from aryx.cpq.bom_gate.bom_gate_constraints import recheck_constraints
+from aryx.cpq.bom_gate.bom_gate_provenance import check_provenance
+from aryx.cpq.bom_gate.bom_gate_required import find_missing_required_fields
+from aryx.cpq.bom_gate.bom_gate_types import BomGateResult, StaleConstraintViolation
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 __all__ = [
