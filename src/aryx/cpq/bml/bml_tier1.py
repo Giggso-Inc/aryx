@@ -9,16 +9,16 @@ from __future__ import annotations
 import logging
 import re
 
-from aryx.cpq.bml_branches import _branch_bool, _branch_values, _parse_branches
-from aryx.cpq.bml_conditions import (
+from aryx.cpq.bml.bml_branches import _branch_bool, _branch_values, _parse_branches
+from aryx.cpq.bml.bml_conditions import (
     _ARRAY_IN_OP,
     _ARRAY_NOT_IN_OP,
     _array_membership_hit,
     _eval_boolean_expr,
     _BoolExpr,
 )
-from aryx.cpq.bml_hide_idioms import evaluate_hide_master_list, evaluate_hide_master_list_unguarded
-from aryx.cpq.bml_text import _split_on_plus_outside_quotes, _split_statements
+from aryx.cpq.bml.bml_hide_idioms import evaluate_hide_master_list, evaluate_hide_master_list_unguarded
+from aryx.cpq.bml.bml_text import _split_on_plus_outside_quotes, _split_statements
 
 logger = logging.getLogger(__name__)
 

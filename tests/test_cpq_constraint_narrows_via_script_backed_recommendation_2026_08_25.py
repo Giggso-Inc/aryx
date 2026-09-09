@@ -20,7 +20,7 @@ ConstraintRule would produce, via the same `_intersect` helper.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, MenuOption, RecommendationRule
 

@@ -27,7 +27,7 @@ fires when NEITHER is selected).
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import _operator_hit, evaluate_declarative_conditions
+from aryx.cpq.bml.bml import _operator_hit, evaluate_declarative_conditions
 from aryx.cpq.engine import CpqEngine, _condition_value_matches
 from aryx.cpq.state import ConfigAttr, HidingRule, MenuOption, RecommendationRule
 

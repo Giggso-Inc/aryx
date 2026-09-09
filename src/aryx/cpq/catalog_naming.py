@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-from aryx.cpq.bml import _operator_hit
+from aryx.cpq.bml.bml import _operator_hit
 
 # Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
 # (e.g. 'ApxNextConfigBmConfigAttr', 'Sl3500EConfigBmConfigAttr') because every

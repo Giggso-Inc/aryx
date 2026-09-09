@@ -8,7 +8,7 @@ Stateless and purely functional -- no ``CpqEngine`` instance needed; same
 
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator, evaluate_declarative_conditions
+from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.state import ConfigAttr, ValidationRule
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ValidationRule
 from aryx.cpq.turn_intent.patterns2 import _ALLOWED_CHARS_RE
 

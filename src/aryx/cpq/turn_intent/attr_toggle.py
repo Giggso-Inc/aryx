@@ -9,7 +9,7 @@ param) to re-check hiding rules against the current filled state via
 
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import _label_mentioned_strict
 from aryx.cpq.state import ConfigAttr, HidingRule
 from aryx.cpq.turn_intent.apply_multi import apply_multi_answer

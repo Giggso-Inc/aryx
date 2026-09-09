@@ -28,7 +28,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq import data_table_bridge
-from aryx.cpq.bml import (
+from aryx.cpq.bml.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
     _operator_hit,
 )
@@ -598,7 +598,7 @@ def _cpq_model_candidates(
 # Moved to bml_util_substitution.py (Phase 4 module-level extraction)
 # -- re-exported here so every existing `from aryx.cpq.engine import
 # <name>` caller/test keeps working unchanged.
-from aryx.cpq.bml_util_substitution import (  # noqa: E402
+from aryx.cpq.bml.bml_util_substitution import (  # noqa: E402
     _substitute_util_get_constraint_vals, _UTIL_ATTR_VAR_NAME_RE,
     _UTIL_GET_CONSTRAINT_VALS_CALL_RE,
 )

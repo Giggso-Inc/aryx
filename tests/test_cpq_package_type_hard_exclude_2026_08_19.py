@@ -18,7 +18,7 @@ happened to catch it first.
 from __future__ import annotations
 
 from aryx.api.ask_scope_and_pending.ask_pending_exclusion import _hard_exclude_from_pending
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption, RecommendationRule
 
 _ICE_KIT_SCRIPT = """

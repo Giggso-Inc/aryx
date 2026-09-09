@@ -28,7 +28,7 @@ live: 54 constraint + 66 sequence rows for wirelessCarrier_astro).
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_hide_master_list_unguarded, evaluate_hide_tier1
+from aryx.cpq.bml.bml import evaluate_hide_master_list_unguarded, evaluate_hide_tier1
 
 _REAL_CARRIER_SCRIPT = (
     'splitstringArray = SPLIT(hiddenMasterStringForAstroPortable_astro,hidddenRecordSeparator_allFamilly);\n'

@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import re
 
-from aryx.cpq.bml_text import _split_top_level, _strip_wrapping_parens
+from aryx.cpq.bml.bml_text import _split_top_level, _strip_wrapping_parens
 
 # variable == "value" / variable <> "value" comparisons inside a condition.
 # The RHS also accepts a bare true/false literal (variable == true), not just

@@ -12,8 +12,8 @@ from __future__ import annotations
 import logging
 import re
 
-from aryx.cpq.bml_conditions import _parse_boolean_expr, _parse_condition
-from aryx.cpq.bml_text import _find_block, _strip_block_comments, _strip_line_comments
+from aryx.cpq.bml.bml_conditions import _parse_boolean_expr, _parse_condition
+from aryx.cpq.bml.bml_text import _find_block, _strip_block_comments, _strip_line_comments
 
 logger = logging.getLogger(__name__)
 

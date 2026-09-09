@@ -26,7 +26,7 @@ from aryx.api.ask_api import AskRequest
 from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_current_quote_attribute_listing_text
 from aryx.api.ask_catalog.ask_catalog_listing_text import _build_catalog_attribute_listing_text
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

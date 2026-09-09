@@ -43,7 +43,7 @@ from unittest.mock import patch
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_test_module

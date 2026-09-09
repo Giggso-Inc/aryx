@@ -56,13 +56,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from aryx.cpq.bml_analysis import ArrayIterationShape, extract_literal_comparisons, parse_array_iteration, referenced_variables
-from aryx.cpq.bml_branches import _branch_bool, _branch_values, _parse_branches
-from aryx.cpq.bml_conditions import _parse_condition
-from aryx.cpq.bml_declarative import _operator_hit, evaluate_declarative_conditions
-from aryx.cpq.bml_hide_idioms import evaluate_hide_master_list_unguarded
-from aryx.cpq.bml_text import _strip_line_comments
-from aryx.cpq.bml_tier1 import (
+from aryx.cpq.bml.bml_analysis import ArrayIterationShape, extract_literal_comparisons, parse_array_iteration, referenced_variables
+from aryx.cpq.bml.bml_branches import _branch_bool, _branch_values, _parse_branches
+from aryx.cpq.bml.bml_conditions import _parse_condition
+from aryx.cpq.bml.bml_declarative import _operator_hit, evaluate_declarative_conditions
+from aryx.cpq.bml.bml_hide_idioms import evaluate_hide_master_list_unguarded
+from aryx.cpq.bml.bml_text import _strip_line_comments
+from aryx.cpq.bml.bml_tier1 import (
     _first_matching_branch,
     _MAX_SHARED_CACHE_ENTRIES,
     _SHARED_SCRIPT_CACHE,

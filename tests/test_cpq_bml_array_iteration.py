@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import io
 
-from aryx.cpq.bml import parse_array_iteration
+from aryx.cpq.bml.bml import parse_array_iteration
 from aryx.pipeline.doc_discovery import _detect_script_data_flow_links
 
 _BOOLEAN_VARIANT_SCRIPT = (

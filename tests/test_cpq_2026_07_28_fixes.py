@@ -24,7 +24,7 @@ from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
 from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
-from aryx.cpq.bml import BmlEvaluator, evaluate_tier1
+from aryx.cpq.bml.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import clear_gateway_cache
 from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult

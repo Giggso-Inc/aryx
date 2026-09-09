@@ -369,7 +369,7 @@ def fake_rdb(truth, monkeypatch):
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
     # Tier-2 LLM off: tests must be deterministic and offline.
-    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
     clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",
@@ -478,7 +478,7 @@ def test_s5_script_rules_not_silently_dropped(truth, fake_rdb, caplog):
 
 def test_s5_tier1_coverage_on_real_scripts(truth):
     """Tier-1 parses a measurable share of the export's real BML scripts."""
-    from aryx.cpq.bml import _parse_branches, evaluate_tier1
+    from aryx.cpq.bml.bml import _parse_branches, evaluate_tier1
 
     scripts = [f["script_text"] for f in truth.functions()]
     if not scripts:
@@ -1090,7 +1090,7 @@ def apx_fake_rdb(apx_truth, monkeypatch):
     rdb = FakeCpqRdb(apx_truth)
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
-    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
     clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",

@@ -26,7 +26,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.api.ask_llm.ask_llm_classify_scope_reply import _llm_classify_scope_reply
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

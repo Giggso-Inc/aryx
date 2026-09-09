@@ -11,7 +11,7 @@ to be fixed twice precisely because this logic was duplicated.
 
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator, evaluate_declarative_conditions
+from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.engine import _condition_value_matches
 from aryx.cpq.state import RecommendationRule
 

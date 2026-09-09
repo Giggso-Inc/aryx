@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from aryx.cpq.bml import BmlEvaluator
+    from aryx.cpq.bml.bml import BmlEvaluator
     from aryx.cpq.state import ConfigAttr, ConstraintRule
 
 

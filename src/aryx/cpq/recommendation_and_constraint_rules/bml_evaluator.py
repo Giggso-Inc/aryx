@@ -15,7 +15,7 @@ import time
 
 from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import logger
 
 

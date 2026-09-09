@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
-from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

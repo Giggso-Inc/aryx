@@ -13,7 +13,7 @@ then rejected).
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_tier1, referenced_variables, BmlEvaluator
+from aryx.cpq.bml.bml import evaluate_tier1, referenced_variables, BmlEvaluator
 
 _ICE_KIT_SCRIPT = """
 retVal = "";

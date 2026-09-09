@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import re
 
-from aryx.cpq.bml_text import _find_block
+from aryx.cpq.bml.bml_text import _find_block
 
 
 def referenced_variables(script: str) -> set[str]:

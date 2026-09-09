@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 
 
 def _fake_chat(reply_json: str, prompt_tokens: int, completion_tokens: int):

@@ -11,7 +11,7 @@ Both need the live ``CpqEngine`` instance (``engine`` param):
 
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import _label_mentioned_strict, _variable_words
 from aryx.cpq.state import ConfigAttr, ConstraintRule, RecommendationRule
 from aryx.cpq.turn_intent.patterns2 import _BULK_QTY_RE, _CLEAR_VERB_RE

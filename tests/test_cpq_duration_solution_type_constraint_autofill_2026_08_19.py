@@ -31,7 +31,7 @@ end-to-end, not just the script in isolation.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
 
@@ -55,7 +55,7 @@ def _menu(*values: str) -> list[MenuOption]:
 def test_tier1_resolves_the_real_script_to_seven_years_for_radiocentral_cps():
     """Confirms Tier 1 handles this idiom natively -- no LLM/Tier-2
     stubbing required, unlike the Package Type ICE-KIT script."""
-    from aryx.cpq.bml import evaluate_tier1
+    from aryx.cpq.bml.bml import evaluate_tier1
     result, blocked = evaluate_tier1(
         _DURATION_SCRIPT, {"solutionTypeDevices_astro": "RADIOCENTRAL PLUS CPS PROGRAMMING"},
     )

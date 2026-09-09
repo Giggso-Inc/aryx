@@ -19,7 +19,7 @@ produce.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_tier1, _branch_values
+from aryx.cpq.bml.bml import evaluate_tier1, _branch_values
 
 _REAL_MOUNTING_TYPE_SCRIPT = (
     'ret = string[];\n'

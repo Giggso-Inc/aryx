@@ -14,7 +14,7 @@ from aryx.cpq.engine import (
     _condition_value_matches,
     _substitute_util_get_constraint_vals,
 )
-from aryx.cpq.bml import evaluate_declarative_conditions
+from aryx.cpq.bml.bml import evaluate_declarative_conditions
 
 
 def apply_rules(

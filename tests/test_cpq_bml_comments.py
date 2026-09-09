@@ -16,7 +16,7 @@ scanned raw script text including comments.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_tier1, evaluate_hide_tier1, _strip_line_comments, _branch_values
+from aryx.cpq.bml.bml import evaluate_tier1, evaluate_hide_tier1, _strip_line_comments, _branch_values
 
 
 def test_commented_out_assign_is_ignored_real_apx_next_script():
