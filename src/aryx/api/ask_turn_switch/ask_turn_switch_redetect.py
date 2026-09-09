@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_turn_switch_answer_guard import _is_answer_to_pending_over_switch
-from aryx.api.ask_turn_switch_redetect_prompt import _build_switch_redetect_prompt
+from aryx.api.ask_turn_switch.ask_turn_switch_answer_guard import _is_answer_to_pending_over_switch
+from aryx.api.ask_turn_switch.ask_turn_switch_redetect_prompt import _build_switch_redetect_prompt
 
 
 def _check_mid_turn_switch_redetection(

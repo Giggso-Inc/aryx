@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.api.ask_turn_confirm_switch_anchor import _handle_confirm_switch_anchor
-from aryx.api.ask_turn_suggest_switch_anchor import _handle_suggest_switch_anchor
-from aryx.api.ask_turn_switch_country_anchor import _handle_switch_country_anchor
+from aryx.api.ask_turn_switch.ask_turn_confirm_switch_anchor import _handle_confirm_switch_anchor
+from aryx.api.ask_turn_switch.ask_turn_suggest_switch_anchor import _handle_suggest_switch_anchor
+from aryx.api.ask_turn_switch.ask_turn_switch_country_anchor import _handle_switch_country_anchor
 
 
 def _handle_product_switch_pending_anchor(

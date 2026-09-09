@@ -19,9 +19,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.api.ask_turn_intent_diagnostics import _log_turn_intent_diagnostics
-from aryx.api.ask_turn_seed_product_anchor import _seed_product_select_from_anchor
-from aryx.api.ask_turn_switch_redetect import _check_mid_turn_switch_redetection
+from aryx.api.ask_turn_switch.ask_turn_intent_diagnostics import _log_turn_intent_diagnostics
+from aryx.api.ask_turn_switch.ask_turn_seed_product_anchor import _seed_product_select_from_anchor
+from aryx.api.ask_turn_switch.ask_turn_switch_redetect import _check_mid_turn_switch_redetection
 
 from aryx.api.ask_llm_confirm_extract_quantity import _build_llm_call_failed_response
 from aryx.api import ask_core_helpers as _ask_core_helpers_module

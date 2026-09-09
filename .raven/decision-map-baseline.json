@@ -9442,26 +9442,6 @@
       "<try>"
     ],
     [
-      "src/aryx/api/ask_turn_confirm_switch_anchor.py",
-      24,
-      "_handle_confirm_switch_anchor"
-    ],
-    [
-      "src/aryx/api/ask_turn_confirm_switch_anchor.py",
-      94,
-      "_handle_confirm_switch_anchor"
-    ],
-    [
-      "src/aryx/api/ask_turn_confirm_switch_decline.py",
-      18,
-      "_handle_confirm_switch_decline"
-    ],
-    [
-      "src/aryx/api/ask_turn_confirm_switch_decline.py",
-      71,
-      "_handle_confirm_switch_decline"
-    ],
-    [
       "src/aryx/api/ask_turn_country_available_for.py",
       19,
       "_country_available_for"
@@ -9480,31 +9460,6 @@
       "src/aryx/api/ask_turn_dispatch.py",
       101,
       "_dispatch_cpq_turn_steps"
-    ],
-    [
-      "src/aryx/api/ask_turn_intent_diagnostics.py",
-      19,
-      "_log_turn_intent_diagnostics"
-    ],
-    [
-      "src/aryx/api/ask_turn_intent_diagnostics.py",
-      39,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/ask_turn_product_switch_complete.py",
-      20,
-      "_complete_product_switch"
-    ],
-    [
-      "src/aryx/api/ask_turn_product_switch_complete.py",
-      92,
-      "<assign>"
-    ],
-    [
-      "src/aryx/api/ask_turn_seed_product_anchor.py",
-      18,
-      "_seed_product_select_from_anchor"
     ],
     [
       "src/aryx/api/ask_turn_steps/ask_step10_blocked_removal.py",
@@ -9962,42 +9917,87 @@
       "_step9_scope_and_constraint_setup"
     ],
     [
-      "src/aryx/api/ask_turn_suggest_switch_anchor.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_confirm_switch_anchor.py",
+      24,
+      "_handle_confirm_switch_anchor"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_confirm_switch_anchor.py",
+      94,
+      "_handle_confirm_switch_anchor"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_confirm_switch_decline.py",
+      18,
+      "_handle_confirm_switch_decline"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_confirm_switch_decline.py",
+      71,
+      "_handle_confirm_switch_decline"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_intent_diagnostics.py",
+      19,
+      "_log_turn_intent_diagnostics"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_intent_diagnostics.py",
+      39,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_product_switch_complete.py",
+      20,
+      "_complete_product_switch"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_product_switch_complete.py",
+      92,
+      "<assign>"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_seed_product_anchor.py",
+      18,
+      "_seed_product_select_from_anchor"
+    ],
+    [
+      "src/aryx/api/ask_turn_switch/ask_turn_suggest_switch_anchor.py",
       17,
       "_handle_suggest_switch_anchor"
     ],
     [
-      "src/aryx/api/ask_turn_suggest_switch_anchor.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_suggest_switch_anchor.py",
       53,
       "_handle_suggest_switch_anchor"
     ],
     [
-      "src/aryx/api/ask_turn_switch_answer_guard.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_answer_guard.py",
       18,
       "_is_answer_to_pending_over_switch"
     ],
     [
-      "src/aryx/api/ask_turn_switch_answer_guard.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_answer_guard.py",
       95,
       "_is_answer_to_pending_over_switch"
     ],
     [
-      "src/aryx/api/ask_turn_switch_country_anchor.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_country_anchor.py",
       21,
       "_handle_switch_country_anchor"
     ],
     [
-      "src/aryx/api/ask_turn_switch_country_anchor.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_country_anchor.py",
       88,
       "_handle_switch_country_anchor"
     ],
     [
-      "src/aryx/api/ask_turn_switch_redetect_prompt.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_redetect_prompt.py",
       21,
       "_build_switch_redetect_prompt"
     ],
     [
-      "src/aryx/api/ask_turn_switch_redetect_prompt.py",
+      "src/aryx/api/ask_turn_switch/ask_turn_switch_redetect_prompt.py",
       117,
       "_build_switch_redetect_prompt"
     ],
