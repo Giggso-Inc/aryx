@@ -34,7 +34,7 @@ from aryx.api.ask_dispatch.ask_dispatch_query_approval_decline import (
     _dispatch_qa_question,
     _dispatch_response_mode_request,
 )
-from aryx.cpq.intent_schema import Confidence, IntentCategory, IntentResult
+from aryx.cpq.intent_schema.intent_schema import Confidence, IntentCategory, IntentResult
 
 
 def _dispatch_intent_result(

@@ -16,7 +16,7 @@ from aryx.api.ask_response_building.ask_build_country_change_response import _bu
 from aryx.api.ask_response_building.ask_build_product_quantity_response import (
     _build_product_quantity_change_response,
 )
-from aryx.cpq.intent_schema import _is_signed_digit_quantity_text
+from aryx.cpq.intent_schema.intent_schema import _is_signed_digit_quantity_text
 
 
 def _dispatch_quantity_change(

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema_enums import IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 
 from aryx.api.ask_handle import ask_handle_attr_activation as _ask_handle_attr_activation_module
 from aryx.api.ask_handle import ask_handle_attr_clear as _ask_handle_attr_clear_module

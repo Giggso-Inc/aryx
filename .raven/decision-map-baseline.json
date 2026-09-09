@@ -12497,42 +12497,42 @@
       "audit_intent_conservation"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       174,
       "parse_gateway_intent"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       215,
       "parse_gateway_intent"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       245,
       "validate_gateway_quarantine"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       259,
       "_ambiguous"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       264,
       "_ambiguous"
     ],
     [
-      "src/aryx/cpq/intent_schema_gateway.py",
+      "src/aryx/cpq/intent_schema/intent_schema_gateway.py",
       320,
       "validate_gateway_quarantine"
     ],
     [
-      "src/aryx/cpq/intent_schema_result.py",
+      "src/aryx/cpq/intent_schema/intent_schema_result.py",
       121,
       "parse_intent_result"
     ],
     [
-      "src/aryx/cpq/intent_schema_result.py",
+      "src/aryx/cpq/intent_schema/intent_schema_result.py",
       161,
       "parse_intent_result"
     ],

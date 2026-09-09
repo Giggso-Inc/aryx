@@ -67,7 +67,7 @@ from aryx.cpq.intent_gateway_candidates import (
     build_candidate_bundles,
     resolve_value_from_ref,
 )
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     GATEWAY_INTENT_JSON_SCHEMA,
     Confidence,
     GatewayIntentResult,

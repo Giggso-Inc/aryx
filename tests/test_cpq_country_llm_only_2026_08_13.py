@@ -16,7 +16,7 @@ from aryx.api.ask_core_helpers import _mine_history_for_cpq_context
 from aryx.api.ask_llm.ask_llm_confirm_extract_country import _llm_confirm_and_extract_country
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     Confidence,
     GatewayIntentResult,
     IntentCategory,

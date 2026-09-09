@@ -23,7 +23,7 @@ from aryx.cpq.intent_gateway import (
     clear_gateway_cache,
     resolve_value_from_ref,
 )
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     Confidence,
     GatewayIntentResult,
     IntentCategory,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from aryx.cpq.intent_schema_enums import Confidence, IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import Confidence, IntentCategory
 
 
 @dataclass

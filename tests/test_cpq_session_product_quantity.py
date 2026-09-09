@@ -33,7 +33,7 @@ from aryx.cpq.engine import (
 )
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

@@ -28,7 +28,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
 from aryx.api.ask_pending_clarify.ask_pending_clarify_answer import _set_pending_clarify_and_answer
 from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

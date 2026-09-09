@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from aryx.cpq.intent_schema import GatewayIntentResult
+from aryx.cpq.intent_schema.intent_schema import GatewayIntentResult
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 _VALUE_CAP = 40

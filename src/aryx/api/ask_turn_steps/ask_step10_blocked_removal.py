@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema_enums import IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 
 from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module

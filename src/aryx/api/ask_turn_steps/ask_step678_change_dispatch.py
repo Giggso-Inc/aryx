@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema_enums import IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 
 from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi
 from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _scan_and_enqueue_remaining_targets

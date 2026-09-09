@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.cpq.intent_schema import GatewayIntentResult, IntentCategory
+from aryx.cpq.intent_schema.intent_schema import GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr
 
 logger = logging.getLogger(__name__)

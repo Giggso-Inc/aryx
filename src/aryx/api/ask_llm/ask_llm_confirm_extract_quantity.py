@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema import IntentCategory, _is_signed_digit_quantity_text
+from aryx.cpq.intent_schema.intent_schema import IntentCategory, _is_signed_digit_quantity_text
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 

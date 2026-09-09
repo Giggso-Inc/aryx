@@ -14,7 +14,7 @@ from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _with_
 from aryx.api.ask_handle.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.cpq.engine import is_valid_product_quantity
-from aryx.cpq.intent_schema import _is_signed_digit_quantity_text
+from aryx.cpq.intent_schema.intent_schema import _is_signed_digit_quantity_text
 
 
 def _dispatch_bulk_quantity_change(

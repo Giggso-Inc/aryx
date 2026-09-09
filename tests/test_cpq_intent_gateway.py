@@ -18,7 +18,7 @@ from aryx.cpq.intent_gateway import (
     resolve_value_from_ref,
     session_state_hash,
 )
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     GATEWAY_INTENT_JSON_SCHEMA,
     Confidence,
     GatewayIntentResult,

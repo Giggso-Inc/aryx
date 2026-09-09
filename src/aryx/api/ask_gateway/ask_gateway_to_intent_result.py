@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema import ChangeTarget, IntentCategory, IntentResult
+from aryx.cpq.intent_schema.intent_schema import ChangeTarget, IntentCategory, IntentResult
 
 
 def _gateway_to_intent_result(
@@ -35,7 +35,7 @@ def _gateway_to_intent_result(
     Both closed here so the remaining dispatch-branch phases (2-4) have
     a converter that actually matches its own documented contract.
     """
-    from aryx.cpq.intent_schema import GatewayIntentResult as _GIR
+    from aryx.cpq.intent_schema.intent_schema import GatewayIntentResult as _GIR
     if not isinstance(gw, _GIR):
         return None
     by_vn = {a.variable_name: a for a in attrs}

@@ -16,7 +16,7 @@ from typing import Any
 from aryx import llm_runtime
 from aryx.api.ask_llm.ask_llm_intent_universal_pending import _build_pending_state_block
 from aryx.api.ask_catalog.ask_relevant_intent_candidates import _relevant_intent_candidates
-from aryx.cpq.intent_schema import INTENT_RESULT_JSON_SCHEMA, IntentCategory, parse_intent_result
+from aryx.cpq.intent_schema.intent_schema import INTENT_RESULT_JSON_SCHEMA, IntentCategory, parse_intent_result
 
 _INTENT_CATEGORY_LIST = ", ".join(c.value for c in IntentCategory)
 
@@ -25,7 +25,7 @@ def _llm_classify_intent_universal(
     question: str, attrs: list, session: Any, workspace_id: int,
 ) -> "tuple[Any | None, int, int]":
     """One structured classification call per the Phase 0 schema
-    (`aryx.cpq.intent_schema`).
+    (`aryx.cpq.intent_schema.intent_schema`).
 
     Returns (result, prompt_tokens, completion_tokens) — 2026-07-28: token
     counts are threaded through so callers that actually DISPATCH on this

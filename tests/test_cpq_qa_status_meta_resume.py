@@ -26,7 +26,7 @@ from unittest.mock import patch
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest
 from aryx.api.ask_handle.ask_handle_cpq_qa import _handle_cpq_qa
-from aryx.cpq.intent_schema import Confidence, IntentCategory, IntentResult
+from aryx.cpq.intent_schema.intent_schema import Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 

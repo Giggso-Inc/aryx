@@ -14,7 +14,7 @@ from typing import Any
 
 from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
-from aryx.cpq.intent_schema import Confidence, IntentCategory
+from aryx.cpq.intent_schema.intent_schema import Confidence, IntentCategory
 
 
 def _qa_graph_search(

@@ -27,7 +27,7 @@ from aryx.api.ask_catalog.ask_target_description import _resolve_target_descript
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import clear_gateway_cache
-from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
+from aryx.cpq.intent_schema.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 from aryx.api.ask_pending_clarify import ask_pending_clarify_llm_classify as _ask_pending_clarify_llm_classify_test_module

@@ -14,7 +14,7 @@ import json
 import os
 
 from aryx.config import get_settings
-from aryx.cpq.intent_schema import GatewayIntentResult
+from aryx.cpq.intent_schema.intent_schema import GatewayIntentResult
 from aryx.cpq.state import CpqSession
 
 # Module-level cache: key → (GatewayIntentResult, pt, ct, model_id)

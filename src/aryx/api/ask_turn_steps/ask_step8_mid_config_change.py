@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema_enums import IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 
 from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi

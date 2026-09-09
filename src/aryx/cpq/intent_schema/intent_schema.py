@@ -31,15 +31,15 @@ is a pure re-export hub: the shared enums live in `cpq.intent_schema_
 enums`, the plain-language IntentResult contract lives in `cpq.intent_
 schema_result`, and the gateway quarantine contract lives in `cpq.intent_
 schema_gateway`. Every importer across the codebase uses direct-name
-imports (`from aryx.cpq.intent_schema import X`) with zero whitebox
+imports (`from aryx.cpq.intent_schema.intent_schema import X`) with zero whitebox
 patches on this module — confirmed via grep before splitting — so this
 re-export list is the only compatibility surface needed.
 """
 
 from __future__ import annotations
 
-from aryx.cpq.intent_schema_enums import Confidence, IntentCategory
-from aryx.cpq.intent_schema_gateway import (
+from aryx.cpq.intent_schema.intent_schema_enums import Confidence, IntentCategory
+from aryx.cpq.intent_schema.intent_schema_gateway import (
     GATEWAY_INTENT_JSON_SCHEMA,
     GatewayIntentResult,
     _GATEWAY_NO_TARGET_CATEGORIES,
@@ -47,7 +47,7 @@ from aryx.cpq.intent_schema_gateway import (
     parse_gateway_intent,
     validate_gateway_quarantine,
 )
-from aryx.cpq.intent_schema_result import (
+from aryx.cpq.intent_schema.intent_schema_result import (
     INTENT_RESULT_JSON_SCHEMA,
     ChangeTarget,
     IntentResult,

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.intent_schema import IntentCategory
+from aryx.cpq.intent_schema.intent_schema import IntentCategory
 
 
 # Gateway failure reasons (GatewayDecision.reason) meaning the LLM call

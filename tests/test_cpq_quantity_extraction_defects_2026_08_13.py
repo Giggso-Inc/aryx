@@ -12,7 +12,7 @@ from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.cpq.engine import extract_quantity_hint
 from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     Confidence,
     GatewayIntentResult,
     IntentCategory,

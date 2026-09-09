@@ -14,7 +14,7 @@ from aryx.api.ask_dispatch.ask_dispatch_intent_result import _dispatch_intent_re
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine, extract_quantity_hint
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.api.ask_response_building import ask_build_show_summary_response as _ask_build_show_summary_response_test_module
 from aryx.api import ask_core_helpers as _ask_core_helpers_test_module

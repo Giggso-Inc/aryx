@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from aryx.cpq.intent_schema_enums import Confidence, IntentCategory
+from aryx.cpq.intent_schema.intent_schema_enums import Confidence, IntentCategory
 
 
 @dataclass
