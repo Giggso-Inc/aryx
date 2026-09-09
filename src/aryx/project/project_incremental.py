@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aryx.graph import FalkorStore
 
-from aryx.project_full import _entity_iri
+from aryx.project.project_full import _entity_iri
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)

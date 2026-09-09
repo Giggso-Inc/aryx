@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aryx.graph import FalkorStore
 
-from aryx.project_full import ProjectProgress, _entity_iri, project_graph
-from aryx.project_incremental import project_incremental
+from aryx.project.project_full import ProjectProgress, _entity_iri, project_graph
+from aryx.project.project_incremental import project_incremental
 from aryx.store.entity_store import EntityStore
 
 __all__ = [
