@@ -4,7 +4,7 @@ from .availability import GEMINI_AVAILABLE, genai
 
 
 def validate_gemini(
-    apiKey: str,
+    api_key: str,
     model: str,
     prompt: str = "This is a test prompt."
 ) -> str:
@@ -12,7 +12,7 @@ def validate_gemini(
     Validate Gemini API by making a test request
 
     Args:
-        apiKey: Gemini API key
+        api_key: Gemini API key
         model: Model name (e.g., "gemini-pro", "gemini-1.5-pro")
         prompt: Test prompt to send
 
@@ -30,7 +30,7 @@ def validate_gemini(
         raise ImportError("google-generativeai package is required. Install it with: pip install google-generativeai")
 
     # Configure Gemini API
-    genai.configure(api_key=apiKey)
+    genai.configure(api_key=api_key)
 
     # Get model instance
     model_instance = genai.GenerativeModel(model)

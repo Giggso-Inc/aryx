@@ -135,7 +135,7 @@ class TestPasswordHashing:
 
     def test_verify_password_reraises_when_bcrypt_also_fails(self):
         with patch("app.core.auth.passwords.pwd_context") as mock_ctx, \
-             patch("app.core.auth.passwords.BCrypt_AVAILABLE", False):
+             patch("app.core.auth.passwords.BCRYPT_AVAILABLE", False):
             mock_ctx.verify.side_effect = Exception("passlib internal error")
             with pytest.raises(Exception, match="passlib internal error"):
                 verify_password("mypassword", "some-hash")

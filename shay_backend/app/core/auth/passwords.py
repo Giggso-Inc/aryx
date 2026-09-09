@@ -20,10 +20,10 @@ warnings.filterwarnings('ignore', message='.*trapped.*error reading bcrypt versi
 # Direct bcrypt import as fallback
 try:
     import bcrypt
-    BCrypt_AVAILABLE = True
+    BCRYPT_AVAILABLE = True
     logger.debug("Direct bcrypt import successful")
 except ImportError:
-    BCrypt_AVAILABLE = False
+    BCRYPT_AVAILABLE = False
     logger.warning("Direct bcrypt import failed")
 
 # Fix bcrypt version detection for passlib compatibility
@@ -94,7 +94,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception as e:
         logger.warning("Passlib password verification failed; trying direct bcrypt fallback: %s", e)
         # Try direct bcrypt as fallback
-        if BCrypt_AVAILABLE:
+        if BCRYPT_AVAILABLE:
             try:
                 # Ensure password is bytes for direct bcrypt
                 password_bytes = plain_password.encode('utf-8')

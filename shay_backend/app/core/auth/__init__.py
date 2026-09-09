@@ -27,7 +27,7 @@ from app.core.auth.ids import (
     generate_workspace_id,
 )
 from app.core.auth.passwords import (
-    BCrypt_AVAILABLE,
+    BCRYPT_AVAILABLE,
     get_password_hash,
     hash_password,
     pwd_context,
@@ -59,7 +59,7 @@ __all__ = [
     "get_password_hash",
     "validate_password_length",
     "pwd_context",
-    "BCrypt_AVAILABLE",
+    "BCRYPT_AVAILABLE",
     "generate_user_id",
     "generate_company_id",
     "generate_workspace_id",

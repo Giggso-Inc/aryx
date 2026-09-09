@@ -18,8 +18,8 @@ needs to change.
   availability.py - optional-dependency detection (OPENAI_AVAILABLE,
                     GEMINI_AVAILABLE, LANGCHAIN_AVAILABLE) + the SDK
                     symbols/exception classes each provider module imports
-  azure.py        - updateAzureOpenAiChat
-  openai_chat.py  - updateOpenAiChat
+  azure.py        - update_azure_openai_chat
+  openai_chat.py  - update_openai_chat
   gemini.py       - validate_gemini
 """
 
@@ -38,8 +38,8 @@ from .availability import (
     get_openai_callback,
     logger,
 )
-from .azure import updateAzureOpenAiChat
-from .openai_chat import updateOpenAiChat
+from .azure import update_azure_openai_chat
+from .openai_chat import update_openai_chat
 from .gemini import validate_gemini
 
 __all__ = [
@@ -56,7 +56,7 @@ __all__ = [
     "LANGCHAIN_AVAILABLE",
     "get_openai_callback",
     "logger",
-    "updateAzureOpenAiChat",
-    "updateOpenAiChat",
+    "update_azure_openai_chat",
+    "update_openai_chat",
     "validate_gemini",
 ]

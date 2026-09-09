@@ -3,22 +3,22 @@
 from .availability import OPENAI_AVAILABLE, AzureOpenAI
 
 
-def updateAzureOpenAiChat(
+def update_azure_openai_chat(
     prompt: str,
-    openaiToken: str,
-    deploymentName: str,
+    openai_token: str,
+    deployment_name: str,
     endpoint: str,
-    apiVersion: str
+    api_version: str
 ) -> str:
     """
     Validate Azure OpenAI API by making a test request
 
     Args:
         prompt: Test prompt to send
-        openaiToken: Azure OpenAI API key
-        deploymentName: Azure deployment name
+        openai_token: Azure OpenAI API key
+        deployment_name: Azure deployment name
         endpoint: Azure endpoint URL
-        apiVersion: API version
+        api_version: API version
 
     Returns:
         Response text from the API
@@ -31,14 +31,14 @@ def updateAzureOpenAiChat(
 
     # Initialize Azure OpenAI client
     client = AzureOpenAI(
-        api_key=openaiToken,
-        api_version=apiVersion,
+        api_key=openai_token,
+        api_version=api_version,
         azure_endpoint=endpoint
     )
 
     # Make a test request
     response = client.chat.completions.create(
-        model=deploymentName,
+        model=deployment_name,
         messages=[
             {"role": "user", "content": prompt}
         ],

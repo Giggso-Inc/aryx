@@ -56,18 +56,18 @@ async def llm_validation(
     )
 
     cost = 0.0
-    llmType = request_data.llmType.lower()  # Normalize to lowercase
+    llm_type = request_data.llmType.lower()  # Normalize to lowercase
 
     try:
         # Decode base64 API key
-        apiKey = base64.b64decode(request_data.llmApiKey).decode('UTF-8').strip()
-        deploymentName = request_data.llmModelName
-        apiVersion = request_data.llmApiVersion
+        api_key = base64.b64decode(request_data.llmApiKey).decode('UTF-8').strip()
+        deployment_name = request_data.llmModelName
+        api_version = request_data.llmApiVersion
         endpoint = request_data.llmEndpoint
         model = request_data.llmModelName
 
         logger.info("## Request received in validator API...")
-        logger.info(f"Token is received in payload Type: {llmType}")
+        logger.info(f"Token is received in payload Type: {llm_type}")
 
     except Exception as exp:
         logger.exception(
@@ -96,20 +96,20 @@ async def llm_validation(
         cb_context = nullcontext()
 
     with cb_context as cb:
-        if llmType == "azureopenai":
+        if llm_type == "azureopenai":
             return _validate_azure_openai(
-                logger, deploymentName, endpoint, apiVersion, apiKey, cb, LANGCHAIN_AVAILABLE
+                logger, deployment_name, endpoint, api_version, api_key, cb, LANGCHAIN_AVAILABLE
             )
 
-        elif llmType == "chatgpt":
-            return _validate_chatgpt(logger, apiKey, model, cb, LANGCHAIN_AVAILABLE)
+        elif llm_type == "chatgpt":
+            return _validate_chatgpt(logger, api_key, model, cb, LANGCHAIN_AVAILABLE)
 
-        elif llmType == "gemini":
-            return _validate_gemini_token(logger, apiKey, model)
+        elif llm_type == "gemini":
+            return _validate_gemini_token(logger, api_key, model)
 
         # -------------------- Unsupported Provider --------------------
         else:
-            logger.error(f"Unsupported llmType received: {llmType}")
+            logger.error(f"Unsupported llmType received: {llm_type}")
             return SuccessResponse(
                 success=False,
                 data={

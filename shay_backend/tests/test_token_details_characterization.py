@@ -376,7 +376,7 @@ class TestLlmValidation:
 
     def test_azure_happy_path(self, mock_db):
         client = _make_client(mock_db)
-        with patch("app.services.llm_validation_service.updateAzureOpenAiChat", return_value="ok"):
+        with patch("app.services.llm_validation_service.update_azure_openai_chat", return_value="ok"):
             resp = client.post(
                 "/api/v1/llmValidation/gpt-token-validation",
                 json=self._payload(
@@ -391,7 +391,7 @@ class TestLlmValidation:
 
     def test_chatgpt_happy_path(self, mock_db):
         client = _make_client(mock_db)
-        with patch("app.services.llm_validation_service.updateOpenAiChat", return_value="ok"):
+        with patch("app.services.llm_validation_service.update_openai_chat", return_value="ok"):
             resp = client.post(
                 "/api/v1/llmValidation/gpt-token-validation",
                 json=self._payload("chatgpt"),
@@ -406,7 +406,7 @@ class TestLlmValidation:
         from openai import RateLimitError
         err = RateLimitError("rate limited", response=response, body=None)
         client = _make_client(mock_db)
-        with patch("app.services.llm_validation_service.updateOpenAiChat", side_effect=err):
+        with patch("app.services.llm_validation_service.update_openai_chat", side_effect=err):
             resp = client.post(
                 "/api/v1/llmValidation/gpt-token-validation",
                 json=self._payload("chatgpt"),

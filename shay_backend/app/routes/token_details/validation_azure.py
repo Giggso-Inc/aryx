@@ -18,26 +18,26 @@ from app.schemas.common import SuccessResponse
 
 def _validate_azure_openai(
     logger: logging.Logger,
-    deploymentName: str | None,
+    deployment_name: str | None,
     endpoint: str | None,
-    apiVersion: str | None,
-    apiKey: str,
+    api_version: str | None,
+    api_key: str,
     cb,
     langchain_available: bool,
 ) -> SuccessResponse[dict]:
     """Validate an Azure OpenAI API token; mirrors the original inline branch."""
-    from app.services.llm_validation_service import updateAzureOpenAiChat, get_openai_callback
+    from app.services.llm_validation_service import update_azure_openai_chat, get_openai_callback
 
     cost = 0.0
 
     try:
         logger.info("## Request received for the AzureOpenAI API...")
         logger.info(
-            f"Deployment Name: {deploymentName}\nEndpoint: {endpoint}\nAPI Version: {apiVersion}"
+            f"Deployment Name: {deployment_name}\nEndpoint: {endpoint}\nAPI Version: {api_version}"
         )
 
         # Validate required fields for Azure
-        if not apiVersion or not endpoint:
+        if not api_version or not endpoint:
             return SuccessResponse(
                 success=False,
                 data={
@@ -50,12 +50,12 @@ def _validate_azure_openai(
                 code=status.HTTP_400_BAD_REQUEST
             )
 
-        response = updateAzureOpenAiChat(
+        response = update_azure_openai_chat(
             prompt="This is a test",
-            openaiToken=apiKey,
-            deploymentName=deploymentName,
+            openai_token=api_key,
+            deployment_name=deployment_name,
             endpoint=endpoint,
-            apiVersion=apiVersion
+            api_version=api_version
         )
 
         logger.info(f"Response: {response}")

@@ -3,9 +3,9 @@
 from .availability import OPENAI_AVAILABLE, OpenAI
 
 
-def updateOpenAiChat(
+def update_openai_chat(
     prompt: str,
-    apiKey: str,
+    api_key: str,
     model: str
 ) -> str:
     """
@@ -13,7 +13,7 @@ def updateOpenAiChat(
 
     Args:
         prompt: Test prompt to send
-        apiKey: OpenAI API key
+        api_key: OpenAI API key
         model: Model name (e.g., "gpt-3.5-turbo", "gpt-4")
 
     Returns:
@@ -27,7 +27,7 @@ def updateOpenAiChat(
         raise ImportError("openai package is required. Install it with: pip install openai")
 
     # Initialize OpenAI client
-    client = OpenAI(api_key=apiKey)
+    client = OpenAI(api_key=api_key)
 
     # Make a test request
     response = client.chat.completions.create(

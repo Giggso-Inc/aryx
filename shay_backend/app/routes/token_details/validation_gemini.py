@@ -18,7 +18,7 @@ from app.schemas.common import SuccessResponse
 
 def _validate_gemini_token(
     logger: logging.Logger,
-    apiKey: str,
+    api_key: str,
     model: str | None,
 ) -> SuccessResponse[dict]:
     """Validate a Gemini API token; mirrors the original inline branch."""
@@ -33,7 +33,7 @@ def _validate_gemini_token(
     try:
         logger.info("## Request received for the Gemini API...")
 
-        response = validate_gemini(apiKey, model, "This is a test prompt.")
+        response = validate_gemini(api_key, model, "This is a test prompt.")
         logger.info(f"Response: {response}")
 
         return SuccessResponse(

@@ -48,18 +48,18 @@ def test_langchain_available_flag_reflects_import():
 
 
 # ---------------------------------------------------------------------------
-# updateAzureOpenAiChat
+# update_azure_openai_chat
 # ---------------------------------------------------------------------------
 
 def test_update_azure_openai_chat_requires_package_when_unavailable():
-    from app.services.llm_validation_service import updateAzureOpenAiChat
+    from app.services.llm_validation_service import update_azure_openai_chat
     with patch(f"{MODPATH}.azure.OPENAI_AVAILABLE", False):
         with pytest.raises(ImportError, match="openai package is required"):
-            updateAzureOpenAiChat("prompt", "token", "deploy", "https://endpoint", "2024-01-01")
+            update_azure_openai_chat("prompt", "token", "deploy", "https://endpoint", "2024-01-01")
 
 
 def test_update_azure_openai_chat_success():
-    from app.services.llm_validation_service import updateAzureOpenAiChat
+    from app.services.llm_validation_service import update_azure_openai_chat
 
     fake_response = MagicMock()
     fake_response.choices = [MagicMock(message=MagicMock(content="hello back"))]
@@ -67,7 +67,7 @@ def test_update_azure_openai_chat_success():
     fake_client.chat.completions.create = MagicMock(return_value=fake_response)
 
     with patch(f"{MODPATH}.azure.AzureOpenAI", return_value=fake_client) as mock_azure_cls:
-        result = updateAzureOpenAiChat(
+        result = update_azure_openai_chat(
             "test prompt", "token-123", "gpt-4-deploy", "https://example.openai.azure.com", "2024-01-01"
         )
 
@@ -83,18 +83,18 @@ def test_update_azure_openai_chat_success():
 
 
 # ---------------------------------------------------------------------------
-# updateOpenAiChat
+# update_openai_chat
 # ---------------------------------------------------------------------------
 
 def test_update_openai_chat_requires_package_when_unavailable():
-    from app.services.llm_validation_service import updateOpenAiChat
+    from app.services.llm_validation_service import update_openai_chat
     with patch(f"{MODPATH}.openai_chat.OPENAI_AVAILABLE", False):
         with pytest.raises(ImportError, match="openai package is required"):
-            updateOpenAiChat("prompt", "key", "gpt-4")
+            update_openai_chat("prompt", "key", "gpt-4")
 
 
 def test_update_openai_chat_success():
-    from app.services.llm_validation_service import updateOpenAiChat
+    from app.services.llm_validation_service import update_openai_chat
 
     fake_response = MagicMock()
     fake_response.choices = [MagicMock(message=MagicMock(content="chat reply"))]
@@ -102,7 +102,7 @@ def test_update_openai_chat_success():
     fake_client.chat.completions.create = MagicMock(return_value=fake_response)
 
     with patch(f"{MODPATH}.openai_chat.OpenAI", return_value=fake_client) as mock_openai_cls:
-        result = updateOpenAiChat("hi", "sk-test", "gpt-3.5-turbo")
+        result = update_openai_chat("hi", "sk-test", "gpt-3.5-turbo")
 
     mock_openai_cls.assert_called_once_with(api_key="sk-test")
     fake_client.chat.completions.create.assert_called_once_with(

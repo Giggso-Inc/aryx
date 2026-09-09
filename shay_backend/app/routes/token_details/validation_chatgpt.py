@@ -18,14 +18,14 @@ from app.schemas.common import SuccessResponse
 
 def _validate_chatgpt(
     logger: logging.Logger,
-    apiKey: str,
+    api_key: str,
     model: str | None,
     cb,
     langchain_available: bool,
 ) -> SuccessResponse[dict]:
     """Validate an OpenAI (ChatGPT) API token; mirrors the original inline branch."""
     from app.services.llm_validation_service import (
-        updateOpenAiChat,
+        update_openai_chat,
         RateLimitError,
         get_openai_callback,
     )
@@ -35,8 +35,8 @@ def _validate_chatgpt(
     try:
         logger.info(f"## Request received for OpenAI Model: {model}")
 
-        userPrompt = "This is a test"
-        response = updateOpenAiChat(userPrompt, apiKey, model)
+        user_prompt = "This is a test"
+        response = update_openai_chat(user_prompt, api_key, model)
 
         # Get cost from callback if available
         if langchain_available and get_openai_callback and hasattr(cb, 'total_cost'):
