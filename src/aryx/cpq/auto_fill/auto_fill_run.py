@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq import auto_fill_resolve, auto_fill_setup
+from aryx.cpq.auto_fill import auto_fill_resolve, auto_fill_setup
 
 
 def run_auto_fill(

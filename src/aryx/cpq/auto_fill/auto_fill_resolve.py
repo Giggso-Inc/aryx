@@ -13,7 +13,7 @@ held before (see `auto_fill_stages/coordinator.py` for the stage order and
 `auto_fill_stages/state.py` for the shared state the stages thread through).
 The split is mechanical and behavior-preserving; this module keeps the same
 name and the same `resolve_one_attr(engine, attr, ctx, scope)` signature, so
-`engine.py`'s `from aryx.cpq import auto_fill_resolve` call site is
+`engine.py`'s `from aryx.cpq.auto_fill import auto_fill_resolve` call site is
 unchanged.
 
 `engine` is the live `CpqEngine` instance (for its own method calls,

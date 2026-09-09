@@ -577,11 +577,11 @@ _NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
 # SCRIPT_GOVERNED, _BLIND_FILL_RISK_ACCEPTED_VNS, _OPTIONAL_EMPTY_FILL_
 # ACCEPTED_VNS, _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS, logger) — this line
 # must sit after every one of those is already defined above.
-from aryx.cpq import auto_fill_hw_order
+from aryx.cpq.auto_fill import auto_fill_hw_order
 from aryx.cpq import catalog_hints
 from aryx.cpq import mandatory_input
-from aryx.cpq import auto_fill_postpass
-from aryx.cpq import auto_fill_resolve
+from aryx.cpq.auto_fill import auto_fill_postpass
+from aryx.cpq.auto_fill import auto_fill_resolve
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
 
@@ -725,8 +725,8 @@ class FillScope:
 
 # Deferred: auto_fill_setup imports FillContext/FillScope BACK from this
 # module, so it must be placed after both class definitions above.
-from aryx.cpq import auto_fill_run  # noqa: E402
-from aryx.cpq import auto_fill_setup  # noqa: E402
+from aryx.cpq.auto_fill import auto_fill_run  # noqa: E402
+from aryx.cpq.auto_fill import auto_fill_setup  # noqa: E402
 from aryx.cpq.product_config import product_config_load  # noqa: E402
 
 

@@ -10587,62 +10587,62 @@
       "<try>"
     ],
     [
-      "src/aryx/cpq/auto_fill_data_table_setup.py",
+      "src/aryx/cpq/auto_fill/auto_fill_data_table_setup.py",
       33,
       "compute_data_table_setup"
     ],
     [
-      "src/aryx/cpq/auto_fill_data_table_setup.py",
+      "src/aryx/cpq/auto_fill/auto_fill_data_table_setup.py",
       137,
       "compute_data_table_setup"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       33,
       "is_product_line_selector"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       44,
       "is_product_line_selector"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       64,
       "order_pending_hardware_before_product"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       134,
       "_rank"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       142,
       "_rank"
     ],
     [
-      "src/aryx/cpq/auto_fill_hw_order.py",
+      "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
       144,
       "order_pending_hardware_before_product"
     ],
     [
-      "src/aryx/cpq/auto_fill_postpass.py",
+      "src/aryx/cpq/auto_fill/auto_fill_postpass.py",
       56,
       "cascade_fill_pending"
     ],
     [
-      "src/aryx/cpq/auto_fill_postpass.py",
+      "src/aryx/cpq/auto_fill/auto_fill_postpass.py",
       112,
       "cascade_fill_pending"
     ],
     [
-      "src/aryx/cpq/auto_fill_run.py",
+      "src/aryx/cpq/auto_fill/auto_fill_run.py",
       16,
       "run_auto_fill"
     ],
     [
-      "src/aryx/cpq/auto_fill_run.py",
+      "src/aryx/cpq/auto_fill/auto_fill_run.py",
       245,
       "run_auto_fill"
     ],

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.auto_fill_conflict_detection import compute_conflicted_optional_ids
-from aryx.cpq.auto_fill_data_table_setup import compute_data_table_setup
-from aryx.cpq.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
+from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_optional_ids
+from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
+from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
 from aryx.cpq.engine import FillContext, FillScope
 
 
