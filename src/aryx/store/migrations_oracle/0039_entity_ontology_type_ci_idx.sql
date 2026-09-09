@@ -1,6 +1,6 @@
 -- Oracle equivalent of migrations/0039_entity_ontology_type_ci_idx.sql —
 -- case-insensitive ontology_type lookup index for aryx_entity, closing the
--- same full-scan performance problem aryx.cpq.rdb.fetch_entities_by_exact_
+-- same full-scan performance problem aryx.cpq.rdb.rdb.fetch_entities_by_exact_
 -- type()'s lower(ontology_type) filter causes on Postgres (see that
 -- migration's comment for the confirmed-live incident).
 --

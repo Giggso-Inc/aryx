@@ -53,7 +53,7 @@ def test_fetch_value_rules_emits_status_clause_only_when_active_only(monkeypatch
     already gets on fetch_rules() -- and must NOT add it when active_only is
     left at its default False, so existing (non-status-aware) callers stay
     byte-for-byte unaffected."""
-    from aryx.cpq.rdb import PostgresCpqRdb
+    from aryx.cpq.rdb.rdb import PostgresCpqRdb
 
     class _FakeCursor:
         def __init__(self, capture):

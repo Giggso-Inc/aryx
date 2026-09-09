@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
-from aryx.cpq.rdb_helpers import _as_attrs, _as_int, _type_pattern
+from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
 
 if TYPE_CHECKING:
     import psycopg

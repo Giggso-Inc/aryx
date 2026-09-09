@@ -19,7 +19,7 @@ from aryx.cpq.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
 )
-from aryx.cpq.rdb import PostgresCpqRdb
+from aryx.cpq.rdb.rdb import PostgresCpqRdb
 
 
 def _load_rule_join_data(

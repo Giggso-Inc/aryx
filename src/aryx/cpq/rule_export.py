@@ -28,7 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq.rdb.rdb import get_cpq_rdb
 from aryx.cpq.rule_export_classify import UNSCOPED, _rule_dict, classify_rule_scope
 from aryx.cpq.rule_export_tree import TreeNode, _name_index, _normalize
 from aryx.cpq.state import ConstraintRule, HidingRule, RecommendationRule

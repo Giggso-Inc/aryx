@@ -6,7 +6,7 @@ and `attrSequence` were identified and cross-validated against a real Oracle
 CPQ admin trace page and a live Pipeline Viewer capture.
 
 Reads from Aryx's real ingested entity store (aryx_entity via
-aryx.cpq.rdb.get_cpq_rdb()), NOT from any bundled/hardcoded CSV file --
+aryx.cpq.rdb.rdb.get_cpq_rdb()), NOT from any bundled/hardcoded CSV file --
 whichever Data Table CSVs a user uploads through the normal ingestion UI
 (same CsvConnector path as any other tabular upload) are what this module
 sees. There is no fixed file list, no per-product data file, and nothing

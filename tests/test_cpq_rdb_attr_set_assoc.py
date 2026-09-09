@@ -6,7 +6,7 @@ serves Oracle too through inheritance (same pattern as fetch_function_scripts).
 """
 from __future__ import annotations
 
-from aryx.cpq.rdb import PostgresCpqRdb
+from aryx.cpq.rdb.rdb import PostgresCpqRdb
 
 
 def _rdb(monkeypatch, set_rows, assoc_rows):

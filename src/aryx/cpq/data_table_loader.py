@@ -17,7 +17,7 @@ from aryx.cpq.data_table_cache import (
     _invalidate_on_marker_change,
 )
 from aryx.cpq.data_table_shapes import _detect_shape
-from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq.rdb.rdb import get_cpq_rdb
 
 logger = logging.getLogger(__name__)
 

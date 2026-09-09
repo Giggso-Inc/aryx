@@ -21,8 +21,8 @@ whitebox patches on this module.
 from __future__ import annotations
 
 from aryx.config import get_settings
-from aryx.cpq.rdb_oracle import OracleCpqRdb
-from aryx.cpq.rdb_postgres import PostgresCpqRdb
+from aryx.cpq.rdb.rdb_oracle import OracleCpqRdb
+from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb
 
 __all__ = [
     "OracleCpqRdb",
