@@ -6,6 +6,17 @@ unchanged from the original inline definition. `_cpq_engine`,
 `_is_global_change_decline`, and `_persist_cpq_history` are read through
 the ask_api MODULE object (not imported by name) since ask_api tests
 patch several of its own module-level names by dotted path.
+
+`_match_pending_clarify_reply` is likewise read through its own defining
+module (`ask_pending_clarify_match`), not imported by name — PR review
+(2026-09-10) caught a live regression here: a bare name import binds a
+local reference at import time, so
+`tests/test_cpq_pending_clarify.py`'s `patch("aryx.api.ask_pending_clarify.
+ask_pending_clarify_match._match_pending_clarify_reply", ...)` silently
+went dark (the mock never intercepted the call, the real function ran
+and attempted a live LLM/network call). Module-qualified access, same
+pattern as `_ask_api_module._cpq_engine` below, fixes it without
+touching the test.
 """
 
 from __future__ import annotations
@@ -18,7 +29,7 @@ from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import (
     _apply_pending_clarify_resolution,
     _clear_pending_clarify,
 )
-from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_pending_clarify import ask_pending_clarify_match as _ask_pending_clarify_match_module
 from aryx.api.ask_pending_clarify.ask_pending_clarify_prompt import _grounded_clarify_prompt
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.cpq.session_guard.session_guard import (
@@ -81,7 +92,7 @@ def _handle_pending_clarify_turn(
                 _clear_pending_clarify(session)
                 return None
 
-        clarify_status, resolved_vn = _match_pending_clarify_reply(
+        clarify_status, resolved_vn = _ask_pending_clarify_match_module._match_pending_clarify_reply(
             req.question, candidates, session, req.workspace_id,
         )
     if clarify_status == "resolved" and resolved_vn:
