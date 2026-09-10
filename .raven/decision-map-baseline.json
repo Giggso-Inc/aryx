@@ -10163,32 +10163,32 @@
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      44,
+      48,
       "doc_discover_router"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      71,
+      77,
       "summary"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      73,
+      79,
       "summary"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      85,
+      91,
       "confirm"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      112,
+      118,
       "confirm"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_api.py",
-      114,
+      120,
       "doc_discover_router"
     ],
     [
@@ -10238,12 +10238,12 @@
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_api.py",
-      149,
+      153,
       "ingest_file"
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_api.py",
-      156,
+      161,
       "file_ingest_router"
     ],
     [
@@ -15163,7 +15163,7 @@
     ],
     [
       "src/aryx/worker/fn_handler.py",
-      65,
+      75,
       "<try>"
     ],
     [
