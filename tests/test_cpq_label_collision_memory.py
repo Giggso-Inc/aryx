@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import _llm_resolve_label_collision
+from aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm import _llm_resolve_label_collision
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 

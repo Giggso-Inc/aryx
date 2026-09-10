@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import _reask_confirmed_data_table_conflict
+from aryx.api.ask_data_table_conflict_reask import _reask_confirmed_data_table_conflict
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption, RecommendationRule
 

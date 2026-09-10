@@ -65,9 +65,9 @@ def _patch_access(admin_user, workspace_id=_WS_UUID):
     mock_workspace = MagicMock()
     mock_workspace.id = workspace_id
     return (
-        patch("app.routes.aryx.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-        patch("app.routes.aryx._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)),
-        patch("app.routes.aryx.require_active_workspace_role", new=AsyncMock(return_value="admin")),
+        patch("app.routes.aryx._shared.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.aryx._shared._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)),
+        patch("app.routes.aryx._shared.require_active_workspace_role", new=AsyncMock(return_value="admin")),
     )
 
 
@@ -84,8 +84,8 @@ def test_ask_forwards_question_and_returns_aryx_answer(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._ask.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._ask._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/ask",
             json={"thread_id": "thread-1", "question": "How did revenue change?"},
@@ -110,8 +110,8 @@ def test_ask_returns_502_when_aryx_unreachable(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._ask.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._ask._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/ask",
             json={"thread_id": "thread-1", "question": "..."},
@@ -130,9 +130,9 @@ def test_ask_requires_active_workspace_role(mock_db, admin_user):
     mock_workspace = MagicMock()
     mock_workspace.id = _WS_UUID
 
-    with patch("app.routes.aryx.get_current_user_required", new=AsyncMock(return_value=admin_user)), \
-         patch("app.routes.aryx._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)), \
-         patch("app.routes.aryx.require_active_workspace_role",
+    with patch("app.routes.aryx._shared.get_current_user_required", new=AsyncMock(return_value=admin_user)), \
+         patch("app.routes.aryx._shared._get_workspace_or_404", new=AsyncMock(return_value=mock_workspace)), \
+         patch("app.routes.aryx._shared.require_active_workspace_role",
                new=AsyncMock(side_effect=HTTPException(403, "Access denied to workspace"))):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/ask",
@@ -159,8 +159,9 @@ def test_read_documents_resolves_aryx_workspace_and_uploads_files(mock_db, admin
         return async_ctx_get if call_count["n"] == 1 else async_ctx_post
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", side_effect=_client_factory), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._shared.httpx.AsyncClient", side_effect=_client_factory), \
+         patch("app.routes.aryx._shared._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}), \
+         patch("app.routes.aryx._documents._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/documents/read",
             files={"files": ("report.csv", b"id,name\n1,Widget\n", "text/csv")},
@@ -185,8 +186,8 @@ def test_read_documents_404_when_workspace_never_bridged(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._shared.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._shared._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/documents/read",
             files={"files": ("x.csv", b"a,b\n1,2\n", "text/csv")},
@@ -208,8 +209,8 @@ def test_document_summary_returns_discovered_types(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._documents.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._documents._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.get(
             "/api/v1/aryx/workspaces/ws-1/documents/disc-123/summary",
             headers={"Authorization": "Bearer test-token"},
@@ -230,8 +231,8 @@ def test_confirm_documents_forwards_approved_types_and_files(mock_db, admin_user
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._documents.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._documents._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.post(
             "/api/v1/aryx/workspaces/ws-1/documents/disc-123/confirm",
             json={"approved_types": ["Invoice", "Customer"], "approved_files": ["x.csv"]},
@@ -261,8 +262,8 @@ def test_job_status_returns_live_progress(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._jobs.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._jobs._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.get(
             "/api/v1/aryx/workspaces/ws-1/jobs/job-456",
             headers={"Authorization": "Bearer test-token"},
@@ -280,8 +281,8 @@ def test_job_status_404_when_job_unknown(mock_db, admin_user):
     p1, p2, p3 = _patch_access(admin_user)
 
     with p1, p2, p3, \
-         patch("app.routes.aryx.httpx.AsyncClient", return_value=async_ctx), \
-         patch("app.routes.aryx._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
+         patch("app.routes.aryx._jobs.httpx.AsyncClient", return_value=async_ctx), \
+         patch("app.routes.aryx._jobs._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}):
         response = client_.get(
             "/api/v1/aryx/workspaces/ws-1/jobs/does-not-exist",
             headers={"Authorization": "Bearer test-token"},

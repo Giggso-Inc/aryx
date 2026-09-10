@@ -11,6 +11,17 @@ Scope levels
   thread     → app connection scoped to a specific thread
 
 Inheritance direction: thread > channel > workspace (most specific wins).
+
+Raven 150-line style exception: this file defines exactly one SQLAlchemy
+declarative model (GGAppConnection) backing a single wide table — the
+column count, the three-way exclusive-arc CHECK constraint, and the
+partial unique indexes are all part of one cohesive mapped class.
+Splitting a single declarative class's Column/Index/relationship
+definitions across files is unusual and risky for SQLAlchemy's
+mapper/metadata registration order, so per the Raven model-file guidance
+this file is kept intact rather than split. `__repr__`/`to_dict` already
+carry the codebase's established return-type-hint convention (see
+app/models/task.py, app/models/user.py).
 """
 
 from uuid import uuid4
@@ -162,11 +173,11 @@ class GGAppConnection(Base):
         Index("idx_gg_app_connections_level",         "level"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         scope = self.workspace_id or self.channel_id or self.thread_id
         return f"<GGAppConnection(id={self.id}, level={self.level}, scope={scope}, app={self.app_id})>"
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "id":                  str(self.id),
             "app_id":              str(self.app_id) if self.app_id else None,

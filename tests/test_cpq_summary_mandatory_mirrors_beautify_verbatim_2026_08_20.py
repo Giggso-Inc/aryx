@@ -37,13 +37,9 @@ this fix fragile in several ways, each covered here:
 from __future__ import annotations
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import (
-    AskRequest,
-    _beautify_mandatory_block,
-    _labels_already_shown,
-    _OTHER_SUMMARY_CATEGORY_HEADERS,
-    _splice_mandatory_block_into_summary,
-)
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_attach_share_flags import _attach_share_flags
+from aryx.api.ask_response_building.ask_mandatory_block_splice import _beautify_mandatory_block, _labels_already_shown, _OTHER_SUMMARY_CATEGORY_HEADERS, _splice_mandatory_block_into_summary
 from aryx.cpq.engine import SUMMARY_CATEGORY_NAMES, SUMMARY_FALLBACK_CATEGORY
 from aryx.cpq.state import ConfigAttr, MenuOption
 
@@ -305,7 +301,7 @@ def test_attach_share_flags_forces_full_beautify_mandatory_parity_without_duplic
         "session_data": session_data,
     }
     req = AskRequest(question="give the configuration", workspace_id=1, session_data=session_data)
-    api._attach_share_flags(result, req, object())
+    _attach_share_flags(result, req, object())
 
     answer = result["answer"]
     assert "**Mandatory User Input:**\n```" in answer
@@ -361,7 +357,7 @@ def test_attach_share_flags_suppresses_the_splice_while_still_configuring(monkey
         "session_data": session_data,
     }
     req = AskRequest(question="APX NEXT for USA", workspace_id=1, session_data=session_data)
-    api._attach_share_flags(result, req, object())
+    _attach_share_flags(result, req, object())
 
     # JSON/Beautify buttons are still allowed to show early (unaffected,
     # pre-existing behavior) -- only the splice must be suppressed.
@@ -406,6 +402,6 @@ def test_attach_share_flags_suppresses_the_splice_after_confirm_too(monkeypatch)
         "session_data": session_data,
     }
     req = AskRequest(question="confirm", workspace_id=1, session_data=session_data)
-    api._attach_share_flags(result, req, object())
+    _attach_share_flags(result, req, object())
 
     assert "**Mandatory User Input:**" not in result["answer"]

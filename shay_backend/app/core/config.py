@@ -1,5 +1,28 @@
 """
 Configuration settings for the Log Analyzer Backend
+
+STATED EXCEPTION (Raven Phase 5a file-size compliance, 2026-09):
+This file is a single `Settings(BaseSettings)` class plus the module-level
+`settings` singleton every other module in the app imports by name
+(`from app.core.config import settings`, ~78 call sites). It is well over
+the 150-line/file threshold, but it is NOT split into a routers/services-
+style package because doing so would require either:
+  (a) breaking `Settings` into multiple mixin classes re-combined via
+      multiple inheritance, which risks silently changing Pydantic's
+      field-resolution/MRO order and env-var precedence for fields whose
+      defaults are themselves computed from `os.environ.get(...)` at
+      class-definition time, or
+  (b) turning this module into a package, which is lower risk for the
+      `settings` name itself (an `__init__.py` re-export keeps
+      `from app.core.config import settings` working) but does not
+      eliminate risk (a) since the fields still have to live somewhere.
+Given a single BaseSettings class's own field declarations don't have a
+safe seam to split along, only the pure, side-effect-free parsing helpers
+(no dependency on Settings or the singleton) were extracted, to
+app/core/config_helpers.py. The Settings class, its properties/validators,
+and the settings singleton stay in this one file, unsplit, so the
+singleton's initialization behavior is never put at risk for a stylistic
+line-count win.
 """
 
 import os
@@ -7,56 +30,13 @@ import json
 from typing import List, Optional, Union
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
-import base64
 
-
-def _decode_base64_env_or_passthrough(name: str, default: str = "") -> str:
-    """Return a UTF-8 decoded base64 env value, or the raw value when it is plain text."""
-    value = os.getenv(name, default)
-    if not value:
-        return value
-
-    normalized = value.strip()
-    padded = normalized + ("=" * (-len(normalized) % 4))
-    try:
-        decoded_bytes = base64.b64decode(padded, validate=True)
-        decoded = decoded_bytes.decode("utf-8")
-    except Exception:
-        return value
-
-    round_trip = base64.b64encode(decoded.encode("utf-8")).decode("utf-8").rstrip("=")
-    if round_trip == normalized.rstrip("="):
-        return decoded
-    return value
-
-
-def _parse_env_list(name: str, default: str) -> list[str]:
-    """Parse a list env var from either JSON-array or comma-separated syntax."""
-    raw_value = os.environ.get(name, default)
-    if not raw_value:
-        return []
-
-    try:
-        parsed = json.loads(raw_value)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        parsed = None
-
-    if isinstance(parsed, list):
-        return [str(item).strip().rstrip("/") for item in parsed if str(item).strip()]
-
-    return [item.strip().rstrip("/") for item in raw_value.split(",") if item.strip()]
-
-
-def _normalize_url(value: str, default: str = "") -> str:
-    """Trim whitespace and trailing slashes from URL-like settings."""
-    candidate = (value or default).strip()
-    return candidate.rstrip("/") if candidate else ""
-
-
-def _append_path(base: str, path: str) -> str:
-    """Join a normalized base URL with a fixed leading-slash path."""
-    root = _normalize_url(base)
-    return f"{root}{path}" if root else path
+from app.core.config_helpers import (
+    _decode_base64_env_or_passthrough,
+    _parse_env_list,
+    _normalize_url,
+    _append_path,
+)
 
 
 class Settings(BaseSettings):
@@ -403,7 +383,7 @@ class Settings(BaseSettings):
     
     @field_validator('SUPPORTED_LOG_TYPES')
     @classmethod
-    def validate_supported_log_types(cls, v):
+    def validate_supported_log_types(cls, v) -> List[str]:
         """Validate that supported log types are not empty"""
         if not v or not any(v):
             raise ValueError("SUPPORTED_LOG_TYPES cannot be empty")

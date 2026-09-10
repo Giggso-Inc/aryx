@@ -168,7 +168,7 @@ class TestListChannelMembers:
             _scalars_result([]),  # members list
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/members")
         assert resp.status_code == 200
         assert resp.json()["members"] == []
@@ -184,7 +184,7 @@ class TestListChannelMembers:
             _scalars_result([member]), # members list
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/members")
         assert resp.status_code == 200
         assert len(resp.json()["members"]) == 1
@@ -194,7 +194,7 @@ class TestListChannelMembers:
         """Channel not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/members")
         assert resp.status_code == 404
 
@@ -202,7 +202,7 @@ class TestListChannelMembers:
     def test_list_invalid_uuid(self, mock_db, admin_user):
         """Invalid channel_id UUID → 400."""
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get("/gg-channels/not-a-uuid/members")
         assert resp.status_code == 400
 
@@ -221,8 +221,8 @@ class TestAddChannelMember:
         mock_db.execute = AsyncMock(return_value=_scalar(ch))
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_channels.GGMember", return_value=member):
+        with patch("app.routes.gg_channels.mem_add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_channels.mem_add.GGMember", return_value=member):
                 resp = client.post(
                     f"/gg-channels/{_CH_ID}/members",
                     json={"user_id": _USER_ID, "role": "member"},
@@ -234,7 +234,7 @@ class TestAddChannelMember:
         """Channel not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -248,7 +248,7 @@ class TestAddChannelMember:
         ch.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ch))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -259,7 +259,7 @@ class TestAddChannelMember:
     def test_add_invalid_uuid(self, mock_db, admin_user):
         """Invalid channel_id UUID → 400."""
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 "/gg-channels/not-a-uuid/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -279,7 +279,7 @@ class TestUpdateChannelMember:
         member = _make_member_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/{_CH_ID}/members/{_USER_ID}",
                 json={"role": "admin"},
@@ -291,7 +291,7 @@ class TestUpdateChannelMember:
         """Member not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/{_CH_ID}/members/{_USER_ID}",
                 json={"role": "admin"},
@@ -302,7 +302,7 @@ class TestUpdateChannelMember:
     def test_update_invalid_uuid(self, mock_db, admin_user):
         """Invalid channel_id UUID → 400."""
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/not-a-uuid/members/{_USER_ID}",
                 json={"role": "admin"},
@@ -323,7 +323,7 @@ class TestRemoveChannelMember:
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         mock_db.delete = AsyncMock()
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/{_CH_ID}/members/{_USER_ID}")
         assert resp.status_code == 200
 
@@ -332,7 +332,7 @@ class TestRemoveChannelMember:
         """Member not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/{_CH_ID}/members/{_USER_ID}")
         assert resp.status_code == 404
 
@@ -340,7 +340,7 @@ class TestRemoveChannelMember:
     def test_remove_invalid_uuid(self, mock_db, admin_user):
         """Invalid channel_id UUID → 400."""
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.mem_remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/not-a-uuid/members/{_USER_ID}")
         assert resp.status_code == 400
 
@@ -362,7 +362,7 @@ class TestListChannelAppConnections:
             # no user fetch when rows is empty
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/app-connections")
         assert resp.status_code == 200
         assert resp.json()["connections"] == []
@@ -380,7 +380,7 @@ class TestListChannelAppConnections:
             _scalars_result([user]),   # users batch
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/app-connections")
         assert resp.status_code == 200
         assert len(resp.json()["connections"]) == 1
@@ -390,7 +390,7 @@ class TestListChannelAppConnections:
         """Channel not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-channels/{_CH_ID}/app-connections")
         assert resp.status_code == 404
 
@@ -414,7 +414,7 @@ class TestConnectChannelApp:
         ])
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/app-connections",
                 json={
@@ -430,7 +430,7 @@ class TestConnectChannelApp:
         """Channel not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/app-connections",
                 json={
@@ -450,7 +450,7 @@ class TestConnectChannelApp:
             _scalar(None),  # app not found
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/app-connections",
                 json={
@@ -473,7 +473,7 @@ class TestConnectChannelApp:
             _scalar(existing),  # existing connection found
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/app-connections",
                 json={
@@ -491,7 +491,7 @@ class TestConnectChannelApp:
         ch.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ch))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-channels/{_CH_ID}/app-connections",
                 json={
@@ -521,7 +521,7 @@ class TestUpdateChannelAppConnection:
             _scalar(user),  # connector user lookup (after commit/refresh)
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -537,7 +537,7 @@ class TestUpdateChannelAppConnection:
             _scalar(None),  # connection not found
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -551,7 +551,7 @@ class TestUpdateChannelAppConnection:
         ch.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ch))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -576,7 +576,7 @@ class TestDisconnectChannelApp:
         ])
         mock_db.delete = AsyncMock()
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 200
 
@@ -589,7 +589,7 @@ class TestDisconnectChannelApp:
             _scalar(None),  # connection not found
         ])
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 404
 
@@ -600,6 +600,6 @@ class TestDisconnectChannelApp:
         ch.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ch))
         client = _make_ch_client(mock_db)
-        with patch("app.routes.gg_channels.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_channels.conn_disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-channels/{_CH_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 403

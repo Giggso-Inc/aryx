@@ -74,7 +74,7 @@ class User(Base):
     requested_approvals = relationship("Approval", foreign_keys="Approval.requested_by_user_id", back_populates="requested_by_user")
     assigned_approvals = relationship("Approval", foreign_keys="Approval.approver_user_id", back_populates="approver_user")
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<User(id={self.id}, email_id={self.email_id}, role={self.role})>"
     
     @property

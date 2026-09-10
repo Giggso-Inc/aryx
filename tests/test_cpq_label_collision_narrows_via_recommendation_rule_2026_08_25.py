@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
-from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption, RecommendationRule
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 _ALL_TWELVE = [
     "Shirt Magnetic Mount", "Jacket Magnetic Mount", "Shirt Clip Mount",
@@ -82,7 +83,7 @@ def _narrowing_rule(target_attr_id: int) -> RecommendationRule:
 
 
 def _setup(monkeypatch, attrs, rec_rules):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])

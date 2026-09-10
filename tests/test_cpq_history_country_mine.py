@@ -11,12 +11,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_api import (
-    AskRequest,
-    Turn,
-    _mine_history_for_cpq_context,
-    _user_texts_from_history,
-)
+from aryx.api.ask_api import AskRequest, Turn
+from aryx.api.ask_core_helpers import _mine_history_for_cpq_context
+from aryx.api.ask_standard_pipeline import _user_texts_from_history
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, CpqSession
 

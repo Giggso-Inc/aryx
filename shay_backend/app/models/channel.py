@@ -64,7 +64,7 @@ class Channel(Base):
         Index('idx_channel_name_workspace_unique', 'name', 'workspace_id', unique=True),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Channel(id={self.id}, name={self.name}, workspace_id={self.workspace_id})>"
     
     def is_accessible_by_user(self, user_company_id: str, user_role: str) -> bool:

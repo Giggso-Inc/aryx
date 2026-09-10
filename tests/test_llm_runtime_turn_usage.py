@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 def _fake_complete_text(model, tier, system, user, think=False):
@@ -47,7 +47,7 @@ def test_reset_then_no_calls_reports_zero_calls():
 
 def test_single_chat_call_is_recorded():
     llm_runtime.reset_turn_usage()
-    with patch("aryx.llm_runtime.complete_text", _fake_complete_text), \
+    with patch("aryx.llm.llm_runtime.complete_text", _fake_complete_text), \
          patch.object(llm_runtime, "_log_call", lambda *a, **k: None):
         llm_runtime.chat("menial", "sys", "user")
     usage = llm_runtime.get_turn_usage()
@@ -59,7 +59,7 @@ def test_single_chat_call_is_recorded():
 
 def test_multiple_chat_calls_accumulate():
     llm_runtime.reset_turn_usage()
-    with patch("aryx.llm_runtime.complete_text", _fake_complete_text), \
+    with patch("aryx.llm.llm_runtime.complete_text", _fake_complete_text), \
          patch.object(llm_runtime, "_log_call", lambda *a, **k: None):
         llm_runtime.chat("menial", "sys", "user")
         llm_runtime.chat("answer", "sys", "user")
@@ -71,7 +71,7 @@ def test_multiple_chat_calls_accumulate():
 
 def test_reset_clears_prior_turn_totals():
     llm_runtime.reset_turn_usage()
-    with patch("aryx.llm_runtime.complete_text", _fake_complete_text), \
+    with patch("aryx.llm.llm_runtime.complete_text", _fake_complete_text), \
          patch.object(llm_runtime, "_log_call", lambda *a, **k: None):
         llm_runtime.chat("menial", "sys", "user")
     assert llm_runtime.get_turn_usage()["calls"] == 1
@@ -86,7 +86,7 @@ def test_failed_chat_call_records_nothing():
     def _raise(*a, **k):
         raise RuntimeError("provider unavailable")
 
-    with patch("aryx.llm_runtime.complete_text", _raise):
+    with patch("aryx.llm.llm_runtime.complete_text", _raise):
         try:
             llm_runtime.chat("menial", "sys", "user")
         except RuntimeError:

@@ -50,5 +50,5 @@ class GGEmail(Base):
         Index("idx_gg_emails_user", "user_id"),
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<GGEmail(email_id={self.email_id}, sender={self.sender}, subject={self.subject})>"

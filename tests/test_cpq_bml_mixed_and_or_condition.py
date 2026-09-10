@@ -15,7 +15,7 @@ condition it already resolves keeps using the exact same code path.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_hide_tier1, evaluate_tier1
+from aryx.cpq.bml.bml import evaluate_hide_tier1, evaluate_tier1
 
 # The exact real script from workspace 39005's "Hide Frequency Bands and
 # additional frequency band" rule.

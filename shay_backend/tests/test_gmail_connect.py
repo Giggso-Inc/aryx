@@ -73,7 +73,7 @@ def _make_httpx_side_effect(*resps):
 def test_initiate_rejects_invalid_sid():
     """sid containing special chars or exceeding 128 chars must return 400."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.gmail_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.gmail_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/gmail/connect/initiate",
             params={"sid": "bad sid with spaces!", "redirect_uri": _VALID_REDIRECT},
@@ -85,7 +85,7 @@ def test_initiate_rejects_invalid_sid():
 def test_initiate_rejects_invalid_redirect_uri():
     """redirect_uri not in ALLOWED_ORIGINS must return 400."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.gmail_connect.is_allowed_redirect_uri", return_value=False):
+    with patch("app.routes.gmail_connect.initiate.is_allowed_redirect_uri", return_value=False):
         resp = client.get(
             "/api/v1/gmail/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": "https://evil.example.com/steal"},
@@ -97,8 +97,8 @@ def test_initiate_rejects_invalid_redirect_uri():
 def test_initiate_happy_path_returns_authorization_url():
     """Valid sid and allowed redirect_uri must return a Google authorization_url."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.gmail_connect.is_allowed_redirect_uri", return_value=True), \
-         patch("app.routes.gmail_connect.build_state", return_value=_STATE):
+    with patch("app.routes.gmail_connect.initiate.is_allowed_redirect_uri", return_value=True), \
+         patch("app.routes.gmail_connect.initiate.build_state", return_value=_STATE):
         resp = client.get(
             "/api/v1/gmail/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": _VALID_REDIRECT},
@@ -115,7 +115,7 @@ def test_initiate_happy_path_returns_authorization_url():
 def test_callback_state_failure_redirects_to_root():
     """Tampered or missing state must redirect to '/' (silent failure)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.gmail_connect.verify_state", side_effect=ValueError("bad state")):
+    with patch("app.routes.gmail_connect.callback.verify_state", side_effect=ValueError("bad state")):
         resp = client.get(
             "/api/v1/gmail/connect/callback",
             params={"code": "auth-code", "state": "tampered"},
@@ -128,7 +128,7 @@ def test_callback_state_failure_redirects_to_root():
 def test_callback_provider_error_redirects_with_error_fragment():
     """When Google returns ?error=access_denied, callback must redirect with #error=access_denied."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.gmail_connect.verify_state", return_value=_STATE_DATA):
+    with patch("app.routes.gmail_connect.callback.verify_state", return_value=_STATE_DATA):
         resp = client.get(
             "/api/v1/gmail/connect/callback",
             params={"error": "access_denied", "state": _STATE},
@@ -148,8 +148,8 @@ def test_callback_token_exchange_failure_redirects_with_error():
     bad_cm.__aexit__ = AsyncMock(return_value=None)
     bad_cm.post = AsyncMock(side_effect=Exception("network error"))
 
-    with patch("app.routes.gmail_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.gmail_connect.httpx.AsyncClient", return_value=bad_cm):
+    with patch("app.routes.gmail_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.gmail_connect.callback.httpx.AsyncClient", return_value=bad_cm):
         resp = client.get(
             "/api/v1/gmail/connect/callback",
             params={"code": "auth-code", "state": _STATE},
@@ -166,8 +166,8 @@ def test_callback_no_email_redirects_with_error():
     profile_resp = _make_profile_resp({"sub": "user-123"})  # no email field
 
     mocks = _make_httpx_side_effect((token_resp, "post"), (profile_resp, "get"))
-    with patch("app.routes.gmail_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.gmail_connect.httpx.AsyncClient", side_effect=mocks):
+    with patch("app.routes.gmail_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.gmail_connect.callback.httpx.AsyncClient", side_effect=mocks):
         resp = client.get(
             "/api/v1/gmail/connect/callback",
             params={"code": "auth-code", "state": _STATE},
@@ -187,8 +187,8 @@ def test_callback_happy_path_redirects_with_gmail_data_fragment():
     profile_resp = _make_profile_resp({"email": "user@gmail.com", "sub": "user-123"})
 
     mocks = _make_httpx_side_effect((token_resp, "post"), (profile_resp, "get"))
-    with patch("app.routes.gmail_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.gmail_connect.httpx.AsyncClient", side_effect=mocks):
+    with patch("app.routes.gmail_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.gmail_connect.callback.httpx.AsyncClient", side_effect=mocks):
         resp = client.get(
             "/api/v1/gmail/connect/callback",
             params={"code": "auth-code", "state": _STATE},

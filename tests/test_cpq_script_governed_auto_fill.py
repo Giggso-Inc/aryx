@@ -28,7 +28,7 @@ only the confirmed-broken attr is affected.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, MenuOption, RecommendationRule
 

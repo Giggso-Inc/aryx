@@ -14,7 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline.doc_discovery import ingest_confirmed
+from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
 
 
 def _mention(otype: str):
@@ -24,15 +24,15 @@ def _mention(otype: str):
 def _run(approved_types, mentions):
     data = {"mentions": mentions, "tabular": []}
     jobs = MagicMock()
-    with patch("aryx.pipeline.doc_discovery.get_settings") as mock_settings, \
-         patch("aryx.pipeline.doc_discovery.DatasourceStore", return_value=MagicMock()), \
-         patch("aryx.pipeline.doc_discovery.run_pipeline") as mock_run_pipeline, \
-         patch("aryx.pipeline.doc_discovery.OntologyStore", return_value=MagicMock()), \
-         patch("aryx.pipeline.doc_discovery._detect_fk_links", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._detect_script_data_flow_links", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._detect_fk_links_workspace", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery.detect_dynamic_fk_links", return_value=[]), \
-         patch("aryx.pipeline.doc_discovery._persist_tabular_sources"):
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings") as mock_settings, \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.DatasourceStore", return_value=MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.OntologyStore", return_value=MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links_workspace", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.detect_dynamic_fk_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._persist_tabular_sources"):
         settings_mock = MagicMock()
         settings_mock.rdb_dsn = "postgresql://x"
         settings_mock.graph_url = "redis://x"

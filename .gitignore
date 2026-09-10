@@ -13,6 +13,14 @@ manifest.secrets.json
 .raven/audit/
 .raven/guard/digest.log
 .raven/.model-session.json
+.raven/model-pricing.local.json
+.raven/state/
+.raven/memory/
+.raven/code-xray.json
+.raven/code-xray.html
+.raven/turn-log.jsonl
+.raven/.route-stamp
+.raven/.router-state.json
 
 # Raven framework — never commit (lives outside project)
 raven-claude/

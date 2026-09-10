@@ -13,14 +13,11 @@ from __future__ import annotations
 import pytest
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import (
-    AskRequest,
-    _constrain_excluding_rejected,
-    _extract_replacement_clause,
-    _run_cpq_turn,
-)
-from aryx.cpq.bml import BmlEvaluator
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _constrain_excluding_rejected, _extract_replacement_clause
+from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -35,7 +32,7 @@ def _attr(eid, vn, label, *, options=None) -> ConfigAttr:
 
 
 def _rules_setup(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])

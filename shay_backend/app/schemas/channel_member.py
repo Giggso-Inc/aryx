@@ -14,7 +14,7 @@ class ChannelMemberUserData(BaseModel):
     permissions: Optional[Dict[str, Any]] = Field(None, description="Optional permissions for the user")
 
     @validator('role')
-    def validate_role(cls, v):
+    def validate_role(cls, v) -> str:
         # Convert to lowercase for comparison, but accept any case variation
         v_lower = v.lower()
         allowed_roles = ['user', 'admin']
@@ -38,7 +38,7 @@ class SingleChannelMemberCreate(BaseModel):
     )
 
     @validator('role')
-    def validate_role(cls, v):
+    def validate_role(cls, v) -> str:
         # Convert to lowercase for comparison, but accept any case variation
         v_lower = v.lower()
         allowed_roles = ['user', 'admin']
@@ -54,7 +54,7 @@ class ChannelMemberCreate(BaseModel):
     channel_id: str = Field(..., description="Channel ID to grant access to")
 
     @validator('users')
-    def validate_users(cls, v):
+    def validate_users(cls, v) -> List[ChannelMemberUserData]:
         if not v:
             raise ValueError('At least one user must be specified')
         return v
@@ -72,7 +72,7 @@ class ChannelMemberResponse(BaseModel):
     updated_at: Optional[str] = Field(None, description="Last update timestamp")
 
     @field_serializer('created_at', 'updated_at')
-    def serialize_datetime(self, dt):
+    def serialize_datetime(self, dt) -> Optional[str]:
         if dt:
             return dt.isoformat() if hasattr(dt, 'isoformat') else str(dt)
         return None
@@ -109,7 +109,7 @@ class ChannelMemberUpdate(BaseModel):
     permissions: Optional[Dict[str, Any]] = Field(None, description="Optional permissions update")
 
     @validator('role')
-    def validate_role(cls, v):
+    def validate_role(cls, v) -> str:
         # Convert to lowercase for comparison, but accept any case variation
         v_lower = v.lower()
         allowed_roles = ['user', 'admin']

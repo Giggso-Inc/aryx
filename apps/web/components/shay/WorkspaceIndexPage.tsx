@@ -1,254 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { FolderPlus, Search, X } from "lucide-react";
+import { FolderPlus, Search } from "lucide-react";
 import { AuthGuard } from "./AuthGuard";
-import {
-  WorkspaceIndexCard,
-  type WorkspaceCardMetrics,
-} from "./WorkspaceIndexCard";
+import { WorkspaceIndexCard } from "./WorkspaceIndexCard";
 import { WorkspaceProfileDialog } from "./WorkspaceProfileDialog";
 import { ShayPageShell } from "./ShayPageShell";
-import { api } from "@/lib/api";
-import { getShayAccessToken, shayApi } from "@/lib/shay-api";
-import { useShayAuth } from "@/lib/shay-auth";
-import { storeShaySession } from "@/lib/shay-session";
-import type { ShayWorkspace } from "@/lib/shay-types";
 import { workspaceSectionHref } from "@/lib/workspace-route";
-
-function resolveWorkspaceDataSourceCount({
-  summarySourceCount,
-  catalogSourceCount,
-  datasourceTotal,
-  datasourceItemsCount,
-}: {
-  summarySourceCount: number | null;
-  catalogSourceCount: number | null;
-  datasourceTotal: number | null;
-  datasourceItemsCount: number | null;
-}) {
-  const candidates = [
-    summarySourceCount,
-    catalogSourceCount,
-    datasourceTotal,
-    datasourceItemsCount,
-  ];
-  const firstPositive = candidates.find(
-    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
-  );
-  if (typeof firstPositive === "number") {
-    return firstPositive;
-  }
-  const firstKnown = candidates.find(
-    (value): value is number => typeof value === "number" && Number.isFinite(value),
-  );
-  return firstKnown ?? null;
-}
+import { CreateWorkspaceModal } from "./workspace-index/CreateWorkspaceModal";
+import { DeleteWorkspaceModal } from "./workspace-index/DeleteWorkspaceModal";
+import { useWorkspaceIndexPage } from "./workspace-index/useWorkspaceIndexPage";
 
 export function WorkspaceIndexPage() {
-  const router = useRouter();
-  const { session } = useShayAuth();
-  const [workspaces, setWorkspaces] = useState<ShayWorkspace[]>([]);
-  const [query, setQuery] = useState("");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [modalError, setModalError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [workspaceToDelete, setWorkspaceToDelete] = useState<ShayWorkspace | null>(null);
-  const [workspaceToEdit, setWorkspaceToEdit] = useState<ShayWorkspace | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [workspaceMetrics, setWorkspaceMetrics] = useState<Record<string, WorkspaceCardMetrics>>({});
-
-  const load = async () => {
-    if (!session) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const list = await shayApi.listWorkspaces(session.access_token);
-      setWorkspaces(list.workspaces);
-    } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to load workspaces.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, [session?.access_token]);
-
-  useEffect(() => {
-    if (!session?.access_token || workspaces.length === 0) {
-      setWorkspaceMetrics({});
-      return;
-    }
-
-    let active = true;
-
-    const loadMetrics = async () => {
-      const metricResults = await Promise.allSettled(workspaces.map(async (workspace) => {
-        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
-        const [membersResult, datasourcesResult, groupedSourcesResult, summaryResult] = await Promise.allSettled([
-          shayApi.listWorkspaceMembers(workspace.id, session.access_token),
-          shayApi.listDatasources(workspace.id, session.access_token),
-          aryxWorkspaceId
-            ? api.listDataSources(aryxWorkspaceId)
-            : Promise.resolve(null),
-          aryxWorkspaceId
-            ? api.dataSummary(aryxWorkspaceId)
-            : Promise.resolve(null),
-        ]);
-        const members = membersResult.status === "fulfilled" ? membersResult.value : null;
-        const datasources = datasourcesResult.status === "fulfilled" ? datasourcesResult.value : null;
-        const groupedSources = groupedSourcesResult.status === "fulfilled" ? groupedSourcesResult.value : null;
-        const summary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
-
-        return [workspace.id, {
-          users: members?.total ?? members?.members.length ?? null,
-          entities: summary?.total_entities ?? null,
-          entityTypes: summary?.type_count ?? null,
-          dataSources: resolveWorkspaceDataSourceCount({
-            summarySourceCount: summary?.sources.length ?? null,
-            catalogSourceCount: groupedSources?.length ?? null,
-            datasourceTotal: datasources?.total ?? null,
-            datasourceItemsCount: datasources?.items.length ?? null,
-          }),
-        }] as const;
-      }));
-
-      if (!active) {
-        return;
-      }
-
-      const nextMetrics: Record<string, WorkspaceCardMetrics> = {};
-      metricResults.forEach((result) => {
-        if (result.status !== "fulfilled") {
-          return;
-        }
-        const [workspaceId, metrics] = result.value;
-        nextMetrics[workspaceId] = metrics;
-      });
-      setWorkspaceMetrics(nextMetrics);
-    };
-
-    void loadMetrics();
-
-    return () => {
-      active = false;
-    };
-  }, [session?.access_token, session?.company_id, workspaces]);
-
-  const filteredWorkspaces = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return workspaces;
-    return workspaces.filter((workspace) => {
-      const nameText = workspace.name.toLowerCase();
-      const descriptionText = (workspace.description || "").toLowerCase();
-      return nameText.includes(needle) || descriptionText.includes(needle);
-    });
-  }, [query, workspaces]);
-
-  const resetModal = () => {
-    setName("");
-    setDescription("");
-    setModalError(null);
-    setShowCreateModal(false);
-  };
-
-  const openEditModal = (workspace: ShayWorkspace) => {
-    setWorkspaceToEdit(workspace);
-    setEditName(workspace.name);
-    setEditDescription(workspace.description ?? "");
-    setModalError(null);
-  };
-
-  const closeEditModal = () => {
-    setWorkspaceToEdit(null);
-    setEditName("");
-    setEditDescription("");
-    setModalError(null);
-  };
-
-  const saveEditedWorkspace = async () => {
-    if (!workspaceToEdit || !session?.company_id) {
-      setModalError("Authentication required");
-      return;
-    }
-    const accessToken = session.access_token || getShayAccessToken();
-    if (!accessToken) {
-      setModalError("Authentication required");
-      return;
-    }
-    setSaving(true);
-    setModalError(null);
-    try {
-      const updated = await shayApi.updateWorkspace(
-        workspaceToEdit.id,
-        { name: editName.trim(), description: editDescription.trim() },
-        accessToken,
-      );
-      setWorkspaces((current) =>
-        current.map((workspace) => (workspace.id === updated.id ? updated : workspace)),
-      );
-      closeEditModal();
-    } catch (nextError: unknown) {
-      setModalError(nextError instanceof Error ? nextError.message : "Workspace save failed.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const createWorkspace = async () => {
-    const accessToken = session?.access_token || getShayAccessToken();
-    if (!accessToken || !session?.company_id || !name.trim()) {
-      setModalError("Authentication required");
-      return;
-    }
-    setSaving(true);
-    setModalError(null);
-    try {
-      storeShaySession({
-        ...(session ?? {}),
-        access_token: accessToken,
-      });
-      const workspace = await shayApi.createWorkspace({
-        name: name.trim(),
-        description: description.trim(),
-      }, accessToken);
-      resetModal();
-      router.push(workspaceSectionHref(workspace.id, "home"));
-    } catch (nextError: unknown) {
-      setModalError(nextError instanceof Error ? nextError.message : "Workspace creation failed.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const deleteWorkspace = async () => {
-    const accessToken = session?.access_token || getShayAccessToken();
-    if (!workspaceToDelete || !accessToken) {
-      setDeleteError("Authentication required");
-      return;
-    }
-    setDeletingWorkspaceId(workspaceToDelete.id);
-    setDeleteError(null);
-    try {
-      await shayApi.deleteWorkspace(workspaceToDelete.id, accessToken);
-      setWorkspaceToDelete(null);
-      await load();
-    } catch (nextError: unknown) {
-      setDeleteError(nextError instanceof Error ? nextError.message : "Workspace deletion failed.");
-    } finally {
-      setDeletingWorkspaceId(null);
-    }
-  };
+  const s = useWorkspaceIndexPage();
 
   return (
     <AuthGuard>
@@ -263,8 +26,8 @@ export function WorkspaceIndexPage() {
             <label className="relative block w-full max-w-xl">
               <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-subtle" />
               <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                value={s.query}
+                onChange={(event) => s.setQuery(event.target.value)}
                 placeholder="Search workspaces..."
                 className="focus-ring w-full rounded-2xl border border-navy-100 bg-white py-3 pl-11 pr-4 text-sm text-navy-900 shadow-soft"
               />
@@ -272,8 +35,8 @@ export function WorkspaceIndexPage() {
             <button
               type="button"
               onClick={() => {
-                setModalError(null);
-                setShowCreateModal(true);
+                s.setModalError(null);
+                s.setShowCreateModal(true);
               }}
               className="focus-ring inline-flex items-center justify-center gap-2 rounded-2xl bg-navy-800 px-5 py-3 text-sm font-semibold text-white shadow-soft hover:bg-navy-700"
             >
@@ -282,18 +45,18 @@ export function WorkspaceIndexPage() {
             </button>
           </div>
 
-          {loading ? (
+          {s.loading ? (
             <div className="rounded-[1.5rem] border border-navy-100 bg-white px-5 py-12 text-center text-sm text-subtle shadow-soft">
               Loading Aryx workspaces...
             </div>
-          ) : filteredWorkspaces.length === 0 ? (
+          ) : s.filteredWorkspaces.length === 0 ? (
             <div className="rounded-[1.75rem] border border-dashed border-navy-200 bg-white px-5 py-16 text-center shadow-soft">
               <div className="mx-auto max-w-md">
                 <p className="text-lg font-semibold text-navy-900">
-                  {workspaces.length === 0 ? "No workspaces yet." : "No workspaces match that search."}
+                  {s.workspaces.length === 0 ? "No workspaces yet." : "No workspaces match that search."}
                 </p>
                 <p className="mt-2 text-sm text-subtle">
-                  {workspaces.length === 0
+                  {s.workspaces.length === 0
                     ? "Create the first workspace to start the Aryx bridge."
                     : "Try a different name or description keyword."}
                 </p>
@@ -301,16 +64,16 @@ export function WorkspaceIndexPage() {
             </div>
           ) : (
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-              {filteredWorkspaces.map((workspace) => (
+              {s.filteredWorkspaces.map((workspace) => (
                 <WorkspaceIndexCard
                   key={workspace.id}
                   workspace={workspace}
-                  metrics={workspaceMetrics[workspace.id]}
-                  onOpen={() => router.push(workspaceSectionHref(workspace.id, "home"))}
-                  onEdit={() => openEditModal(workspace)}
+                  metrics={s.workspaceMetrics[workspace.id]}
+                  onOpen={() => s.router.push(workspaceSectionHref(workspace.id, "home"))}
+                  onEdit={() => s.openEditModal(workspace)}
                   onDelete={() => {
-                    setDeleteError(null);
-                    setWorkspaceToDelete(workspace);
+                    s.setDeleteError(null);
+                    s.setWorkspaceToDelete(workspace);
                   }}
                 />
               ))}
@@ -318,140 +81,39 @@ export function WorkspaceIndexPage() {
           )}
         </div>
 
-        {showCreateModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-navy-900/35 px-4">
-            <div className="w-full max-w-lg rounded-[2rem] border border-navy-100 bg-white p-6 shadow-soft">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-2xl font-semibold text-navy-900">
-                    Create a workspace
-                  </h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Spin up a new Aryx workspace and bridge it into the shared runtime.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={resetModal}
-                  className="focus-ring rounded-full border border-navy-100 p-2 text-navy-500 hover:bg-navy-50"
-                  aria-label="Close create workspace dialog"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+        <CreateWorkspaceModal
+          open={s.showCreateModal}
+          name={s.name}
+          description={s.description}
+          modalError={s.modalError}
+          saving={s.saving}
+          onNameChange={s.setName}
+          onDescriptionChange={s.setDescription}
+          onClose={s.resetModal}
+          onCreate={() => void s.createWorkspace()}
+        />
 
-              <div className="mt-6 space-y-4">
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Workspace name"
-                  className="focus-ring w-full rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
-                />
-                <textarea
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  rows={5}
-                  placeholder="What will this workspace own across auth, Aryx ingest, and Ask?"
-                  className="focus-ring w-full resize-none rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
-                />
-                {modalError ? (
-                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    {modalError}
-                  </div>
-                ) : null}
-              </div>
+        <DeleteWorkspaceModal
+          workspace={s.workspaceToDelete}
+          deleteError={s.deleteError}
+          deleting={Boolean(s.workspaceToDelete && s.deletingWorkspaceId === s.workspaceToDelete.id)}
+          onClose={() => {
+            s.setDeleteError(null);
+            s.setWorkspaceToDelete(null);
+          }}
+          onConfirm={() => void s.deleteWorkspace()}
+        />
 
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={resetModal}
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={createWorkspace}
-                  disabled={!name.trim() || saving}
-                  className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700 disabled:opacity-50"
-                >
-                  <FolderPlus size={16} />
-                  {saving ? "Creating..." : "Create Workspace"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {workspaceToDelete ? (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-navy-900/35 px-4">
-            <div className="w-full max-w-md rounded-[2rem] border border-navy-100 bg-white p-6 shadow-soft">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-2xl font-semibold text-navy-900">
-                    Delete workspace
-                  </h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Delete <span className="font-semibold text-navy-900">{workspaceToDelete.name}</span> from the workspace list.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeleteError(null);
-                    setWorkspaceToDelete(null);
-                  }}
-                  className="focus-ring rounded-full border border-navy-100 p-2 text-navy-500 hover:bg-navy-50"
-                  aria-label="Close delete workspace dialog"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <p className="mt-5 text-sm text-subtle">
-                This action removes the workspace and cannot be undone from this screen.
-              </p>
-
-              {deleteError ? (
-                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {deleteError}
-                </div>
-              ) : null}
-
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeleteError(null);
-                    setWorkspaceToDelete(null);
-                  }}
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={deleteWorkspace}
-                  disabled={deletingWorkspaceId === workspaceToDelete.id}
-                  className="focus-ring rounded-2xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-rose-700 disabled:opacity-50"
-                >
-                  {deletingWorkspaceId === workspaceToDelete.id ? "Deleting..." : "Delete Workspace"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {workspaceToEdit ? (
+        {s.workspaceToEdit ? (
           <WorkspaceProfileDialog
-            description={editDescription}
-            error={modalError}
-            name={editName}
-            onClose={closeEditModal}
-            onDescriptionChange={setEditDescription}
-            onNameChange={setEditName}
-            onSave={saveEditedWorkspace}
-            saving={saving}
+            description={s.editDescription}
+            error={s.modalError}
+            name={s.editName}
+            onClose={s.closeEditModal}
+            onDescriptionChange={s.setEditDescription}
+            onNameChange={s.setEditName}
+            onSave={s.saveEditedWorkspace}
+            saving={s.saving}
             title="Edit workspace"
             descriptionText="Update the workspace name and description directly from the workspace library."
           />

@@ -1,4 +1,4 @@
-"""Tests for aryx.cpq.rule_trace (docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md,
+"""Tests for aryx.cpq.rule_trace.rule_trace (docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md,
 Tier 1). RuleTraceStore is mocked -- no real DB -- local .jsonl writes go to
 a tmp_path directory.
 """
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aryx.cpq import rule_trace
+from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.logging_context import set_run_id
 from aryx.cpq.state import ConfigAttr, MenuOption

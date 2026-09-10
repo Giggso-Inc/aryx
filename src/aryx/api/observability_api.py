@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 from aryx.config import get_settings
 from aryx.ports import ports
 from aryx.queries import load

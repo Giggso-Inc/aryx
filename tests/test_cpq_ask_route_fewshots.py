@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     _ROUTE_FEW_SHOTS,
     AskRouteDecision,
     _parse_route,
@@ -111,7 +111,7 @@ def test_classify_order_apx_returns_quote():
         '"rationale":"full order APX with US destination"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -130,7 +130,7 @@ def test_classify_astrology_off_topic():
         '"rationale":"astrology not product config"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -147,7 +147,7 @@ def test_classify_options_for_product_is_qa_not_quote():
         '"rationale":"options question not family switch"}'
     )
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         return_value=(raw, 5, 3),
     ):
         d = classify_ask_route(
@@ -165,7 +165,7 @@ def test_timeout_escape_hatch():
 
     # Force ThreadPoolExecutor.result to raise TimeoutError by patching
     with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
+        "aryx.cpq.intent_gateway.intent_gateway._pinned_chat",
         side_effect=lambda *a, **k: (_ for _ in ()).throw(
             concurrent.futures.TimeoutError()
         ),
@@ -198,11 +198,11 @@ def test_run_ask_live_session_skips_top_level_gateway():
         history=[],
         session_data={"mode": "cpq", "product_name": "aSTRO25_bom", "status": "configuring"},
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.classify_ask_route") as mock_route, \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
-         patch("aryx.api.ask_api._validate_workspace"):
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_core_helpers._validate_workspace"):
         mock_cpq.return_value = {
             "answer": "Which value would you like for Hardware Version?",
             "tools_called": ["cpq_change_target_no_value()"],
@@ -227,11 +227,11 @@ def test_run_ask_llm_first_off_topic_goes_standard():
         clarifying_question=None, rationale="astrology",
         model_id="gemini-2.5-pro", det_is_cpq=False, agreement=True,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=False), \
-         patch("aryx.api.ask_api._standard_ask_pipeline") as mock_std, \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std, \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
@@ -260,12 +260,12 @@ def test_run_ask_llm_first_quote_uses_cpq_turn():
         clarifying_question=None, rationale="full order",
         model_id="gemini-2.5-pro", det_is_cpq=True, agreement=True,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
         mock_cpq.return_value = {
@@ -292,13 +292,13 @@ def test_run_ask_shadow_follows_deterministic_not_llm():
         clarifying_question=None, rationale="wrong",
         model_id="m", det_is_cpq=True, agreement=False,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
-         patch("aryx.api.ask_api._standard_ask_pipeline") as mock_std:
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std:
         gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0
         mock_cpq.return_value = {
@@ -329,12 +329,12 @@ def test_run_ask_llm_first_gateway_error_surfaces_a_customer_facing_error():
         clarifying_question=None, rationale="timeout",
         timed_out=True, error="timeout", model_id="m", det_is_cpq=True,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
         out = run_ask(req)
@@ -359,12 +359,12 @@ def test_run_ask_shadow_mode_gateway_error_still_uses_the_old_escape_hatch():
         clarifying_question=None, rationale="timeout",
         timed_out=True, error="timeout", model_id="m", det_is_cpq=True,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=True), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0
         mock_cpq.return_value = {

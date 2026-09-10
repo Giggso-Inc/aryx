@@ -12,6 +12,7 @@ Version: 1.0.0
 # Standard library imports for date/time operations and UUID
 import uuid
 from datetime import datetime
+from typing import Any
 
 # SQLAlchemy core components for table definition and column types
 from sqlalchemy import Column, String, DateTime, Text, Index
@@ -56,10 +57,10 @@ class Template(Base):
         Index('idx_created_datetime', 'created_datetime'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Template(id={self.id}, template_id={self.template_id}, template_name={self.template_name})>"
     
-    def get_config_value(self, key: str, default=None):
+    def get_config_value(self, key: str, default=None) -> Any:
         """
         Get a specific configuration value from additional_config.
         
@@ -74,7 +75,7 @@ class Template(Base):
             return default
         return self.additional_config.get(key, default)
     
-    def set_config_value(self, key: str, value):
+    def set_config_value(self, key: str, value) -> None:
         """
         Set a specific configuration value in additional_config.
         

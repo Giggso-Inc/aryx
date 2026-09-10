@@ -26,16 +26,26 @@ SRC = ROOT / "src"
 
 
 def _load_mod(name: str, rel: str):
-    """Load a module by file path — avoids aryx.cpq.__init__ pulling engine/psycopg."""
+    """Load a module by file path — avoids aryx.cpq.__init__ pulling engine/psycopg.
+
+    Fake parent-package stand-ins get a real __path__ (pointing at their
+    actual directory under SRC) so a moved module's own internal sibling
+    imports (e.g. `from aryx.cpq.intent_queue.intent_queue_notices import
+    ...`) still resolve via normal import machinery, without triggering
+    the real aryx.cpq.__init__.
+    """
     import importlib.util
     import types
 
-    # Ensure package parents exist as plain namespaces
+    # Ensure package parents exist as plain namespaces, each pointed at its
+    # real directory so submodule imports under it still work.
     parts = name.split(".")
     for i in range(1, len(parts)):
         pkg = ".".join(parts[:i])
         if pkg not in sys.modules:
-            sys.modules[pkg] = types.ModuleType(pkg)
+            pkg_mod = types.ModuleType(pkg)
+            pkg_mod.__path__ = [str(SRC / Path(*parts[:i]))]
+            sys.modules[pkg] = pkg_mod
     path = SRC / rel
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -52,7 +62,7 @@ def _load_cases() -> list[dict]:
 
 def _check_schema_coverage(cases: list[dict]) -> list[str]:
     """Every expected_intent must be a known IntentCategory value."""
-    schema = _load_mod("aryx.cpq.intent_schema", "aryx/cpq/intent_schema.py")
+    schema = _load_mod("aryx.cpq.intent_schema.intent_schema", "aryx/cpq/intent_schema/intent_schema.py")
     known = {c.value for c in schema.IntentCategory}
     errors: list[str] = []
     for case in cases:
@@ -65,8 +75,8 @@ def _check_schema_coverage(cases: list[dict]) -> list[str]:
 def _check_undo_detector(cases: list[dict]) -> list[str]:
     # session_guard imports state + intent_queue — load those first
     _load_mod("aryx.cpq.state", "aryx/cpq/state.py")
-    _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
-    guard = _load_mod("aryx.cpq.session_guard", "aryx/cpq/session_guard.py")
+    _load_mod("aryx.cpq.intent_queue.intent_queue", "aryx/cpq/intent_queue/intent_queue.py")
+    guard = _load_mod("aryx.cpq.session_guard.session_guard", "aryx/cpq/session_guard/session_guard.py")
     errors: list[str] = []
     for case in cases:
         if case.get("expected_intent") != "undo":
@@ -78,8 +88,8 @@ def _check_undo_detector(cases: list[dict]) -> list[str]:
 
 def _check_gateway_quarantine_invariants() -> list[str]:
     """Regression pins for quarantine — no live LLM."""
-    schema = sys.modules.get("aryx.cpq.intent_schema") or _load_mod(
-        "aryx.cpq.intent_schema", "aryx/cpq/intent_schema.py",
+    schema = sys.modules.get("aryx.cpq.intent_schema.intent_schema") or _load_mod(
+        "aryx.cpq.intent_schema.intent_schema", "aryx/cpq/intent_schema/intent_schema.py",
     )
     errors: list[str] = []
     if schema.parse_gateway_intent({
@@ -110,10 +120,10 @@ def _check_session_guard_snapshot() -> list[str]:
     state = sys.modules.get("aryx.cpq.state") or _load_mod(
         "aryx.cpq.state", "aryx/cpq/state.py",
     )
-    if "aryx.cpq.intent_queue" not in sys.modules:
-        _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
-    guard = sys.modules.get("aryx.cpq.session_guard") or _load_mod(
-        "aryx.cpq.session_guard", "aryx/cpq/session_guard.py",
+    if "aryx.cpq.intent_queue.intent_queue" not in sys.modules:
+        _load_mod("aryx.cpq.intent_queue.intent_queue", "aryx/cpq/intent_queue/intent_queue.py")
+    guard = sys.modules.get("aryx.cpq.session_guard.session_guard") or _load_mod(
+        "aryx.cpq.session_guard.session_guard", "aryx/cpq/session_guard/session_guard.py",
     )
     errors: list[str] = []
     s = state.CpqSession()

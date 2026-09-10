@@ -14,7 +14,12 @@ from unittest.mock import patch
 import pytest
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import _cpq_summary_text, _llm_resolve_quantity_target, _run_cpq_turn
+from aryx.api.ask_api import _run_cpq_turn
+from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
+from aryx.api.ask_llm.ask_llm_resolve_quantity_target import (
+    _llm_resolve_quantity_target,
+    _quantity_message_might_name_candidate,
+)
 from aryx.api.ask_api import AskRequest
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY,
@@ -26,10 +31,11 @@ from aryx.cpq.engine import (
     question_mentions_quantity,
     quantity_turn_precheck,
 )
-from aryx.cpq.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.bml.bml import BmlEvaluator
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 def _confirm_product_quantity_change(monkeypatch, quantity_text: str | None = None) -> None:
@@ -70,7 +76,7 @@ def _no_real_history_persistence(monkeypatch):
     to acquire a real connection to an unreachable 'postgres' host and
     blocks for a very long time rather than failing fast (confirmed via
     faulthandler stack dump during this test file's own development)."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 
 
 def _vx650_qty_attr() -> ConfigAttr:
@@ -362,7 +368,7 @@ def test_quantity_question_answers_from_session_with_no_competing_attribute(monk
     session = _base_session(product_quantity=5)
     req = AskRequest(question="what's my quantity", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.cpq.intent_gateway.complete_text") as mock_llm:
+    with patch("aryx.cpq.intent_gateway.intent_gateway.complete_text") as mock_llm:
         resp = _run_cpq_turn(req, object())
     mock_llm.assert_not_called()
     assert "5" in resp["answer"]
@@ -760,10 +766,10 @@ def test_quantity_message_might_name_candidate_is_permissively_inclusive():
         display_label="Quantity for Tier 2 Bundle", required=False,
         default_value="", select_type="integer", options=[],
     )
-    assert api._quantity_message_might_name_candidate(
+    assert _quantity_message_might_name_candidate(
         "please change the quantity to 2", tier2_bundle,
     ) is True
-    assert api._quantity_message_might_name_candidate(
+    assert _quantity_message_might_name_candidate(
         "can you change that quantity to 5", tier2_bundle,
     ) is False
 
@@ -868,7 +874,7 @@ def test_unselected_catalog_quantity_attrs_are_never_offered_as_candidates(monke
     # never selected any of these accessories.
     req = AskRequest(question="where is the quantity?", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.cpq.intent_gateway.complete_text") as mock_llm, \
+    with patch("aryx.cpq.intent_gateway.intent_gateway.complete_text") as mock_llm, \
          patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_llm.assert_not_called()

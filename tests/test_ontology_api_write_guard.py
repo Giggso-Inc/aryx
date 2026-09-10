@@ -25,7 +25,7 @@ TestClient = testclient.TestClient
 
 @pytest.fixture
 def client() -> TestClient:
-    from aryx.api.ontology_api import ontology_router
+    from aryx.api.ontology.ontology_api import ontology_router
 
     app = FastAPI()
     app.include_router(ontology_router())

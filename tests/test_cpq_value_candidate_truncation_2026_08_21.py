@@ -11,7 +11,7 @@ rarity-weighted word overlap instead of raw storage order.
 """
 from __future__ import annotations
 
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     _VALUE_CAP,
     _rank_value_candidates_by_relevance,
     build_candidate_bundles,

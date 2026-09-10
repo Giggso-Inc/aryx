@@ -1,6 +1,6 @@
 """Runtime config for the RDF/OWL interchange plugin (Settings-controlled).
 
-Mirrors aryx.llm_runtime: process-memory state, swappable live from the
+Mirrors aryx.llm.llm_runtime: process-memory state, swappable live from the
 Settings panel, never written to disk. Ontology export/import is opt-in
 (disabled by default) so it only appears once a customer turns it on.
 """

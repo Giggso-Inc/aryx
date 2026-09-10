@@ -3,8 +3,8 @@ import csv
 import io
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline import doc_discovery
-from aryx.pipeline.doc_discovery import _xml_to_csvs, ingest_confirmed
+from aryx.pipeline.doc_discovery import doc_discovery
+from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs, ingest_confirmed
 
 
 def _rows(data: bytes) -> list[dict]:
@@ -105,10 +105,10 @@ def test_xml_derived_plans_get_text_match_key():
     mock_settings.embed_dim = 1536
 
     # _infer_type would normally return ["name"] as fallback — the override must win.
-    with patch("aryx.pipeline.doc_discovery.get_settings", return_value=mock_settings), \
-         patch("aryx.pipeline.doc_discovery._infer_type",
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings", return_value=mock_settings), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._infer_type",
                return_value={"ontology_type": "Product", "match_keys": ["name"]}):
-        from aryx.pipeline.doc_discovery import read_files
+        from aryx.pipeline.doc_discovery.doc_discovery import read_files
         result = read_files(
             doc_paths=[],
             tabular=[(xml, "catalogue.xml")],
@@ -183,7 +183,7 @@ def test_ingest_confirmed_clears_cpq_rule_and_table_caches_on_completion():
          patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
          patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
          patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
-         patch("aryx.cpq.data_table_resolver._clear_tables_cache") as mock_tables, \
+         patch("aryx.cpq.data_table.data_table_resolver._clear_tables_cache") as mock_tables, \
          patch("aryx.cpq.engine._clear_rule_join_data_cache") as mock_rule_join, \
          patch("aryx.cpq.engine._clear_value_rules_cache") as mock_value_rules, \
          patch("aryx.cpq.engine._clear_data_table_forced_vns_cache") as mock_forced_vns, \
@@ -240,7 +240,7 @@ def test_ingest_confirmed_marker_write_failure_never_fails_the_ingest():
          patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
          patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
          patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
-         patch("aryx.cpq.data_table_resolver._clear_tables_cache"), \
+         patch("aryx.cpq.data_table.data_table_resolver._clear_tables_cache"), \
          patch("aryx.cpq.engine._clear_rule_join_data_cache"), \
          patch("aryx.cpq.engine._clear_value_rules_cache"), \
          patch("aryx.cpq.engine._clear_data_table_forced_vns_cache"), \
@@ -263,7 +263,7 @@ def test_ingest_confirmed_cache_invalidation_failure_never_fails_the_ingest():
          patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
          patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
          patch(
-             "aryx.cpq.data_table_resolver._clear_tables_cache",
+             "aryx.cpq.data_table.data_table_resolver._clear_tables_cache",
              side_effect=RuntimeError("cache backend unavailable"),
          ), \
          patch("aryx.store.pool.get_pool", return_value=MagicMock()):

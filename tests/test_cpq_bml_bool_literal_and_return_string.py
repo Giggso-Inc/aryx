@@ -24,7 +24,7 @@ recommendation onto a customer whose spare-battery flag was false.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import (
+from aryx.cpq.bml.bml import (
     evaluate_tier1, evaluate_hide_tier1, _parse_branches, _parse_condition, _branch_values,
 )
 

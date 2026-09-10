@@ -3,16 +3,16 @@
 import { Suspense, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, Eye, EyeOff, KeyRound, Lock } from "lucide-react";
-import { PasswordRequirements } from "@/components/auth/PasswordRequirements";
+import { AlertTriangle, KeyRound } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import {
   getPasswordRequirementFlags,
   isPasswordPolicyValid,
   PASSWORD_POLICY_ERROR_MESSAGE,
-  PASSWORD_REQUIREMENT_LABELS,
 } from "@/lib/password-policy";
 import { shayApi } from "@/lib/shay-api";
+import { ResetPasswordFallback } from "./Fallback";
+import { ResetForm } from "./ResetForm";
 
 export default function ResetPasswordPage() {
   return (
@@ -125,72 +125,20 @@ function ResetPasswordContent() {
                 {success}
               </div>
             ) : (
-              <form onSubmit={submit} className="mt-8 space-y-5">
-                <label className="block space-y-2">
-                  <span className="text-sm font-semibold text-navy-900">New Password</span>
-                  <div className="relative">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-subtle">
-                      <Lock size={18} />
-                    </div>
-                    <input
-                      type={showNewPassword ? "text" : "password"}
-                      value={newPassword}
-                      onChange={(event) => setNewPassword(event.target.value)}
-                      placeholder="Enter your new password"
-                      className="focus-ring h-12 w-full rounded-xl border border-navy-100 px-12 pr-12 text-sm text-navy-900 placeholder:text-slate-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword((value) => !value)}
-                      className="absolute inset-y-0 right-0 pr-4 text-subtle transition-colors hover:text-navy-700"
-                    >
-                      {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
-                  </div>
-                </label>
-
-                <PasswordRequirements
-                  flags={passwordFlags}
-                  labels={PASSWORD_REQUIREMENT_LABELS}
-                />
-
-                <label className="block space-y-2">
-                  <span className="text-sm font-semibold text-navy-900">Confirm Password</span>
-                  <div className="relative">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-subtle">
-                      <Lock size={18} />
-                    </div>
-                    <input
-                      type={showConfirmPassword ? "text" : "password"}
-                      value={confirmPassword}
-                      onChange={(event) => setConfirmPassword(event.target.value)}
-                      placeholder="Confirm your new password"
-                      className="focus-ring h-12 w-full rounded-xl border border-navy-100 px-12 pr-12 text-sm text-navy-900 placeholder:text-slate-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword((value) => !value)}
-                      className="absolute inset-y-0 right-0 pr-4 text-subtle transition-colors hover:text-navy-700"
-                    >
-                      {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
-                  </div>
-                </label>
-
-                {error ? (
-                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    {error}
-                  </div>
-                ) : null}
-
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="focus-ring inline-flex h-12 w-full items-center justify-center rounded-xl bg-navy-800 text-sm font-semibold text-white shadow-lg shadow-navy-900/20 transition-transform hover:-translate-y-0.5 hover:bg-navy-700 disabled:opacity-60"
-                >
-                  {saving ? "Resetting..." : "Reset Password"}
-                </button>
-              </form>
+              <ResetForm
+                newPassword={newPassword}
+                confirmPassword={confirmPassword}
+                showNewPassword={showNewPassword}
+                showConfirmPassword={showConfirmPassword}
+                saving={saving}
+                error={error}
+                passwordFlags={passwordFlags}
+                onNewPasswordChange={setNewPassword}
+                onConfirmPasswordChange={setConfirmPassword}
+                onToggleShowNewPassword={() => setShowNewPassword((value) => !value)}
+                onToggleShowConfirmPassword={() => setShowConfirmPassword((value) => !value)}
+                onSubmit={submit}
+              />
             )}
 
             <div className="mt-7 border-t border-navy-100 pt-6 text-center">
@@ -206,18 +154,6 @@ function ResetPasswordContent() {
           <p className="mt-6 text-center text-sm text-white/82">
             © {new Date().getFullYear()} Aryx. All rights reserved.
           </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ResetPasswordFallback() {
-  return (
-    <div className="min-h-screen bg-[linear-gradient(145deg,_#1e5f95,_#2a78ba_55%,_#5b95d0)] px-6 py-10">
-      <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-md items-center justify-center">
-        <div className="w-full rounded-[2rem] bg-white p-8 text-center shadow-[0_24px_70px_rgba(10,21,48,0.22)]">
-          <p className="text-sm text-subtle">Loading reset form...</p>
         </div>
       </div>
     </div>

@@ -1,4 +1,14 @@
-"""Oracle ADB 23ai workspace store — replaces psycopg.connect() with oracledb."""
+"""Oracle ADB 23ai workspace store — replaces psycopg.connect() with oracledb.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03),
+`_parse_brief` moved to `oracle_workspace_helpers.py` (zero patch risk).
+The `OracleWorkspaceStore` class stays as a deliberate, documented
+exception: `load` is directly whitebox-patched
+(`aryx.store.oracle_workspace.load`) across ~30 test cases in
+`tests/test_oracle_workspace.py`, and nearly every method calls it —
+moving any one out would mean it could no longer see the patch (the same
+bound-at-import-time gotcha this plan has hit repeatedly).
+"""
 from __future__ import annotations
 
 import json
@@ -7,32 +17,9 @@ from typing import Any
 
 from aryx.queries import load
 from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
+from aryx.store.oracle_workspace_helpers import _parse_brief
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_brief(v: Any) -> dict:
-    """Return the brief column value as a Python dict.
-
-    oracledb thin may return Oracle 23ai JSON columns as either a Python dict
-    (native JSON type) or a plain str (JSON text). Handle both so the API
-    response always carries a JSON object, never a raw JSON-encoded string.
-    """
-    logger.info("oracle brief: raw type=%s", type(v).__name__)
-    logger.debug("oracle brief: raw value=%r", v)
-    if isinstance(v, str):
-        try:
-            parsed = json.loads(v)
-            result = parsed if isinstance(parsed, dict) else {}
-            logger.info("oracle brief: str → dict keys=%s", list(result.keys()))
-            return result
-        except Exception as exc:
-            logger.warning("oracle brief: json.loads failed error=%s raw=%r", exc, v)
-            return {}
-    result = v or {}
-    logger.info("oracle brief: native %s keys=%s", type(v).__name__,
-                list(result.keys()) if isinstance(result, dict) else "non-dict")
-    return result
 
 
 # Tables that used Postgres partitioning; on Oracle we use plain tables with

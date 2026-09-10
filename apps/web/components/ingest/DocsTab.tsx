@@ -1,11 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { api } from "@/lib/api";
 import { useJobPoller } from "./useJobPoller";
 import { DocsUploadStep } from "./DocsUploadStep";
 import { DocsSummaryStep } from "./DocsSummaryStep";
+import { ProgressCard } from "./docs-tab/ProgressCard";
+import { clearDocsSession, loadDocsSession, saveDocsSession } from "./docs-tab/session-storage";
 import type { DocPhase } from "./types";
 import type { DiscoverySummary } from "@/lib/types";
 
@@ -13,52 +15,6 @@ interface DocsTabProps {
   restoreId?: string | null;
   restart?: boolean;
   onRestored?: () => void;
-}
-
-const RESUMABLE_PHASES: DocPhase[] = ["reading", "summary", "confirming"];
-
-type PersistedDocsSession = {
-  phase: DocPhase;
-  readJobId: string | null;
-  discoveryId: string | null;
-  summary: DiscoverySummary | null;
-  approved: string[];
-  confirmJobId: string | null;
-};
-
-// A read/confirm job on a large (1000+ page) document can run for hours —
-// far longer than a single browser tab is reliably alive for (reloads,
-// crashes, accidental closes). Without this, phase/discoveryId/job ids were
-// pure in-memory React state: any interruption lost track of an
-// in-progress job that was still running server-side, and the only way
-// back in was to re-upload from scratch. Persisting to localStorage and
-// rehydrating on mount lets a reload pick the same job back up.
-function _storageKey(workspaceId: number): string {
-  return `aryx.docs.session.${workspaceId}`;
-}
-
-function _loadSession(workspaceId: number): PersistedDocsSession | null {
-  try {
-    const raw = localStorage.getItem(_storageKey(workspaceId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as PersistedDocsSession;
-    if (!RESUMABLE_PHASES.includes(parsed.phase)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function _saveSession(workspaceId: number, session: PersistedDocsSession): void {
-  try {
-    localStorage.setItem(_storageKey(workspaceId), JSON.stringify(session));
-  } catch { /* storage unavailable/full — resuming is best-effort */ }
-}
-
-function _clearSession(workspaceId: number): void {
-  try {
-    localStorage.removeItem(_storageKey(workspaceId));
-  } catch { /* ignore */ }
 }
 
 export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps = {}) {
@@ -93,7 +49,7 @@ export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps
   // whatever session happened to be sitting in localStorage.
   useEffect(() => {
     if (restoreId) return;
-    const saved = _loadSession(workspaceId);
+    const saved = loadDocsSession(workspaceId);
     if (!saved) return;
     setPhase(saved.phase);
     setReadJobId(saved.readJobId);
@@ -115,10 +71,10 @@ export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps
     // localStorage indefinitely instead of being cleaned up as soon as its
     // terminal state is known.
     if (phase === "idle" || phase === "done" || phase === "error") {
-      _clearSession(workspaceId);
+      clearDocsSession(workspaceId);
       return;
     }
-    _saveSession(workspaceId, {
+    saveDocsSession(workspaceId, {
       phase, readJobId, discoveryId, summary, approved: [...approved], confirmJobId,
     });
   }, [workspaceId, phase, readJobId, discoveryId, summary, approved, confirmJobId]);
@@ -192,38 +148,28 @@ export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps
       <DocsUploadStep files={files} setFiles={setFiles} context={context} setContext={setContext}
         started={phase !== "idle"} onStart={start} />
       {phase === "reading" && (
-        <div className="rounded-xl border border-navy-100 bg-white p-5 shadow-soft animate-fade-in">
-          <div className="mb-3 flex items-center gap-2">
-            <span className="flex size-6 items-center justify-center rounded-full bg-navy-800 text-[11px] font-bold text-white">2</span>
-            <h3 className="font-semibold text-navy-900">Reading &amp; discovering entities…</h3>
-            <Loader2 size={14} className="animate-spin text-steel-500 ml-auto" />
-          </div>
-          {readPoller.pct != null && (
-            <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-navy-100">
-              <div className="h-full rounded-full bg-steel-500 transition-all duration-500" style={{ width: `${readPoller.pct}%` }} />
-            </div>
-          )}
-          <p className="text-[12px] text-subtle">{readPoller.stage || "Processing…"}</p>
-        </div>
+        <ProgressCard
+          step={2}
+          title="Reading & discovering entities…"
+          pct={readPoller.pct}
+          stage={readPoller.stage}
+          fallbackStage="Processing…"
+          barColor="bg-steel-500"
+        />
       )}
       {(phase === "summary" || phase === "confirming") && summary && (
         <DocsSummaryStep summary={summary} approved={approved} onToggle={toggleType}
           confirming={phase === "confirming"} onConfirm={confirm} onReset={reset} />
       )}
       {phase === "confirming" && (
-        <div className="rounded-xl border border-navy-100 bg-white p-5 shadow-soft animate-fade-in">
-          <div className="mb-3 flex items-center gap-2">
-            <span className="flex size-6 items-center justify-center rounded-full bg-navy-800 text-[11px] font-bold text-white">3</span>
-            <h3 className="font-semibold text-navy-900">Ingesting to graph…</h3>
-            <Loader2 size={14} className="animate-spin text-steel-500 ml-auto" />
-          </div>
-          {confirmPoller.pct != null && (
-            <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-navy-100">
-              <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${confirmPoller.pct}%` }} />
-            </div>
-          )}
-          <p className="text-[12px] text-subtle">{confirmPoller.stage || "Writing entities…"}</p>
-        </div>
+        <ProgressCard
+          step={3}
+          title="Ingesting to graph…"
+          pct={confirmPoller.pct}
+          stage={confirmPoller.stage}
+          fallbackStage="Writing entities…"
+          barColor="bg-emerald-500"
+        />
       )}
     </div>
   );

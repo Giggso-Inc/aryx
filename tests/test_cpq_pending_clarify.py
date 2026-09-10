@@ -17,16 +17,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import (
-    AskRequest,
-    _clear_pending_clarify,
-    _ground_clarify_candidates,
-    _grounded_clarify_prompt,
-    _handle_pending_clarify_turn,
-    _is_global_change_decline,
-    _match_pending_clarify_reply,
-    _set_pending_clarify_and_answer,
-)
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _is_global_change_decline
+from aryx.api.ask_pending_clarify.ask_pending_clarify_answer import _set_pending_clarify_and_answer
+from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pending_clarify
+from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates
+from aryx.api.ask_pending_clarify.ask_pending_clarify_match import _match_pending_clarify_reply
+from aryx.api.ask_pending_clarify.ask_pending_clarify_prompt import _grounded_clarify_prompt
+from aryx.api.ask_pending_clarify.ask_pending_clarify_turn import _handle_pending_clarify_turn
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 
@@ -159,7 +157,7 @@ def test_unrelated_reply_does_not_misbind():
     cands = [_hw_version(), _system_key()]
     session = _session()
     with patch(
-        "aryx.api.ask_api._llm_resolve_label_collision",
+        "aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision",
         return_value=None,
     ):
         status, vn = _match_pending_clarify_reply(
@@ -178,7 +176,7 @@ def test_set_pending_clarify_stores_candidates_and_tokens():
         history=[],
         session_data=session.to_dict(),
     )
-    with patch("aryx.api.ask_api._persist_cpq_history"):
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _set_pending_clarify_and_answer(
             req, session, attrs,
             original_question="change hardware",
@@ -213,7 +211,7 @@ def test_pending_clarify_turn_resolves_to_no_value_prompt():
         history=[],
         session_data=session.to_dict(),
     )
-    with patch("aryx.api.ask_api._persist_cpq_history"):
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"):
         resp = _handle_pending_clarify_turn(
             req, session, attrs,
             hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
@@ -239,8 +237,8 @@ def test_pending_clarify_miss_reprompts_without_binding():
         history=[],
         session_data=session.to_dict(),
     )
-    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
-        "aryx.api.ask_api._llm_resolve_label_collision", return_value=None,
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
+        "aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm._llm_resolve_label_collision", return_value=None,
     ):
         resp = _handle_pending_clarify_turn(
             req, session, attrs,
@@ -284,8 +282,8 @@ def test_pending_clarify_global_change_decline_is_noop():
         session_data=session.to_dict(),
     )
 
-    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
-        "aryx.api.ask_api._match_pending_clarify_reply",
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
+        "aryx.api.ask_pending_clarify.ask_pending_clarify_match._match_pending_clarify_reply",
         return_value=("resolved", "update"),
     ) as match_reply:
         resp = _handle_pending_clarify_turn(
@@ -318,8 +316,8 @@ def test_pending_clarify_candidate_decline_keeps_existing_guidance():
         session_data=session.to_dict(),
     )
 
-    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
-        "aryx.api.ask_api._match_pending_clarify_reply",
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
+        "aryx.api.ask_pending_clarify.ask_pending_clarify_match._match_pending_clarify_reply",
         return_value=("decline", None),
     ):
         resp = _handle_pending_clarify_turn(

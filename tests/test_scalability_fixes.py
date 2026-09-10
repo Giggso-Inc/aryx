@@ -760,7 +760,7 @@ class TestThreadPoolExecutor:
     def _reset_executor(self):
         # Reset module-level executor singleton between tests
         import importlib
-        import aryx.api.file_ingest_api as m
+        import aryx.api.file_ingest.file_ingest_api as m
         m._executor = None
 
     def setup_method(self):
@@ -773,17 +773,17 @@ class TestThreadPoolExecutor:
 
     def test_executor_uses_worker_threads(self):
         """_get_executor() creates ThreadPoolExecutor with worker_threads from config."""
-        with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg:
+        with patch("aryx.api.file_ingest.file_ingest_api.get_settings") as mock_cfg:
             mock_cfg.return_value.worker_threads = 2
-            from aryx.api.file_ingest_api import _get_executor
+            from aryx.api.file_ingest.file_ingest_api import _get_executor
             executor = _get_executor()
         assert executor._max_workers == 2
 
     def test_executor_is_singleton(self):
         """Calling _get_executor() twice returns the same object."""
-        with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg:
+        with patch("aryx.api.file_ingest.file_ingest_api.get_settings") as mock_cfg:
             mock_cfg.return_value.worker_threads = 3
-            from aryx.api.file_ingest_api import _get_executor
+            from aryx.api.file_ingest.file_ingest_api import _get_executor
             e1 = _get_executor()
             e2 = _get_executor()
         assert e1 is e2
@@ -802,7 +802,7 @@ class TestThreadPoolExecutor:
 
     def test_executor_lock_present(self):
         """B1 fix: _executor_lock must exist to prevent double-initialisation race."""
-        import aryx.api.file_ingest_api as m
+        import aryx.api.file_ingest.file_ingest_api as m
         assert hasattr(m, "_executor_lock")
         import threading
         assert isinstance(m._executor_lock, type(threading.Lock()))
@@ -821,12 +821,12 @@ class TestThreadPoolExecutor:
         mock_file.filename = "data.csv"
         mock_file.read = AsyncMock(return_value=b"id,name\n1,Alice")
 
-        with patch("aryx.api.file_ingest_api._get_executor", return_value=mock_executor), \
-             patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \
-             patch("aryx.api.file_ingest_api.apply_migrations"), \
-             patch("aryx.api.file_ingest_api.JobStore"):
+        with patch("aryx.api.file_ingest.file_ingest_api._get_executor", return_value=mock_executor), \
+             patch("aryx.api.file_ingest.file_ingest_api.get_settings") as mock_cfg, \
+             patch("aryx.api.file_ingest.file_ingest_api.apply_migrations"), \
+             patch("aryx.api.file_ingest.file_ingest_api.JobStore"):
             mock_cfg.return_value.rdb_dsn = "postgresql://x"
-            from aryx.api.file_ingest_api import file_ingest_router
+            from aryx.api.file_ingest.file_ingest_api import file_ingest_router
             router = file_ingest_router()
             handler = next(r for r in router.routes if "POST" in r.methods).endpoint
             asyncio.run(handler(
@@ -842,10 +842,10 @@ class TestThreadPoolExecutor:
     def test_shutdown_executor_drains_and_resets(self):
         """shutdown_executor() calls shutdown(wait=True) and resets singleton to None."""
         mock_exc = MagicMock(spec=["shutdown"])
-        import aryx.api.file_ingest_api as m
+        import aryx.api.file_ingest.file_ingest_api as m
         m._executor = mock_exc
 
-        from aryx.api.file_ingest_api import shutdown_executor
+        from aryx.api.file_ingest.file_ingest_api import shutdown_executor
         shutdown_executor()
 
         mock_exc.shutdown.assert_called_once_with(wait=True)
@@ -853,18 +853,18 @@ class TestThreadPoolExecutor:
 
     def test_shutdown_executor_noop_when_not_initialised(self):
         """shutdown_executor() is a no-op when the executor was never created."""
-        import aryx.api.file_ingest_api as m
+        import aryx.api.file_ingest.file_ingest_api as m
         m._executor = None
-        from aryx.api.file_ingest_api import shutdown_executor
+        from aryx.api.file_ingest.file_ingest_api import shutdown_executor
         shutdown_executor()   # must not raise
 
     def test_run_files_jobstore_raises_no_nameerror(self):
         """B4 fix: JobStore() raising must not cause NameError in except/finally."""
-        with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \
-             patch("aryx.api.file_ingest_api.JobStore",
+        with patch("aryx.api.file_ingest.file_ingest_run.get_settings") as mock_cfg, \
+             patch("aryx.api.file_ingest.file_ingest_run.JobStore",
                    side_effect=RuntimeError("DB down")):
             mock_cfg.return_value.rdb_dsn = "postgresql://x"
-            from aryx.api.file_ingest_api import _run_files
+            from aryx.api.file_ingest.file_ingest_run import _run_files
             # Pre-fix: NameError from jobs.finish/jobs.close in except/finally.
             # Post-fix: logs warning and returns cleanly.
             _run_files([], "Company", [], [], "test-job-id", 1)

@@ -20,11 +20,17 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _llm_confirm_deterministic_intent, _run_cpq_turn_inner
-from aryx.cpq.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
+from aryx.api.ask_shadow_classify_and_confirm_intent import _llm_confirm_deterministic_intent
+from aryx.cpq.bml.bml import BmlEvaluator
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
+from aryx.api.ask_handle import ask_handle_attr_activation as _ask_handle_attr_activation_test_module
+from aryx.api.ask_handle import ask_handle_attr_clear as _ask_handle_attr_clear_test_module
+from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_test_module
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -139,7 +145,7 @@ def test_conditional_sentence_naming_an_unrelated_quantity_is_not_misread_as_a_c
     correctly classifies this as NOT a quantity-change command, so the
     deterministic match must be rejected -- quantity stays unchanged and
     the turn falls through instead of answering "Quantity → 6"."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -172,7 +178,7 @@ def test_conditional_sentence_naming_an_unrelated_quantity_is_not_misread_as_a_c
 
 
 def test_genuine_quantity_command_still_works_when_gateway_confirms(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -204,7 +210,7 @@ def test_genuine_quantity_command_still_works_when_gateway_confirms(monkeypatch)
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_multi_select_removal_confirmed_by_gateway_executes(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     # The pre-existing "LLM-first mid-session gateway" call (ask_api.py,
     # gated on cpq_llm_first_enabled/top_level_route_used) runs BEFORE
     # STEP 6 and would consume this test's globally-mocked
@@ -226,7 +232,7 @@ def test_multi_select_removal_confirmed_by_gateway_executes(monkeypatch):
     with patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(IntentCategory.MULTI_SELECT_REMOVAL, "mountType_astro"),
-    ), patch.object(api, "_handle_multi_select_removal") as mock_handle:
+    ), patch.object(_ask_handle_multi_select_removal_test_module, "_handle_multi_select_removal") as mock_handle:
         mock_handle.return_value = {"answer": "removed", "terms": [], "tools_called": [],
                                      "usage": {}, "grounding": None,
                                      "session_data": session.to_dict(), "cpq_payload": None}
@@ -235,7 +241,7 @@ def test_multi_select_removal_confirmed_by_gateway_executes(monkeypatch):
 
 
 def test_multi_select_removal_rejected_by_gateway_never_executes(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     mounts = _attr(1, "mountType_astro", "Mount Type",
                     options=_opt("Shirt Mount", "Jacket Mount"), select_type="multi")
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
@@ -249,13 +255,13 @@ def test_multi_select_removal_rejected_by_gateway_never_executes(monkeypatch):
     with patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(IntentCategory.AMBIGUOUS),
-    ), patch.object(api, "_handle_multi_select_removal") as mock_handle:
+    ), patch.object(_ask_handle_multi_select_removal_test_module, "_handle_multi_select_removal") as mock_handle:
         _run_cpq_turn_inner(req, object())
     mock_handle.assert_not_called()
 
 
 def test_attr_activation_rejected_by_gateway_never_executes(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     warranty = _attr(2, "extendedWarranty_astro", "Extended Warranty",
                       options=_opt("Yes"), required=False)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
@@ -268,13 +274,13 @@ def test_attr_activation_rejected_by_gateway_never_executes(monkeypatch):
     ), patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(IntentCategory.AMBIGUOUS),
-    ), patch.object(api, "_handle_attr_activation") as mock_handle:
+    ), patch.object(_ask_handle_attr_activation_test_module, "_handle_attr_activation") as mock_handle:
         _run_cpq_turn_inner(req, object())
     mock_handle.assert_not_called()
 
 
 def test_attr_clear_rejected_by_gateway_never_executes(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -288,13 +294,13 @@ def test_attr_clear_rejected_by_gateway_never_executes(monkeypatch):
     ), patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(IntentCategory.AMBIGUOUS),
-    ), patch.object(api, "_handle_attr_clear") as mock_handle:
+    ), patch.object(_ask_handle_attr_clear_test_module, "_handle_attr_clear") as mock_handle:
         _run_cpq_turn_inner(req, object())
     mock_handle.assert_not_called()
 
 
 def test_change_request_rejected_by_gateway_never_executes(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD", "EXTENDED"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -308,7 +314,7 @@ def test_change_request_rejected_by_gateway_never_executes(monkeypatch):
     ), patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(IntentCategory.AMBIGUOUS),
-    ), patch.object(api, "_handle_cascade") as mock_handle:
+    ), patch.object(_ask_handle_cascade_test_module, "_handle_cascade") as mock_handle:
         _run_cpq_turn_inner(req, object())
     mock_handle.assert_not_called()
 
@@ -344,7 +350,7 @@ def test_live_bug_repro_country_command_is_recognized_and_quantity_is_not(monkey
     the country instruction must be processed, and the conditional
     "unless the quantity is 10" clause must NOT be misread as a command
     to set the quantity."""
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     _confirm_country_change(monkeypatch)
@@ -362,7 +368,7 @@ def test_live_bug_repro_country_command_is_recognized_and_quantity_is_not(monkey
 
 
 def test_country_change_confirmed_by_gateway_updates_session(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     _confirm_country_change(monkeypatch, country="Canada")
@@ -375,7 +381,7 @@ def test_country_change_confirmed_by_gateway_updates_session(monkeypatch):
 
 
 def test_country_change_already_matching_current_value_is_a_no_op_message(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     _confirm_country_change(monkeypatch)
@@ -388,7 +394,7 @@ def test_country_change_already_matching_current_value_is_a_no_op_message(monkey
 
 
 def test_country_change_rejected_by_gateway_never_updates_session(monkeypatch):
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
     monkeypatch.setattr(

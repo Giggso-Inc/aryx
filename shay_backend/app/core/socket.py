@@ -5,7 +5,7 @@ Socket integration for FastAPI application
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from app.core.config import settings
 from app.services.socket_client_service import get_socket_service
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def socket_lifespan():
+async def socket_lifespan() -> AsyncIterator[tuple]:
     """Socket service lifespan management"""
     socket_service = get_socket_service()
     event_handler = None

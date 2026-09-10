@@ -64,24 +64,24 @@ class Checklist(Base):
         Index('idx_checklist_created_at', 'created_at'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Checklist(id={self.id}, text={self.text[:30]}..., order={self.order_index}, completed={self.is_completed})>"
     
-    def mark_completed(self, user_id: str = None):
+    def mark_completed(self, user_id: str = None) -> None:
         """Mark checklist item as completed"""
         self.is_completed = True
         self.completed_at = datetime.now()
         self.completed_by = user_id
         self.updated_at = datetime.now()
     
-    def mark_incomplete(self):
+    def mark_incomplete(self) -> None:
         """Mark checklist item as incomplete"""
         self.is_completed = False
         self.completed_at = None
         self.completed_by = None
         self.updated_at = datetime.now()
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert model to dictionary"""
         return {
             "id": str(self.id),

@@ -16,7 +16,7 @@ sys.path.insert(0, str(BENCH))
 
 import run_regression  # noqa: E402
 
-from aryx.cpq import intent_gateway  # noqa: E402
+from aryx.cpq.intent_gateway import intent_gateway  # noqa: E402
 
 
 def test_suite_parses_50_50() -> None:

@@ -1,4 +1,19 @@
-"""Entity resolution orchestration: resolve a run's records into entities."""
+"""Entity resolution orchestration: resolve a run's records into entities.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03),
+`_key_selectivity` moved to `resolve_entities_selectivity.py` (zero
+patch risk). The rest of this module stays together as a deliberate,
+documented exception: `get_settings` is called both directly in
+`resolve_run` and internally by `_id_like_keys`, and
+`tests/test_resolve_run_wiring.py` whitebox-patches
+`aryx.resolve_entities.get_settings` expecting BOTH call sites to see the
+patched value — moving `_id_like_keys` to a module with its own
+`from aryx.config import get_settings` import would silently stop seeing
+that patch (the same bound-at-import-time gotcha this plan has hit
+before). `AdjudicationStore`/`make_workspace_store`/`resolve`/
+`resolve_chunked`/`PgChunkBackend` are likewise all patched directly and
+called only from `resolve_run`, so they stay too.
+"""
 from __future__ import annotations
 
 import logging
@@ -12,6 +27,7 @@ from aryx.resolution.chunked import resolve_chunked
 from aryx.resolution.review_queue import StoreReviewSink
 from aryx.resolution.run import _materialize
 from aryx.resolution.survivorship import SurvivorshipPolicy
+from aryx.resolve_entities_selectivity import _key_selectivity
 from aryx.store.adjudication_store import AdjudicationStore
 from aryx.store.chunk_backend import PgChunkBackend
 from aryx.store.entity_store import EntityStore
@@ -34,22 +50,6 @@ def _id_like_keys() -> frozenset[str]:
         s.strip().lower() for s in get_settings().id_like_column_names.split(",")
         if s.strip()
     )
-
-
-def _key_selectivity(records: list[ResolutionRecord], sample_size: int) -> float:
-    """Distinct-value ratio of match text over a bounded sample.
-
-    A cheap, upfront signal for whether the match key has enough identity
-    information to produce a meaningful block at all — the same principle
-    already applied to FK-detection candidates (dynamic_fk.py) applied one
-    layer over: measure selectivity before committing to expensive work,
-    not after discovering it was pointless.
-    """
-    sample = records[:sample_size]
-    if not sample:
-        return 1.0
-    distinct = len({r.text.strip().lower() for r in sample if r.text})
-    return distinct / len(sample)
 
 
 def resolve_run(

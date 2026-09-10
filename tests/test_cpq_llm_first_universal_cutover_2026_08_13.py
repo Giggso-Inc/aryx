@@ -20,10 +20,13 @@ from unittest.mock import patch
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn_inner
-from aryx.cpq.bml import BmlEvaluator
-from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.bml.bml import BmlEvaluator
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
+from aryx.cpq.intent_schema.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
+from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_test_module
+from aryx.api.ask_llm import ask_llm_topic_switch_and_change_decline as _ask_llm_topic_switch_and_change_decline_test_module
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -45,9 +48,9 @@ def _setup(monkeypatch, *, universal_enabled: bool, llm_first_enabled: bool = Tr
     # test run in the same thread, making the "N4: skip when top-level
     # already ran this turn" gate wrongly short-circuit. Reset explicitly
     # per test rather than relying on suite-wide ordering.
-    from aryx.cpq.intent_gateway import _top_level_route_used
+    from aryx.cpq.intent_gateway.intent_gateway import _top_level_route_used
     _token = _top_level_route_used.set(False)
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
     monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
@@ -112,7 +115,7 @@ def test_universal_flag_on_dispatches_multi_select_removal_during_configuring(mo
         return_value=_confirming_decision(
             IntentCategory.MULTI_SELECT_REMOVAL, variable_name="mountType_astro",
         ),
-    ) as mock_gw, patch.object(api, "_handle_multi_select_removal") as mock_handle:
+    ) as mock_gw, patch.object(_ask_handle_multi_select_removal_test_module, "_handle_multi_select_removal") as mock_handle:
         mock_handle.return_value = {
             "answer": "removed", "terms": [], "tools_called": [],
             "usage": {}, "grounding": None,
@@ -292,8 +295,7 @@ def test_topic_switch_mentioning_pending_options_own_value_still_uses_gateway(mo
         question="since it ships to Canada, change the hardware version instead",
         workspace_id=1, session_data=session.to_dict(),
     )
-    with patch.object(
-        api, "_llm_detect_pending_topic_switch", return_value="hWVersion_astro",
+    with patch.object(_ask_llm_topic_switch_and_change_decline_test_module, "_llm_detect_pending_topic_switch", return_value="hWVersion_astro",
     ), patch.object(
         api, "gateway_classify_intent",
         return_value=_confirming_decision(
@@ -334,8 +336,7 @@ def test_long_verbatim_option_name_bare_reply_bypasses_the_word_count_cap(monkey
         question="APX NEXT XE 4G LTE PLUS 5G",
         workspace_id=1, session_data=session.to_dict(),
     )
-    with patch.object(
-        api, "_llm_detect_pending_topic_switch", return_value=None,
+    with patch.object(_ask_llm_topic_switch_and_change_decline_test_module, "_llm_detect_pending_topic_switch", return_value=None,
     ), patch.object(api, "gateway_classify_intent") as mock_gw:
         _run_cpq_turn_inner(req, object())
     assert not mock_gw.called, (

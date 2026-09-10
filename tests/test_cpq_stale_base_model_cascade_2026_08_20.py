@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import _BASE_MODEL_VN, _invalidate_stale_base_model
+from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import _BASE_MODEL_VN, _invalidate_stale_base_model
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
@@ -203,7 +203,7 @@ def test_base_model_is_never_stale_across_a_real_two_turn_cascade():
     hw_attr = attrs[0]
     by_eid = {a.entity_id: a for a in attrs}
 
-    with patch("aryx.cpq.data_table_resolver._load_all_tables", side_effect=_fake_load_all_tables):
+    with patch("aryx.cpq.data_table.data_table_product._load_all_tables", side_effect=_fake_load_all_tables):
         # Turn 1 — Hardware Version changes; mirrors _handle_cascade's own
         # dependent-stripping + _invalidate_stale_base_model call.
         dependent_eids = engine.find_cascade_dependents(hw_attr, attrs, [], [], con_rules)

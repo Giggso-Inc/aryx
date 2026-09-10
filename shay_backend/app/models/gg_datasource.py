@@ -11,6 +11,16 @@ Scope levels
 
 Inheritance direction (read access): message > thread > channel > workspace
 The most-specific scope wins when resolving which datasources an agent can see.
+
+Raven 150-line style exception: this file defines exactly one SQLAlchemy
+declarative model (GGDatasource) backing a single wide table — the column
+count, the four-way exclusive-arc CHECK constraint, and the partial unique
+indexes are all part of one cohesive mapped class. Splitting a single
+declarative class's Column/Index/relationship definitions across files is
+unusual and risky for SQLAlchemy's mapper/metadata registration order, so
+per the Raven model-file guidance this file is kept intact rather than
+split. `__repr__`/`to_dict` already carry the codebase's established
+return-type-hint convention (see app/models/task.py, app/models/user.py).
 """
 
 from uuid import uuid4
@@ -181,11 +191,11 @@ class GGDatasource(Base):
         {"extend_existing": True},
     )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         scope = self.workspace_id or self.channel_id or self.thread_id or self.message_id
         return f"<GGDatasource(id={self.id}, level={self.level}, scope={scope}, name={self.name!r})>"
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "id":                   str(self.id),
             "level":                self.level,

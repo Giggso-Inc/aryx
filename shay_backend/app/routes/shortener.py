@@ -21,7 +21,7 @@ async def redirect_thread_link(
     old_channel_id: str,
     thread_id: str,
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     """
     Redirect old thread links to current channel. Self-healing: reads current channel_id from DB.
     """
@@ -41,7 +41,7 @@ async def redirect_thread_link(
 async def resolve_short_link(
     short_link: str,
     db: AsyncSession = Depends(get_db),
-):
+) -> dict:
     """
     Return original_url for the given short_link. Frontend calls this to get the URL without following redirect.
     """
@@ -58,7 +58,7 @@ async def resolve_short_link(
 async def redirect_short_link(
     short_link: str,
     db: AsyncSession = Depends(get_db),
-):
+) -> RedirectResponse:
     """
     Redirect to the original URL and set used_at on first use.
     Uses Referrer-Policy: no-referrer so the final page sees the same referrer

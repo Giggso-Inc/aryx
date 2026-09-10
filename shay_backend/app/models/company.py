@@ -58,7 +58,7 @@ class Company(Base):
         Index('idx_company_domain_hash', 'domain'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Company(id={self.id}, name={self.name}, domain={self.domain})>"
     
     @property

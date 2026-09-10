@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     INTENT_QUEUE_CAP,
     audit_intent_conservation,
     enqueue_intent_targets,

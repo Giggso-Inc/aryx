@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 def test_log_call_uses_effective_dsn_not_raw_env_var():
-    with patch("aryx.llm_runtime.get_settings") as mock_settings, \
-         patch("aryx.llm_runtime.get_pool") as mock_get_pool, \
-         patch("aryx.llm_runtime.load", side_effect=lambda name: name):
+    with patch("aryx.llm.llm_runtime.get_settings") as mock_settings, \
+         patch("aryx.llm.llm_runtime.get_pool") as mock_get_pool, \
+         patch("aryx.llm.llm_runtime.load", side_effect=lambda name: name):
         mock_settings.return_value.effective_dsn.return_value = "oracle-dsn-value"
         pool = MagicMock()
         mock_get_pool.return_value = pool
@@ -29,8 +29,8 @@ def test_log_call_uses_effective_dsn_not_raw_env_var():
 
 
 def test_log_call_is_noop_when_effective_dsn_empty():
-    with patch("aryx.llm_runtime.get_settings") as mock_settings, \
-         patch("aryx.llm_runtime.get_pool") as mock_get_pool:
+    with patch("aryx.llm.llm_runtime.get_settings") as mock_settings, \
+         patch("aryx.llm.llm_runtime.get_pool") as mock_get_pool:
         mock_settings.return_value.effective_dsn.return_value = ""
 
         llm_runtime._log_call("answer", "some-model", 10, 20, 500, "")
@@ -41,8 +41,8 @@ def test_log_call_is_noop_when_effective_dsn_empty():
 def test_log_call_is_noop_when_effective_dsn_raises():
     """e.g. ARYX_OCI_ADB_DSN unset on an oci-backend deployment -- stay
     best-effort, never let audit logging break the actual LLM call."""
-    with patch("aryx.llm_runtime.get_settings") as mock_settings, \
-         patch("aryx.llm_runtime.get_pool") as mock_get_pool:
+    with patch("aryx.llm.llm_runtime.get_settings") as mock_settings, \
+         patch("aryx.llm.llm_runtime.get_pool") as mock_get_pool:
         mock_settings.return_value.effective_dsn.side_effect = RuntimeError("boom")
 
         llm_runtime._log_call("answer", "some-model", 10, 20, 500, "")

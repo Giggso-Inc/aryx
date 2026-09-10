@@ -28,11 +28,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import (
-    AskRequest,
-    _apply_pending_clarify_resolution,
-    _ground_clarify_candidates,
-)
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _apply_pending_clarify_resolution
+from aryx.api.ask_pending_clarify.ask_pending_clarify_grounding import _ground_clarify_candidates
 from aryx.cpq.engine import (
     CpqEngine,
     _is_ordered_abbreviation,
@@ -131,8 +129,8 @@ def test_pending_clarify_resolution_prefers_the_current_reply_value():
         workspace_id=1, history=[], session_data=session.to_dict(),
     )
 
-    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
-        "aryx.api.ask_api._handle_cascade",
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
+        "aryx.api.ask_handle.ask_handle_cascade._handle_cascade",
     ) as mock_cascade:
         mock_cascade.return_value = {"tools_called": ["stubbed"]}
         _apply_pending_clarify_resolution(
@@ -160,8 +158,8 @@ def test_pending_clarify_resolution_falls_back_to_original_utterance_value():
         workspace_id=1, history=[], session_data=session.to_dict(),
     )
 
-    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
-        "aryx.api.ask_api._handle_cascade",
+    with patch("aryx.api.ask_core_helpers._persist_cpq_history"), patch(
+        "aryx.api.ask_handle.ask_handle_cascade._handle_cascade",
     ) as mock_cascade:
         mock_cascade.return_value = {"tools_called": ["stubbed"]}
         _apply_pending_clarify_resolution(

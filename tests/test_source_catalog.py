@@ -1,7 +1,7 @@
 """Tests for XML-aware source catalog shaping."""
 from __future__ import annotations
 
-from aryx.source_catalog import (
+from aryx.source.source_catalog import (
     build_source_catalog,
     build_source_detail,
     find_legacy_xml_row,

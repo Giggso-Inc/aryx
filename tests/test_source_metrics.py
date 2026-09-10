@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from aryx.source_metrics import (
+from aryx.source.source_metrics import (
     apply_source_metrics,
     page_source_catalog,
     source_references,

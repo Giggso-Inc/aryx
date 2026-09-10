@@ -104,9 +104,9 @@ def test_send_verification_email_uses_support_email_not_smtp_from():
         captured.update(verification_data)
         return True
 
-    with patch("app.services.email_verification_service.settings") as mock_settings, \
-         patch("app.services.email_verification_service.email_service") as mock_email_svc, \
-         patch("app.services.email_verification_service.link_shortener_service") as mock_shortener:
+    with patch("app.services.email_verification_service.send.settings") as mock_settings, \
+         patch("app.services.email_verification_service.send.email_service") as mock_email_svc, \
+         patch("app.services.email_verification_service.send.link_shortener_service") as mock_shortener:
         mock_settings.PLATFORM_URL   = "https://app.example.com"
         mock_settings.PLATFORM_NAME  = "Accsell"
         mock_settings.SUPPORT_EMAIL  = "support@accsell.io"
@@ -143,9 +143,9 @@ def test_send_verification_email_normalizes_relative_platform_url():
     async def passthrough_shortener(url, db=None):
         return url
 
-    with patch("app.services.email_verification_service.settings") as mock_settings, \
-         patch("app.services.email_verification_service.email_service") as mock_email_svc, \
-         patch("app.services.email_verification_service.link_shortener_service") as mock_shortener:
+    with patch("app.services.email_verification_service.send.settings") as mock_settings, \
+         patch("app.services.email_verification_service.send.email_service") as mock_email_svc, \
+         patch("app.services.email_verification_service.send.link_shortener_service") as mock_shortener:
         mock_settings.FRONTEND_URL = "https://app.aryx.com"
         mock_settings.PLATFORM_URL = "http://localhost:3000"
         mock_settings.PLATFORM_NAME = "Aryx"

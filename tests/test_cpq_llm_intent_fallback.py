@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from aryx.api.ask_api import _llm_classify_change_intent
+from aryx.api.ask_llm.ask_llm_classify_change_intent import _llm_classify_change_intent
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 

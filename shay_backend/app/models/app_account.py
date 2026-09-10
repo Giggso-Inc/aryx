@@ -62,10 +62,10 @@ class AppAccount(Base):
         Index('idx_app_account_connected_by', 'connected_by', 'created_at'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<AppAccount(id={self.id}, app_id={self.app_id}, channel_id={self.channel_id})>"
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert model to dictionary"""
         return {
             "id": str(self.id),

@@ -46,7 +46,7 @@ class App(Base):
         Index('idx_app_version', 'version'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<App(id={self.id}, app_name={self.app_name})>"
     
     @property
@@ -59,7 +59,7 @@ class App(Base):
             return 'Cloud Drive'
         return 'Datasource'
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert model to dictionary"""
         return {
             "id": str(self.id),

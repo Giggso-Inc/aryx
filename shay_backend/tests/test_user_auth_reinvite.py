@@ -40,8 +40,8 @@ def test_bulk_invite_allows_inactive_existing_user(mock_db, mock_company):
     )
 
     client = _make_client(mock_db)
-    with patch("app.routes.user_auth.link_shortener_service.shorten", new=AsyncMock(return_value="short-link")), \
-         patch("app.routes.user_auth.email_service.send_invitation_email", return_value=True):
+    with patch("app.routes.user_auth._invitation_helpers.link_shortener_service.shorten", new=AsyncMock(return_value="short-link")), \
+         patch("app.routes.user_auth._invitation_helpers.email_service.send_invitation_email", return_value=True):
         response = client.post(
             "/api/v1/user-auth/bulk-invite",
             json={
@@ -98,10 +98,10 @@ def test_register_reactivates_inactive_existing_user_with_invite(mock_db, mock_c
     mock_db.refresh = AsyncMock()
 
     client = _make_client(mock_db)
-    with patch("app.routes.user_auth.get_password_hash", return_value="hashed-password"), \
-         patch("app.routes.user_auth.ensure_workspace_membership", new=AsyncMock()), \
-         patch("app.routes.user_auth.create_access_token", return_value="access-token"), \
-         patch("app.routes.user_auth.create_refresh_token", return_value="refresh-token"):
+    with patch("app.routes.user_auth.register.get_password_hash", return_value="hashed-password"), \
+         patch("app.routes.user_auth.register.ensure_workspace_membership", new=AsyncMock()), \
+         patch("app.routes.user_auth.register.create_access_token", return_value="access-token"), \
+         patch("app.routes.user_auth.register.create_refresh_token", return_value="refresh-token"):
         response = client.post(
             "/api/v1/user-auth/register",
             json={

@@ -1,10 +1,10 @@
-"""Tests for aryx.llm_normalize's provider-quirk envelope coercion.
+"""Tests for aryx.llm.llm_normalize's provider-quirk envelope coercion.
 
 Covers the single-item-list-wraps-a-flat-object quirk (docs/CPQ_LLM_
 NORMALIZE_LIST_ENVELOPE_FIX.md) and confirms the pre-existing array-
 property wrap behavior is unchanged.
 """
-from aryx.llm_normalize import normalize
+from aryx.llm.llm_normalize import normalize
 
 _FLAT_OBJECT_SCHEMA = {
     "type": "object",

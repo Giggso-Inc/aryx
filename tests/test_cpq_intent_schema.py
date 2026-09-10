@@ -11,7 +11,7 @@ it.
 """
 from __future__ import annotations
 
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_schema.intent_schema import (
     ChangeTarget,
     Confidence,
     IntentCategory,

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
 import {
   Background, BackgroundVariant, Controls, MiniMap, ReactFlow,
   ReactFlowProvider, useEdgesState, useNodesState,
@@ -13,59 +12,14 @@ import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
 import type { OntologyDoc } from "@/lib/types";
 import { useWorkspace } from "@/lib/workspace";
-import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
-import {
-  EntityTypeNode, type EntityTypeNodeData,
-} from "./EntityTypeNode";
+import { EntityTypeNode } from "./EntityTypeNode";
 import { Inspector } from "./Inspector";
 import { Toolbar } from "./Toolbar";
 import { NewTypeDialog } from "./NewTypeDialog";
+import { EmptyState } from "./canvas/EmptyState";
+import { ontologyToGraph } from "./canvas/ontology-to-graph";
 
 const nodeTypes = { entityType: EntityTypeNode };
-
-function ontologyToGraph(doc: OntologyDoc): { nodes: Node[]; edges: Edge[] } {
-  const nodes: Node[] = (doc.types || []).map((t) => ({
-    id: t.name,
-    type: "entityType",
-    position: { x: 0, y: 0 },
-    data: {
-      label: t.name,
-      attributes: t.attributes || [],
-      status: t.status || "approved",
-      instanceCount: t.instance_count,
-      parent: t.parent_type ?? null,
-    } satisfies EntityTypeNodeData,
-  }));
-  const known = new Set(nodes.map((n) => n.id));
-  const edges: Edge[] = [];
-  for (const t of doc.types || []) {
-    if (t.parent_type && known.has(t.parent_type)) {
-      edges.push({
-        id: `subClassOf::${t.name}::${t.parent_type}`,
-        source: t.parent_type,
-        target: t.name,
-        label: "subClassOf",
-        animated: false,
-        style: { stroke: "#94A8CB", strokeDasharray: "4 4" },
-      });
-    }
-  }
-  for (const r of doc.relationships || []) {
-    if (!r.source_type || !r.target_type) continue;
-    if (!known.has(r.source_type) || !known.has(r.target_type)) continue;
-    edges.push({
-      id: `rel::${r.source_type}::${r.name}::${r.target_type}`,
-      source: r.source_type,
-      target: r.target_type,
-      label: r.name,
-      style: { stroke: "#4068A8" },
-      // Carry the declared-relationship row id (if any) so an edge click
-      // can DELETE the right row. Subclass + entity-derived edges have no id.
-      data: r.id ? { relId: r.id } : undefined,
-    });
-  }
-  return { nodes, edges };
-}
 
 function CanvasInner() {
   const { workspaceId } = useWorkspace();
@@ -228,39 +182,6 @@ function CanvasInner() {
         onClose={() => setShowNewType(false)}
         onCreated={load}
       />
-    </div>
-  );
-}
-
-function EmptyState({ onCreate }: { onCreate: () => void }) {
-  const pathname = usePathname();
-  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
-
-  return (
-    <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
-      <div className="pointer-events-auto max-w-md rounded-2xl border border-dashed border-navy-200 bg-white/80 px-8 py-10 text-center shadow-soft backdrop-blur">
-        <h2 className="font-display text-[1.6rem] text-navy-900">
-          No data yet.
-        </h2>
-        <p className="mt-2 text-[13px] text-subtle">
-          Start with the guided setup — Aryx will read your data and propose
-          the map for you to approve.
-        </p>
-        <div className="mt-5 flex flex-col items-center gap-2">
-          <a
-            href={shayWorkspaceId ? workspaceStartHref(shayWorkspaceId) : "/start"}
-            className="focus-ring inline-flex items-center gap-2 rounded-lg bg-navy-800 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-700"
-          >
-            ✨ Start guided setup
-          </a>
-          <button
-            onClick={onCreate}
-            className="focus-ring text-[12px] text-subtle hover:text-navy-700"
-          >
-            I'll add records by hand
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -1,0 +1,123 @@
+"""``evaluate_rules_loop`` (Phase 4, one of the 8 previously-deferred
+oversized `CpqEngine` methods, docs/RAVEN_STYLE_COMPLIANCE_PLAN_
+2026-09-03.md). Orchestrates the fixed-point hide -> auto-fill ->
+recommend -> constrain loop; the actual per-pass work lives in
+`rules_loop_pass_early.py`/`rules_loop_pass_late.py`, threaded through
+`rules_loop_state.py`'s `LoopState`/`LoopScope`.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from aryx.cpq.engine import logger
+from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
+from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
+from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+
+_MAX_LOOPS = 8
+
+
+def evaluate_rules_loop(
+    engine: Any,
+    attrs: list[Any],
+    hints: dict[str, str],
+    filled: dict[str, str],
+    hiding_rules: list[Any],
+    rec_rules: list[Any],
+    con_rules: list[Any],
+    bml_eval: Any | None = None,
+    filled_source: dict[str, str] | None = None,
+    filled_multi: dict[str, list[str]] | None = None,
+    dropped_multi: dict[str, list[str]] | None = None,
+    country: str | None = None,
+    negated_vns: set[str] | None = None,
+    skip_always_ask: set[str] | None = None,
+    rule_conflict_order: dict[str, int] | None = None,
+    display_order: dict[str, int] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+) -> tuple[list[Any], dict[str, str], dict[str, str], dict[int, list[str]]]:
+    """Run hide → recommend → constrain → auto-fill until state is stable.
+
+    workspace_id/catalog_prefix — passed straight through to auto_fill's
+    real-Data-Table fallback; `None` (the default) keeps every existing
+    caller's behavior unchanged.
+
+    display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2d:
+    passed straight through to every internal `auto_fill` call so the
+    default-value/first-available skip gate applies on EVERY pass, not
+    just the caller's own separate, final `auto_fill` call in
+    ask_api.py. Without this, an attr could get a "default"-sourced
+    value locked in during this loop's own early passes -- that value
+    then looks like "already filled in a prior turn" to every later
+    pass (which only re-validates against constraints, never re-
+    derives from scratch), so the §2d skip never gets a chance to
+    apply. Confirmed live: exactly this happened for 8 real attrs
+    before this fix.
+
+    rule_conflict_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md
+    §2b: the catalog's FULL layout document order
+    (`_load_layout_full_order`), passed straight through to
+    `rank_rules_by_specificity`. `None` keeps today's dependency-
+    graph-depth ranking unchanged.
+
+    Each pass: (1) auto-fill (hints + defaults + first-option, with
+    active constraints), (2) apply hiding rules -> update visible
+    attrs, (3) apply recommendation rules -> add new auto-fills, (4)
+    apply constraint rules -> update constrained option sets. Iterates
+    until neither the filled set nor the visible attr set changes.
+    filled_source/filled_multi are updated in place when supplied.
+    Returns (visible_attrs, filled, display_filled, constrained_opts).
+
+    skip_always_ask — passed straight through to auto_fill; compute via
+    resolve_always_ask_skips() once per turn at the caller.
+    """
+    sources = filled_source if filled_source is not None else {}
+    multi = filled_multi if filled_multi is not None else {}
+    dropped = dropped_multi if dropped_multi is not None else {}
+
+    # docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md --
+    # ranked ONCE here against the full, pre-loop `attrs` (never the
+    # loop-local `attrs`, which apply_hiding_rules reassigns to a
+    # shrinking subset every pass) so same-target hiding/recommendation
+    # conflicts resolve via provable specificity instead of whatever
+    # order fetch_rules()/fetch_value_rules() happened to return.
+    hiding_rules, rec_rules, con_rules = engine.rank_rules_by_specificity(
+        attrs, hiding_rules, rec_rules, con_rules, display_order=rule_conflict_order)
+
+    state = LoopState(
+        attrs=attrs, filled=filled, display_filled={}, sources=sources,
+        multi=multi, dropped=dropped,
+    )
+    scope = LoopScope(
+        hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,
+        con_rules=con_rules, bml_eval=bml_eval, country=country,
+        negated_vns=negated_vns, skip_always_ask=skip_always_ask,
+        display_order=display_order, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix,
+    )
+
+    # cpq_step start/done -- the per-pass "cpq_perf: pass N total ...s"
+    # lines already cover per-pass granularity; this brackets the WHOLE
+    # fixed-point loop (all up to _MAX_LOOPS=8 passes) so a hang
+    # anywhere inside shows up as "start" with no matching "done" for
+    # this run_id, rather than only inferring it from a missing pass log.
+    _loop_t0 = time.monotonic()
+    logger.info("cpq_step: evaluate_rules_loop start max_passes=%d", _MAX_LOOPS)
+    # pass_num pre-seeded defensively -- the "done" log below reads it
+    # after the loop, which is only safe today because _MAX_LOOPS is a
+    # positive constant guaranteeing at least one iteration.
+    pass_num = -1
+    for pass_num in range(_MAX_LOOPS):
+        run_early_pass(engine, pass_num, state, scope)
+        should_break = run_late_pass(engine, pass_num, state, scope)
+        if should_break:
+            break
+
+    logger.info(
+        "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",
+        time.monotonic() - _loop_t0, pass_num + 1,
+    )
+    return state.attrs, state.filled, state.display_filled, state.constrained_opts

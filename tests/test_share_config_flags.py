@@ -7,7 +7,8 @@ attribute loading (already covered by test_cpq_e2e.py).
 from __future__ import annotations
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _attach_share_flags
+from aryx.api.ask_api import AskRequest
+from aryx.api.ask_attach_share_flags import _attach_share_flags
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
 

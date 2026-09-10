@@ -119,7 +119,7 @@ class TestGraphQueryTimeout:
 
 @pytest.fixture
 def client():
-    from aryx.api.ontology_api import ontology_router
+    from aryx.api.ontology.ontology_api import ontology_router
     app = FastAPI()
     app.include_router(ontology_router())
     return TestClient(app, raise_server_exceptions=False)
@@ -127,7 +127,7 @@ def client():
 
 def _patch_export_enabled():
     return patch.multiple(
-        "aryx.api.ontology_api.export_runtime",
+        "aryx.api.ontology.ontology_api.export_runtime",
         is_enabled=MagicMock(return_value=True),
         enabled_formats=MagicMock(return_value=["turtle"]),
         status=MagicMock(return_value={
@@ -144,9 +144,9 @@ class TestOntologyExportCap:
         mock_estore = MagicMock()
         mock_estore.count_entities.return_value = 75_000
         with _patch_export_enabled(), \
-             patch("aryx.api.ontology_api.get_settings") as mock_cfg, \
-             patch("aryx.api.ontology_api.EntityStore", return_value=mock_estore), \
-             patch("aryx.api.ontology_api._load_bundle") as mock_load:
+             patch("aryx.api.ontology.ontology_api.get_settings") as mock_cfg, \
+             patch("aryx.api.ontology.ontology_api.EntityStore", return_value=mock_estore), \
+             patch("aryx.api.ontology.ontology_api._load_bundle") as mock_load:
             mock_cfg.return_value.ontology_export_max_entities = 50_000
             resp = client.get("/ontology/export", params={"workspace_id": 45})
 
@@ -160,10 +160,10 @@ class TestOntologyExportCap:
         mock_estore = MagicMock()
         mock_estore.count_entities.return_value = 100
         with _patch_export_enabled(), \
-             patch("aryx.api.ontology_api.get_settings") as mock_cfg, \
-             patch("aryx.api.ontology_api.EntityStore", return_value=mock_estore), \
-             patch("aryx.api.ontology_api._load_bundle", return_value=MagicMock()), \
-             patch("aryx.api.ontology_api.serialize",
+             patch("aryx.api.ontology.ontology_api.get_settings") as mock_cfg, \
+             patch("aryx.api.ontology.ontology_api.EntityStore", return_value=mock_estore), \
+             patch("aryx.api.ontology.ontology_api._load_bundle", return_value=MagicMock()), \
+             patch("aryx.api.ontology.ontology_api.serialize",
                    return_value=(b"@prefix : <x> .", "text/turtle", "ttl")):
             mock_cfg.return_value.ontology_export_max_entities = 50_000
             resp = client.get("/ontology/export", params={"workspace_id": 45})
@@ -176,10 +176,10 @@ class TestOntologyExportCap:
         workspace's export is never blocked by this feature when it's off."""
         mock_estore = MagicMock()
         with _patch_export_enabled(), \
-             patch("aryx.api.ontology_api.get_settings") as mock_cfg, \
-             patch("aryx.api.ontology_api.EntityStore", return_value=mock_estore), \
-             patch("aryx.api.ontology_api._load_bundle", return_value=MagicMock()), \
-             patch("aryx.api.ontology_api.serialize",
+             patch("aryx.api.ontology.ontology_api.get_settings") as mock_cfg, \
+             patch("aryx.api.ontology.ontology_api.EntityStore", return_value=mock_estore), \
+             patch("aryx.api.ontology.ontology_api._load_bundle", return_value=MagicMock()), \
+             patch("aryx.api.ontology.ontology_api.serialize",
                    return_value=(b"data", "text/turtle", "ttl")):
             mock_cfg.return_value.ontology_export_max_entities = 0
             resp = client.get("/ontology/export", params={"workspace_id": 45})
@@ -193,10 +193,10 @@ class TestOntologyExportCap:
         mock_estore = MagicMock()
         mock_estore.count_entities.return_value = 50_000
         with _patch_export_enabled(), \
-             patch("aryx.api.ontology_api.get_settings") as mock_cfg, \
-             patch("aryx.api.ontology_api.EntityStore", return_value=mock_estore), \
-             patch("aryx.api.ontology_api._load_bundle", return_value=MagicMock()), \
-             patch("aryx.api.ontology_api.serialize",
+             patch("aryx.api.ontology.ontology_api.get_settings") as mock_cfg, \
+             patch("aryx.api.ontology.ontology_api.EntityStore", return_value=mock_estore), \
+             patch("aryx.api.ontology.ontology_api._load_bundle", return_value=MagicMock()), \
+             patch("aryx.api.ontology.ontology_api.serialize",
                    return_value=(b"data", "text/turtle", "ttl")):
             mock_cfg.return_value.ontology_export_max_entities = 50_000
             resp = client.get("/ontology/export", params={"workspace_id": 45})

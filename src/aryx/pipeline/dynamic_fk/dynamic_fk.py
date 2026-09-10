@@ -1,0 +1,315 @@
+"""Dynamic, value-based + LLM-judged FK detection for tabular ingestion.
+
+Runs AFTER the column-name passes in doc_discovery._detect_fk_links, over
+whichever type pairs those passes did not already resolve. Nothing here is
+specific to any column name, entity type, or dataset — every judgment is
+made from the data actually present in the batch being ingested.
+
+Two stages:
+
+Stage 1 (cheap, no LLM call, no hardcoded column/type names): sample a
+bounded number of DISTINCT values per column (deduplicated, so a
+heavily-duplicated source costs the same as a clean one), normalize them,
+and score value-set overlap between every pair of columns across every pair
+of entity types. Produces a candidate list purely from the data itself.
+
+Stage 2 (LLM judge + reason): every Stage-1 candidate is sent to the LLM for
+a real relationship judgment with a reason, covering relationships no naming
+convention could ever anticipate (differently-named columns, derived/partial
+joins). No count cap is applied to how many candidates are judged — every
+candidate that clears Stage 1 gets a verdict; ARYX_FK_DYNAMIC_JUDGE_WORKERS
+only bounds concurrency (throughput), never coverage, so no relationship is
+silently dropped by this stage.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from aryx.broker import Broker
+from aryx.config import get_settings
+from aryx.llm import complete_json
+from aryx.pipeline.dynamic_fk.dynamic_fk_sampling import (
+    _candidate_columns,
+    _headers,
+    estimate_join_fanout,
+    sample_distinct_values,
+    sample_value_counts,
+    try_prefix_transforms,
+    value_overlap_ratio,
+)
+
+logger = logging.getLogger(__name__)
+
+_JUDGE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "linked": {"type": "boolean"},
+        "cardinality": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["linked", "reason"],
+    "additionalProperties": False,
+}
+
+
+def generate_candidate_pairs(
+    plans: list[dict],
+    already_linked: set[tuple[str, str]] | None = None,
+    log_id: str | None = None,
+) -> list[dict]:
+    """Stage 1: value-overlap candidate filter.
+
+    Returns every {type_a, col_a, type_b, col_b, overlap, samples_a,
+    samples_b} whose overlap clears ARYX_FK_VALUE_OVERLAP_THRESHOLD. No
+    count cap — every unresolved type pair and column pair is scored; only
+    ARYX_FK_VALUE_SAMPLE_SIZE bounds the per-column sampling cost.
+    """
+    settings = get_settings()
+    already_linked = already_linked or set()
+    sample_size = settings.fk_value_sample_size
+    threshold = settings.fk_value_overlap_threshold
+    fanout_scan_rows = settings.fk_fanout_scan_rows
+    max_fanout = settings.fk_max_estimated_fanout
+    prefix_lengths = [
+        int(n) for n in settings.fk_prefix_transform_lengths.split(",") if n.strip()
+    ]
+
+    plan_headers = [_headers(p["data"]) for p in plans]
+    value_cache: dict[tuple[int, str], set[str]] = {}
+
+    def _values(idx: int, col: str) -> set[str]:
+        key = (idx, col)
+        if key not in value_cache:
+            value_cache[key] = sample_distinct_values(
+                plans[idx]["data"], plan_headers[idx], col, sample_size,
+            )
+        return value_cache[key]
+
+    candidates: list[dict] = []
+    seen_cols: set[tuple[str, str, str, str]] = set()
+    for i, plan_a in enumerate(plans):
+        type_a = plan_a["ontology_type"]
+        for j, plan_b in enumerate(plans):
+            if i >= j:
+                continue
+            type_b = plan_b["ontology_type"]
+            if type_a == type_b:
+                continue
+            if (type_a, type_b) in already_linked or (type_b, type_a) in already_linked:
+                continue
+            for col_a in _candidate_columns(plan_headers[i]):
+                values_a = _values(i, col_a)
+                if len(values_a) < 2:
+                    continue
+                for col_b in _candidate_columns(plan_headers[j]):
+                    pair_key = (type_a, col_a, type_b, col_b)
+                    if pair_key in seen_cols:
+                        continue
+                    values_b = _values(j, col_b)
+                    if len(values_b) < 2:
+                        continue
+                    ratio = value_overlap_ratio(values_a, values_b)
+                    prefix_len_a: int | None = None
+                    prefix_len_b: int | None = None
+                    transform_desc: str | None = None
+                    eval_a, eval_b = values_a, values_b
+                    if ratio < threshold and prefix_lengths:
+                        # Fallback: raw values don't overlap enough — try a
+                        # derived (prefix-truncated) relationship instead,
+                        # e.g. a short grouped code that is really a prefix
+                        # of a longer code in the other table. Generic: no
+                        # column name or specific transform is hardcoded,
+                        # only a small set of configured lengths.
+                        best = try_prefix_transforms(values_a, values_b, prefix_lengths)
+                        if best and best[0] >= threshold:
+                            ratio, prefix_len_a, prefix_len_b, eval_a, eval_b = best
+                            transform_desc = (
+                                f"Table A's column truncated to its first {prefix_len_a} character(s)"
+                                if prefix_len_a is not None else
+                                f"Table B's column truncated to its first {prefix_len_b} character(s)"
+                            )
+                    if ratio < threshold:
+                        continue
+                    # Selectivity guard: a candidate can have a perfectly
+                    # reasonable DISTINCT-value overlap ratio while still
+                    # being a shared low-cardinality category (not a real
+                    # join key) — that only shows up once you account for
+                    # how many ROWS share each value, not just how many
+                    # distinct values overlap. Estimate the actual join
+                    # fan-out before this candidate is even considered, so a
+                    # non-selective pair never reaches the LLM judge or
+                    # becomes an fk_link. Uses the SAME prefix transform (if
+                    # any) the candidate was found under, since truncation
+                    # only ever merges groups and would otherwise understate
+                    # the real fan-out risk.
+                    fanout = estimate_join_fanout(
+                        plans[i]["data"], plan_headers[i], col_a,
+                        plans[j]["data"], plan_headers[j], col_b,
+                        fanout_scan_rows,
+                        prefix_len_a=prefix_len_a, prefix_len_b=prefix_len_b,
+                    )
+                    if fanout > max_fanout:
+                        logger.info(
+                            "value_overlap log_id=%s type_a=%s col_a=%s "
+                            "type_b=%s col_b=%s ratio=%.3f transform=%r REJECTED "
+                            "estimated_fanout=%d exceeds max=%d — non-selective "
+                            "join key, skipping",
+                            log_id, type_a, col_a, type_b, col_b, ratio,
+                            transform_desc, fanout, max_fanout,
+                        )
+                        seen_cols.add(pair_key)
+                        continue
+                    seen_cols.add(pair_key)
+                    candidates.append({
+                        "type_a": type_a, "col_a": col_a,
+                        "type_b": type_b, "col_b": col_b,
+                        "overlap": ratio,
+                        "transform": transform_desc,
+                        "samples_a": sorted(eval_a)[:5],
+                        "samples_b": sorted(eval_b)[:5],
+                    })
+                    logger.info(
+                        "value_overlap log_id=%s type_a=%s col_a=%s "
+                        "type_b=%s col_b=%s ratio=%.3f transform=%r estimated_fanout=%d",
+                        log_id, type_a, col_a, type_b, col_b, ratio,
+                        transform_desc, fanout,
+                    )
+    return candidates
+
+
+def _judge_one(candidate: dict, broker: Broker, log_id: str | None) -> dict | None:
+    """Stage 2: ask the LLM whether this candidate pair is a real relationship.
+
+    Returns an fk_link spec if the LLM confirms a link, else None. Every
+    verdict — accepted or rejected — is logged with its reason, so "why is
+    this pair linked/unlinked" is always answerable from logs alone.
+    """
+    system = (
+        "You determine whether two columns from two different data tables "
+        "reference the same real-world thing (a valid join key), based only "
+        "on the column names and sample values given. Consider derived or "
+        "partial relationships (e.g. one column being a truncated, coded, or "
+        "aggregated form of the other) as well as direct equality. Be "
+        "conservative: only say linked=true when the evidence genuinely "
+        "supports it."
+    )
+    transform = candidate.get("transform")
+    transform_note = (
+        f"\nNote: this candidate was only found after applying a value "
+        f"transform — {transform}. The sample values shown below are AFTER "
+        f"that transform, not the raw column values. Judge whether this "
+        f"derived relationship (e.g. one column being a grouped/truncated "
+        f"code derived from the other) is a genuine one.\n"
+        if transform else ""
+    )
+    user = (
+        f"Table A type={candidate['type_a']!r} column={candidate['col_a']!r} "
+        f"sample values={candidate['samples_a']!r}\n"
+        f"Table B type={candidate['type_b']!r} column={candidate['col_b']!r} "
+        f"sample values={candidate['samples_b']!r}\n"
+        f"Cheap value-overlap ratio already measured: {candidate['overlap']:.3f}\n"
+        f"{transform_note}"
+        "Is table A's column a valid reference to table B's column?"
+    )
+    try:
+        result = complete_json(broker, "cheap", system, user, _JUDGE_SCHEMA)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "fk_llm_verdict log_id=%s type_a=%s type_b=%s judge call failed: %s",
+            log_id, candidate["type_a"], candidate["type_b"], exc,
+        )
+        return None
+    linked = bool(result.get("linked"))
+    reason = str(result.get("reason", ""))[:200]
+    logger.info(
+        "fk_llm_verdict log_id=%s type_a=%s col_a=%s type_b=%s col_b=%s "
+        "linked=%s reason=%r",
+        log_id, candidate["type_a"], candidate["col_a"],
+        candidate["type_b"], candidate["col_b"], linked, reason,
+    )
+    if not linked:
+        return None
+    return {
+        "source_type": candidate["type_a"],
+        "source_attr": candidate["col_a"],
+        "target_type": candidate["type_b"],
+        "target_attr": candidate["col_b"],
+        "name": f"{candidate['type_b'].upper()}_HAS_{candidate['type_a'].upper()}",
+        "reason": reason,
+    }
+
+
+def judge_candidates_with_llm(
+    candidates: list[dict], broker: Broker, log_id: str | None = None,
+    on_progress: "Callable[[int, int], None] | None" = None,
+) -> list[dict]:
+    """Stage 2: judge every candidate pair concurrently.
+
+    ARYX_FK_DYNAMIC_JUDGE_WORKERS bounds how many judge calls run at once —
+    it never caps how many candidates get judged. Every item in *candidates*
+    receives a verdict.
+
+    on_progress(done, total) — optional, called after each candidate's
+    verdict comes back (docs/falkordb_high_cpu_2026-07-29.md follow-up: this
+    stage can run for a long time with zero visibility — a live ingestion
+    job sat with no log output and near-zero CPU for 9+ minutes while
+    workers waited on individual LLM calls, indistinguishable from a hang
+    without this). Never lets a callback exception break judging.
+    """
+    if not candidates:
+        return []
+    settings = get_settings()
+    workers = max(1, settings.fk_dynamic_judge_workers)
+    total = len(candidates)
+    done = 0
+    links: list[dict] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_judge_one, c, broker, log_id) for c in candidates]
+        for future in as_completed(futures):
+            link = future.result()
+            if link is not None:
+                links.append(link)
+            done += 1
+            if on_progress is not None:
+                try:
+                    on_progress(done, total)
+                except Exception:  # noqa: BLE001 — progress reporting must never break judging
+                    logger.warning("dynamic_fk on_progress callback failed", exc_info=True)
+    return links
+
+
+def detect_dynamic_fk_links(
+    plans: list[dict], broker: Broker,
+    already_linked: set[tuple[str, str]] | None = None,
+    log_id: str | None = None,
+    on_progress: "Callable[[int, int], None] | None" = None,
+) -> list[dict]:
+    """Full Stage 1 + Stage 2 dynamic FK detection over *plans*.
+
+    Intended to run after doc_discovery._detect_fk_links; *already_linked*
+    should be the set of (source_type, target_type) pairs those column-name
+    passes already resolved, so this stage only fills the gap they miss —
+    it never duplicates or overrides an already-found relationship.
+
+    on_progress — see judge_candidates_with_llm; threaded through so the
+    caller (ingest_confirmed) can report real progress during the slow,
+    uncapped, per-candidate LLM-judge stage.
+    """
+    settings = get_settings()
+    if not settings.fk_dynamic_detection_enabled or len(plans) < 2:
+        return []
+    t0 = time.monotonic()
+    candidates = generate_candidate_pairs(plans, already_linked=already_linked, log_id=log_id)
+    t1 = time.monotonic()
+    links = judge_candidates_with_llm(candidates, broker, log_id=log_id, on_progress=on_progress)
+    t2 = time.monotonic()
+    logger.info(
+        "ingest_timing log_id=%s stage=dynamic_fk plans=%d candidates=%d "
+        "links_found=%d value_sample_ms=%d llm_judge_ms=%d",
+        log_id, len(plans), len(candidates), len(links),
+        int((t1 - t0) * 1000), int((t2 - t1) * 1000),
+    )
+    return links

@@ -40,7 +40,7 @@ def _fuzzy_matches(needle: str, haystack: str) -> bool:
     stripping the filename-naming-convention's own boilerplate words.
 
     Confirmed live (2026-08-08): a real ingested catalog_prefix is
-    whatever `aryx.pipeline.doc_discovery._stem_type` derived from the
+    whatever `aryx.pipeline.doc_discovery.doc_discovery._stem_type` derived from the
     SOURCE XML's own filename (e.g. "ApxnextCnofigdata" from "APXNext_
     CnofigData.xml", typo included) -- a completely different naming
     scheme than the human-authored layout export's own filename ("Config

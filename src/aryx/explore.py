@@ -7,165 +7,32 @@ unit-testable and the HTTP layer (api/data_api.py) stays a thin wire.
 Three reads back the Data tab: a workspace summary (types, counts, sources,
 the dedup story) and an entities-by-type view that carries each golden record's
 attributes AND the source records it traces back to.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
+`explore_summary.py` (`summarize`/`entities_view`/`graph_view`) and
+`explore_text_match.py` (brief-driven text normalization/matching), both
+re-imported here. Zero whitebox test patches exist anywhere against
+`aryx.explore.*` (confirmed via grep), so the split was purely mechanical.
+`domain_overview_view` — the brief-driven overview orchestrator — stays
+here.
 """
 from __future__ import annotations
 
-import re
 from collections import Counter, defaultdict
 from typing import Any
 
 from aryx.display_name import display_name  # noqa: F401 — re-exported for callers
+from aryx.explore_summary import entities_view, graph_view, summarize
+from aryx.explore_text_match import _domain_matches, _matches
 
-_STOPWORDS = {
-    "a", "an", "and", "by", "for", "from", "in", "of", "on", "or",
-    "the", "to", "with",
-}
-_WORD_RE = re.compile(r"[A-Za-z0-9]+")
-_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
-
-
-def _prov_by_entity(provenance: list[tuple[int, str, str, str]]) -> dict[int, list[dict]]:
-    """Group (entity_id, system, dataset, record_id) rows by entity."""
-    out: dict[int, list[dict]] = defaultdict(list)
-    for entity_id, system, dataset, record_id in provenance:
-        out[int(entity_id)].append(
-            {"system": system, "dataset": dataset, "record_id": str(record_id)})
-    return out
-
-
-def summarize(entities, provenance) -> dict[str, Any]:
-    """Workspace-level counts: per-type, per-source, and the dedup story."""
-    entities = list(entities)
-    provenance = list(provenance)
-    type_counts = Counter(t for _, t, _ in entities)
-    src_counts: Counter = Counter(
-        f"{system}.{dataset}" for _, system, dataset, _ in provenance)
-    total = len(entities)
-    source_records = len(provenance)
-    return {
-        "total_entities": total,
-        "type_count": len(type_counts),
-        "types": [{"name": name, "count": count}
-                  for name, count in type_counts.most_common()],
-        "sources": [{"source": src, "count": count}
-                    for src, count in src_counts.most_common()],
-        "source_records": source_records,
-        "duplicates_merged": max(0, source_records - total),
-    }
-
-
-def entities_view(entities: list[tuple[int, str, dict]],
-                  provenance: list[tuple[int, str, str, str]],
-                  ontology_type: str | None = None,
-                  limit: int = 50, offset: int = 0) -> dict[str, Any]:
-    """Entities (optionally filtered by type) with attributes + provenance.
-
-    Returns the page plus the unfiltered count for that type so the UI can
-    paginate without a second call.
-    """
-    by_entity = _prov_by_entity(provenance)
-    rows = [e for e in entities
-            if not ontology_type or e[1] == ontology_type]
-    total = len(rows)
-    capped = max(1, min(int(limit), 200))
-    start = max(0, int(offset))
-    page = rows[start:start + capped]
-    items = [{
-        "id": eid,
-        "type": etype,
-        "name": display_name(attrs, eid),
-        "attributes": attrs or {},
-        "sources": by_entity.get(eid, []),
-    } for eid, etype, attrs in page]
-    return {"type": ontology_type, "total": total,
-            "offset": start, "limit": capped, "items": items}
-
-
-def graph_view(entities, relationships) -> dict[str, Any]:
-    """Type-level knowledge map: nodes per type, edges aggregated by relation.
-
-    Renders the *shape* of the graph (Customer -HAS_SITE(22)-> Site ...) rather
-    than every node — legible at any scale, the query-don't-render rule.
-    """
-    entities = list(entities)
-    relationships = list(relationships)
-    id_type = {eid: etype for eid, etype, _ in entities}
-    type_counts = Counter(etype for _, etype, _ in entities)
-    edge_agg: Counter = Counter()
-    for src, tgt, name in relationships:
-        st, tt = id_type.get(src), id_type.get(tgt)
-        if st and tt:
-            edge_agg[(st, tt, name)] += 1
-    return {
-        "type_nodes": [{"type": t, "count": c}
-                       for t, c in type_counts.most_common()],
-        "type_edges": [{"source": s, "target": t, "name": n, "count": c}
-                       for (s, t, n), c in edge_agg.most_common()],
-        "entity_count": len(entities),
-        "relationship_count": len(relationships),
-    }
-
-
-def _normalise_text(text: str) -> str:
-    """Lowercase + split camel case so brief text can match ontology labels."""
-    split = _CAMEL_RE.sub(" ", str(text or ""))
-    return " ".join(part.lower() for part in _WORD_RE.findall(split))
-
-
-def _tokens(text: str) -> set[str]:
-    """Tokenise a label, dropping tiny/common words that drown the match signal."""
-    return {
-        tok for tok in _normalise_text(text).split()
-        if (len(tok) > 1 or tok.isdigit()) and tok not in _STOPWORDS
-    }
-
-
-def _matches(query_text: str, candidate: str) -> bool:
-    """Return True when text overlaps by phrase or meaningful token."""
-    q_norm = _normalise_text(query_text)
-    c_norm = _normalise_text(candidate)
-    if not q_norm or not c_norm:
-        return False
-    if _tokens(query_text) & _tokens(candidate):
-        return True
-    return len(q_norm) >= 4 and len(c_norm) >= 4 and (q_norm in c_norm or c_norm in q_norm)
-
-
-def _entity_match_text(entity_id: int, entity_type: str, attrs: dict[str, Any]) -> str:
-    """Build a compact text block used to decide if an entity matches the brief."""
-    parts = [entity_type, display_name(attrs or {}, entity_id)]
-    for value in (attrs or {}).values():
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
-    return " ".join(parts)
-
-
-def _domain_matches(
-    entities: list[tuple[int, str, dict[str, Any]]], query_text: str,
-) -> tuple[set[int], set[str]]:
-    """Match the query against entity types first, then against entity text."""
-    if not _tokens(query_text):
-        return set(), set()
-
-    ids_by_type: dict[str, set[int]] = defaultdict(set)
-    for entity_id, entity_type, _attrs in entities:
-        ids_by_type[entity_type].add(entity_id)
-
-    matched_types = {
-        entity_type for entity_type in ids_by_type
-        if _matches(query_text, entity_type)
-    }
-    matched_ids = {
-        entity_id for entity_type in matched_types
-        for entity_id in ids_by_type[entity_type]
-    }
-
-    for entity_id, entity_type, attrs in entities:
-        if _matches(query_text, _entity_match_text(entity_id, entity_type, attrs or {})):
-            matched_ids.add(entity_id)
-            matched_types.add(entity_type)
-
-    return matched_ids, matched_types
+__all__ = [
+    "_matches",
+    "display_name",
+    "domain_overview_view",
+    "entities_view",
+    "graph_view",
+    "summarize",
+]
 
 
 def domain_overview_view(

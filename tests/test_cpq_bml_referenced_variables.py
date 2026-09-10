@@ -13,7 +13,7 @@ boolean ones.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import referenced_variables
+from aryx.cpq.bml.bml import referenced_variables
 
 
 def test_quoted_string_comparison_detected():

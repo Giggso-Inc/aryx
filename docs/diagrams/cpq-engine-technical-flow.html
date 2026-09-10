@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aryx · CPQ Engine — Technical Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;500;600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --navy-50:#F2F5FB; --navy-100:#E4EAF4; --navy-200:#C2CFE3;
+    --navy-300:#94A8CB; --navy-500:#3A578C; --navy-700:#1A2F55;
+    --navy-800:#0F1F3D; --navy-900:#0A1530;
+    --steel-400:#5F8AD2; --steel-500:#4068A8; --steel-600:#2D4B8A;
+    --canvas:#F8F9FC; --ink:#0F1726; --subtle:#5A6478;
+    --emerald:#10B981; --amber:#F59E0B; --rose:#E11D48;
+    --oracle-500:#B45309; --oracle-600:#8A3D06;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: var(--canvas); color: var(--ink); padding: 56px 24px; }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  header { text-align: center; padding-bottom: 32px; border-bottom: 1px solid var(--navy-100); }
+  .brand { display: inline-flex; align-items: center; gap: 12px; }
+  .brand img { width: 38px; height: 38px; }
+  .brand .name { font-weight: 600; letter-spacing: 0.32em; color: var(--navy-900); font-size: 15px; }
+  h1 { font-family: 'Fraunces', Georgia, serif; font-size: 2.3rem; color: var(--navy-900); margin-top: 18px; letter-spacing: -0.01em; }
+  .sub { color: var(--subtle); font-size: 15px; margin-top: 8px; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.55; }
+
+  .stack { margin-top: 48px; display: flex; flex-direction: column; gap: 18px; }
+  .layer { background: white; border: 1px solid var(--navy-100); border-radius: 18px; padding: 22px 24px; box-shadow: 0 1px 2px rgba(10,21,48,0.04), 0 6px 18px rgba(10,21,48,0.05); }
+  .layer-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px dashed var(--navy-100); }
+  .layer-num { width: 28px; height: 28px; border-radius: 8px; background: var(--navy-800); color: white; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+  .layer-title { font-family: 'Fraunces', serif; font-size: 1.2rem; color: var(--navy-900); }
+  .layer-hint { color: var(--subtle); font-size: 12px; margin-left: auto; font-family: 'JetBrains Mono', monospace; text-align: right; }
+
+  .row { display: grid; gap: 14px; }
+  .row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .row.cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+  .box { background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 12px; padding: 14px 14px 12px; text-align: center; }
+  .box .ico { font-size: 22px; }
+  .box .label { font-weight: 700; color: var(--navy-900); font-size: 13px; margin-top: 6px; }
+  .box .desc { font-size: 11px; color: var(--subtle); margin-top: 4px; line-height: 1.4; }
+  .box .file { margin-top: 6px; display: inline-block; padding: 2px 8px; background: var(--navy-50); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--steel-600); }
+  .box.accent { background: white; border-color: var(--steel-500); box-shadow: 0 0 0 3px rgba(64,104,168,0.08); }
+  .box.amber { background: #FFFBEB; border-color: #FCD34D; }
+  .box.rose { background: #FFF1F2; border-color: #FDA4AF; }
+  .box.oracle { background: #FBEEE0; border-color: var(--oracle-500); }
+  .box.oracle .label { color: var(--oracle-600); }
+
+  .pipeline { display: flex; gap: 1px; }
+  .pl-cell { flex: 1; padding: 12px 8px; background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 10px; text-align: center; min-width: 96px; }
+  .pl-cell .ico { font-size: 18px; }
+  .pl-cell .t { font-size: 11px; font-weight: 700; color: var(--navy-900); margin-top: 3px; }
+  .pl-cell .eg { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--steel-600); margin-top: 3px; }
+  .pl-arr { display: flex; align-items: center; color: var(--navy-300); font-size: 16px; padding: 0 2px; }
+
+  .band { margin-top: 14px; padding: 14px 18px; background: linear-gradient(135deg, var(--navy-50) 0%, white 100%); border: 1px dashed var(--steel-400); border-radius: 12px; display: flex; gap: 14px; align-items: center; }
+  .band .glyph { font-size: 26px; }
+  .band strong { color: var(--navy-900); font-size: 13px; }
+  .band p { color: var(--subtle); font-size: 12px; margin-top: 2px; line-height: 1.5; }
+  .band code { font-family: 'JetBrains Mono', monospace; background: white; padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--steel-600); border: 1px solid var(--navy-100); }
+  .band.warn { background: linear-gradient(135deg,#FFFBEB 0%,white 100%); border-color: #FCD34D; }
+  .band.oracle { background: linear-gradient(135deg,#FBEEE0 0%,white 100%); border-color: var(--oracle-500); }
+  .band.rose { background: linear-gradient(135deg,#FFF1F2 0%,white 100%); border-color: #FDA4AF; }
+
+  /* Tier ladder */
+  .tiers { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .tier { display: grid; grid-template-columns: 90px 1fr; gap: 14px; align-items: center; padding: 12px 14px; background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 10px; }
+  .tier .badge { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; color: white; background: var(--navy-700); border-radius: 6px; padding: 4px 0; text-align: center; }
+  .tier.c .badge { background: var(--oracle-500); }
+  .tier .t { font-size: 12px; font-weight: 700; color: var(--navy-900); }
+  .tier .d { font-size: 11px; color: var(--subtle); margin-top: 2px; line-height: 1.4; }
+
+  .decision-flow { display: flex; gap: 4px; align-items: stretch; margin-top: 12px; }
+  .d-step { flex: 1; padding: 10px 8px; background: var(--canvas); border-radius: 8px; text-align: center; border: 1px solid var(--navy-100); min-width: 100px; }
+  .d-step.dispatch { background: #ECFDF5; border-color: #6EE7B7; }
+  .d-step.clarify { background: #FFFBEB; border-color: #FCD34D; }
+  .d-step.fallback { background: #FFF1F2; border-color: #FDA4AF; }
+  .d-step .t { font-size: 11px; font-weight: 700; color: var(--navy-900); }
+  .d-step .d { font-size: 10px; color: var(--subtle); margin-top: 2px; line-height: 1.3; }
+  .d-arr { display: flex; align-items: center; color: var(--navy-300); font-size: 14px; padding: 0 1px; }
+
+  .stats { margin-top: 36px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .stat { background: white; border: 1px solid var(--navy-100); border-radius: 14px; padding: 18px 20px; }
+  .stat .n { font-family: 'Fraunces', serif; font-size: 1.8rem; color: var(--navy-900); }
+  .stat .l { color: var(--subtle); font-size: 12px; margin-top: 2px; }
+
+  footer { margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--navy-100); text-align: center; color: var(--subtle); font-size: 12px; }
+  footer a { color: var(--steel-500); text-decoration: none; margin: 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <img src="aryx-logo.png" alt="Aryx" />
+      <span class="name">A R Y X</span>
+    </div>
+    <h1>CPQ engine · technical flow</h1>
+    <p class="sub">
+      What actually decides which questions get asked, in what order, and when the
+      engine refuses to guess — traced through <code style="font-family:'JetBrains Mono',monospace">cpq/engine.py</code>,
+      <code style="font-family:'JetBrains Mono',monospace">cpq/intent_gateway.py</code>, and
+      <code style="font-family:'JetBrains Mono',monospace">api/ask_api.py</code> as they run today.
+    </p>
+  </header>
+
+  <div class="stack">
+
+    <!-- Layer 1 — Entry & routing -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">1</span>
+        <span class="layer-title">Entry &amp; intent routing</span>
+        <span class="layer-hint">ask_api.py · cpq/intent_gateway.py</span>
+      </div>
+      <p style="font-size:12px;color:var(--subtle);margin-bottom:14px;">
+        Every message arrives as free text with no guaranteed structure. Before anything else,
+        the gateway decides whether this turn is safe to act on, needs a clarifying question,
+        or should fall through to the older deterministic detector.
+      </p>
+      <div class="decision-flow">
+        <div class="d-step"><div class="t">LLM classify</div><div class="d">complete_json against the candidate bundle for this turn</div></div>
+        <div class="d-arr">›</div>
+        <div class="d-step dispatch"><div class="t">dispatch</div><div class="d">Safe to act — value resolved against OUR candidate list, never taken as free text from the model</div></div>
+        <div class="d-arr">›</div>
+        <div class="d-step clarify"><div class="t">clarify</div><div class="d">Ambiguous — ask the user, don't guess between candidates</div></div>
+        <div class="d-arr">›</div>
+        <div class="d-step fallback"><div class="t">fallback</div><div class="d">Timeout, schema failure, or empty question — defer to the deterministic path</div></div>
+      </div>
+      <div class="band">
+        <div class="glyph">🔒</div>
+        <div>
+          <strong>The model never picks the value directly</strong>
+          <p>
+            <code>GatewayDecision.value_display</code> is resolved from a <code>value_ref</code> the
+            model returns, matched against candidate bundles built in our own code
+            (<code>build_candidate_bundles</code>) — a hallucinated value that isn't in the
+            candidate list simply can't reach the session state.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 2 — Catalog file types -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">2</span>
+        <span class="layer-title">Three file types feed the catalog — one skips the database entirely</span>
+        <span class="layer-hint">pipeline/doc_discovery.py · cpq/data_table_resolver.py</span>
+      </div>
+      <p style="font-size:12px;color:var(--subtle);margin-bottom:14px;">
+        <code style="font-family:'JetBrains Mono',monospace">DATA_EXTS = &#123;".json", ".csv", ".xml", ".xlsx"&#125;</code> —
+        CPQ ingestion only actually exercises two of those plus one file type that never
+        touches the database at all.
+      </p>
+      <div class="row cols-3">
+        <div class="box accent">
+          <div class="ico">📦</div>
+          <div class="label">.xml — the raw catalog export</div>
+          <div class="desc">Oracle CPQ's native export format. Never queried directly — the pipeline explodes it into one CSV per element type first, so the same FK-detection code handles every source uniformly.</div>
+          <div class="file">_xml_to_csvs()</div>
+        </div>
+        <div class="box accent">
+          <div class="ico">📊</div>
+          <div class="label">.csv — Data Tables</div>
+          <div class="desc">Either exploded from the XML above, or ingested directly. Identified by <em>column shape</em>, never by filename — the same detector works across every customer's catalog.</div>
+          <div class="file">data_table_resolver.py</div>
+        </div>
+        <div class="box oracle">
+          <div class="ico">📄</div>
+          <div class="label">.txt — layout export</div>
+          <div class="desc">Read straight off disk at runtime, never ingested into Oracle at all. Display order only — see Layer 4.</div>
+          <div class="file">config_layouts/*.txt</div>
+        </div>
+      </div>
+
+      <p style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--navy-700);margin:18px 0 8px;">Four column-shapes the .csv Data Tables resolve to</p>
+      <div class="row cols-4">
+        <div class="box oracle">
+          <div class="label">Sequence-shaped</div>
+          <div class="desc">e.g. AttrSequence — every AttrName's optionOrReqFlag for a (cpq_model, base_model) pair. This is Tier C's mandatory-field source.</div>
+        </div>
+        <div class="box">
+          <div class="label">Hierarchy-shaped</div>
+          <div class="desc">e.g. CPQModelHierarchy.csv — maps a Product name to its coarser CPQModel product-family code.</div>
+        </div>
+        <div class="box">
+          <div class="label">Region-rule-shaped</div>
+          <div class="desc">e.g. NewCountryRegMapping.csv — model/value/region/ruleType/attribute rows; resolves the one ALLOW value for a region (+country).</div>
+        </div>
+        <div class="box">
+          <div class="label">Series-mapping-shaped</div>
+          <div class="desc">e.g. Seriesmodelsmapping.csv — resolves which real CPQModel variant applies for a region/country condition, keyed by attrN/opN/valN triples.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 3 — Session state & attribute tiers -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">3</span>
+        <span class="layer-title">Session state &amp; the three attribute tiers</span>
+        <span class="layer-hint">session_data · mandatory_tier_c_vns()</span>
+      </div>
+      <p style="font-size:12px;color:var(--subtle);margin-bottom:8px;">
+        One <code style="font-family:'JetBrains Mono',monospace">session_data</code> dict carries the whole
+        conversation forward: <code style="font-family:'JetBrains Mono',monospace">filled</code>,
+        <code style="font-family:'JetBrains Mono',monospace">pending_variables</code>,
+        <code style="font-family:'JetBrains Mono',monospace">turn</code>, <code style="font-family:'JetBrains Mono',monospace">status</code> —
+        round-tripped to the client and back on every message. Which fields still need an
+        answer is decided by three tiers, not one flat list:
+      </p>
+      <div class="tiers">
+        <div class="tier">
+          <div class="badge">TIER A</div>
+          <div><div class="t">User-answered</div><div class="d"><code style="font-family:'JetBrains Mono',monospace;font-size:10px">filled_source == "user"</code> — the customer typed or picked this value directly.</div></div>
+        </div>
+        <div class="tier">
+          <div class="badge">TIER B</div>
+          <div><div class="t">Rule / default-filled</div><div class="d">Resolved by a business rule or a data-table default before the customer ever saw it.</div></div>
+        </div>
+        <div class="tier c">
+          <div class="badge">TIER C</div>
+          <div><div class="t">Catalog-mandatory, still unresolved</div><div class="d">
+            <code style="font-family:'JetBrains Mono',monospace;font-size:10px">mandatory_tier_c_vns()</code> — attribute names the real ingested
+            <strong>AttrSequence Data Table</strong> flags <code style="font-family:'JetBrains Mono',monospace;font-size:10px">optionOrReqFlag == "R"</code>
+            for the active <code style="font-family:'JetBrains Mono',monospace;font-size:10px">(cpq_model, base_model)</code>. Catches fields Tier A/B miss
+            entirely because they were defaulted, not user-answered — <em>this is what's driving
+            "Mounting Type", "Solution Set", "Solution Feature", and "Product" showing up as
+            required</em>, and it's read live from the catalog, not hardcoded.
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 3 — Display order -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">4</span>
+        <span class="layer-title">Display order — a separate signal from "is it mandatory"</span>
+        <span class="layer-hint">cpq/layout_source.py · load_layout_display_order()</span>
+      </div>
+      <div class="row cols-3">
+        <div class="box accent">
+          <div class="ico">📄</div>
+          <div class="label">Native-UI layout export</div>
+          <div class="desc">A .txt file per catalog, decoded from the source CPQ's own UI layout</div>
+          <div class="file">config_layouts/*.txt</div>
+        </div>
+        <div class="box accent">
+          <div class="ico">🔎</div>
+          <div class="label">Fuzzy catalog match</div>
+          <div class="desc">Normalized substring match: real ingested catalog_prefix against a human-authored filename</div>
+        </div>
+        <div class="box">
+          <div class="ico">🔢</div>
+          <div class="label">Visibility rank</div>
+          <div class="desc">{variable_name: rank} for every attr marked hide:false, non-HTML — beautify/summary ordering only</div>
+        </div>
+      </div>
+      <div class="band oracle">
+        <div class="glyph">🛠</div>
+        <div>
+          <strong>This is what the Oracle env-var bug broke</strong>
+          <p>
+            <code>ARYX_CPQ_LAYOUT_DIR</code> was missing from <code>docker-compose-oci.yml</code>, so
+            <code>LocalDirLayoutFileSource</code> fell back to cwd (<code>/app</code>) instead of
+            <code>/app/config_layouts</code> — every lookup silently returned no match. It never
+            changed <em>which</em> fields were mandatory (that's Tier C, above, reading straight
+            from Oracle) — only the display order in the beautify/summary block went unranked.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 4 — Safety guards -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">5</span>
+        <span class="layer-title">Never a guessed value in the final quote</span>
+        <span class="layer-hint">ask_api.py — turn cap &amp; incomplete-state guard</span>
+      </div>
+      <div class="pipeline">
+        <div class="pl-cell"><div class="ico">🔁</div><div class="t">Turn loop</div><div class="eg">one pending attr per turn</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">⏱</div><div class="t">MAX_TURNS</div><div class="eg">cap reached, attrs still open</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">⚠️</div><div class="t">Incomplete state</div><div class="eg">"N attribute(s) still need your input"</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">🚫</div><div class="t">Refuse to guess</div><div class="eg">"I won't generate a BOM with guessed values"</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">↩️</div><div class="t">Re-ask</div><div class="eg">same pending attribute, next turn</div></div>
+      </div>
+      <div class="band rose">
+        <div class="glyph">🛑</div>
+        <div>
+          <strong>The guard fires even at the turn cap</strong>
+          <p>
+            Hitting <code>MAX_TURNS</code> with attributes still unresolved does not produce a
+            best-effort BOM — the code explicitly keeps the guided flow open on the next
+            pending attribute rather than ever presenting a payload that could contain a
+            fabricated value.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="stats" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="stat"><div class="n">3</div><div class="l">catalog file types: .xml, .csv, .txt</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">.csv column-shapes the resolver detects</div></div>
+    <div class="stat"><div class="n">3</div><div class="l">attribute tiers: user, rule/default, catalog-mandatory</div></div>
+    <div class="stat"><div class="n">3</div><div class="l">gateway outcomes: dispatch, clarify, fallback</div></div>
+    <div class="stat"><div class="n">0</div><div class="l">guessed values allowed in a submitted quote</div></div>
+  </div>
+
+  <footer>
+    <div>
+      <a href="cpq-overview.html">How CPQ builds a quote</a>
+      ·
+      <a href="technical-flow-oracle.html">Oracle technical flow</a>
+      ·
+      <a href="../aryx_oracle_adb_architecture.html">Oracle ADB architecture</a>
+    </div>
+    <div style="margin-top:10px;">Aryx — CPQ engine technical flow</div>
+  </footer>
+</div>
+</body>
+</html>

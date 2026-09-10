@@ -26,7 +26,7 @@ re-asking. Every other stale attribute in the same batch is unaffected.
 """
 from __future__ import annotations
 
-from aryx.api.ask_api import _reask_stale_constraint_violations
+from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
 

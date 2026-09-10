@@ -56,7 +56,7 @@ def _make_http_mock(method: str, resp_json: dict, status: int = 200) -> AsyncMoc
 def test_initiate_rejects_invalid_sid():
     """sid with special chars must return 400 invalid_sid."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.is_allowed_redirect_uri", return_value=True):
+    with patch("app.routes.zoho_connect.initiate.is_allowed_redirect_uri", return_value=True):
         resp = client.get(
             "/api/v1/zoho/connect/initiate",
             params={"sid": "bad sid with spaces!", "redirect_uri": _VALID_REDIRECT},
@@ -68,7 +68,7 @@ def test_initiate_rejects_invalid_sid():
 def test_initiate_rejects_invalid_redirect_uri():
     """redirect_uri not in allowlist must return 400 invalid_redirect_uri."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.is_allowed_redirect_uri", return_value=False):
+    with patch("app.routes.zoho_connect.initiate.is_allowed_redirect_uri", return_value=False):
         resp = client.get(
             "/api/v1/zoho/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": "https://evil.example.com/steal"},
@@ -80,8 +80,8 @@ def test_initiate_rejects_invalid_redirect_uri():
 def test_initiate_happy_path_returns_authorization_url():
     """Valid request must return a Zoho accounts.zoho.com authorization_url."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.is_allowed_redirect_uri", return_value=True), \
-         patch("app.routes.zoho_connect.build_state", return_value=_STATE):
+    with patch("app.routes.zoho_connect.initiate.is_allowed_redirect_uri", return_value=True), \
+         patch("app.routes.zoho_connect.initiate.build_state", return_value=_STATE):
         resp = client.get(
             "/api/v1/zoho/connect/initiate",
             params={"sid": _VALID_SID, "redirect_uri": _VALID_REDIRECT},
@@ -99,7 +99,7 @@ def test_initiate_happy_path_returns_authorization_url():
 def test_callback_state_failure_redirects_to_root():
     """Tampered state must redirect to '/'."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.verify_state", side_effect=ValueError("bad")):
+    with patch("app.routes.zoho_connect.callback.verify_state", side_effect=ValueError("bad")):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": "tampered", "accounts-server": _ACCOUNTS_SVR},
@@ -112,7 +112,7 @@ def test_callback_state_failure_redirects_to_root():
 def test_callback_provider_error_redirects_with_error_fragment():
     """Zoho returning error=access_denied must redirect with #error= fragment."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA):
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"error": "access_denied", "state": _STATE},
@@ -130,8 +130,8 @@ def test_callback_token_exchange_failure_redirects_with_error():
     bad_cm.__aexit__ = AsyncMock(return_value=None)
     bad_cm.post = AsyncMock(side_effect=Exception("timeout"))
 
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.zoho_connect.httpx.AsyncClient", return_value=bad_cm):
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.zoho_connect.callback.httpx.AsyncClient", return_value=bad_cm):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": _STATE, "accounts-server": _ACCOUNTS_SVR},
@@ -147,8 +147,8 @@ def test_callback_no_email_redirects_with_error():
     token_cm   = _make_http_mock("post", {"access_token": "zoho.tok", "refresh_token": "ref"})
     profile_cm = _make_http_mock("get", {"users": [{"id": "uid", "full_name": "Rep"}]})  # no email
 
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.zoho_connect.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.zoho_connect.callback.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": _STATE, "accounts-server": _ACCOUNTS_SVR},
@@ -169,8 +169,8 @@ def test_callback_happy_path_redirects_with_zoho_data_fragment():
         "users": [{"id": "uid123", "full_name": "Sales Rep", "email": "rep@zoho.dev"}]
     })
 
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.zoho_connect.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.zoho_connect.callback.httpx.AsyncClient", side_effect=[token_cm, profile_cm]):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": _STATE, "accounts-server": _ACCOUNTS_SVR},
@@ -192,7 +192,7 @@ def test_callback_happy_path_redirects_with_zoho_data_fragment():
 def test_callback_invalid_accounts_server_redirects_with_error():
     """accounts-server not in the SSRF allowlist must redirect with error=invalid_accounts_server."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA):
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA):
         resp = client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": _STATE, "accounts-server": "https://evil.example.com"},
@@ -211,8 +211,8 @@ def test_callback_uses_accounts_server_from_query_param():
         "users": [{"id": "u", "full_name": "EU Rep", "email": "eu@zoho.dev"}]
     })
 
-    with patch("app.routes.zoho_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.zoho_connect.httpx.AsyncClient", side_effect=[token_cm, profile_cm]) as mock_cls:
+    with patch("app.routes.zoho_connect.callback.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.zoho_connect.callback.httpx.AsyncClient", side_effect=[token_cm, profile_cm]) as mock_cls:
         client.get(
             "/api/v1/zoho/connect/callback",
             params={"code": "c", "state": _STATE, "accounts-server": eu_server},

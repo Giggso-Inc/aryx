@@ -10,7 +10,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx import llm_runtime
+from aryx.llm import llm_runtime
 
 
 def test_noop_when_no_usage_key():
@@ -78,7 +78,7 @@ def test_run_cpq_turn_end_to_end_resets_and_reports(monkeypatch):
         # Simulate a real LLM call happening somewhere deep inside this
         # turn (BML Tier-2, an intent classifier, anything) via the same
         # llm_runtime.chat() choke point every real call site uses.
-        with patch("aryx.llm_runtime.complete_text",
+        with patch("aryx.llm.llm_runtime.complete_text",
                    lambda *a, **k: ("reply", 30, 4)), \
              patch.object(llm_runtime, "_log_call", lambda *a, **k: None):
             llm_runtime.chat("answer", "sys", "user")

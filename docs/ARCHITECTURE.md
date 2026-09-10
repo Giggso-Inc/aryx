@@ -4,12 +4,20 @@
 
 Aryx is a knowledge graph platform that ingests records from heterogeneous sources (databases, files), resolves duplicates into single entities, infers relationships, and builds a queryable graph.
 
-**Core principle:** Postgres is the source of truth; FalkorDB is a rebuildable projection. Cheap, deterministic stages (blocking, scoring) shrink the search space so frontier LLMs only touch the hard ~1-5% of decisions.
+**Core principle:** the relational store is the source of truth; the graph store is a rebuildable projection. Cheap, deterministic stages (blocking, scoring) shrink the search space so frontier LLMs only touch the hard ~1-5% of decisions.
+
+Two backend modes exist behind the same application code:
+
+- **Local (default dev)** — PostgreSQL 16 + FalkorDB + Ollama, via `docker-compose.yml`.
+- **Oracle (OCI deployment)** — Oracle Autonomous Database 23ai holds both the Aryx schema and Shay's own schema in one instance, with the graph as Oracle's SQL/PGQ property graph (no separate FalkorDB), OCI GenAI for LLM/embeddings, and OCI Document Understanding for parsing — via `docker-compose-oci.yml`. See `docs/OCI_DEPLOYMENT_PLAN.md` for setup.
 
 ## Interactive Diagrams
 
 - **[Business View](diagrams/business-view.html)** — User paths and backend flow
-- **[Technical Flow](diagrams/technical-flow.html)** — 4-layer system architecture with all components
+- **[Technical Flow](diagrams/technical-flow.html)** — 4-layer system architecture, local (Postgres/FalkorDB) stack
+- **[Technical Flow — Oracle](diagrams/technical-flow-oracle.html)** — same 4 layers, Oracle OCI deployment
+- **[CPQ Engine — Technical Flow](diagrams/cpq-engine-technical-flow.html)** — intent routing, the three attribute tiers, catalog file types, and the never-guess safety guard
+- **[Oracle ADB Architecture](aryx_oracle_adb_architecture.html)** — service-to-database connectivity map for the Oracle deployment, verified against actual call sites (not just declared config)
 
 ---
 

@@ -20,6 +20,7 @@ from collections import Counter
 import pytest
 
 from tests.cpq_fixtures import REPO_ROOT, load_truth, sample_path
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 pytestmark = pytest.mark.skipif(
     not sample_path().exists(),
@@ -60,7 +61,7 @@ def _falkor_available() -> bool:
 
 def test_s1_extraction_counts_match_raw_xml(truth):
     from aryx.config import get_settings
-    from aryx.pipeline.doc_discovery import _xml_to_csvs
+    from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
     import csv as _csv
     import io
 
@@ -368,7 +369,7 @@ def fake_rdb(truth, monkeypatch):
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
     # Tier-2 LLM off: tests must be deterministic and offline.
-    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
     clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",
@@ -477,7 +478,7 @@ def test_s5_script_rules_not_silently_dropped(truth, fake_rdb, caplog):
 
 def test_s5_tier1_coverage_on_real_scripts(truth):
     """Tier-1 parses a measurable share of the export's real BML scripts."""
-    from aryx.cpq.bml import _parse_branches, evaluate_tier1
+    from aryx.cpq.bml.bml import _parse_branches, evaluate_tier1
 
     scripts = [f["script_text"] for f in truth.functions()]
     if not scripts:
@@ -607,7 +608,7 @@ def _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=30):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
 
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
@@ -727,7 +728,7 @@ def test_s7_turn_cap_never_fabricates_payload(truth, fake_rdb, monkeypatch):
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
     from aryx.cpq.engine import CpqEngine
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     # Cap at 1 turn so the very first configuring turn with pending attrs
     # exercises the cap branch deterministically.
     monkeypatch.setattr(CpqEngine, "MAX_TURNS", 1)
@@ -781,7 +782,7 @@ def test_s8_sequential_anchor_prompting(fake_rdb, monkeypatch):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
 
     # Turn 1: neither product nor country mentioned.
@@ -895,7 +896,7 @@ def test_s12_verbose_default_json_on_request_only(truth, fake_rdb, monkeypatch):
     # Explicit JSON request mid-configuration.
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
     resp2 = _run_cpq_turn(
         AskRequest(question="show me the json so far", workspace_id=1,
@@ -924,7 +925,7 @@ def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(fake_rdb)
     resp = _run_cpq_turn(
         AskRequest(question="quote sl 3500 single unit for customer in United States",
@@ -1001,8 +1002,8 @@ def test_s13_share_flags_appear_via_run_ask_after_three_answers(truth, fake_rdb,
     if not transcript:
         pytest.skip("engine filtered out all config attrs for this export")
 
-    monkeypatch.setattr(api, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 
     saw_ready = False
     prior_session: dict = {}
@@ -1089,7 +1090,7 @@ def apx_fake_rdb(apx_truth, monkeypatch):
     rdb = FakeCpqRdb(apx_truth)
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
-    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    from aryx.cpq.bml.bml import BmlEvaluator, clear_shared_bml_cache
     clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",
@@ -1104,7 +1105,7 @@ def test_s15_fk_compound_column_detection(apx_truth):
     """Phase G regression guard: a FK column whose stem is a MULTI-word
     trailing run of the target type's de-camelCased name (not just the last
     word, e.g. attr_set_id -> BmConfigAttrSet) must still resolve to an edge."""
-    from aryx.pipeline.doc_discovery import _detect_fk_links
+    from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links
     import csv
     import io
 
@@ -1179,7 +1180,7 @@ def test_s15_fk_compound_column_detection(apx_truth):
 def test_s16_dangling_fk_sentinel_exclusion():
     """Phase H: BM's "-1" not-set convention must never count as a dangling
     FK value. Pure unit test — synthetic minimal plans, not sample-derived."""
-    from aryx.pipeline.ingest_validation import ground_truth_from_tabular
+    from aryx.pipeline.ingest_validation.ingest_validation import ground_truth_from_tabular
 
     parent_csv = b"id,name,_element_type\n1,Alpha,parent\n2,Beta,parent\n"
     child_csv = (b"id,name,parent_id,_element_type\n"
@@ -1349,7 +1350,7 @@ def test_s23_at_most_a_few_prompts_to_configure(apx_truth, apx_fake_rdb, monkeyp
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
 
@@ -1742,6 +1743,8 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     bullet summary instead of blocking the flow or showing a malformed
     merge."""
     from aryx.api import ask_api
+    from aryx.api.ask_core_helpers import _CPQ_SEGMENT_DELIM
+    from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
     from aryx.cpq.state import ConfigAttr, MenuOption
 
     attrs = [
@@ -1762,7 +1765,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         ),
     ]
     display_filled = {"region": "NA", "ruggedized": "Yes", "quantitySpareUnits": "1"}
-    delim = ask_api._CPQ_SEGMENT_DELIM
+    delim = _CPQ_SEGMENT_DELIM
 
     captured: dict[str, str] = {}
 
@@ -1776,7 +1779,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         ), 10, 20
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", fake_chat)
-    text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2, 3}, "APX NEXT", 1)
+    text = _cpq_summary_text(display_filled, attrs, {1, 2, 3}, "APX NEXT", 1)
     assert text == (
         "Your configuration is complete.\n\n"
         "**Quantity & Duration:**\n- **Spare Units** → 1\n\n"
@@ -1793,7 +1796,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         return "The radio is configured for the NA region.", 10, 20
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", malformed_chat)
-    malformed_fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    malformed_fallback = _cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert "Key decisions" in malformed_fallback and "Region" in malformed_fallback, (
         "a reply that doesn't match the expected segment count must fall back")
 
@@ -1801,13 +1804,13 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
-    fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    fallback = _cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert "Key decisions" in fallback and "Region" in fallback, (
         "LLM failure must fall back to the deterministic bullet summary")
 
     # Nothing survives filtering → no LLM call, empty string.
     monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
-    assert ask_api._cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
+    assert _cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
 
 
 def test_s32_change_request_full_option_name_outranks_coarse_hint():
@@ -2089,7 +2092,7 @@ def test_s38_single_query_full_quote_zero_pending(apx_truth, apx_fake_rdb, monke
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(
@@ -2116,7 +2119,7 @@ def test_s39_missing_country_falls_to_anchor_gate_with_real_options(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(question="Quote APX Next Enhanced radios.", workspace_id=1, session_data={})
@@ -2139,7 +2142,7 @@ def test_s41_conversational_quote_only_payload_after_confirm(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
     none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
 
@@ -2196,7 +2199,7 @@ def test_s42_run_id_stable_across_turns_and_present_in_logs(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req1 = AskRequest(question="Quote APX Next for a US customer.", workspace_id=1, session_data={})
@@ -2232,7 +2235,7 @@ def test_s44_enhanced_product_hint_vs_hwversion_default_documented(
     import aryx.api.ask_api as api
     from aryx.api.ask_api import AskRequest, _run_cpq_turn
 
-    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
     reader = FakeReader(apx_fake_rdb)
 
     req = AskRequest(

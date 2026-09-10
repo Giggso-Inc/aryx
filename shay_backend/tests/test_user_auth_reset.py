@@ -149,9 +149,9 @@ def test_forgot_password_commits_token_before_shortening(mock_db):
         assert mock_db.commit.await_count == 1
         return url
 
-    with patch("app.routes.user_auth.email_verification_service.invalidate_existing_tokens", new=AsyncMock(return_value=True)), \
-         patch("app.routes.user_auth.link_shortener_service.shorten", new=AsyncMock(side_effect=shorten_side_effect)), \
-         patch("app.routes.user_auth._send_default_password_reset_email", new=AsyncMock(return_value=True)):
+    with patch("app.routes.user_auth._forgot_password_helpers.email_verification_service.invalidate_existing_tokens", new=AsyncMock(return_value=True)), \
+         patch("app.routes.user_auth._forgot_password_helpers.link_shortener_service.shorten", new=AsyncMock(side_effect=shorten_side_effect)), \
+         patch("app.routes.user_auth._forgot_password_helpers._send_default_password_reset_email", new=AsyncMock(return_value=True)):
         response = client.post(
             "/api/v1/user-auth/forgot-password",
             json={

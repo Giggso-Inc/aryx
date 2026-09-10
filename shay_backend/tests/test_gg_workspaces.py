@@ -168,7 +168,7 @@ class TestListWorkspaceMembers:
             _scalars_result([]),  # members list
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/members")
         assert resp.status_code == 200
         assert resp.json()["members"] == []
@@ -184,7 +184,7 @@ class TestListWorkspaceMembers:
             _scalars_result([member]), # members list
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/members")
         assert resp.status_code == 200
         assert len(resp.json()["members"]) == 1
@@ -194,7 +194,7 @@ class TestListWorkspaceMembers:
         """Workspace not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/members")
         assert resp.status_code == 404
 
@@ -202,7 +202,7 @@ class TestListWorkspaceMembers:
     def test_list_invalid_uuid(self, mock_db, admin_user):
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get("/gg-workspaces/not-a-uuid/members")
         assert resp.status_code == 400
 
@@ -224,8 +224,8 @@ class TestAddWorkspaceMember:
         ])
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.GGMember", return_value=member):
+        with patch("app.routes.gg_workspaces.members.add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.add.GGMember", return_value=member):
                 resp = client.post(
                     f"/gg-workspaces/{_WS_ID}/members",
                     json={"user_id": _USER_ID, "role": "member"},
@@ -244,10 +244,10 @@ class TestAddWorkspaceMember:
         ])
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.GGMember", return_value=member):
+        with patch("app.routes.gg_workspaces.members.add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.add.GGMember", return_value=member):
                 with patch(
-                    "app.routes.gg_workspaces.email_service.send_workspace_access_email",
+                    "app.routes.gg_workspaces.members.add.email_service.send_workspace_access_email",
                     new=AsyncMock(return_value=True),
                 ) as mock_send:
                     resp = client.post(
@@ -264,7 +264,7 @@ class TestAddWorkspaceMember:
         """Workspace not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -278,7 +278,7 @@ class TestAddWorkspaceMember:
         ws.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ws))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -289,7 +289,7 @@ class TestAddWorkspaceMember:
     def test_add_invalid_uuid(self, mock_db, admin_user):
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.add.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 "/gg-workspaces/not-a-uuid/members",
                 json={"user_id": _USER_ID, "role": "member"},
@@ -312,8 +312,8 @@ class TestUpdateWorkspaceMember:
             _scalar(_make_user_mock()),
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.update.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.put(
                     f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
                     json={"role": "admin"},
@@ -326,9 +326,9 @@ class TestUpdateWorkspaceMember:
         member = _make_member_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=regular_user)):
+        with patch("app.routes.gg_workspaces.members.update.get_current_user_required", new=AsyncMock(return_value=regular_user)):
             with patch(
-                "app.routes.gg_workspaces.require_active_workspace_role",
+                "app.routes.gg_workspaces.members.update.require_active_workspace_role",
                 new=AsyncMock(side_effect=HTTPException(status_code=403, detail="Only workspace admins can manage this workspace")),
             ):
                 resp = client.put(
@@ -345,8 +345,8 @@ class TestUpdateWorkspaceMember:
         member = _make_member_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.update.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.put(
                     f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
                     json={"role": "member"},
@@ -359,8 +359,8 @@ class TestUpdateWorkspaceMember:
         """Member not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.update.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.put(
                     f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
                     json={"role": "admin"},
@@ -371,8 +371,8 @@ class TestUpdateWorkspaceMember:
     def test_update_invalid_uuid(self, mock_db, admin_user):
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.update.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.put(
                     f"/gg-workspaces/not-a-uuid/members/{_USER_ID}",
                     json={"role": "admin"},
@@ -393,8 +393,8 @@ class TestRemoveWorkspaceMember:
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         mock_db.delete = AsyncMock()
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.remove.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
         assert resp.status_code == 200
 
@@ -405,9 +405,9 @@ class TestRemoveWorkspaceMember:
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         mock_db.delete = AsyncMock()
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=regular_user)):
+        with patch("app.routes.gg_workspaces.members.remove.get_current_user_required", new=AsyncMock(return_value=regular_user)):
             with patch(
-                "app.routes.gg_workspaces.require_active_workspace_role",
+                "app.routes.gg_workspaces.members.remove.require_active_workspace_role",
                 new=AsyncMock(side_effect=HTTPException(status_code=403, detail="Only workspace admins can manage this workspace")),
             ):
                 resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
@@ -423,8 +423,8 @@ class TestRemoveWorkspaceMember:
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         mock_db.delete = AsyncMock()
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.remove.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
         assert resp.status_code == 400
         mock_db.delete.assert_not_awaited()
@@ -435,8 +435,8 @@ class TestRemoveWorkspaceMember:
         """Member not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.remove.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
         assert resp.status_code == 404
 
@@ -444,8 +444,8 @@ class TestRemoveWorkspaceMember:
     def test_remove_invalid_uuid(self, mock_db, admin_user):
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.remove.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.remove.require_active_workspace_role", new=AsyncMock(return_value="admin")):
                 resp = client.delete(f"/gg-workspaces/not-a-uuid/members/{_USER_ID}")
         assert resp.status_code == 400
 
@@ -460,8 +460,8 @@ class TestGetEffectiveRole:
     def test_effective_role_found(self, mock_db, admin_user):
         """get_effective_role returns 'admin' → 200, has_access=True."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.get_effective_role", new=AsyncMock(return_value="admin")):
+        with patch("app.routes.gg_workspaces.members.effective_role.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.effective_role.get_effective_role", new=AsyncMock(return_value="admin")):
                 resp = client.get(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}/effective-role")
         assert resp.status_code == 200
         data = resp.json()
@@ -471,8 +471,8 @@ class TestGetEffectiveRole:
     def test_effective_role_no_access(self, mock_db, admin_user):
         """get_effective_role returns None → 200, has_access=False."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.get_effective_role", new=AsyncMock(return_value=None)):
+        with patch("app.routes.gg_workspaces.members.effective_role.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.effective_role.get_effective_role", new=AsyncMock(return_value=None)):
                 resp = client.get(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}/effective-role")
         assert resp.status_code == 200
         data = resp.json()
@@ -482,7 +482,7 @@ class TestGetEffectiveRole:
     def test_effective_role_invalid_uuid(self, mock_db, admin_user):
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.members.effective_role.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/not-a-uuid/members/{_USER_ID}/effective-role")
         assert resp.status_code == 400
 
@@ -491,8 +491,8 @@ class TestGetEffectiveRole:
         """Pass ?channel_id=... → 200."""
         channel_id = "550e8400-e29b-41d4-a716-446655440001"
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            with patch("app.routes.gg_workspaces.get_effective_role", new=AsyncMock(return_value="member")):
+        with patch("app.routes.gg_workspaces.members.effective_role.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.members.effective_role.get_effective_role", new=AsyncMock(return_value="member")):
                 resp = client.get(
                     f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}/effective-role",
                     params={"channel_id": channel_id},
@@ -517,7 +517,7 @@ class TestListWorkspaceAppConnections:
             # no user fetch when rows is empty
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/app-connections")
         assert resp.status_code == 200
         assert resp.json()["connections"] == []
@@ -535,7 +535,7 @@ class TestListWorkspaceAppConnections:
             _scalars_result([user]),   # users batch
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/app-connections")
         assert resp.status_code == 200
         assert len(resp.json()["connections"]) == 1
@@ -545,7 +545,7 @@ class TestListWorkspaceAppConnections:
         """Workspace not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.list.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.get(f"/gg-workspaces/{_WS_ID}/app-connections")
         assert resp.status_code == 404
 
@@ -569,7 +569,7 @@ class TestConnectWorkspaceApp:
         ])
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/app-connections",
                 json={
@@ -585,7 +585,7 @@ class TestConnectWorkspaceApp:
         """Workspace not found → 404."""
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/app-connections",
                 json={
@@ -605,7 +605,7 @@ class TestConnectWorkspaceApp:
             _scalar(None),  # app not found
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/app-connections",
                 json={
@@ -628,7 +628,7 @@ class TestConnectWorkspaceApp:
             _scalar(existing),  # existing connection found
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/app-connections",
                 json={
@@ -646,7 +646,7 @@ class TestConnectWorkspaceApp:
         ws.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ws))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.connect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.post(
                 f"/gg-workspaces/{_WS_ID}/app-connections",
                 json={
@@ -676,7 +676,7 @@ class TestUpdateWorkspaceAppConnection:
             _scalar(user),  # connector user lookup (after commit/refresh)
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -692,7 +692,7 @@ class TestUpdateWorkspaceAppConnection:
             _scalar(None),  # connection not found
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -706,7 +706,7 @@ class TestUpdateWorkspaceAppConnection:
         ws.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ws))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.update.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}",
                 json={"connection_name": "Updated"},
@@ -731,7 +731,7 @@ class TestDisconnectWorkspaceApp:
         ])
         mock_db.delete = AsyncMock()
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 200
 
@@ -744,7 +744,7 @@ class TestDisconnectWorkspaceApp:
             _scalar(None),  # connection not found
         ])
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 404
 
@@ -755,6 +755,6 @@ class TestDisconnectWorkspaceApp:
         ws.is_accessible_by_user = MagicMock(return_value=False)
         mock_db.execute = AsyncMock(return_value=_scalar(ws))
         client = _make_ws_client(mock_db)
-        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.gg_workspaces.app_connections.disconnect.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.delete(f"/gg-workspaces/{_WS_ID}/app-connections/{_CONN_ID}")
         assert resp.status_code == 403

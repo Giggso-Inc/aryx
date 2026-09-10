@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml.bml import BmlEvaluator
 
 
 def _make_pool_cursor(exists: bool):

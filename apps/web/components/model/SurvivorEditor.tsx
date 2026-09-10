@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Save, Loader2, Plus, X } from "lucide-react";
+import { Save, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { OntologyType, SurvivorshipPolicy } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { AttributeOverridesList } from "./survivor-editor/AttributeOverridesList";
+import { SourcePriorityEditor } from "./survivor-editor/SourcePriorityEditor";
 
 interface Props {
   type: OntologyType;
@@ -91,83 +93,22 @@ export function SurvivorEditor({ type, workspaceId, initialPolicy }: Props) {
         </select>
       </div>
 
-      <div className="rounded-lg border border-navy-100 bg-white px-3 py-2.5">
-        <label className="block text-[10px] uppercase tracking-wider text-subtle">
-          Source priority {def !== "source_priority" && (
-            <span className="text-subtle/60"> · used only by source_priority</span>
-          )}
-        </label>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {(policy.source_priority || []).length === 0 && (
-            <span className="text-[11px] italic text-subtle">empty</span>
-          )}
-          {(policy.source_priority || []).map((s, i) => (
-            <span
-              key={s}
-              className="group inline-flex items-center gap-1 rounded-full border border-navy-100 bg-navy-50/60 pl-2 pr-1 py-0.5 font-mono text-[11px] text-navy-700"
-            >
-              {i + 1}. {s}
-              <button
-                type="button"
-                onClick={() => removeSource(s)}
-                className="focus-ring rounded-full p-0.5 text-subtle hover:bg-white hover:text-rose-500"
-              >
-                <X size={9} />
-              </button>
-            </span>
-          ))}
-        </div>
-        <div className="mt-2 flex items-center gap-1.5">
-          <input
-            value={newSource}
-            onChange={(e) => setNewSource(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addSource()}
-            placeholder="add source… (e.g. crm)"
-            className="focus-ring flex-1 rounded-md border border-navy-100 bg-white px-2 py-1 font-mono text-[11px] text-navy-800 focus:border-steel-500"
-          />
-          <button
-            type="button"
-            onClick={addSource}
-            disabled={!newSource.trim()}
-            className="focus-ring inline-flex size-6 items-center justify-center rounded-md bg-navy-100 text-navy-700 hover:bg-navy-200 disabled:opacity-50"
-            aria-label="Add source"
-          >
-            <Plus size={11} />
-          </button>
-        </div>
-      </div>
+      <SourcePriorityEditor
+        sources={policy.source_priority || []}
+        usedByDefault={def === "source_priority"}
+        newSource={newSource}
+        onNewSourceChange={setNewSource}
+        onAdd={addSource}
+        onRemove={removeSource}
+      />
 
-      <div className="rounded-lg border border-navy-100 bg-white">
-        <div className="border-b border-navy-100 px-3 py-2">
-          <label className="block text-[10px] uppercase tracking-wider text-subtle">
-            Per-attribute override · {type.name}
-          </label>
-        </div>
-        {type.attributes.length === 0 ? (
-          <p className="px-3 py-3 text-[11px] italic text-subtle">
-            no attributes yet
-          </p>
-        ) : (
-          <ul className="divide-y divide-navy-100/60">
-            {type.attributes.map((a) => (
-              <li key={a} className="flex items-center justify-between gap-2 px-3 py-2">
-                <span className="truncate font-mono text-[11px] text-navy-700">
-                  {a}
-                </span>
-                <select
-                  value={policy.attribute_strategies?.[a] || def}
-                  onChange={(e) => setAttrOverride(a, e.target.value)}
-                  className="focus-ring rounded-md border border-navy-100 bg-white px-2 py-0.5 font-mono text-[11px] text-navy-800 focus:border-steel-500"
-                >
-                  {STRATEGIES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <AttributeOverridesList
+        typeName={type.name}
+        attributes={type.attributes}
+        overrides={policy.attribute_strategies}
+        defaultStrategy={def}
+        onChange={setAttrOverride}
+      />
 
       {error && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">

@@ -4,9 +4,9 @@ from __future__ import annotations
 import re
 from unittest.mock import MagicMock, patch
 
-from aryx.cpq.bom_gate import check_provenance
+from aryx.cpq.bom_gate.bom_gate import check_provenance
 from aryx.cpq.engine import CpqEngine, _COUNTRY_PREP
-from aryx.cpq.intent_gateway import (
+from aryx.cpq.intent_gateway.intent_gateway import (
     hard_off_topic,
     mark_top_level_route_used,
     soft_quote_heuristic,
@@ -14,7 +14,7 @@ from aryx.cpq.intent_gateway import (
     _cache_key,
     clear_gateway_cache,
 )
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     CLARIFY_STREAK_MAX,
     note_clarify,
     should_force_numbered_options,
@@ -91,7 +91,7 @@ def test_n10_hard_off_topic_astrology():
 def test_n4_top_level_route_marks_contextvar():
     # ContextVar default false; mark then true
     # Note: may be dirty from prior tests in same process — set explicitly
-    from aryx.cpq import intent_gateway as gw
+    from aryx.cpq.intent_gateway import intent_gateway as gw
     token = gw._top_level_route_used.set(False)
     try:
         assert top_level_route_used() is False
@@ -194,8 +194,9 @@ def test_n9_cache_key_includes_model_and_pid():
 
 def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
     import logging
-    from aryx.api.ask_api import AskRequest, run_ask
-    from aryx.cpq.intent_gateway import AskRouteDecision
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_run_ask import run_ask
+    from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
     req = AskRequest(
         question="random unrelated chatter",
@@ -206,13 +207,13 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
         clarifying_question=None, rationale="disagree",
         model_id="m", det_is_cpq=False, agreement=False,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api.soft_quote_heuristic", return_value=False), \
-         patch("aryx.api.ask_api._standard_ask_pipeline",
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline",
                return_value={"answer": "std", "tools_called": [], "usage": {}}), \
          patch("aryx.api.ask_api.mark_top_level_route_used"):
         gs.return_value.cpq_intent_mode = "shadow"
@@ -225,15 +226,16 @@ def test_n5_run_ask_shadow_disagreement_uses_warning(caplog):
 # ── N2 cold QA does not set product on empty session ─────────────────────────
 
 def test_n2_route_qa_read_only_product():
-    from aryx.api.ask_api import AskRequest, _route_qa
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_qa.ask_route_qa import _route_qa
 
     req = AskRequest(
         question="what are the options for product",
         workspace_id=1, history=[], session_data={},
     )
     with patch("aryx.api.ask_api._cpq_engine") as eng, \
-         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_handle.ask_handle_cpq_qa._handle_cpq_qa") as mock_qa, \
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_api.set_run_id"):
         eng.extract_hints.return_value = {}
         eng.detect_product_mention.return_value = "aSTRO25_bom"
@@ -263,8 +265,9 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
     failure there is a real outage worth surfacing, not masking. Shadow
     mode (test_cpq_ask_route_fewshots.py) is where the old escape-hatch
     fallback still lives, since it's observe-only by design."""
-    from aryx.api.ask_api import AskRequest, run_ask
-    from aryx.cpq.intent_gateway import AskRouteDecision
+    from aryx.api.ask_api import AskRequest
+    from aryx.api.ask_run_ask import run_ask
+    from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
     req = AskRequest(
         question="I want to order APX Next radios for destination country United States",
@@ -275,15 +278,15 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
         clarifying_question=None, rationale="timeout",
         timed_out=True, error="timeout", model_id="m", det_is_cpq=False,
     )
-    with patch("aryx.api.ask_api._reader", return_value=object()), \
+    with patch("aryx.api.ask_core_helpers._reader", return_value=object()), \
          patch("aryx.api.ask_api.get_settings") as gs, \
          patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
-         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=False), \
+         patch("aryx.api.ask_response_building.ask_finish_cpq_result._deterministic_cpq_gate", return_value=False), \
          patch("aryx.api.ask_api.hard_off_topic", return_value=False), \
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
-         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r), \
+         patch("aryx.api.ask_attach_share_flags._attach_share_flags", side_effect=lambda r, *a, **k: r), \
          patch("aryx.api.ask_api.mark_top_level_route_used"), \
-         patch("aryx.api.ask_api._standard_ask_pipeline") as mock_std:
+         patch("aryx.api.ask_standard_pipeline._standard_ask_pipeline") as mock_std:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
         out = run_ask(req)

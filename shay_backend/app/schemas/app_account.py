@@ -23,7 +23,7 @@ class AppAccountBase(BaseModel):
     sync_interval: int = Field(3600, ge=60, description="Sync interval in seconds")
     
     @validator('connection_settings', pre=True)
-    def parse_connection_settings(cls, v):
+    def parse_connection_settings(cls, v) -> Optional[Dict[str, Any]]:
         if v is None:
             return None
         if isinstance(v, dict):
@@ -42,13 +42,13 @@ class AppAccountCreate(AppAccountBase):
     """Schema for creating a new app account"""
     
     @validator('app_id', 'channel_id')
-    def validate_ids(cls, v):
+    def validate_ids(cls, v) -> str:
         if not v or not v.strip():
             raise ValueError('ID cannot be empty')
         return v.strip()
     
     @validator('connection_status')
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> str:
         valid_statuses = ['active', 'inactive', 'error']
         if v not in valid_statuses:
             raise ValueError(f'Status must be one of: {valid_statuses}')
@@ -69,7 +69,7 @@ class AppAccountUpdate(BaseModel):
     error_message: Optional[str] = None
     
     @validator('connection_status')
-    def validate_status(cls, v):
+    def validate_status(cls, v) -> Optional[str]:
         if v is not None:
             valid_statuses = ['active', 'inactive', 'error']
             if v not in valid_statuses:

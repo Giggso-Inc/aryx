@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Database, MessageSquareText, Settings2, Sparkles } from "lucide-react";
 import { AuthGuard } from "./AuthGuard";
 import { ShayPageShell } from "./ShayPageShell";
 import { ShayWorkspaceTabs } from "./ShayWorkspaceTabs";
@@ -17,6 +15,10 @@ import type {
   ShayDatasource,
   ShayWorkspace,
 } from "@/lib/shay-types";
+import { ChatSessionsPanel } from "./workspace-overview/ChatSessionsPanel";
+import { CommandCenter } from "./workspace-overview/CommandCenter";
+import { DataSourcesPanel } from "./workspace-overview/DataSourcesPanel";
+import { Metric } from "./workspace-overview/shared";
 
 export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
@@ -95,168 +97,14 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
             </div>
 
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_380px]">
-              <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-xl font-semibold text-navy-900">Workspace command center</h2>
-                    <p className="mt-2 text-sm text-subtle">
-                      Move between Aryx administration and graph work without leaving this workspace.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={openNewChat}
-                      className="focus-ring inline-flex items-center gap-2 rounded-full bg-navy-800 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-700"
-                    >
-                      <Sparkles size={15} />
-                      New Ask session
-                    </button>
-                    <Link
-                      href={`/workspaces/${workspace.id}/settings`}
-                      className="focus-ring inline-flex items-center gap-2 rounded-full border border-navy-100 px-4 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                    >
-                      <Settings2 size={15} />
-                      Workspace settings
-                    </Link>
-                  </div>
-                </div>
-                <div className="mt-5 grid gap-4 md:grid-cols-2">
-                  <ActionCard
-                    title="Workspace members"
-                    description="Manage company users, membership roles, and shared access from the workspace settings tabs."
-                    href={`/workspaces/${workspace.id}/settings?tab=members`}
-                  />
-                  <ActionCard
-                    title="Apps and connections"
-                    description="Attach workspace apps while preserving the Aryx bridge to downstream ingest and Ask."
-                    href={`/workspaces/${workspace.id}/settings?tab=apps`}
-                  />
-                  <ActionCard
-                    title="Data sources and ingest"
-                    description="Register sources, then sync them into Aryx ingest with a workspace-aware datasource map."
-                    href={`/workspaces/${workspace.id}/settings?tab=data-sources`}
-                  />
-                  <ActionCard
-                    title="Admin hub"
-                    description="Invite and manage company users who can participate in this shared workspace."
-                    href="/admin/users"
-                  />
-                </div>
-              </section>
-
-              <section className="space-y-4">
-                <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-navy-900">
-                    <Database size={15} />
-                    Recent data sources
-                  </div>
-                  <div className="mt-4 space-y-3">
-                    {datasources.slice(0, 4).map((datasource) => (
-                      <div key={datasource.id} className="rounded-2xl border border-navy-100 px-4 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-navy-900">{datasource.name}</p>
-                            <p className="mt-1 text-xs text-subtle">
-                              {datasource.storage_type} · {datasource.provider || "manual"} · {datasource.processing_status}
-                            </p>
-                          </div>
-                          <span className="rounded-full bg-navy-50 px-2.5 py-1 text-[11px] text-navy-700">
-                            {datasource.is_connected ? "Connected" : "Draft"}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                    {datasources.length === 0 ? (
-                      <p className="rounded-2xl border border-dashed border-navy-200 px-4 py-6 text-sm text-subtle">
-                        No workspace data sources yet. Add the first one in workspace settings.
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              </section>
+              <CommandCenter workspaceId={workspace.id} onNewChat={openNewChat} />
+              <DataSourcesPanel datasources={datasources} />
             </div>
 
-            <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-              <div className="flex items-center gap-2 text-sm font-semibold text-navy-900">
-                <MessageSquareText size={15} />
-                Mapped chat sessions
-              </div>
-              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {threads.map((thread) => (
-                  <Link
-                    key={thread.shay_thread_id}
-                    href={`/workspaces/${workspace.id}/chats/${thread.shay_thread_id}`}
-                    className="group rounded-[1.5rem] border border-navy-100 bg-canvas p-4 transition-colors hover:border-steel-300"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-base font-semibold text-navy-900">{thread.title}</h3>
-                        <p className="mt-2 text-sm text-subtle">
-                          {thread.turn_count} turn{thread.turn_count === 1 ? "" : "s"} · updated {new Date(thread.updated_at).toLocaleString()}
-                        </p>
-                      </div>
-                      <ArrowRight size={16} className="text-subtle transition-transform group-hover:translate-x-1" />
-                    </div>
-                  </Link>
-                ))}
-                {threads.length === 0 ? (
-                  <button
-                    type="button"
-                    onClick={openNewChat}
-                    className="rounded-[1.5rem] border border-dashed border-navy-200 bg-canvas p-5 text-left text-sm text-subtle hover:border-steel-300"
-                  >
-                    Create the first Aryx Ask session for this workspace.
-                  </button>
-                ) : null}
-              </div>
-            </section>
+            <ChatSessionsPanel workspaceId={workspace.id} threads={threads} onNewChat={openNewChat} />
           </div>
         ) : null}
       </ShayPageShell>
     </AuthGuard>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  note: string;
-}) {
-  return (
-    <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-subtle">{label}</p>
-      <p className="mt-3 text-2xl font-semibold text-navy-900">{value}</p>
-      <p className="mt-2 text-sm text-subtle">{note}</p>
-    </div>
-  );
-}
-
-function ActionCard({
-  title,
-  description,
-  href,
-}: {
-  title: string;
-  description: string;
-  href: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="group rounded-[1.5rem] border border-navy-100 bg-canvas p-4 transition-colors hover:border-steel-300"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-navy-900">{title}</h3>
-          <p className="mt-2 text-sm text-subtle">{description}</p>
-        </div>
-        <ArrowRight size={16} className="text-subtle transition-transform group-hover:translate-x-1" />
-      </div>
-    </Link>
   );
 }

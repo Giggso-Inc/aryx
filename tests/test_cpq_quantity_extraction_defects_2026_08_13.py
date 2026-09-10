@@ -8,10 +8,11 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _llm_confirm_and_extract_quantity, _run_cpq_turn
+from aryx.api.ask_api import AskRequest, _run_cpq_turn
+from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.cpq.engine import extract_quantity_hint
-from aryx.cpq.intent_gateway import GatewayDecision
-from aryx.cpq.intent_schema import (
+from aryx.cpq.intent_gateway.intent_gateway import GatewayDecision
+from aryx.cpq.intent_schema.intent_schema import (
     Confidence,
     GatewayIntentResult,
     IntentCategory,
@@ -19,6 +20,7 @@ from aryx.cpq.intent_schema import (
     validate_gateway_quarantine,
 )
 from aryx.cpq.state import CpqSession
+from aryx.api import ask_core_helpers as _ask_core_helpers_test_module
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -255,7 +257,7 @@ def test_extract_accepts_a_negative_value_from_the_llm():
 # Full turn — the STEP-6 gate corrects a wrong deterministic value
 # ═══════════════════════════════════════════════════════════════════════
 
-@patch.object(api, "_persist_cpq_history", lambda *a, **k: None)
+@patch.object(_ask_core_helpers_test_module, "_persist_cpq_history", lambda *a, **k: None)
 def test_full_turn_change_command_uses_llm_corrected_value(monkeypatch):
     """"change the quantity to one hundred and twelve" with the pre-fix
     dozen/twelve collision would deterministically resolve to 1200 --

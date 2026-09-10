@@ -93,14 +93,14 @@ class TemplateUploadRequest(BaseModel):
     overwrite: bool = Field(default=False, description="Whether to overwrite existing file")
     
     @validator('template_type')
-    def validate_template_type(cls, v):
+    def validate_template_type(cls, v) -> str:
         allowed_types = ['PWD', 'INVT', 'OTH']
         if v not in allowed_types:
             raise ValueError(f"Template type must be one of: {', '.join(allowed_types)}")
         return v
     
     @validator('platform')
-    def validate_platform(cls, v):
+    def validate_platform(cls, v) -> str:
         allowed_platforms = ['BASE', 'ZAPT', 'LOGA']
         if v not in allowed_platforms:
             raise ValueError(f"Platform must be one of: {', '.join(allowed_platforms)}")

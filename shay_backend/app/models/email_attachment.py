@@ -63,5 +63,5 @@ class EmailAttachment(Base):
         Index("idx_attachment_channel", "channel_id"),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<EmailAttachment(attachment_id={self.attachment_id}, filename={self.filename}, storage_path={self.storage_path})>"

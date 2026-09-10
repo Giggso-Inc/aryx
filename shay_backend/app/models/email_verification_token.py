@@ -42,7 +42,7 @@ class EmailVerificationToken(Base):
         Index('idx_verification_expires', 'expires_at'),
     )
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<EmailVerificationToken(id={self.id}, email={self.email}, token_type={self.token_type})>"
 
     @staticmethod
@@ -69,7 +69,7 @@ class EmailVerificationToken(Base):
         expires_at = self._normalize_utc(self.expires_at)
         return now >= expires_at
     
-    def mark_as_used(self):
+    def mark_as_used(self) -> None:
         """Mark token as used"""
         self.is_used = True
         self.used_at = datetime.utcnow()

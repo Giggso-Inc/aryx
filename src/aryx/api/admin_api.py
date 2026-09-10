@@ -1,96 +1,46 @@
-"""Admin API: ingestion triggers with durable per-stage job progress."""
+"""Admin API: ingestion triggers with durable per-stage job progress.
+
+As of the Raven Style Compliance Plan's Phase 2b (2026-09-03),
+`_local_broker` moved to `admin_broker.py` and the request models moved
+to `admin_models.py` (both zero patch risk, re-imported/re-exported
+here). `admin_router()` stays as a deliberate exception: `get_settings`/
+`EntityStore`/`FalkorStore`/`_build_type_ancestors`/`project_graph` are
+all directly whitebox-patched (`aryx.api.admin_api.*`) by
+`tests/test_admin_api.py` and called from its route closures (splitting
+FastAPI route closures across files would also be a much larger
+architectural change than this plan's mechanical splits).
+"""
 from __future__ import annotations
 
 import logging
 import uuid
 from typing import Any
 
-import os
-
-import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel
 
-from aryx import llm_runtime
-from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
+from aryx.api.admin_broker import _local_broker
+from aryx.api.admin_models import EntityCreateRequest, EntityUpdateRequest, FkLink, IngestDbRequest
 from aryx.config import get_settings
 from aryx.connectors.postgres import PostgresConnector
 from aryx.graph import FalkorStore
-from aryx.pipeline.enrich import _build_type_ancestors
+from aryx.pipeline.enrich.enrich import _build_type_ancestors
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.project import project_graph
 from aryx.store.entity_store import EntityStore
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
-from aryx.store.ontology_store import OntologyStore
 from aryx.workspaces import ws_graph
 from aryx.api.security import require_api_key, write_api_key
 
-
-def _local_broker() -> Broker:
-    """Pipeline broker — honours Settings → LLM Provider (live, no restart).
-
-    Reads aryx.llm_runtime.status() so the doc ingest pipeline + the Ask API
-    share ONE config. Switching provider/model in the Settings panel now
-    drives both. `embed_config` below is always Ollama-shaped (model +
-    endpoint) — harmless when ARYX_EMBED_BACKEND is "oci" or "gemini",
-    since Broker.embed() checks that global setting BEFORE ever touching
-    this dict, routing to _oci_embed/_gemini_embed instead (see
-    docs/LLM_GEMINI_MIGRATION_PLAN.md). Only actually used on the default
-    "local" (Ollama) backend.
-    """
-    cfg = llm_runtime.status()
-    provider = str(cfg.get("provider") or "ollama")
-    endpoint = str(cfg.get("endpoint") or "http://ollama:11434")
-    menial = str(cfg.get("menial_model") or "qwen3.5:0.8b")
-    answer = str(cfg.get("answer_model") or "lfm2.5-thinking:latest")
-    is_ollama = provider == "ollama"
-    api_key_ref = None if is_ollama else llm_runtime._KEY_REF
-    embed_model = os.environ.get("ARYX_EMBED_MODEL", "nomic-embed-text")
-    embed_endpoint = os.environ.get(
-        "ARYX_EMBED_ENDPOINT",
-        endpoint if is_ollama else "http://ollama:11434",
-    )
-    registry = Registry()
-    for name, tier in ((menial, "cheap"), (answer, "frontier")):
-        registry.add(ModelSpec(name=name, provider=provider, tier=tier,
-                               local=is_ollama, endpoint=endpoint,
-                               api_key_ref=api_key_ref))
-    return Broker(
-        registry, TokenGovernor({}),
-        secrets=llm_runtime._RuntimeSecrets(),
-        embed_config={"model": embed_model, "endpoint": embed_endpoint},
-    )
+__all__ = [
+    "EntityCreateRequest",
+    "EntityUpdateRequest",
+    "FkLink",
+    "IngestDbRequest",
+    "_local_broker",
+    "admin_router",
+]
 
 logger = logging.getLogger(__name__)
-
-
-class EntityCreateRequest(BaseModel):
-    ontology_type: str
-    attributes: dict[str, Any] = {}
-    workspace_id: int = 1
-
-
-class EntityUpdateRequest(BaseModel):
-    attributes: dict[str, Any]
-
-
-class FkLink(BaseModel):
-    source_type: str
-    source_attr: str
-    target_type: str
-    target_attr: str
-    name: str
-
-
-class IngestDbRequest(BaseModel):
-    table: str
-    ontology_type: str
-    match_keys: str
-    system: str = "postgresql"
-    key_column: str = "id"
-    fk_links: list[FkLink] = []
-    workspace_id: int = 1
 
 
 def _run_db(req: IngestDbRequest, job_id: str) -> None:

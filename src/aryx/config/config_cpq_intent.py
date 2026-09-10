@@ -1,0 +1,167 @@
+"""CPQ LLM-first intent classifier settings — a Settings mixin.
+
+Split out of `config.py` (Raven Style Compliance Plan, Phase 2a,
+2026-09-03). See `config_core.py`'s docstring for the mixin-composition
+rationale.
+"""
+from __future__ import annotations
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
+
+
+class CpqIntentSettingsMixin(BaseSettings):
+    cpq_shadow_intent_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: run the "
+            "shadow-mode universal intent classifier (_shadow_classify_cpq_"
+            "turn in ask_api.py) alongside the real deterministic dispatch "
+            "on every CPQ turn, logging its classification for later "
+            "comparison. Off by default: live-confirmed this added an extra "
+            "unconditional LLM call to every single test invoking "
+            "_run_cpq_turn, taking the CPQ/BML suite from ~10s to ~128s with "
+            "zero behavioral change (the shadow call is try/except-wrapped "
+            "and never affects a turn's real answer) -- purely a test-speed "
+            "and CI-cost concern, same class of always-on-cost issue "
+            "bml_use_llm above already guards against. Override with "
+            "ARYX_CPQ_SHADOW_INTENT_ENABLED=true to collect real shadow-mode "
+            "data against live traffic."
+        ),
+    )
+    cpq_qa_ambiguity_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 3, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: before "
+            "answering a generic graph Q&A question, classify whether the "
+            "question is itself ambiguous (2+ plausible distinct meanings) "
+            "and ask a clarifying question instead of committing to one "
+            "interpretation. Off by default for the same test-speed/CI-cost "
+            "reason as cpq_shadow_intent_enabled -- an unconditional extra "
+            "LLM call on every Q&A turn. Override with "
+            "ARYX_CPQ_QA_AMBIGUITY_CHECK_ENABLED=true."
+        ),
+    )
+    cpq_llm_first_enabled: bool = Field(
+        default=True,
+        description=(
+            "Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: "
+            "let the universal intent classifier dispatch directly to "
+            "_handle_cascade/_handle_cascade_multi/_build_no_value_response "
+            "(bypassing the regex detectors) for CHANGE_REQUEST/"
+            "CHANGE_REQUESTS_MULTI/CHANGE_TARGET_WITHOUT_VALUE/AMBIGUOUS/"
+            "OUT_OF_SCOPE only -- every other category still falls through "
+            "to the unchanged deterministic path (see "
+            "_dispatch_intent_result's docstring for the full category "
+            "list this initial landing does not yet cover). On by default "
+            "(2026-07-28) for local/dev testing of the LLM-first flow -- "
+            "note this carries the same extra-LLM-call cost as "
+            "cpq_shadow_intent_enabled on every STEP 6 turn, and has NOT "
+            "been validated against real Phase 1 shadow-mode disagreement/"
+            "resolution-failure data yet -- the plan doc's own Phase 2 "
+            "criteria ('once shadow mode shows the deterministic "
+            "resolution step reliably resolves what the LLM names') has "
+            "not actually been met. Set ARYX_CPQ_LLM_FIRST_ENABLED=false "
+            "to fall back to the pure deterministic path (e.g. for a fast "
+            "CI run) or before considering this validated for production."
+        ),
+    )
+    cpq_llm_first_universal_enabled: bool = Field(
+        default=True,
+        description=(
+            "Phase 4 (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): "
+            "runs the LLM-first dispatcher (_dispatch_intent_result, gated "
+            "above by cpq_llm_first_enabled) on EVERY turn regardless of "
+            "session.status -- previously it only ran inside the "
+            "awaiting_approval/post_approval block, so it never fired "
+            "during the actual configuring-stage conversation, which is "
+            "most real traffic. Also enables the 6 new dispatch branches "
+            "(PRODUCT_QUANTITY_CHANGE, COUNTRY_CHANGE, "
+            "BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST, APPROVAL) that "
+            "Phase 2's initial landing deliberately deferred. Off by "
+            "default -- ships behind this flag for shadow/staging "
+            "validation first, per the plan doc's own rollout discipline, "
+            "since these are real mutating actions during active "
+            "configuration, not just post-review edits. Requires "
+            "cpq_llm_first_enabled=True to have any effect at all -- this "
+            "flag only widens WHEN/WHAT that mechanism covers, it doesn't "
+            "replace it. Override with "
+            "ARYX_CPQ_LLM_FIRST_UNIVERSAL_ENABLED=true."
+        ),
+    )
+    cpq_intent_gemini_model: str = Field(
+        default="gemini-2.5-pro",
+        description=(
+            "Pinned model id for the CPQ intent gateway (cpq/intent_gateway.py). "
+            "One structured call per turn; logged with session run_id. "
+            "Override with ARYX_CPQ_INTENT_GEMINI_MODEL."
+        ),
+    )
+    cpq_intent_mode: str = Field(
+        default="llm_first",
+        description=(
+            "Top-level /ask intent router mode (Prompt 3). "
+            "'llm_first' (default) — gateway classifies every cold-start "
+            "turn; handlers only execute. Required for route_meta.quantity/"
+            "route_meta.country (docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_"
+            "PLAN_2026_08_13.md) to ever reach the actual turn at all -- "
+            "'shadow' strips both before the turn runs (observe-only), so "
+            "a turn-1 message stating the country/quantity is left entirely "
+            "to the deterministic regex extractor with no LLM fallback, "
+            "even when the regex mis-parses it. "
+            "'deterministic_first' — legacy is_cpq_question regex/alias gate "
+            "(no gateway). "
+            "'shadow' — deterministic path decides; gateway classifies in "
+            "parallel for agreement logs only (grep by run_id). "
+            "Rollback = set ARYX_CPQ_INTENT_MODE=shadow or "
+            "=deterministic_first."
+        ),
+    )
+    cpq_intent_timeout_s: float = Field(
+        default=120.0,
+        description=(
+            "Hard timeout (seconds) for the top-level intent gateway call "
+            "(classify_ask_route). On timeout/error, escape hatch falls "
+            "back to the deterministic is_cpq_question path -- but as of "
+            "docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md, a turn-1 "
+            "timeout ALSO means route_meta.quantity/.country are "
+            "unavailable, surfacing an explicit \"classifier call failed\" "
+            "message rather than a silent regex fallback for those two "
+            "fields specifically -- raised from the original 10s default "
+            "(too tight, live-verified timing out during normal, non-bulk "
+            "traffic) to match cpq_intent_classify_timeout_s below. "
+            "OPERATIONAL WARNING (review finding, 2026-08-13): this is a "
+            "hard timeout on a SYNCHRONOUS, user-facing HTTP request -- "
+            "before this value elapses, a slow/degraded LLM backend holds "
+            "the /ask request open. If any upstream reverse proxy, load "
+            "balancer, or API gateway in front of this service has a "
+            "shorter idle/request timeout than this value (many common "
+            "defaults are 30-60s), the CUSTOMER will see a generic "
+            "502/504 from that layer instead of the graceful \"classifier "
+            "call failed, try again\" message this design is meant to "
+            "guarantee -- the reject-on-failure UX this PR ships can only "
+            "ever fire if this value is reached before any shorter upstream "
+            "timeout is. Confirm the deployment's full upstream timeout "
+            "chain comfortably exceeds this value before relying on the "
+            "default; lower it here if it doesn't, accepting the original "
+            "too-tight-for-normal-traffic tradeoff at a smaller scale "
+            "instead. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
+        ),
+    )
+    cpq_intent_classify_timeout_s: float = Field(
+        default=120.0,
+        description=(
+            "Hard timeout (seconds) for classify_intent (intent_gateway.py) "
+            "-- the mid-session LLM-first classifier, distinct from "
+            "cpq_intent_timeout_s (the turn-1 top-level router's own "
+            "timeout). Added docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md "
+            "§8 Phase 4: classify_intent had no timeout wrapper at all "
+            "before this, unlike classify_ask_route -- broadening how "
+            "often it's called (every turn, not just post-approval) made "
+            "an unbounded hang a bigger exposure than it was before. On "
+            "timeout, returns action='fallback' -- callers already treat "
+            "that as 'proceed to the deterministic path', so no new "
+            "caller-side branch is needed. Override with "
+            "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
+        ),
+    )

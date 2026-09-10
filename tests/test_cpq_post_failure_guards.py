@@ -1,11 +1,11 @@
 """Unit tests for post-failure prevention guards (session/BOM/summary/telemetry)."""
 from __future__ import annotations
 
-from aryx.cpq.bom_gate import (
+from aryx.cpq.bom_gate.bom_gate import (
     check_provenance, find_missing_required_fields, recheck_constraints,
     validate_before_payload,
 )
-from aryx.cpq.session_guard import (
+from aryx.cpq.session_guard.session_guard import (
     CLARIFY_STREAK_MAX,
     HISTORY_CAP,
     detect_undo,

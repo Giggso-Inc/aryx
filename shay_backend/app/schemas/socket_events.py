@@ -17,7 +17,7 @@ class SocketEventData(BaseModel):
     source: Optional[str] = Field(None, description="Event source identifier")
     
     @validator('type')
-    def validate_event_type(cls, v):
+    def validate_event_type(cls, v) -> int:
         """Validate that type is a valid SocketEventType"""
         if v not in [event_type.value for event_type in SocketEventType]:
             raise ValueError(f"Invalid event type: {v}")
@@ -35,7 +35,7 @@ class ConnectionStatus(BaseModel):
     last_error: Optional[str] = Field(None, description="Last error message")
     
     @validator('state')
-    def validate_state(cls, v):
+    def validate_state(cls, v) -> int:
         """Validate that state is a valid SocketConnectionState"""
         if v not in [state.value for state in SocketConnectionState]:
             raise ValueError(f"Invalid connection state: {v}")
@@ -51,7 +51,7 @@ class SocketError(BaseModel):
     retry_count: int = Field(0, description="Number of retry attempts")
     
     @validator('code')
-    def validate_error_code(cls, v):
+    def validate_error_code(cls, v) -> int:
         """Validate that code is a valid SocketErrorCodes"""
         if v not in [code.value for code in SocketErrorCodes]:
             raise ValueError(f"Invalid error code: {v}")
