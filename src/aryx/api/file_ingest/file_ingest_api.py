@@ -1,6 +1,6 @@
 """File ingest API: upload up to 50 files (JSON/CSV/PDF/DOCX/PPTX/images).
 
-Limits: 2 MB per file, 50 MB total per request, max 50 files.
+Limits: 250 MB per file, 750 MB total per request, max 50 files.
 JSON/CSV go through the standard entity pipeline.
 Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→entity.
 
@@ -90,10 +90,14 @@ def file_ingest_router() -> APIRouter:
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds 50 MB limit")
+                raise HTTPException(
+                    400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit",
+                )
             total += len(data)
             if total > _MAX_TOTAL:
-                raise HTTPException(400, f"Total upload exceeds 500 MB limit")
+                raise HTTPException(
+                    400, f"Total upload exceeds {_MAX_TOTAL // (1024 * 1024)} MB limit",
+                )
             suffix = Path(f.filename or "").suffix.lower()
             if suffix not in _ALL:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
@@ -151,6 +155,7 @@ def file_ingest_router() -> APIRouter:
     @router.get("/ingest/supported")
     def supported_types() -> dict[str, Any]:
         return {"file_types": sorted(_ALL), "max_files": _MAX_FILES,
-                "max_file_mb": 50, "max_total_mb": 500}
+                "max_file_mb": _MAX_FILE // (1024 * 1024),
+                "max_total_mb": _MAX_TOTAL // (1024 * 1024)}
 
     return router

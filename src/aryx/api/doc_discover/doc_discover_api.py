@@ -29,7 +29,11 @@ from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
-_MAX_FILE = 50 * 1024 * 1024
+# Kept in sync with file_ingest_api.py's own _MAX_FILE -- same class of
+# upload, same real-world file sizes (2026-09: a real MSI catalog export
+# is 223 MB), separate endpoint duplicating the same constant rather than
+# sharing it.
+_MAX_FILE = 250 * 1024 * 1024
 
 
 class ConfirmRequest(BaseModel):
@@ -55,7 +59,9 @@ def doc_discover_router() -> APIRouter:
             if len(data) > _MAX_FILE:
                 logger.warning("doc read rejected filename=%s size=%d limit=%d",
                                 f.filename, len(data), _MAX_FILE)
-                raise HTTPException(400, f"{f.filename}: exceeds 50 MB limit")
+                raise HTTPException(
+                    400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit",
+                )
             items.append((data, f.filename or "upload"))
         did = uuid.uuid4().hex
         jobs = JobStore(settings.effective_dsn())

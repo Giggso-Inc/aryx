@@ -57,6 +57,24 @@ EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
 /
 
+-- 2026-09-10: OracleGraphReader.subgraph() (graph/oracle_graph_reader_
+-- traverse.py) filters on (workspace_id, name) twice per call -- once for
+-- `SELECT DISTINCT name ... WHERE workspace_id = :1` (the relationship-type
+-- discovery scan) and once per relationship type for the proportional
+-- sample (`WHERE workspace_id = :ws AND name = :rel`) -- with no index
+-- covering that column pair, both require a full scan of every edge in the
+-- workspace. This is the exact same performance shape as the FalkorDB
+-- GraphReader.subgraph() incident fixed in docs/GRAPH_SUBGRAPH_LARGE_
+-- WORKSPACE_PERFORMANCE_2026_09_02.md (dev-rv-msi #316, ported to dev_oci
+-- 2026-09-10) -- confirmed via this table's own DDL above that, unlike
+-- FalkorDB's r.name index (already present there), no equivalent index
+-- exists here at all.
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE INDEX idx_graph_edge_workspace_name ON aryx_graph_edge (workspace_id, name)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
+END;
+/
+
 BEGIN
   EXECUTE IMMEDIATE 'CREATE TABLE aryx_graph_source (
     workspace_id NUMBER(19) NOT NULL,

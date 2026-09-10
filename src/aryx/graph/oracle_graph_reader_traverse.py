@@ -5,16 +5,59 @@ Split out of `graph/oracle_graph_reader.py` (Raven Style Compliance Plan,
 Phase 2b, 2026-09-03). `shortest_path` is exercised directly by
 `tests/test_oracle_graph_reader_shortest_path_scope.py` via the real
 `OracleGraphReader` class (no patches) — confirmed via grep.
+
+2026-09-10: subgraph()'s relationship-type discovery scan and per-type
+fan-out (below) mirror the fix ported into GraphReader.subgraph()'s
+FalkorDB counterpart (graph/reader_subgraph.py, dev-rv-msi #316,
+docs/GRAPH_SUBGRAPH_LARGE_WORKSPACE_PERFORMANCE_2026_09_02.md) — same
+performance shape (a full-scan-required type-discovery query, then N
+sequential per-type queries, each independently slow at scale), same
+class of fix (cache the type list with a longer TTL since it changes far
+less often than the sampled subgraph; fan the per-type queries out over
+a small worker pool, each on its own pooled connection). Unlike
+FalkorDB, this table had NO index at all on (workspace_id, name) before
+this pass (added in migrations_oracle/graph_schema.sql) — the missing
+index is the more fundamental fix; the cache + fan-out on top are the
+same defense-in-depth this codebase already applies to the FalkorDB
+path.
 """
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from aryx.config import get_settings
 from aryx.graph.oracle_graph_reader_helpers import _entity
 
 logger = logging.getLogger(__name__)
+
+# Module-level TTL cache for subgraph results — mirrors reader_subgraph.
+# py's _subgraph_cache/_SUBGRAPH_TTL for the FalkorDB path. Without this,
+# every /graph request re-runs the full type-discovery + per-type-fan-out
+# query set even for back-to-back repeated calls (page navigation,
+# multiple viewers of the same workspace).
+_subgraph_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_SUBGRAPH_TTL: float = 30.0
+
+# Longer-lived cache for the relationship-type discovery scan (`SELECT
+# DISTINCT name FROM aryx_graph_edge WHERE workspace_id = :1`) — a
+# full-table scan of every edge in the workspace regardless of indexing on
+# `name` alone (the index added alongside this fix covers (workspace_id,
+# name), which helps, but the set of relationship TYPES present still
+# changes far less often than the sampled subgraph itself, so it's still
+# worth avoiding on every _subgraph_cache miss). Mirrors reader_subgraph.
+# py's _types_cache/_TYPES_TTL for the FalkorDB path.
+_types_cache: dict[str, tuple[float, list[str]]] = {}
+_TYPES_TTL: float = 300.0
+
+# Bound on concurrent per-relationship-type sampling queries. Each worker
+# borrows its own connection from the shared Oracle connection pool
+# (self._connection()) — safe precisely because a pool, unlike a single
+# shared connection, is designed to hand out independent connections to
+# concurrent callers.
+_MAX_RTYPE_WORKERS: int = 8
 
 
 class _OracleGraphTraverseMixin:
@@ -27,46 +70,70 @@ class _OracleGraphTraverseMixin:
         relationship type then fills remaining slots with isolated entities.
         """
         capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
+        cache_key = f"{self.graph_name}:{capped}"
+        now = time.monotonic()
+        cached_result = _subgraph_cache.get(cache_key)
+        if cached_result is not None:
+            ts, result = cached_result
+            if now - ts < _SUBGRAPH_TTL:
+                return result
+
         entity_map: dict[int, dict[str, Any]] = {}
         rels: list[dict[str, Any]] = []
 
-        # 1. Distinct relationship types in this workspace
-        with self._connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT name FROM aryx_graph_edge WHERE workspace_id = :1",
-                    (self._workspace_id,),
-                )
-                rel_types = [r[0] for r in cur.fetchall() if r[0]]
+        # 1. Distinct relationship types in this workspace, from the
+        # longer-TTL _types_cache when fresh.
+        types_cache_key = self.graph_name
+        cached = _types_cache.get(types_cache_key)
+        if cached is not None and now - cached[0] < _TYPES_TTL:
+            rel_types = cached[1]
+        else:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT name FROM aryx_graph_edge WHERE workspace_id = :1",
+                        (self._workspace_id,),
+                    )
+                    rel_types = [r[0] for r in cur.fetchall() if r[0]]
+            _types_cache[types_cache_key] = (now, rel_types)
 
-        # 2. Sample edges proportionally per type
+        # 2. Sample edges proportionally per type — fanned out over a small
+        # worker pool instead of run sequentially, since each per-type query
+        # is independently slow on a large workspace (same reasoning as the
+        # FalkorDB path this mirrors).
         if rel_types:
             per_type = max(1, capped // len(rel_types))
-            for rtype in rel_types:
+            rtype_sql = f"""
+                SELECT e.src_id, v1.type, v1.name, v1.attributes,
+                       e.tgt_id, v2.type, v2.name, v2.attributes,
+                       e.name
+                  FROM aryx_graph_edge e
+                  JOIN aryx_graph_vertex v1
+                    ON v1.workspace_id = e.workspace_id
+                   AND v1.entity_id = e.src_id
+                  JOIN aryx_graph_vertex v2
+                    ON v2.workspace_id = e.workspace_id
+                   AND v2.entity_id = e.tgt_id
+                 WHERE e.workspace_id = :ws AND e.name = :rel
+                 FETCH FIRST {per_type} ROWS ONLY
+                """  # nosec S608 — per_type is a validated int
+
+            def _fetch_rtype(rtype: str) -> tuple[str, list[tuple]]:
                 with self._connection() as conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            f"""
-                            SELECT e.src_id, v1.type, v1.name, v1.attributes,
-                                   e.tgt_id, v2.type, v2.name, v2.attributes,
-                                   e.name
-                              FROM aryx_graph_edge e
-                              JOIN aryx_graph_vertex v1
-                                ON v1.workspace_id = e.workspace_id
-                               AND v1.entity_id = e.src_id
-                              JOIN aryx_graph_vertex v2
-                                ON v2.workspace_id = e.workspace_id
-                               AND v2.entity_id = e.tgt_id
-                             WHERE e.workspace_id = :ws AND e.name = :rel
-                             FETCH FIRST {per_type} ROWS ONLY
-                            """,  # nosec S608 — per_type is a validated int
-                            {"ws": self._workspace_id, "rel": rtype},
-                        )
-                        for row in cur.fetchall():
-                            aid, atype, aname, aattrs, bid, btype, bname, battrs, rname = row
-                            entity_map[aid] = _entity((aid, atype, aname, aattrs))
-                            entity_map[bid] = _entity((bid, btype, bname, battrs))
-                            rels.append({"source": aid, "target": bid, "name": rname})
+                        cur.execute(rtype_sql, {"ws": self._workspace_id, "rel": rtype})
+                        return rtype, cur.fetchall()
+
+            max_workers = min(_MAX_RTYPE_WORKERS, len(rel_types))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_fetch_rtype, rtype) for rtype in rel_types]
+                for future in as_completed(futures):
+                    _rtype, rows = future.result()
+                    for row in rows:
+                        aid, atype, aname, aattrs, bid, btype, bname, battrs, rname = row
+                        entity_map[aid] = _entity((aid, atype, aname, aattrs))
+                        entity_map[bid] = _entity((bid, btype, bname, battrs))
+                        rels.append({"source": aid, "target": bid, "name": rname})
 
         # 3. Fill remaining slots with isolated entities
         remaining = capped - len(entity_map)
@@ -82,7 +149,9 @@ class _OracleGraphTraverseMixin:
                         if row[0] not in entity_map:
                             entity_map[row[0]] = _entity(row)
 
-        return {"entities": list(entity_map.values()), "relationships": rels}
+        result = {"entities": list(entity_map.values()), "relationships": rels}
+        _subgraph_cache[cache_key] = (now, result)
+        return result
 
     def shortest_path(self, src: int, dst: int, max_hops: int = 6) -> list[dict[str, Any]]:
         """Return shortest path using Oracle 23ai SQL/PGQ GRAPH_TABLE ONE ROW PER STEP.
