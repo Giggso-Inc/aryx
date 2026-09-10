@@ -121,6 +121,7 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_JOB_TIMEOUT_MINUTES=${ARYX_JOB_TIMEOUT_MINUTES:-120}
       # docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md — per-catalog native-UI
       # layout exports. Dockerfile COPYs a baked-in default (so the image
       # alone is enough in a real deployment with no host to bind-mount
