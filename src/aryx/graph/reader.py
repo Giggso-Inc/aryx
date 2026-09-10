@@ -54,16 +54,26 @@ class GraphReader:
             graph: Graph key to read from.
         """
         parsed = urlparse(url)
-        self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379,
-                            username=parsed.username or None,
-                            password=parsed.password or None)
+        self._conn_kwargs = dict(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            username=parsed.username or None,
+            password=parsed.password or None,
+        )
+        self._graph_name = graph
+        self._db = FalkorDB(**self._conn_kwargs)
         self._graph = self._db.select_graph(graph)
 
     @property
     def graph_name(self) -> str:
         """The workspace-scoped graph key this reader selects — cache-key-safe."""
         return self._graph.name
+
+    def _new_connection(self):
+        """Open an independent FalkorDB connection selecting this reader's
+        graph — used by subgraph()'s per-relationship-type worker threads,
+        since redis-py connections cannot be shared safely across threads."""
+        return FalkorDB(**self._conn_kwargs).select_graph(self._graph_name)
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """Execute a Cypher query and return its result rows.
@@ -147,7 +157,10 @@ class GraphReader:
         Results are cached for 30 s (per graph + rel_limit combination).
         """
         capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
-        return _build_subgraph(self._query, self._graph.name, capped)
+        timeout_ms = get_settings().graph_query_timeout or None
+        return _build_subgraph(
+            self._query, self._graph.name, capped, self._new_connection, timeout_ms,
+        )
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""
