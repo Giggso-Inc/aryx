@@ -1048,6 +1048,23 @@ class CpqEngine:
     def parse_grid_quantity_reply(self, text: str) -> str | None:
         return grid_quantity.parse_grid_quantity_reply(text)
 
+    def parse_grid_batch_quantities(
+        self, candidates: list[tuple[str, str]], user_answer: str,
+    ) -> dict[str, int]:
+        return grid_quantity.parse_grid_batch_quantities(candidates, user_answer)
+
+    @staticmethod
+    def grid_batch_count_mismatch(
+        candidates: list[tuple[str, str]], user_answer: str,
+    ) -> int | None:
+        return grid_quantity.grid_batch_count_mismatch(candidates, user_answer)
+
+    @staticmethod
+    def grid_batch_unparseable_segment(
+        candidates: list[tuple[str, str]], user_answer: str,
+    ) -> str | None:
+        return grid_quantity.grid_batch_unparseable_segment(candidates, user_answer)
+
     def resolve_pending_grid_quantities(
         self, attrs: list[ConfigAttr], filled: dict[str, str],
         filled_multi: dict[str, list[str]],

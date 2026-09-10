@@ -21,6 +21,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from aryx.api.ask_turn_steps.ask_grid_batch_quantity import (
+    _grid_batch_count_mismatch_message,
+    _try_apply_grid_quantities_batch_reply,
+)
 from aryx.api.ask_turn_steps.ask_step9_apply_result import _step9_apply_pending_result
 from aryx.api.ask_turn_steps.ask_step9_decline_multiselect import _step9_decline_optional_multiselect
 from aryx.api.ask_turn_steps.ask_step9_llm_fallback_match import _step9_llm_fallback_match
@@ -49,6 +53,30 @@ def _step9_lock_pending_answer(
     pending_var: str | None = None
     if not (session.pending_variables and session.turn > 1 and not mode_request):
         return None, pending_var
+
+    # 2026-09-01 (ported from dev-rv-msi #305): before locking `req.question`
+    # as an answer to a single pending attr, check whether it's actually a
+    # batched reply covering several grid-sibling quantities at once (the
+    # reply-side counterpart to _grid_batch_pending_answer, which asks these
+    # siblings together in the first place). A non-empty result already
+    # wrote every resolved value into session.filled and pruned
+    # session.pending_variables, so this turn's `req.question` must NOT
+    # also be tried as a single free-text answer to whatever's left pending
+    # — it was never a reply to that; pending_var stays None and the caller
+    # proceeds with whatever STEP 5 convergence logic runs next.
+    if _try_apply_grid_quantities_batch_reply(req.question, session, attrs):
+        return None, pending_var
+
+    # 2026-09-02 (ported from dev-rv-msi #307): a purely positional batch
+    # reply with the wrong value count is genuinely ambiguous (see
+    # grid_batch_count_mismatch's own docstring — never guessed) but
+    # deserves a SPECIFIC re-ask rather than falling through to the
+    # single-attr handling below, which would reject the whole
+    # comma-separated string against just pending_variables[0] with no
+    # explanation of what actually went wrong.
+    _mismatch_response = _grid_batch_count_mismatch_message(req, session, attrs)
+    if _mismatch_response is not None:
+        return _mismatch_response, pending_var
 
     pending_var = session.pending_variables[0]
     pending_attr = next(

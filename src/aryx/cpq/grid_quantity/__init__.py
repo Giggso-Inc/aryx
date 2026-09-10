@@ -15,7 +15,10 @@ from aryx.cpq.grid_quantity.links import (
 )
 from aryx.cpq.grid_quantity.pending import resolve_pending_grid_quantities
 from aryx.cpq.grid_quantity.replies import (
+    grid_batch_count_mismatch,
+    grid_batch_unparseable_segment,
     is_grid_quantity_attr,
+    parse_grid_batch_quantities,
     parse_grid_quantity_reply,
 )
 from aryx.cpq.grid_quantity.selector_options import (
@@ -27,8 +30,11 @@ __all__ = [
     "_finalize_grid_selections_from_quantities",
     "append_pending_grid_quantities",
     "array_grid_controls_in_play",
+    "grid_batch_count_mismatch",
+    "grid_batch_unparseable_segment",
     "grid_selector_remaining_options",
     "is_grid_quantity_attr",
+    "parse_grid_batch_quantities",
     "parse_grid_quantity_reply",
     "resolve_array_grid_links",
     "resolve_pending_grid_quantities",

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from aryx.api.ask_turn_steps.ask_grid_batch_quantity import _grid_batch_pending_answer
 from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _remember_attr_scope
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _label_collision_for
@@ -73,6 +74,18 @@ def _step11_on_request_response(
             + f"Here's everything still needed ({len(pending)} item(s)):\n\n"
             + "\n\n---\n\n".join(blocks)
         )
+
+    # 2026-09-01 (ported from dev-rv-msi #305): no explicit mode_request
+    # (checked above) but every pending attr is one grid's own quantity
+    # companions -- see _grid_batch_pending_answer's docstring. Ask them
+    # together instead of forcing FORMAT A's one-at-a-time default onto a
+    # grid the customer thinks of as a single unit.
+    _grid_batch = _grid_batch_pending_answer(
+        pending, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        constrained_opts, validation_rules, dropped_note,
+    )
+    if _grid_batch is not None:
+        return _grid_batch
 
     # ── STEP 4: FORMAT A — context sentence + numbered options only ──
     next_attr = pending[0]

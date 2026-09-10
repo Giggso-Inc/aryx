@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.api.ask_turn_steps.ask_grid_batch_quantity import _grid_batch_pending_answer
 from aryx.api.ask_turn_steps.ask_step11_completion_responses import (
     _step11_completion_response,
     _step11_grid_gap_response,
@@ -52,9 +53,27 @@ def _step11_build_turn_response(
                 req, session, attrs, display_filled, rule_ids, dropped_note,
             )
     elif session.turn >= _ask_api_module._cpq_engine.MAX_TURNS:
-        answer = _step11_turn_cap_response(
-            req, session, visible_attrs, pending, constrained_opts, validation_rules,
+        # 2026-09-01 (ported from dev-rv-msi #305): the turn cap must not
+        # force one-mount-at-a-time either, or a customer who's already
+        # past MAX_TURNS elsewhere in a large configuration gets stuck
+        # answering one grid's own quantities one by one with no way out.
+        # An explicit mode_request ("json"/"batch") still takes priority --
+        # skip grid-batching entirely and fall through to the pre-existing
+        # turn-cap response unchanged.
+        _grid_batch = (
+            _grid_batch_pending_answer(
+                pending, visible_attrs, filled, display_filled, hiding_rules,
+                rec_rules, constrained_opts, validation_rules, dropped_note,
+            )
+            if mode_request is None else None
         )
+        if _grid_batch is not None:
+            session.status = "configuring"
+            answer = _grid_batch
+        else:
+            answer = _step11_turn_cap_response(
+                req, session, visible_attrs, pending, constrained_opts, validation_rules,
+            )
     else:
         answer = _step11_on_request_response(
             req, session, attrs, visible_attrs, filled, display_filled, pending,
