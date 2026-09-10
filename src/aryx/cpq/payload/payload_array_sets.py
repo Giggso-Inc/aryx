@@ -54,8 +54,32 @@ def group_array_set_rows(ctx: PayloadContext, attrs: list[Any] | None, filled: d
         if selector is None or selector.variable_name not in member_vals:
             continue
         selected_values = member_vals[selector.variable_name]
+        # Live-confirmed real BOM API rejection (2026-08-26/31, SVX Mounting
+        # Type (Array), TAA model): "HTTP 400: Index 10 for Array Set
+        # mountingTypeArrayset_viSoln is not Valid." `_index` computed
+        # against the selector's FULL raw catalog option list (all 12 raw
+        # mounting options) gave TEK-LOK Belt Mount position 10 -- but the
+        # real Array Set for this model only has 6 rows (matching the
+        # native UI's own row count), so index 10 is out of range. The 6
+        # options genuinely valid across every model are exactly the ones
+        # resolve_array_grid_links could structurally link to a real
+        # per-option quantity attr -- the other 6 raw catalog options (no
+        # quantity attr exists for them at all) can never actually be
+        # selected through this flow, so they must never occupy a slot in
+        # the index space either. Reindexing against only the grid-linked
+        # options (still in their original catalog order) keeps `_index`
+        # within the real Array Set's actual row count for every model that
+        # constrains to a subset of this same linked set -- generic and
+        # catalog-agnostic, keyed only on resolve_array_grid_links' own
+        # structural resolution (ctx.grid_links, already computed), no
+        # attribute/catalog name hardcoded.
+        item_map = ctx.grid_links.get(selector.variable_name, {}) if selector else {}
+        grid_linked_options = [
+            o for o in selector.options
+            if o.item_value.strip().lower() in item_map
+        ] if item_map else selector.options
         catalog_positions = {
-            o.item_value: i for i, o in enumerate(selector.options)
+            o.item_value: i for i, o in enumerate(grid_linked_options)
         }
         other_members = [
             a for a in all_members
@@ -76,7 +100,6 @@ def group_array_set_rows(ctx: PayloadContext, attrs: list[Any] | None, filled: d
             and not a.hidden and not a.options
             and a.variable_name not in member_vals
         ]
-        item_map = ctx.grid_links.get(selector.variable_name, {}) if selector else {}
         rows: list[dict[str, Any]] = []
         for i, sel_val in enumerate(selected_values):
             position = catalog_positions.get(sel_val)
