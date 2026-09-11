@@ -73,12 +73,6 @@ def _mount_mcp(app: FastAPI) -> None:
         from aryx.mcp.server import server
 
         session_manager = StreamableHTTPSessionManager(app=server, stateless=True)
-        # _lifespan (main_lifespan.py) enters session_manager.run() around
-        # app startup -- stashed on app.state since _mount_mcp runs after
-        # FastAPI(lifespan=...) has already been constructed, but before
-        # the app actually starts serving, so _lifespan sees this by the
-        # time it's invoked.
-        app.state.mcp_session_manager = session_manager
 
         async def handle_mcp(scope, receive, send) -> None:
             """Raw ASGI handler for /mcp -- must reach Starlette as an
@@ -114,6 +108,13 @@ def _mount_mcp(app: FastAPI) -> None:
             Route("/mcp", endpoint=RawAsgiEndpoint(handle_mcp),
                   methods=["GET", "POST", "DELETE"]),
         )
+        # Set only after the route is actually registered -- _lifespan
+        # (main_lifespan.py) enters session_manager.run() around app
+        # startup whenever app.state.mcp_session_manager is present, so
+        # setting it any earlier could leave a session manager's task
+        # group entered for a route that was never mounted, if a future
+        # change adds a failure point between construction and here.
+        app.state.mcp_session_manager = session_manager
         logger.info("MCP mounted at /mcp (streamable-http, stateless)")
     except Exception as exc:  # noqa: BLE001
         logger.warning("MCP mount failed: %s", exc)
