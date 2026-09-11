@@ -1,34 +1,20 @@
-"""Regression tests for the /mcp SSE route registration bug and its fix.
+"""Regression tests for the /mcp route registration and its stateless
+Streamable HTTP transport (ported from dev-rv-msi's 1b269664).
 
-Live-confirmed 2026-08-31 (aryx-api-1 container logs): every /mcp GET
-crashed at teardown with `TypeError: 'NoneType' object is not callable`.
-Root cause: Route(path, endpoint=handle_sse) wrapped handle_sse with
-Starlette's request_response(), which awaits a Response object back --
-handle_sse sends its response directly via the raw ASGI `send` (through
-sse.connect_sse) and never returns one.
-
-A first version of this fix switched /mcp to Mount(app=handle_sse),
-which avoids the wrapping crash but introduces a second bug: Mount
-rewrites scope["root_path"] to include "/mcp" for every request routed
-through it, and SseServerTransport builds the client-facing endpoint URL
-as root_path + its own configured endpoint string -- an absolute
-"/mcp/messages/" endpoint string there doubled up to the live-observed
-"/mcp/mcp/messages/" (streamlit-sales-ui-live-310826.log, 2026-08-31).
-
-The final fix wraps handle_sse in RawAsgiEndpoint and keeps Route:
-Route.__init__ only wraps plain functions/methods with request_response()
-(`inspect.isfunction`/`inspect.ismethod`); a class instance is treated as
-already-ASGI and used unwrapped. Route also does exact-path matching and
-never touches root_path, so the original absolute "/mcp/messages/"
-endpoint string (matching the separately-registered
-Mount("/mcp/messages/", ...)) is correct again.
+Previously this covered the SseServerTransport-based mount and its
+GET-then-POST session-registry handshake. That transport is now gone
+(see main_mcp.py's docstring for the cross-worker 404 bug it caused);
+these tests cover the replacement instead:
+StreamableHTTPSessionManager(stateless=True), mounted as a single Route
+accepting GET/POST/DELETE, with no separate /mcp/messages Mount left to
+desync a session_id across workers.
 """
 from __future__ import annotations
 
 import inspect
 
 from fastapi import FastAPI
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 
 from aryx.api.main import _mount_mcp
 from aryx.asgi_utils import RawAsgiEndpoint
@@ -42,60 +28,51 @@ def test_mcp_is_a_route_wrapping_a_raw_asgi_endpoint() -> None:
     assert mcp_routes, "/mcp was not mounted"
     route = mcp_routes[0]
     assert isinstance(route, Route), (
-        "/mcp must stay a Route (exact-path match, no root_path rewriting) "
-        "-- a Mount(app=...) here reproduces the live doubled-endpoint bug"
+        "/mcp must stay a Route (exact-path match, no root_path rewriting), "
+        "same reasoning as the SSE-era fix this replaces"
     )
     assert isinstance(route.endpoint, RawAsgiEndpoint), (
         "/mcp's endpoint must be wrapped in RawAsgiEndpoint so Route treats "
         "it as already-ASGI and skips request_response() wrapping -- a "
-        "plain function/coroutine here reproduces the live TypeError"
+        "plain function/coroutine here reproduces the live TypeError this "
+        "was originally fixed for"
     )
     # Confirms the underlying handler is genuinely raw-ASGI-shaped.
     assert list(inspect.signature(route.endpoint._app).parameters) == [
         "scope", "receive", "send",
     ]
-    # PR #289 review (M1): RawAsgiEndpoint being a class instance makes
-    # Route.__init__ skip its own methods=["GET"] default (only applied
-    # for plain function/method endpoints) -- must be passed explicitly,
-    # or every HTTP method matches instead of just GET/HEAD.
-    assert route.methods == {"GET", "HEAD"}
+    # Stateless mode carries every real request as a POST; GET/DELETE are
+    # accepted too since StreamableHTTPSessionManager.handle_request
+    # dispatches on method internally and the mcp client library may probe
+    # either. No more session_id to register via a separate GET. HEAD is
+    # Starlette's own Route.__init__ auto-adding it whenever GET is present
+    # (not something this mount configures).
+    assert route.methods == {"GET", "HEAD", "POST", "DELETE"}
 
 
-def test_messages_mount_unaffected() -> None:
+def test_no_separate_messages_mount() -> None:
+    """The old /mcp/messages Mount (a second endpoint the SSE transport
+    posted session-scoped follow-ups to) must not exist -- stateless
+    Streamable HTTP has no second endpoint and no session_id to route by."""
     app = FastAPI()
     _mount_mcp(app)
 
     messages_routes = [
-        r for r in app.router.routes if getattr(r, "path", None) == "/mcp/messages"
+        r for r in app.router.routes if "messages" in (getattr(r, "path", "") or "")
     ]
-    assert messages_routes
-    assert isinstance(messages_routes[0], Mount)
+    assert not messages_routes
 
 
-def test_mcp_endpoint_string_is_absolute_matching_the_messages_mount(
-    monkeypatch,
-) -> None:
-    """Route never rewrites root_path, so SseServerTransport must be
-    configured with the full absolute path -- confirms this fix did NOT
-    carry over the "make it relative" workaround from the Mount-based
-    attempt, which would be wrong here and reproduce the doubled-endpoint
-    bug in reverse (a relative "/messages/" would resolve to just
-    "/messages/", not matching the registered "/mcp/messages/" Mount at
-    all)."""
-    captured_endpoints: list[str] = []
-
-    class _RecordingSseServerTransport:
-        def __init__(self, endpoint: str) -> None:
-            captured_endpoints.append(endpoint)
-
-    monkeypatch.setattr(
-        "mcp.server.sse.SseServerTransport", _RecordingSseServerTransport,
-    )
+def test_mount_sets_session_manager_on_app_state() -> None:
+    """_lifespan (main_lifespan.py) needs app.state.mcp_session_manager to
+    enter/exit StreamableHTTPSessionManager's task group around app
+    startup -- confirms _mount_mcp actually stashes it there."""
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
     app = FastAPI()
     _mount_mcp(app)
 
-    assert captured_endpoints == ["/mcp/messages/"]
+    assert isinstance(app.state.mcp_session_manager, StreamableHTTPSessionManager)
 
 
 def test_mount_did_not_touch_any_other_route() -> None:
@@ -103,7 +80,6 @@ def test_mount_did_not_touch_any_other_route() -> None:
     _mount_mcp(app)
 
     non_mcp_routes = [
-        r for r in app.router.routes
-        if getattr(r, "path", None) not in ("/mcp", "/mcp/messages")
+        r for r in app.router.routes if getattr(r, "path", None) != "/mcp"
     ]
     assert all(isinstance(r, Route) for r in non_mcp_routes)
