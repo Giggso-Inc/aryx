@@ -37,9 +37,20 @@ async def _lifespan(app: "FastAPI") -> AsyncIterator[None]:
     from aryx.api.file_ingest.file_ingest_api import shutdown_executor
     apply_migrations(get_settings().effective_dsn())
     _task = asyncio.ensure_future(_stale_job_sweep())
+    # StreamableHTTPSessionManager needs its task group entered before any
+    # /mcp request can be served -- set on app.state by _mount_mcp (called
+    # in create_app() before the app starts, so it's already there by the
+    # time this runs). Absent if MCP mount failed (see _mount_mcp's own
+    # except clause), which must not take the whole API down with it.
+    mcp_session_manager = getattr(app.state, "mcp_session_manager", None)
+    mcp_run_cm = mcp_session_manager.run() if mcp_session_manager is not None else None
+    if mcp_run_cm is not None:
+        await mcp_run_cm.__aenter__()
     try:
         yield
     finally:
+        if mcp_run_cm is not None:
+            await mcp_run_cm.__aexit__(None, None, None)
         _task.cancel()
         try:
             await _task

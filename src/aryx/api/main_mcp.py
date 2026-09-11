@@ -32,63 +32,64 @@ def _bearer_ok(request) -> bool:
 
 
 def _mount_mcp(app: FastAPI) -> None:
-    """Mount the MCP SSE transport at /mcp with bearer-token auth."""
+    """Mount the MCP Streamable HTTP transport at /mcp with bearer-token
+    auth, in stateless mode.
+
+    2026-09-11 (ported from dev-rv-msi's 1b269664): was
+    mcp.server.sse.SseServerTransport. That transport splits every tool
+    call into two separate HTTP requests -- a long-lived GET /mcp (opens
+    the SSE stream, registers session_id in an in-process dict) and a
+    following POST /mcp/messages/?session_id=... (the actual request,
+    looked up against that same dict). Under multiple uvicorn workers
+    sharing one listening socket via SO_REUSEPORT, the kernel -- not this
+    app -- decides which worker accepts each connection: the GET and its
+    immediately-following POST could land on DIFFERENT workers, and the
+    POST's worker would never have registered that session_id, 404ing
+    instantly ("Could not find session for ID"). This could not be fixed
+    by sharing the registry the way _TABLES_CACHE was (Redis-backed) --
+    that fix worked because the cached value was plain, serializable
+    data; here the value is a LIVE anyio stream object bound to one
+    worker's event loop, which cannot be handed to a different process
+    via Redis or any other shared store.
+
+    StreamableHTTPSessionManager(stateless=True) fixes this at the root:
+    every request is a single, self-contained POST with no session_id to
+    register or look up across requests at all -- there is nothing for a
+    different worker to have missed. Verified (independently, against
+    this checkout's own aryx.mcp package) that nothing here relies on
+    server-initiated push/notification behavior (grepped for
+    send_notification/progress_notification/create_message/elicit/
+    session.send -- zero matches; server.py only uses
+    @server.list_tools() and @server.call_tool(), pure request/response),
+    which is the one thing stateless mode gives up.
+    """
     try:
-        from mcp.server.sse import SseServerTransport
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
         from starlette.requests import Request
-        from starlette.routing import Mount, Route
+        from starlette.routing import Route
 
         from aryx.asgi_utils import RawAsgiEndpoint
         from aryx.mcp.auth import bind_principal, reset_principal
         from aryx.mcp.server import server
 
-        # Absolute path -- Route (see RawAsgiEndpoint) does exact-path
-        # matching and never touches scope["root_path"], so this is not
-        # relative to anything; it must equal the Mount path below exactly.
-        sse = SseServerTransport("/mcp/messages/")
+        session_manager = StreamableHTTPSessionManager(app=server, stateless=True)
 
-        async def handle_sse(scope, receive, send) -> None:
-            """Raw ASGI GET handler for /mcp -- must reach Starlette as an
+        async def handle_mcp(scope, receive, send) -> None:
+            """Raw ASGI handler for /mcp -- must reach Starlette as an
             already-ASGI callable (via RawAsgiEndpoint), not a plain
-            function/method endpoint. A plain function/method registered
-            through Route(endpoint=...) gets wrapped by Starlette's
-            request_response(), which awaits the endpoint expecting a
-            Response object back and then calls
-            `await response(scope, receive, send)`. This handler sends its
-            response directly through the raw ASGI `send` (via
-            `sse.connect_sse`) and never returns one, so that wrapper
-            always ends up calling `None(scope, receive, send)` --
-            live-confirmed 2026-08-31 crashing every /mcp SSE session at
-            teardown with `TypeError: 'NoneType' object is not callable`.
-
-            Wrapping in RawAsgiEndpoint (a callable class instance, not a
-            function) makes Route's own endpoint-type check
-            (`inspect.isfunction(endpoint) or inspect.ismethod(endpoint)`)
-            treat it as already-ASGI and skip that wrapping entirely --
-            confirmed by reading Route.__init__ directly. Deliberately
-            NOT using Mount here: Mount rewrites scope["root_path"] to
-            include the mount path for every request routed through it,
-            which would double the "/mcp" prefix SseServerTransport
-            builds its client-facing endpoint URL from (root_path + the
-            endpoint string passed to SseServerTransport above) -- hit
-            live as "/mcp/mcp/messages/" (streamlit-sales-ui-live-
-            310826.log, 2026-08-31) in an earlier version of this fix.
-            Route's exact-path matching never touches root_path, so the
-            original absolute "/mcp/messages/" endpoint string is correct
-            again with this approach.
-            """
+            function/method endpoint, for the same reason the old SSE
+            handler did: this sends its response directly through the
+            raw ASGI `send` and never returns one, which a plain
+            function/method endpoint's request_response() wrapping would
+            crash on (live-confirmed 2026-08-31 for the SSE handler this
+            replaces)."""
             request = Request(scope, receive=receive, send=send)
             principal = _authenticate_mcp(request)
             if principal is None:
                 raise HTTPException(401, "missing or invalid bearer token")
             principal_token = bind_principal(principal)
             try:
-                async with sse.connect_sse(scope, receive, send) as streams:
-                    await server.run(
-                        streams[0],
-                        streams[1],
-                        server.create_initialization_options(),
-                    )
+                await session_manager.handle_request(scope, receive, send)
             finally:
                 reset_principal(principal_token)
 
@@ -99,11 +100,21 @@ def _mount_mcp(app: FastAPI) -> None:
             # RawAsgiEndpoint is a class instance, so without this,
             # methods stays None and every HTTP method matches (Route.
             # matches()'s `if self.methods and ...` is falsy for None) --
-            # caught in review of PR #289.
-            Route("/mcp", endpoint=RawAsgiEndpoint(handle_sse), methods=["GET"]),
+            # caught in review of PR #289. POST carries every real
+            # request in stateless mode; GET/DELETE are accepted too
+            # since StreamableHTTPSessionManager.handle_request dispatches
+            # on method internally and the mcp client library may probe
+            # either.
+            Route("/mcp", endpoint=RawAsgiEndpoint(handle_mcp),
+                  methods=["GET", "POST", "DELETE"]),
         )
-        app.router.routes.append(Mount("/mcp/messages/",
-                                       app=sse.handle_post_message))
-        logger.info("MCP mounted at /mcp")
+        # Set only after the route is actually registered -- _lifespan
+        # (main_lifespan.py) enters session_manager.run() around app
+        # startup whenever app.state.mcp_session_manager is present, so
+        # setting it any earlier could leave a session manager's task
+        # group entered for a route that was never mounted, if a future
+        # change adds a failure point between construction and here.
+        app.state.mcp_session_manager = session_manager
+        logger.info("MCP mounted at /mcp (streamable-http, stateless)")
     except Exception as exc:  # noqa: BLE001
         logger.warning("MCP mount failed: %s", exc)
