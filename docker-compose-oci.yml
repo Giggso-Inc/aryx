@@ -139,6 +139,12 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       # Scalability
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
+      # CPQ native-UI layout export directory (visibility/order signal for
+      # beautify/summary attribute ranking) -- present in docker-compose.yml
+      # but missing here, so LocalDirLayoutFileSource fell back to cwd (/app)
+      # instead of /app/config_layouts, silently finding no layout files on
+      # every Oracle deployment (confirmed live: get("SVX") returned None).
+      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
       # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
