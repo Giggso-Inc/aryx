@@ -81,14 +81,6 @@ def mcp_tokens_router() -> APIRouter:
     def issue_token(req: TokenRequest) -> dict[str, Any]:
         """Issue a new bearer token. Raw token visible ONCE here."""
         settings = get_settings()
-        if (
-            req.purpose == SALES_CPQ_PURPOSE
-            and settings.effective_db_backend() == "oci"
-        ):
-            raise HTTPException(
-                501,
-                "Sales CPQ tokens require PostgreSQL-backed Shay threads.",
-            )
         store = McpTokenStore(settings.effective_dsn())
         try:
             return store.issue(
