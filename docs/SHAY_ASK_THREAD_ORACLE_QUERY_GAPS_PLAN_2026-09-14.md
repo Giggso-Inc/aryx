@@ -151,3 +151,57 @@ New branch off latest `dev_oci` (this branch,
 `fix/shay-askthread-oracle-query-overrides-2026-09-14`, created from
 `bb7b48b5`), implementation in the order above, PR opened against
 `dev_oci` once implemented and verified.
+
+## Addendum (2026-09-14, post-implementation) — `sales_streamlit/mcp_service.py`'s broken `_reader` import
+
+Recreating `aryx-api-1` with the fixes above and exercising the live
+`sales_chat_bootstrap` flow surfaced a second, unrelated pre-existing
+bug (confirmed identical against unmodified `dev_oci` before this
+branch existed): `sales_streamlit/mcp_service.py` imported `_reader`
+from `aryx.api.ask_api`, but that module never re-exported it after
+the Phase 2b split moved `_reader`'s actual definition into
+`aryx.api.ask_core_helpers`. Every real call to `sales_chat_bootstrap`
+crashed with `cannot import name '_reader' from 'aryx.api.ask_api'`
+the moment the `sales_cpq` OCI guard removal (item 6 above) let a real
+request reach it. Confirmed via grep this is the *only* file importing
+`_reader` from `ask_api` directly -- the many test files that also
+import from `ask_api` either import unrelated names or already patch
+`aryx.api.ask_core_helpers` directly, unaffected. Fixed by importing
+`_reader` from its actual current module (`aryx.api.ask_core_helpers`).
+
+## Addendum 2 (2026-09-14) — `gg_messages` missing `request_id` on Oracle
+
+Retrying the chat flow after the above surfaced a third, separate gap:
+`gg_messages` on Oracle carried over the full base shape from
+Postgres's original `CREATE TABLE gg_messages`
+(`migrations/0028_shay_skin.sql` -- confirmed all 19 base columns
+present via `user_tab_columns`), but never got the later, separate
+`ALTER TABLE ADD COLUMN request_id` from
+`migrations/0033_ask_thread_messages.sql`. Whatever ported `gg_messages`
+to Oracle carried over the base shape but missed that follow-up
+migration.
+
+**Fix:** `migrations_oracle/0043_gg_messages_request_id.sql` -- adds
+`request_id VARCHAR2(36)` and `idx_gg_messages_thread_sequence
+(thread_id, sequence_number)`, guarded the same way every other Oracle
+migration in this repo is (`ORA-01430`/`ORA-01408` = already applied,
+safe to re-run).
+
+**Deliberately deferred, not bundled into this fix:** Postgres's
+matching index here is a *partial unique* index
+(`uq_gg_messages_thread_request_type`, `UNIQUE (thread_id, request_id,
+message_type) WHERE request_id IS NOT NULL`), enforcing per-thread
+request idempotency. Oracle has no `WHERE`-clause-qualified `CREATE
+UNIQUE INDEX` -- Oracle's own equivalent (relying on Oracle's
+composite-NULL uniqueness behavior: a row where any indexed column is
+NULL is excluded from a unique index's uniqueness check) needs
+verification against real data before asserting it here. Get the
+column in, confirm the crash clears, decide the uniqueness-porting
+question separately.
+
+**Verified live** (not just statically): ran the actual
+`oracle_migrate.apply_oracle_migrations()` against the connected
+Oracle ADB instance -- confirmed `REQUEST_ID VARCHAR2(36)` and
+`IDX_GG_MESSAGES_THREAD_SEQUENCE` now exist via `user_tab_columns`/
+`user_ind_columns`, and confirmed the migration re-runs cleanly
+(idempotent) a second time.
