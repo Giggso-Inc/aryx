@@ -302,6 +302,36 @@ class CpqSession:
     # noise — but only when resolved through THIS specific, verified path.
     model_leaf_resolved: bool = False
 
+    @property
+    def product_noise_filter_ready(self) -> bool:
+        """True once product identity is known well enough to treat an
+        UNGOVERNED "Product"-labeled attr as noise -- either via the
+        strict, verified bm_catalog leaf path (model_leaf_resolved) or,
+        more broadly, once a product FAMILY is anchored at all
+        (product_name).
+
+        Broadening beyond model_leaf_resolved alone is safe: the noise
+        filter itself (product_label_noise_vns) already excludes any
+        "Product"-labeled attr targeted by a real hiding/recommendation/
+        constraint rule (rule_governed_ids) -- so this can never hide a
+        genuinely-decided attr like APX Next's productSelectionProduct_
+        all (which IS rule-governed). It only ever affects attrs with
+        zero rules of their own, which are pure noise once we at least
+        know the product family.
+
+        Live-confirmed gap this closes (2026-09-14, "quote for SVX" /
+        "united states"): step 1's single-suggestion auto-resolve
+        (ask_step1_product_family_prompt.py) correctly anchors
+        product_name to a family via a DIFFERENT mechanism than the
+        bm_catalog-leaf path -- model_leaf_resolved never becomes True
+        for catalogs like videoSolutions_BOM, whose real model choice is
+        narrowed by a constraint rule on a DIFFERENT attribute
+        (modelSelectionSelectModel_viSoln) rather than a bm_catalog leaf.
+        Its own ungoverned "Product" attr fell through to the full
+        ~325-model unscoped list every time as a result.
+        """
+        return self.model_leaf_resolved or bool(self.product_name)
+
     # PROMPT 7 — durable candidate-list scope (flat, session-echoed).
     # When the engine shows a constrained option list / family
     # disambiguation / "did you mean" set, the NEXT reply is matched
