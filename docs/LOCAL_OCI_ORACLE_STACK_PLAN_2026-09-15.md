@@ -70,7 +70,7 @@ Flags).
 |---|---|
 | `docker-compose-oci-local.yml` | New. `oracle` service (new) + `api`/`shay-api`/`web` service blocks copied from `docker-compose-oci.yml`, same `env_file: .env` as the cloud compose file (explicit decision — see below), plus `depends_on: oracle: condition: service_healthy` added to `api` and `shay-api`. Named distinctly from the existing `docker-compose.yml`/`docker-compose.local.yml` (both already-existing, unrelated Postgres+FalkorDB local stacks) to avoid confusion — this one specifically means "OCI code path, local infra." |
 | `oracle-init/01-create-app-user.sql` | New. Mounted read-only into the `oracle` container's init-scripts directory; runs once, automatically, after the database is created on first boot. Creates the app schema user and grants privileges mirroring what the real cloud ADB schema user already has: `CREATE SESSION`, `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE PROPERTY GRAPH` (needed for `shortest_path()`'s SQL/PGQ), `UNLIMITED TABLESPACE`. |
-| `.env.example.oci-local` | Reference only — documents which values in the shared `.env` need to change to point at the local container vs. the cloud ADB (see below). Not a separate file `docker-compose-oci-local.yml` actually reads. |
+| `.env.example.oci-local` | New, real file — mirrors `.env.example.oci`'s existing format (same variable names, same structure), values filled in for the local container instead of the cloud ADB. Not read directly by either compose file at runtime — same relationship `.env.example.oci` already has to `.env` today: copy the relevant values into `.env` by hand when switching modes (see below). |
 
 ## Single shared `.env` — explicit decision, not an oversight
 
