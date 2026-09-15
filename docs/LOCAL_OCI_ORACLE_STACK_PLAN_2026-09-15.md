@@ -68,33 +68,55 @@ Flags).
 
 | File | Purpose |
 |---|---|
-| `docker-compose-oci-local.yml` | New. `oracle` service (new) + `api`/`shay-api`/`web` service blocks copied from `docker-compose-oci.yml` with only the DB-connection env vars overridden (see table below) and `depends_on: oracle: condition: service_healthy` added to `api` and `shay-api`. Named distinctly from the existing `docker-compose.yml`/`docker-compose.local.yml` (both already-existing, unrelated Postgres+FalkorDB local stacks) to avoid confusion — this one specifically means "OCI code path, local infra." |
+| `docker-compose-oci-local.yml` | New. `oracle` service (new) + `api`/`shay-api`/`web` service blocks copied from `docker-compose-oci.yml`, same `env_file: .env` as the cloud compose file (explicit decision — see below), plus `depends_on: oracle: condition: service_healthy` added to `api` and `shay-api`. Named distinctly from the existing `docker-compose.yml`/`docker-compose.local.yml` (both already-existing, unrelated Postgres+FalkorDB local stacks) to avoid confusion — this one specifically means "OCI code path, local infra." |
 | `oracle-init/01-create-app-user.sql` | New. Mounted read-only into the `oracle` container's init-scripts directory; runs once, automatically, after the database is created on first boot. Creates the app schema user and grants privileges mirroring what the real cloud ADB schema user already has: `CREATE SESSION`, `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE PROPERTY GRAPH` (needed for `shortest_path()`'s SQL/PGQ), `UNLIMITED TABLESPACE`. |
-| `.env.example.oci-local` | New, but thin — not a full duplicate of `.env.example.oci`. Documents copying an existing, already-working `.env` and overriding exactly 3 values (below) plus one new one (`ORACLE_PASSWORD`, the container's own SYS/SYSTEM password, gvenzl-image-specific). |
+| `.env.example.oci-local` | Reference only — documents which values in the shared `.env` need to change to point at the local container vs. the cloud ADB (see below). Not a separate file `docker-compose-oci-local.yml` actually reads. |
 
-## Env vars that actually change
+## Single shared `.env` — explicit decision, not an oversight
 
-| Var | Cloud value (today) | Local value |
+`docker-compose-oci.yml` and `docker-compose-oci-local.yml` both use
+`env_file: .env` — the **same** file. This means the two compose files
+are **mutually exclusive at any given moment**: whichever DB values
+`.env` currently holds (cloud ADB vs. local container) is what *both*
+compose files would use if run. Switching between local and cloud
+testing means editing `ARYX_OCI_ADB_DSN`/`ARYX_RDB_DSN`/
+`ARYX_DB_USER`/`ARYX_DB_PASSWORD` (and `ORACLE_PASSWORD` for the local
+container) in `.env` each time, by hand.
+
+This was flagged as a real risk (a separate `.env.oci-local` file
+would make the two compose files independently runnable without any
+manual edit) — the explicit choice made here is to keep one `.env` and
+switch its values manually rather than maintain two files. Worth
+restating plainly so it's never mistaken for an oversight later: **the
+two compose files cannot be run against different databases
+simultaneously with this setup** — only one at a time, whichever `.env`
+currently points at.
+
+## Env vars that change when switching
+
+| Var | Cloud value (in `.env`) | Local value (in `.env`, when testing locally) |
 |---|---|---|
 | `ARYX_OCI_ADB_DSN` / `ARYX_RDB_DSN` | TCPS descriptor to `adb.<region>.oraclecloud.com` | plain easy-connect string to the new service, e.g. `oracle:1521/FREEPDB1` — no TCPS/wallet needed for a local container |
 | `ARYX_DB_USER` / `ARYX_DB_PASSWORD` | cloud-provisioned schema user | created by `oracle-init/01-create-app-user.sql` |
 | `ORACLE_PASSWORD` (new) | n/a | the `oracle` container's own SYS/SYSTEM password (gvenzl image requirement, distinct from the app schema user's password above) |
 
-Everything else — `ARYX_OCI_MODE`, region/compartment, worker/parse/
-embed/LLM backends, OCI API auth, Object Storage — is left exactly as
-in the existing `.env`, per the Scope section above.
-
 ## Dependency map
 
-**Touches:** 3 new files only (compose file, init SQL, env example).
-**Does not touch:** any application code, any existing compose file,
-any migration file — `oracle_migrate.py`'s ~44 migration files run
-unmodified against whichever Oracle instance `ARYX_OCI_ADB_DSN` points
-to; the DSN is the only thing that changes.
-**Breaks if wrong:** `api`/`shay-api` starting before the local Oracle
-container has actually finished its (slow) first-boot init would cause
-every migration/query to fail immediately — this is why `depends_on`
-must gate on `service_healthy`, not `service_started`.
+**Touches:** 3 new files (compose file, init SQL, env-var reference
+doc) plus manual edits to the existing, shared `.env` whenever
+switching between local and cloud testing.
+**Does not touch:** any application code, any existing compose file's
+own content, any migration file — `oracle_migrate.py`'s ~44 migration
+files run unmodified against whichever Oracle instance
+`ARYX_OCI_ADB_DSN` points to; the DSN is the only thing that changes.
+**Breaks if wrong:** (a) `api`/`shay-api` starting before the local
+Oracle container has actually finished its (slow) first-boot init
+would cause every migration/query to fail immediately — this is why
+`depends_on` must gate on `service_healthy`, not `service_started`;
+(b) running `docker-compose-oci.yml` (cloud) while `.env` still holds
+local-container values (or vice versa) — the shared-`.env` decision
+above means this is a real, standing risk on every switch, not a
+one-time setup step.
 
 ## Risk flags
 
