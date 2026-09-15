@@ -53,7 +53,7 @@ def _handle_approval(
         attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
     _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
         req.workspace_id, catalog_prefix, attrs)
-    if session.product_noise_filter_ready:
+    if session.model_leaf_resolved:
         _hidden_for_payload = _hidden_for_payload | _cpq_engine.product_label_noise_vns(
             attrs, hiding_rules, rec_rules, con_rules)
 

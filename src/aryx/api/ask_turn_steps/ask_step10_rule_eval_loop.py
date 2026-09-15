@@ -53,7 +53,7 @@ def _step10_run_rule_eval_loop(
     dropped_multi: dict[str, list[str]] = {}
     skip_always_ask = _cpq_engine.resolve_always_ask_skips(
         req.workspace_id, catalog_prefix, attrs)
-    if session.product_noise_filter_ready:
+    if session.model_leaf_resolved:
         skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
             attrs, hiding_rules, rec_rules, con_rules)
 

@@ -53,7 +53,7 @@ def _recompute_after_attr_clear(
     # customer requesting an unrelated change (e.g. FedRamp) could still
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
-    if session.product_noise_filter_ready:
+    if session.model_leaf_resolved:
         skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
             attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
@@ -81,7 +81,7 @@ def _recompute_after_attr_clear(
         hiding_rules=hiding_rules,
         grid_declined_vns=frozenset(session.pending_grid_declined_vns),
     )
-    if session.product_noise_filter_ready:
+    if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.

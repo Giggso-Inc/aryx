@@ -56,7 +56,7 @@ def _step10_recompute_pending(
         hiding_rules=hiding_rules,
         grid_declined_vns=frozenset(session.pending_grid_declined_vns),
         )
-    if session.product_noise_filter_ready:
+    if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" with nothing to fall back to. Since the resolved
