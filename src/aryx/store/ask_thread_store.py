@@ -212,11 +212,10 @@ class AryxAskThreadStore:
             # scratch every time; a naive +1 on every call (including a
             # request-id replay that hit the ON CONFLICT DO UPDATE branch,
             # or the "already claimed" SELECT fallback) would double-count.
-            # NOTE: no queries/oracle/ask_thread_touch_channel.sql override
-            # exists yet on either source branch -- this increment query is
-            # Postgres-only syntax (%s::uuid) and was already unverified
-            # against Oracle before this merge; flagged for the Oracle
-            # verification pass, not introduced by combining the branches.
+            # queries/oracle/ask_thread_touch_channel.sql (CURRENT_TIMESTAMP,
+            # no ::uuid cast) closes the Oracle override gap this comment
+            # used to flag -- load() resolves it automatically for the oci
+            # backend, no branch needed here.
             if newly_inserted:
                 cur.execute(load("ask_thread_touch_channel"), (channel_id,))
         existing_question = str(message_row[3])

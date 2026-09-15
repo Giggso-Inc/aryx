@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.queries import load
-from aryx.store.ask_thread_store import ASK_CHANNEL_NAME, AryxAskThreadStore, _as_json
+from aryx.store.ask_thread_store import (
+    ASK_CHANNEL_NAME,
+    AryxAskThreadStore,
+    _as_json,
+    _is_oracle_backend,
+)
 from aryx.store.pool import get_pool
 
 
@@ -35,7 +40,12 @@ class SalesChatStore:
                 load("sales_chat_claim_thread"),
                 (thread_id, actor_id, workspace_id, shay_workspace_id),
             )
-            row = cur.fetchone()
+            # Postgres's INSERT ... ON CONFLICT DO NOTHING ... RETURNING
+            # hands back the winning row via fetchone() directly; Oracle's
+            # MERGE equivalent (no ON CONFLICT) produces no resultset at
+            # all, so fetchone() here is always None on Oracle -- always
+            # follow up with the select, not just on a genuine conflict.
+            row = None if _is_oracle_backend() else cur.fetchone()
             if row is None:
                 cur.execute(load("sales_chat_select_thread"), (thread_id,))
                 row = cur.fetchone()

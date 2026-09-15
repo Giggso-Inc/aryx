@@ -145,6 +145,14 @@ services:
       # instead of /app/config_layouts, silently finding no layout files on
       # every Oracle deployment (confirmed live: get("SVX") returned None).
       - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
+      # DB connection pool sizing -- default max_size (25) covers one
+      # /graph request's subgraph() fan-out (up to 8 connections,
+      # _MAX_RTYPE_WORKERS in oracle_graph_reader_traverse.py) plus
+      # concurrent CPQ turn processing and admin-endpoint polling in the
+      # same worker; confirmed live (DPY-4005 pool-timeout errors) that
+      # the old default of 10 wasn't enough headroom for that combination
+      # on an otherwise-healthy container.
+      - ARYX_DB_POOL_MAX_SIZE=${ARYX_DB_POOL_MAX_SIZE:-25}
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
       # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api

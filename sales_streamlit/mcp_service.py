@@ -6,7 +6,8 @@ import re
 import uuid
 from typing import Any, Callable
 
-from aryx.api.ask_api import AskRequest, Turn, _cpq_engine, _reader, run_ask
+from aryx.api.ask_api import AskRequest, Turn, _cpq_engine, run_ask
+from aryx.api.ask_core_helpers import _reader
 from aryx.config import get_settings
 from aryx.mcp.auth import McpPrincipal
 from sales_streamlit.chat_store import SalesChatStore
