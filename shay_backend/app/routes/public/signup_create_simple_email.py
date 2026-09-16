@@ -63,6 +63,13 @@ async def _send_verification_and_build_response(
         import traceback
         print(f"📋 Email error traceback: {traceback.format_exc()}")
 
+    return await _build_signup_response(company, user)
+
+
+async def _build_signup_response(
+    company: Company, user: User
+) -> SuccessResponse[CompanyCreationResponse]:
+    """Build the /companies signup success response (shared by the emailed and auto-verified paths)."""
     # Zoho customer creation and the welcome email are disabled while
     # subscription creation is disabled for this flow (see module docstring
     # of signup_create_simple.py).

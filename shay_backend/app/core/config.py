@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     ARYX_INTERNAL_API_KEY: str = os.environ.get("ARYX_INTERNAL_API_KEY", "")
     SHAY_TOKEN_ENCRYPTION_KEY: str = os.environ.get("SHAY_TOKEN_ENCRYPTION_KEY", "")
 
+    # Local-dev stacks with no working SMTP (e.g. docker-compose-oci-local.yml):
+    # when True, /companies signup skips the email-verification step and
+    # activates the company/user immediately. Never set in a real deployment.
+    SHAY_AUTO_VERIFY_SIGNUPS: bool = os.environ.get("SHAY_AUTO_VERIFY_SIGNUPS", "false").lower() == "true"
+
     # Marketplace platform: when True, subscription validation uses CHANNEL_COUNT and MESSAGE_COUNT from env
     IS_MARKETPLACE: bool = os.environ.get("IS_MARKETPLACE", "false").lower() == "true"
     CHANNEL_COUNT: int = int(os.environ.get("CHANNEL_COUNT", "1"))
