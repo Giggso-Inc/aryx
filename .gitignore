@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.example.oci
+!.env.example.oci-local
 *.pem
 *.key
 *.p12
