@@ -92,6 +92,20 @@ two compose files cannot be run against different databases
 simultaneously with this setup** — only one at a time, whichever `.env`
 currently points at.
 
+**Compounding risk with `SHAY_AUTO_VERIFY_SIGNUPS`:** this shared-`.env`
+design interacts badly with the auto-verify flag added alongside this
+plan (see the `feat(shay)` commit). A developer sets
+`SHAY_AUTO_VERIFY_SIGNUPS=true` for local testing (no working SMTP
+there), then later hand-edits the same `.env`'s DB values back to the
+cloud ADB to test `docker-compose-oci.yml` — forgetting to also unset
+the flag would silently auto-verify real signups against production
+data. `shay_backend/app/core/config.py`'s `Settings` now hard-fails at
+startup (a `model_validator`, not just the flag's `false` default) if
+`SHAY_AUTO_VERIFY_SIGNUPS=true` is combined with a `DATABASE_URL` whose
+embedded DSN looks like the cloud ADB (`oraclecloud.com` / `tcps://`) —
+this is deliberately a startup crash, not a warning, since a warning is
+exactly the kind of thing that gets missed under time pressure.
+
 ## Env vars that change when switching
 
 | Var | Cloud value (in `.env`) | Local value (in `.env`, when testing locally) |
