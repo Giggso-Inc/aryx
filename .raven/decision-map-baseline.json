@@ -488,17 +488,17 @@
     ],
     [
       "sales_streamlit/mcp_service.py",
-      197,
+      198,
       "send"
     ],
     [
       "sales_streamlit/mcp_service.py",
-      344,
+      345,
       "_product_route"
     ],
     [
       "sales_streamlit/mcp_service.py",
-      376,
+      377,
       "_product_route"
     ],
     [
@@ -4778,12 +4778,22 @@
     ],
     [
       "shay_backend/app/routes/public/signup_create_simple.py",
-      54,
+      33,
+      "_build_new_simple_company"
+    ],
+    [
+      "shay_backend/app/routes/public/signup_create_simple.py",
+      39,
+      "_build_new_simple_company"
+    ],
+    [
+      "shay_backend/app/routes/public/signup_create_simple.py",
+      57,
       "_create_new_simple_company_with_user"
     ],
     [
       "shay_backend/app/routes/public/signup_create_simple.py",
-      92,
+      101,
       "_create_new_simple_company_with_user"
     ],
     [
@@ -4798,8 +4808,18 @@
     ],
     [
       "shay_backend/app/routes/public/signup_create_simple_email.py",
-      80,
+      66,
       "_send_verification_and_build_response"
+    ],
+    [
+      "shay_backend/app/routes/public/signup_create_simple_email.py",
+      69,
+      "_build_signup_response"
+    ],
+    [
+      "shay_backend/app/routes/public/signup_create_simple_email.py",
+      87,
+      "_build_signup_response"
     ],
     [
       "shay_backend/app/routes/public/signup_helpers.py",
@@ -10337,21 +10357,6 @@
       "create_app"
     ],
     [
-      "src/aryx/api/main_mcp.py",
-      34,
-      "_mount_mcp"
-    ],
-    [
-      "src/aryx/api/main_mcp.py",
-      36,
-      "<try>"
-    ],
-    [
-      "src/aryx/api/main_mcp.py",
-      50,
-      "handle_sse"
-    ],
-    [
       "src/aryx/api/observability_api.py",
       56,
       "observability_router"
@@ -14073,17 +14078,17 @@
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      225,
+      224,
       "ensure_thread_and_user_message"
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      277,
+      276,
       "<if>"
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      303,
+      302,
       "append_assistant_message"
     ],
     [
@@ -14258,12 +14263,12 @@
     ],
     [
       "src/aryx/store/pool.py",
-      15,
+      28,
       "get_pool"
     ],
     [
       "src/aryx/store/pool.py",
-      38,
+      62,
       "get_pool"
     ],
     [

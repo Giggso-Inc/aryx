@@ -24,7 +24,10 @@ from app.models.company import Company
 from app.schemas.company import CompanyCreationResponse
 from app.schemas.common import SuccessResponse
 from app.routes.public.signup_helpers import _create_placeholder_gpt_vault_for_company
-from app.routes.public.signup_create_simple_email import _send_verification_and_build_response
+from app.routes.public.signup_create_simple_email import (
+    _send_verification_and_build_response,
+    _build_signup_response,
+)
 
 
 def _build_new_simple_company(company_data: Any) -> Company:
@@ -45,7 +48,7 @@ def _build_new_simple_company(company_data: Any) -> Company:
         max_storage_gb="1",
         ai_enabled=True,
         ai_provider="openai",
-        is_active=False,
+        is_active=settings.SHAY_AUTO_VERIFY_SIGNUPS,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow()
     )
@@ -77,8 +80,8 @@ async def _create_new_simple_company_with_user(
         password_hash=hashed_password,
         company_id=company.id,
         role="admin",
-        is_active=False,
-        is_verified=False,
+        is_active=settings.SHAY_AUTO_VERIFY_SIGNUPS,
+        is_verified=settings.SHAY_AUTO_VERIFY_SIGNUPS,
         created_datetime=datetime.utcnow(),
         updated_datetime=datetime.utcnow()
     )
@@ -88,5 +91,11 @@ async def _create_new_simple_company_with_user(
 
     # Commit all changes (Company and User only, no Subscription)
     await db.commit()
+
+    if settings.SHAY_AUTO_VERIFY_SIGNUPS:
+        # No working SMTP in this stack (e.g. local OCI dev) — company/user
+        # are already active above, so skip the verification email entirely
+        # rather than send a link that activates an already-active account.
+        return await _build_signup_response(company, user)
 
     return await _send_verification_and_build_response(db, company, user, company_data)

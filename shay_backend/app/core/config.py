@@ -29,7 +29,7 @@ import os
 import json
 from typing import List, Optional, Union
 from pydantic_settings import BaseSettings
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.core.config_helpers import (
     _decode_base64_env_or_passthrough,
@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     ARYX_API_URL_INTERNAL: str = os.environ.get("ARYX_API_URL_INTERNAL", "http://localhost:8088")
     ARYX_INTERNAL_API_KEY: str = os.environ.get("ARYX_INTERNAL_API_KEY", "")
     SHAY_TOKEN_ENCRYPTION_KEY: str = os.environ.get("SHAY_TOKEN_ENCRYPTION_KEY", "")
+
+    # Local-dev stacks with no working SMTP (e.g. docker-compose-oci-local.yml):
+    # when True, /companies signup skips the email-verification step and
+    # activates the company/user immediately. Never set in a real deployment.
+    SHAY_AUTO_VERIFY_SIGNUPS: bool = os.environ.get("SHAY_AUTO_VERIFY_SIGNUPS", "false").lower() == "true"
 
     # Marketplace platform: when True, subscription validation uses CHANNEL_COUNT and MESSAGE_COUNT from env
     IS_MARKETPLACE: bool = os.environ.get("IS_MARKETPLACE", "false").lower() == "true"
@@ -396,6 +401,35 @@ class Settings(BaseSettings):
         if not value or not value.strip():
             raise ValueError("SSO_STATE_SECRET must be set")
         return value.strip()
+
+    @model_validator(mode="after")
+    def validate_auto_verify_not_pointed_at_cloud(self) -> "Settings":
+        """Refuse to start with SHAY_AUTO_VERIFY_SIGNUPS=true against what looks
+        like the real cloud ADB, rather than just defaulting the flag to false.
+
+        docker-compose-oci.yml and docker-compose-oci-local.yml share ONE .env
+        (see docs/LOCAL_OCI_ORACLE_STACK_PLAN_2026-09-15.md) -- a developer
+        testing locally sets this flag true (no working SMTP there), then
+        hand-edits that same .env's DB values back to the cloud ADB to test
+        docker-compose-oci.yml, and forgetting to also unset the flag would
+        silently auto-verify real signups against production data. Both
+        compose files build DATABASE_URL identically (always a literal
+        "@localhost" host segment with the real target embedded in the
+        ?dsn= query string), so the only reliable signal is the DSN's own
+        contents: the cloud DSN is always tcps://...oraclecloud.com, the
+        local container's is always a plain easy-connect string.
+        """
+        if self.SHAY_AUTO_VERIFY_SIGNUPS:
+            url = (self.DATABASE_URL or "").lower()
+            if "oraclecloud.com" in url or "tcps://" in url:
+                raise ValueError(
+                    "SHAY_AUTO_VERIFY_SIGNUPS=true with a DATABASE_URL that looks "
+                    "like the real cloud ADB (oraclecloud.com / tcps://) -- this "
+                    "would auto-verify real signups against production data. "
+                    "Unset SHAY_AUTO_VERIFY_SIGNUPS in .env before pointing it "
+                    "back at the cloud ADB."
+                )
+        return self
     
     # Socket Configuration
     SOCKET_SERVER_URL: str = os.environ.get("SOCKET_SERVER_URL", "wss://dev-fourd.shay-ai.com/socket.io/")
