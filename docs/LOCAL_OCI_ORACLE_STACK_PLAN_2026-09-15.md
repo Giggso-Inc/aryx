@@ -158,3 +158,28 @@ implementation of the 3 files above, a live first-boot smoke test
 `oracle_migrate.py` run succeeds end-to-end against the fresh local
 instance) as the actual acceptance criterion, PR opened against
 `dev_oci` once implemented and verified.
+
+## Implementation notes (as built)
+
+- `oracle-init/01-create-app-user.sql` (planned above) was actually built
+  as `oracle-init/01-grant-property-graph.sh` — a shell script, not
+  `.sql`. Files mounted into `/container-entrypoint-initdb.d/` run via
+  SQL*Plus with no environment-variable substitution, so a `.sql` file
+  can't reference `${ORACLE_PASSWORD}`; the grant needed the password
+  from the environment, hence a `.sh` wrapper instead. The gvenzl image's
+  own `APP_USER`/`APP_USER_PASSWORD` env vars already auto-create the
+  schema user with `CONNECT`/`RESOURCE`/`UNLIMITED TABLESPACE` on first
+  boot, so this script only grants the one extra privilege that
+  auto-creation doesn't: `CREATE PROPERTY GRAPH`.
+- `docker-compose-oci-local.yml`'s `api`/`shay-api` blocks default
+  `ARYX_WORKER_BACKEND`/`ARYX_PARSE_BACKEND` to `${VAR:-local}` rather
+  than the cloud file's hardcoded `oci_functions`/`oci` literals, so OCI
+  Functions and OCI Document Understanding can be opted out of from
+  `.env` without editing the compose file itself.
+- `config_layouts/*.txt` (4 files, ~7.5MB, CPQ native-UI layout exports
+  for APX Next/APXNext/AstroApx/SVX) were deleted from this branch: they
+  no longer match the current catalog/rule structure for those product
+  families, so a container built from them would render CPQ's native UI
+  against stale layout data. `LocalDirLayoutFileSource` finding no layout
+  files for these catalogs is the accepted interim state until refreshed
+  exports are generated and re-added.

@@ -1,0 +1,256 @@
+# aryx OCI-mode stack, backed by a LOCAL Oracle container instead of the
+# real cloud Oracle ADB 23ai instance — see
+# docs/LOCAL_OCI_ORACLE_STACK_PLAN_2026-09-15.md for the full plan this
+# implements.
+#
+# What this replaces vs docker-compose-oci.yml:
+#   Oracle ADB 23ai (cloud, TLS/wallet)  → oracle (local container, plain TCP)
+#
+# What stays exactly the same as docker-compose-oci.yml:
+#   every non-database OCI backend (worker, parse, embed, LLM, object
+#   storage, OCI API auth) -- still real OCI services, read from the SAME
+#   .env this compose file uses. Only the DB-connection values in .env
+#   need to point at the local `oracle` service instead of the cloud ADB
+#   -- see .env.example.oci-local for exactly which ones.
+#
+# docker-compose-oci.yml and this file share ONE .env by explicit
+# decision (not a separate .env.oci-local) -- they are mutually
+# exclusive at any given moment: whichever DB values .env currently
+# holds is what BOTH compose files would use if run. Switch by hand
+# when moving between local and cloud testing.
+#
+# Scope: api, shay-api, web, oracle only -- no mcp, no pgx-server (the
+# latter needs `docker login container-registry.oracle.com`, unrelated
+# to this change; PGX_SERVER_URL below simply won't resolve in this
+# stack -- fine, since core graph reads (subgraph/shortest_path via
+# SQL/PGQ) don't need PGX at all, only the separate in-memory
+# analytics/OWL-reasoning features do).
+#
+# Usage:
+#   docker compose -f docker-compose-oci-local.yml up -d
+#
+# First boot is slow (Oracle Free creates the database, then runs
+# oracle-init/ scripts) -- commonly 1-3 minutes. api/shay-api wait on
+# `oracle: condition: service_healthy` so migrations never race a
+# not-yet-ready listener.
+#
+# Memory: Oracle Database Free needs ~2GB minimum, 4GB+ recommended, on
+# top of api/shay-api/web's own footprint.
+
+services:
+
+  # ── Local Oracle Database 23ai Free — replaces the cloud ADB instance ───────
+  # gvenzl/oracle-free: the standard community image for local Oracle dev.
+  # Checked directly (Docker Hub) before choosing this: no 24/25/26 tag
+  # exists as of this writing -- 23ai is also the version that actually
+  # matches the real ADB instance's feature set (JSON, VECTOR, SQL/PGQ)
+  # this stack is meant to mirror, so it's the right choice regardless.
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      # SYS/SYSTEM password -- distinct from the app schema user below.
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
+      # Auto-creates a schema user on first boot (CONNECT/RESOURCE/
+      # UNLIMITED TABLESPACE) -- covers CREATE SESSION/TABLE/SEQUENCE.
+      # Does NOT cover CREATE PROPERTY GRAPH (needed for
+      # oracle_graph_reader_traverse.py's shortest_path() SQL/PGQ query)
+      # -- granted separately by oracle-init/01-grant-property-graph.sql.
+      - APP_USER=${ARYX_DB_USER}
+      - APP_USER_PASSWORD=${ARYX_DB_PASSWORD}
+    volumes:
+      - oracle-local-data:/opt/oracle/oradata
+      - ./oracle-init:/container-entrypoint-initdb.d
+    ports:
+      - "1521:1521"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      start_period: 180s
+      retries: 10
+
+  # ── FastAPI — REST API + ingest dispatcher ───────────────────────────────────
+  api:
+    build: .
+    env_file: .env
+    # --workers 2: safe now that /mcp uses StreamableHTTPSessionManager
+    # (stateless) instead of SseServerTransport -- see
+    # aryx.api.main_mcp._mount_mcp's docstring.
+    command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    environment:
+      - ARYX_OCI_MODE=true
+      - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
+      - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
+      # DB → local Oracle container (see .env.example.oci-local for the
+      # easy-connect DSN shape, e.g. oracle:1521/FREEPDB1 -- no TCPS/wallet
+      # needed for a local container, unlike the cloud ADB descriptor).
+      - ARYX_DB_BACKEND=oci
+      - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_DB_USER=${ARYX_DB_USER}
+      - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      # Graph → same local Oracle instance (SQL/PGQ property graph lives
+      # IN the database) -- PGX is out of scope, see file header.
+      - ARYX_GRAPH_BACKEND=oci_graph
+      # Worker → set ARYX_WORKER_BACKEND=local in .env to use the
+      # ThreadPoolExecutor path instead of real OCI Functions (defaults to
+      # local here, unlike docker-compose-oci.yml's hardcoded
+      # oci_functions -- this file's whole point is not needing every real
+      # OCI service just to test the DB layer locally).
+      - ARYX_WORKER_BACKEND=${ARYX_WORKER_BACKEND:-local}
+      - ARYX_OCI_INGEST_FN_ID=${ARYX_OCI_INGEST_FN_ID}
+      # Parse → set ARYX_PARSE_BACKEND=local in .env to use pymupdf instead
+      # of real OCI Document Understanding (defaults to local here, same
+      # reasoning as ARYX_WORKER_BACKEND above).
+      - ARYX_PARSE_BACKEND=${ARYX_PARSE_BACKEND:-local}
+      # Object Storage — Document Understanding output + RDF/OWL exports (unchanged)
+      - ARYX_OCI_OBJECT_STORAGE_NAMESPACE=${ARYX_OCI_OBJECT_STORAGE_NAMESPACE}
+      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-doc-output}
+      - ARYX_OCI_RDF_BUCKET=${ARYX_OCI_RDF_BUCKET:-aryx-rdf-exports}
+      # Embed → OCI GenAI Cohere Embed v3 (unchanged)
+      - ARYX_EMBED_BACKEND=oci
+      # LLM → OCI GenAI (unchanged)
+      - ARYX_LLM_CHEAP_BACKEND=oci
+      - ARYX_LLM_FRONTIER_BACKEND=oci
+      # OCI API auth — env-var mode (unchanged)
+      - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
+      - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
+      - ARYX_OCI_FINGERPRINT=${ARYX_OCI_FINGERPRINT}
+      - ARYX_OCI_PRIVATE_KEY_CONTENT=${ARYX_OCI_PRIVATE_KEY_CONTENT}
+      # Pipeline timeouts + concurrency
+      - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-900}
+      - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-7200}
+      - ARYX_JOB_TIMEOUT_MINUTES=${ARYX_JOB_TIMEOUT_MINUTES:-120}
+      - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
+      - ARYX_WORKER_THREADS=${ARYX_WORKER_THREADS:-4}
+      - ARYX_BATCH_SIZE=${ARYX_BATCH_SIZE:-500}
+      - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
+      - ARYX_RELATE_WORKERS=${ARYX_RELATE_WORKERS:-4}
+      - ARYX_RELATE_MAX_ATTRS=${ARYX_RELATE_MAX_ATTRS:-15}
+      - ARYX_INGEST_RELATE=${ARYX_INGEST_RELATE:-true}
+      # Document chunking
+      - ARYX_CHUNK_SIZE=${ARYX_CHUNK_SIZE:-1000}
+      - ARYX_CHUNK_OVERLAP=${ARYX_CHUNK_OVERLAP:-100}
+      - ARYX_CSV_CHUNK_ROWS=${ARYX_CSV_CHUNK_ROWS:-5000}
+      - ARYX_XML_MAX_ENTITY_TYPES=${ARYX_XML_MAX_ENTITY_TYPES:-10000}
+      - ARYX_XML_MAX_ROWS_PER_TYPE=${ARYX_XML_MAX_ROWS_PER_TYPE:-10000}
+      # Scalability caps
+      - ARYX_MAX_BLOCK_SIZE=${ARYX_MAX_BLOCK_SIZE:-50000}
+      - ARYX_MAX_PAIRS_PER_BLOCK=${ARYX_MAX_PAIRS_PER_BLOCK:-2000}
+      - ARYX_MAX_RELATE_PAIRS=${ARYX_MAX_RELATE_PAIRS:-50}
+      - ARYX_GRAPH_QUERY_LIMIT=${ARYX_GRAPH_QUERY_LIMIT:-5000}
+      - ARYX_TRANSITIVE_MAX_DEPTH=${ARYX_TRANSITIVE_MAX_DEPTH:-4}
+      - ARYX_RULES_DB_WARN_THRESHOLD=${ARYX_RULES_DB_WARN_THRESHOLD:-20}
+      # Entity resolution thresholds
+      - ARYX_ER_AUTO_MERGE=${ARYX_ER_AUTO_MERGE:-0.95}
+      - ARYX_ER_ADJUDICATE=${ARYX_ER_ADJUDICATE:-0.95}
+      - ARYX_ER_REVIEW=${ARYX_ER_REVIEW:-0.75}
+      - ARYX_EMBED_BATCH_SIZE=${ARYX_EMBED_BATCH_SIZE:-50}
+      - ARYX_EMBED_DIM=${ARYX_EMBED_DIM:-1024}
+      # LLM models
+      - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-oci}
+      - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-cohere.command-a-03-2025}
+      - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-cohere.command-a-03-2025}
+      - ARYX_LLM_CHEAP_MODEL_OVERRIDE=${ARYX_LLM_CHEAP_MODEL_OVERRIDE:-cohere.command-a-03-2025}
+      - ARYX_LLM_FRONTIER_MODEL_OVERRIDE=${ARYX_LLM_FRONTIER_MODEL_OVERRIDE:-cohere.command-a-03-2025}
+      - ARYX_EMBED_MODEL_OVERRIDE=${ARYX_EMBED_MODEL_OVERRIDE:-cohere.embed-multilingual-v3.0}
+      # Ontology interchange
+      - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
+      - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
+      # Scalability
+      - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
+      # CPQ native-UI layout export directory
+      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
+      # DB connection pool sizing
+      - ARYX_DB_POOL_MAX_SIZE=${ARYX_DB_POOL_MAX_SIZE:-25}
+      # Observability
+      - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
+      # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_API_AUTH=${ARYX_API_AUTH:-false}
+    ports:
+      - "8088:8000"
+    depends_on:
+      oracle:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Shay API — AI sales assistant backend ───────────────────────────────────
+  # Same local Oracle instance as Aryx, via oracledb thin client.
+  shay-api:
+    build:
+      context: ./shay_backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      - DATABASE_URL=oracle+oracledb://${ARYX_DB_USER}:${ARYX_DB_PASSWORD}@localhost/?dsn=${ARYX_OCI_ADB_DSN}
+      - SHAY_RUN_MIGRATIONS=false
+      - SHAY_INIT_DB=true
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - SHAY_TOKEN_ENCRYPTION_KEY=${SHAY_TOKEN_ENCRYPTION_KEY}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI}
+      - GOOGLE_GMAIL_REDIRECT_URI=${GOOGLE_GMAIL_REDIRECT_URI}
+      - SF_CONNECT_REDIRECT_URI=${SF_CONNECT_REDIRECT_URI}
+      - ZOHO_CRM_CONNECT_REDIRECT_URI=${ZOHO_CRM_CONNECT_REDIRECT_URI}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+    ports:
+      - "8090:8000"
+    depends_on:
+      oracle:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  # ── Next.js web UI ───────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      shay-api:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+networks:
+  aryx-net:
+    driver: bridge
+
+volumes:
+  oracle-local-data:
