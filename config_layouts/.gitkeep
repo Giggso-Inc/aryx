@@ -1,0 +1,13 @@
+Placeholder so this directory exists in every checkout (git doesn't track
+empty directories). The 4 stale CPQ native-UI layout exports that used to
+live here were removed in fe9305f3 -- see that commit and
+docs/LOCAL_OCI_ORACLE_STACK_PLAN_2026-09-15.md's "Implementation notes"
+section for why. This directory itself still needs to exist: the Dockerfile
+does `COPY config_layouts/ ./config_layouts/`, which fails the build
+entirely if the source directory is missing (not just empty) -- confirmed
+live, this is exactly what broke `docker compose ... build`.
+
+`LocalDirLayoutFileSource` (ARYX_CPQ_LAYOUT_DIR=/app/config_layouts) already
+tolerates an empty directory gracefully at runtime -- it just means no
+layout files are found, not a crash. Remove this placeholder once real
+layout export files are added back here.
