@@ -239,7 +239,7 @@ Reserve Command R+ for Ask synthesis and brief drafting only.*
 
 ### Stage 6 — Land to Oracle ADB
 
-**OCI Service:** Oracle Autonomous Database 23ai
+**OCI Service:** Oracle Autonomous Database 26ai
 
 Raw records, chunks, embeddings, and extracted entities are written to
 Oracle ADB. This stage includes:
@@ -318,7 +318,7 @@ No separate billing beyond the Data Flow job cost.
 
 ### Stage 8 — SQL:2023 Property Graph
 
-**OCI Service:** Oracle Autonomous Database 23ai (included)
+**OCI Service:** Oracle Autonomous Database 26ai (included)
 
 The `CREATE PROPERTY GRAPH` view over `aryx_entity` and `aryx_relationship`
 is a DDL statement — one-time setup, no per-use cost. Graph queries execute
@@ -369,7 +369,7 @@ Export of 100K entities: ~30s × 2 ECPU = $0.0034.
 
 ### Stage 10 — Graph Query via Select AI (Ask Flow)
 
-**OCI Service:** Oracle ADB 23ai (Select AI) + OCI Generative AI
+**OCI Service:** Oracle ADB 26ai (Select AI) + OCI Generative AI
 
 The Ask flow has two sub-costs:
 1. **Select AI (NL → SQL/PGQL):** `DBMS_CLOUD_AI.GENERATE()` calls OCI GenAI
@@ -606,9 +606,9 @@ triggers a Data Flow job for >10 files.
 | 3. Chunk + PII | OCI Functions or Data Flow | ~$0.001 |
 | 4. Embed | OCI GenAI (Cohere Embed v3) | $0.001 |
 | 5. Entity extraction | OCI GenAI (Cohere Command R) | $0.019 |
-| 6. Land to ADB | Oracle ADB 23ai | ~$0.00003 |
+| 6. Land to ADB | Oracle ADB 26ai | ~$0.00003 |
 | 7. Resolution | OCI Functions or Data Flow | ~$0.0001 |
-| 8–9. Graph + Graph Studio | Oracle ADB 23ai (included) | $0 |
+| 8–9. Graph + Graph Studio | Oracle ADB 26ai (included) | $0 |
 | 11. OWL 2 RL reasoning | Oracle PGX (batch, standing VM) | ~$0.001 |
 | **Total per document** | | **~$0.14** |
 
@@ -625,7 +625,7 @@ triggers a Data Flow job for >10 files.
 | OCI Functions (worker) | ~$0 |
 | OCI GenAI — Embedding | ~$0.20 |
 | OCI GenAI — Extraction (Command R) | ~$9.30 |
-| Oracle ADB 23ai (compute + storage) | ~$40 |
+| Oracle ADB 26ai (compute + storage) | ~$40 |
 | OCI GenAI — Ask (Command R+) | ~$46 |
 | Oracle PGX VM (standing) | $0 (A1.Flex Always Free) |
 | CQ Testing | ~$1 |
@@ -640,7 +640,7 @@ triggers a Data Flow job for >10 files.
 | OCI Functions (worker) | ~$0.36 |
 | OCI GenAI — Embedding | ~$1.20 |
 | OCI GenAI — Extraction (Command R) | ~$55.80 |
-| Oracle ADB 23ai (2 ECPUs, 200 GB) | ~$65 |
+| Oracle ADB 26ai (2 ECPUs, 200 GB) | ~$65 |
 | OCI GenAI — Ask (Command R+) | ~$230 |
 | Oracle PGX VM (E4.Flex 2 OCPU) | ~$36 |
 | CQ Testing | ~$4 |
@@ -655,7 +655,7 @@ triggers a Data Flow job for >10 files.
 | OCI Data Flow (worker) | ~$0.90 |
 | OCI GenAI — Embedding | ~$8.00 |
 | OCI GenAI — Extraction (Command R) | ~$372 |
-| Oracle ADB 23ai (4 ECPUs, 500 GB) | ~$180 |
+| Oracle ADB 26ai (4 ECPUs, 500 GB) | ~$180 |
 | OCI GenAI — Ask (Command R+) | ~$1,150 |
 | Oracle PGX VM (E4.Flex 4 OCPU) | ~$73 |
 | CQ Testing | ~$20 |

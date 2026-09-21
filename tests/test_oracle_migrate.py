@@ -100,7 +100,7 @@ class TestSplitBlocksIntegration(unittest.TestCase):
         self.assertIn("NO_DATA_FOUND", blocks[0])
 
     def test_comment_lines_do_not_produce_blocks(self) -> None:
-        sql = "-- Oracle ADB 23ai: survivorship.\n-- workspace survivorship already in 0009.\n"
+        sql = "-- Oracle ADB 26ai: survivorship.\n-- workspace survivorship already in 0009.\n"
         blocks = _split_blocks(sql)
         self.assertEqual(len(blocks), 0)
 

@@ -1,4 +1,4 @@
-"""Oracle ADB 23ai implementation of the backend-agnostic CPQ RDB accessor.
+"""Oracle ADB 26ai implementation of the backend-agnostic CPQ RDB accessor.
 
 Split out of `cpq/rdb.py` (Raven Style Compliance Plan, Phase 2a,
 2026-09-03). See rdb.py's module docstring for the dialect-split rationale.
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class OracleCpqRdb(PostgresCpqRdb):
-    """Oracle ADB 23ai implementation — JSON_VALUE over the JSON column.
+    """Oracle ADB 26ai implementation — JSON_VALUE over the JSON column.
 
     Design-complete but not yet exercised by automated tests (the suite runs
     on FalkorDB + Postgres; see docs/CPQ_GRAPH_FIX_PLAN.md).

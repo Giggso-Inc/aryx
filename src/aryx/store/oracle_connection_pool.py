@@ -1,5 +1,5 @@
 """Connection wrapper, pool, and thread-safe singleton factory for Oracle
-ADB 23ai — the psycopg_pool-compatible surface every store class acquires
+ADB 26ai — the psycopg_pool-compatible surface every store class acquires
 connections through.
 
 Split out of `store/oracle_pool.py` (Raven Style Compliance Plan, Phase 2a,

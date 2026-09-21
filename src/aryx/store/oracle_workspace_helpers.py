@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def _parse_brief(v: Any) -> dict:
     """Return the brief column value as a Python dict.
 
-    oracledb thin may return Oracle 23ai JSON columns as either a Python dict
+    oracledb thin may return Oracle 26ai JSON columns as either a Python dict
     (native JSON type) or a plain str (JSON text). Handle both so the API
     response always carries a JSON object, never a raw JSON-encoded string.
     """

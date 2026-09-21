@@ -109,13 +109,14 @@ using standard SPARQL without any aryx-specific client code.
 
 ---
 
-## Service 2 — Oracle Autonomous Database 23ai (Converged Semantic Layer)
+## Service 2 — Oracle Autonomous Database 26ai (Converged Semantic Layer)
 
 ### What This Service Is
 
-Oracle Autonomous Database 23ai is the operational database — the source of
-truth for all persistent data. The "23ai" label marks two specific features
-added in the Oracle Database 23 release:
+Oracle Autonomous Database 26ai is the operational database — the source of
+truth for all persistent data. The two features this section relies on were
+both introduced in the Oracle Database 23ai release and carry forward
+unchanged in 26ai:
 
 **Feature 1: SQL:2023 Property Graphs**
 
@@ -189,7 +190,7 @@ Two connection points in aryx:
 
 aryx's entire source of truth — `aryx_entity`, `aryx_relationship`,
 `aryx_ontology_type`, `aryx_ontology_axiom`, `aryx_chunk`, all 29 migrations —
-lives in Postgres. Oracle Autonomous Database 23ai is a drop-in replacement
+lives in Postgres. Oracle Autonomous Database 26ai is a drop-in replacement
 for Postgres at this level. The same tables, same schema, same migration
 scripts (with minor SQL dialect changes) run on Oracle ADB.
 
@@ -206,7 +207,7 @@ aryx's Ask flow is in `src/aryx/api/ask_api.py`. It currently:
 2. Executes the Cypher query against FalkorDB
 3. Returns entity results to the LLM for a final answer
 
-With Select AI on Oracle ADB 23ai:
+With Select AI on Oracle ADB 26ai:
 1. The NL question goes directly to `DBMS_CLOUD_AI.GENERATE` inside Oracle
 2. Oracle generates and executes a SQL/PGQL query against its own tables
 3. Results come back as SQL rows — no Cypher, no FalkorDB round-trip
@@ -222,7 +223,7 @@ ARYX_ADAPTER_LLM=aryx.adapters.oracle.selectai:SelectAiLlm
 
 ### What aryx Gains
 
-| Current (Postgres + FalkorDB + LLM) | After Oracle ADB 23ai |
+| Current (Postgres + FalkorDB + LLM) | After Oracle ADB 26ai |
 |---|---|
 | Two stores to keep in sync (Postgres source of truth + FalkorDB projection) | One store — property graph queries run directly on `aryx_entity` / `aryx_relationship` |
 | Project stage (`project_graph()`) required before Ask can answer | Project stage optional — SQL:2023 graph queries run against source tables |
@@ -455,7 +456,7 @@ PDF file
   → embed_chunks() (OCI embed model)         [vectors → Oracle ADB vector store]
   → LLMGraphTransformer (OCI GenAI)          [entities + relationships as triples]
   → resolve_run()                            [same resolution logic — unchanged]
-  → Oracle ADB 23ai write                    [entities + relationships into SQL:2023 graph]
+  → Oracle ADB 26ai write                    [entities + relationships into SQL:2023 graph]
   → Oracle Graph Studio SPARQL endpoint      [queries served by Oracle — no FalkorDB]
 ```
 
@@ -477,7 +478,7 @@ ARYX_EDITION=aryx-o
 ARYX_ADAPTER_GRAPH_READER=aryx.adapters.oracle.graph:OracleGraphReader
 ARYX_ADAPTER_GRAPH_STORE=aryx.adapters.oracle.graph:OracleGraphStore
 
-# Service 2 — Oracle ADB 23ai (RelationalPort + Ask flow)
+# Service 2 — Oracle ADB 26ai (RelationalPort + Ask flow)
 ARYX_ADAPTER_RELATIONAL=aryx.adapters.oracle.rdb:OracleRelationalAdapter
 
 # Service 3 — OCI GenAI (LlmPort — covers extraction + NL querying)

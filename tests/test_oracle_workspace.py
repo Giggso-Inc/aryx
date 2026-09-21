@@ -500,7 +500,7 @@ class TestSetBrief(unittest.TestCase):
 class TestParseBrief(unittest.TestCase):
     """_parse_brief() normalises the Oracle JSON column return value.
 
-    oracledb thin returns Oracle 23ai JSON columns as either a Python str
+    oracledb thin returns Oracle 26ai JSON columns as either a Python str
     (JSON text — what we store via json.dumps()) or a Python dict (OSON binary).
     _parse_brief must handle all cases so callers always receive a dict.
     """

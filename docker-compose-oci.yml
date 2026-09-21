@@ -1,7 +1,7 @@
 # aryx OCI deployment stack — runs on OCI A1.Flex VM (4 OCPU / 24 GB ARM).
 #
 # What this replaces vs docker-compose.yml (local dev):
-#   postgres    → Oracle ADB 23ai       (managed, TLS)
+#   postgres    → Oracle ADB 26ai       (managed, TLS)
 #   falkordb    → Oracle Graph / PGX    (pgx-server container + ADB SQL/PGQ)
 #   ollama      → OCI GenAI API         (Cohere Embed v3, Command R / R+)
 #   worker      → OCI Functions         (per-doc async, fire-and-forget)
@@ -65,7 +65,7 @@ services:
       - ARYX_OCI_MODE=true
       - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
       - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
-      # DB → Oracle ADB 23ai
+      # DB → Oracle ADB 26ai
       - ARYX_DB_BACKEND=oci
       - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
@@ -176,7 +176,7 @@ services:
       retries: 3
 
   # ── Shay API — AI sales assistant backend ───────────────────────────────────
-  # Shay uses Oracle ADB 23ai (same instance as Aryx) via oracledb thin client.
+  # Shay uses Oracle ADB 26ai (same instance as Aryx) via oracledb thin client.
   # DATABASE_URL is built inline from the Aryx DB credentials — no separate
   # Postgres sidecar required.
   # SHAY_RUN_MIGRATIONS=false: Alembic migrations are Postgres-generated.

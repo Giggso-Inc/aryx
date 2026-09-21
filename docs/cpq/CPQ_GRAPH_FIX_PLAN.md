@@ -105,7 +105,7 @@ projection with the new store code. No in-place graph migration needed.
 
 ### 1e. Oracle graph backend parity
 
-Aryx runs on two backend pairs — FalkorDB + Postgres, or OCI Oracle ADB 23ai for
+Aryx runs on two backend pairs — FalkorDB + Postgres, or OCI Oracle ADB 26ai for
 both graph and RDB (`effective_graph_backend`, `src/aryx/config.py`). The lift
 must be equivalent on both:
 

@@ -64,7 +64,7 @@ class OciSettingsMixin(BaseSettings):
     )
     db_backend: str = Field(
         default="",
-        description="Relational store backend: 'local' (Postgres) or 'oci' (Oracle ADB 23ai). Phase 2.",
+        description="Relational store backend: 'local' (Postgres) or 'oci' (Oracle ADB 26ai). Phase 2.",
     )
     worker_backend: str = Field(
         default="",

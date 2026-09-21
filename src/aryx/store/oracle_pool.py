@@ -1,11 +1,11 @@
-"""Oracle ADB 23ai connection pool — psycopg3-compatible interface layer.
+"""Oracle ADB 26ai connection pool — psycopg3-compatible interface layer.
 
 Wraps python-oracledb so all 19 store classes work unchanged when
 ARYX_DB_BACKEND=oci. The wrapper handles three translation concerns:
 
 1. Parameter style: psycopg3 uses %s / %(name)s — oracledb uses :1 / :name
 2. JSON: psycopg3 uses psycopg.types.json.Json() wrappers — oracledb accepts
-   plain dicts for JSON columns natively on ADB 23ai
+   plain dicts for JSON columns natively on ADB 26ai
 3. RETURNING: psycopg3 returns rows from INSERT/UPDATE RETURNING via fetchone();
    oracledb requires cursor.var() output variables and RETURNING ... INTO :var
 

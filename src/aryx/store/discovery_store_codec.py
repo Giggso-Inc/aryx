@@ -27,7 +27,7 @@ class DiscoveryPayloadTooLarge(ValueError):
 
     ``data_json`` is stored gzip-compressed then base64-encoded — this keeps
     it a plain JSON string (no column-type/migration change, works
-    unchanged on both Postgres and Oracle ADB 23ai) while shrinking
+    unchanged on both Postgres and Oracle ADB 26ai) while shrinking
     text-heavy CSV/mention payloads substantially. This guard measures the
     size AFTER compression against ``settings.discovery_max_payload_mb``, so
     an oversized batch still fails as a clean, catchable error instead of

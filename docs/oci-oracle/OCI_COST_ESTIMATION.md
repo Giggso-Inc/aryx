@@ -22,11 +22,11 @@ deployment tiers.
 
 ---
 
-## Service 1 — Oracle Autonomous Database 23ai (ADB)
+## Service 1 — Oracle Autonomous Database 26ai (ADB)
 
 ### Purpose in aryx
 
-ADB 23ai is the **central relational store** for aryx-o. It replaces both
+ADB 26ai is the **central relational store** for aryx-o. It replaces both
 Postgres (source of truth) and the FalkorDB projection layer by hosting:
 
 - All 29 aryx migration tables (`aryx_entity`, `aryx_relationship`,
@@ -35,7 +35,7 @@ Postgres (source of truth) and the FalkorDB projection layer by hosting:
   — enabling direct graph queries without a separate FalkorDB store
 - Oracle Graph Studio — the RDF semantic graph and SPARQL endpoint
   (bundled inside ADB, no separate service needed)
-- pgvector replacement — Oracle ADB 23ai has native vector storage
+- pgvector replacement — Oracle ADB 26ai has native vector storage
   (768-dim embeddings from `aryx_chunk_embedding` migrate here)
 - Select AI (`DBMS_CLOUD_AI`) — NL-to-SQL/PGQL for the Ask flow
 
@@ -57,7 +57,7 @@ OCI Console → Oracle Database → Autonomous Database → Create Autonomous Da
   Database name:      ARYXDB
   Workload type:      Transaction Processing (OLTP)
   Deployment type:    Serverless
-  Database version:   23ai
+  Database version:   26ai
   ECPU count:         2 (auto-scaling enabled, max: 8)
   Storage (TB):       1
   Password:           [set admin password]
@@ -111,7 +111,7 @@ CREATE PROPERTY GRAPH aryx_ws_graph
 
 Run the 29 aryx migration SQL files (0001–0029) against ADB using SQL*Plus
 or SQL Developer, adjusting `BIGSERIAL` → `NUMBER GENERATED ALWAYS AS IDENTITY`
-and `JSONB` → `JSON` (Oracle 23ai supports ISO JSON).
+and `JSONB` → `JSON` (Oracle 26ai supports ISO JSON).
 
 ### aryx Adapter
 
@@ -682,7 +682,7 @@ development.
 
 | Service | Config | Monthly Cost |
 |---|---|---|
-| Oracle ADB 23ai | 1 OCPU, 20 GB (Always Free) | $0 |
+| Oracle ADB 26ai | 1 OCPU, 20 GB (Always Free) | $0 |
 | OCI GenAI | ~50 docs, ~200 Ask queries | ~$4 |
 | OCI Document Understanding | <1,000 pages (Always Free) | $0 |
 | Oracle Graph Server (PGX) | A1.Flex VM (Always Free) | $0 |
@@ -702,7 +702,7 @@ Suitable for a team of 5, processing ~500 documents/month, ~2,000 Ask queries.
 
 | Service | Config | Monthly Cost |
 |---|---|---|
-| Oracle ADB 23ai | 2 ECPUs, 100 GB, 12 hrs/day avg | ~$40 |
+| Oracle ADB 26ai | 2 ECPUs, 100 GB, 12 hrs/day avg | ~$40 |
 | OCI GenAI | 500 docs, 2,000 Ask queries | ~$50 |
 | OCI Document Understanding | ~5,000 pages | ~$52 |
 | Oracle Graph Server (PGX) | E4.Flex 2 OCPU (or A1.Flex free) | ~$0–36 |
@@ -722,7 +722,7 @@ Suitable for 20+ users, ~5,000 documents/month, ~20,000 Ask queries, 5M+ entitie
 
 | Service | Config | Monthly Cost |
 |---|---|---|
-| Oracle ADB 23ai | 4 ECPUs (auto-scale to 8), 500 GB, 20 hrs/day | ~$180 |
+| Oracle ADB 26ai | 4 ECPUs (auto-scale to 8), 500 GB, 20 hrs/day | ~$180 |
 | OCI GenAI | 5,000 docs, 20,000 Ask queries | ~$480 |
 | OCI Document Understanding | ~50,000 pages | ~$575 |
 | Oracle Graph Server (PGX) | E4.Flex 4 OCPU dedicated | ~$73 |
@@ -759,7 +759,7 @@ The services must be created in this order due to dependencies:
 
 ```
 1. OCI Networking (VCN + subnets)          ← prerequisite for all
-2. Oracle ADB 23ai                          ← prerequisite for Select AI, Graph Studio
+2. Oracle ADB 26ai                          ← prerequisite for Select AI, Graph Studio
 3. OCI Object Storage (buckets)            ← prerequisite for Document Understanding
 4. OCI Generative AI (credentials)         ← prerequisite for Select AI config in ADB
 5. Configure Select AI in ADB              ← depends on ADB + OCI GenAI credentials

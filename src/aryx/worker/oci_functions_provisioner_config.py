@@ -22,7 +22,7 @@ def _build_fn_config(settings: Any) -> dict[str, str]:
         ``config`` field. Empty values are excluded (OCI SDK rejects blank entries).
     """
     cfg: dict[str, str] = {
-        # ── Database (Oracle ADB 23ai, TLS no-wallet) ─────────────────────────
+        # ── Database (Oracle ADB 26ai, TLS no-wallet) ─────────────────────────
         "ARYX_DB_BACKEND": "oci",
         "ARYX_OCI_ADB_DSN": settings.oci_adb_dsn,
         "ARYX_RDB_DSN": settings.oci_adb_dsn,

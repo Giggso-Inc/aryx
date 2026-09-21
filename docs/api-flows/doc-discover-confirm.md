@@ -810,7 +810,7 @@ Reads from `aryx_entity` + `aryx_relationship`, writes nodes and edges:
 - `MERGE (n:TypeName {entity_id: X}) SET n += attributes`
 - `MERGE (a)-[:RELATIONSHIP_NAME]->(b)`
 
-**Oracle Graph (ADB 23ai):**
+**Oracle Graph (ADB 26ai):**
 - `INSERT INTO {workspace}_vertices ...`
 - `INSERT INTO {workspace}_edges ...`
 

@@ -1,4 +1,4 @@
-"""Oracle Property Graph reader — queries ADB 23ai backing tables with SQL/PGQ.
+"""Oracle Property Graph reader — queries ADB 26ai backing tables with SQL/PGQ.
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `oracle_graph_reader_helpers.py` (row-mapping), `oracle_graph_reader_basic.py`
@@ -28,7 +28,7 @@ __all__ = ["OracleGraphReader"]
 class OracleGraphReader(
     _OracleGraphBasicReadMixin, _OracleGraphNeighborsMixin, _OracleGraphTraverseMixin,
 ):
-    """Reads entities, relationships, and provenance from Oracle ADB 23ai backing tables."""
+    """Reads entities, relationships, and provenance from Oracle ADB 26ai backing tables."""
 
     def __init__(self, dsn: str, workspace_id: int) -> None:
         """Connect to Oracle ADB and scope all reads to workspace_id."""

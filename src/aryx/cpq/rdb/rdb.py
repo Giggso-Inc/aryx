@@ -2,7 +2,7 @@
 
 The CPQ engine reads entity attributes and rule definitions from the
 relational store. Postgres stores them in a JSONB column queried with
-``attributes->>'key'``; Oracle ADB 23ai stores a JSON column queried with
+``attributes->>'key'``; Oracle ADB 26ai stores a JSON column queried with
 ``JSON_VALUE(attributes, '$.key')``. This module hides that dialect split so
 no raw backend-specific SQL lives in ``cpq/``.
 
