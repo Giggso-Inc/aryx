@@ -22,6 +22,7 @@ _EXPORTS = {
     "classify_ask_route": "intent_gateway",
     "classify_intent": "intent_gateway",
     "clear_gateway_cache": "intent_gateway_cache",
+    "detect_feature_region_search": "intent_gateway",
     "hard_off_topic": "intent_gateway",
     "map_route_to_det_expectation": "intent_gateway",
     "mark_top_level_route_used": "intent_gateway",

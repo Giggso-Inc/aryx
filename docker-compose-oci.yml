@@ -19,6 +19,7 @@
 #   shay-api     1 GB
 #   mcp          1 GB
 #   web          1 GB
+#   sales-ui     1 GB
 #   OS + Docker  4 GB
 #   Buffer       6 GB
 
@@ -264,6 +265,36 @@ services:
       api:
         condition: service_healthy
       shay-api:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+  # ── Streamlit sales-ui — sales-rep quoting chat ──────────────────────────────
+  # OCI Security List: port 8502 restricted to VCN CIDR (10.0.0.0/16) — not
+  # public internet, same posture as mcp/api. Route external access through
+  # the VM's reverse proxy (nginx) like the other UI ports, not by opening
+  # 8502 directly — this stack has no OCI Load Balancer/OKE Ingress in front
+  # of it (single A1.Flex VM, see header comment); confirm this against the
+  # real proxy config before onboarding external users.
+  sales-ui:
+    build: .
+    env_file: .env
+    command: ["streamlit", "run", "sales_streamlit/app.py", "--server.port=8502", "--server.address=0.0.0.0", "--server.headless=true"]
+    environment:
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_SALES_MCP_URL=http://api:8000/mcp
+      - ARYX_SALES_MCP_ALLOW_HTTP=1
+      # Same 30s bump as docker-compose.yml's sales-ui block -- live-confirmed
+      # 2026-09-01 fix for session.initialize() tearing down under load.
+      - ARYX_SALES_MCP_CONNECT_TIMEOUT=30
+      # Real MSI host, reached over the VM's normal outbound networking.
+      - ARYX_SALES_MSI_BASE_URL=${ARYX_SALES_MSI_BASE_URL}
+    ports:
+      - "127.0.0.1:8502:8502"
+    depends_on:
+      api:
         condition: service_healthy
     networks:
       - aryx-net

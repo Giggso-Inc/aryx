@@ -148,6 +148,70 @@ def hard_off_topic(question: str) -> bool:
     return bool(_OFF_TOPIC_HARD.search(question or ""))
 
 
+# Feature/region product-SEARCH intent (2026-09-16 andie analysis) --
+# distinct from CPQ configuration ("set region to NA") and from generic QA.
+# Deliberately deterministic/regex-only, not routed through the gateway LLM
+# (classify_ask_route): this only needs to catch a narrow, high-precision
+# pattern -- "which/what/list/show/find products/models ... region X /
+# feature Y" -- and a false negative just falls through to the existing
+# CPQ/QA router unchanged, so there is no correctness cost to keeping this
+# conservative. A false POSITIVE would be worse (hijacking a real CPQ turn
+# into a search response), which is why _SEARCH_TRIGGER requires both a
+# search verb AND a product/model/catalog noun, not either alone.
+_SEARCH_TRIGGER = re.compile(
+    r"\b(which|what|list|show|find)\b.{0,40}\b(product|model|catalog)s?\b",
+    re.IGNORECASE,
+)
+_REGION_SEARCH = re.compile(
+    r"\bregion\s+([A-Za-z]{2,15})\b|\bin\s+([A-Za-z]{2,15})\s+region\b",
+    re.IGNORECASE,
+)
+# "Feature Type" is the only human label CONFIRMED real against
+# attrToVarMapping.csv this session (2026-09-15 hardcoding audit) -- other
+# labels exist in principle (resolve_variable_name_for_role is generic),
+# but this deterministic extractor only ever emits that one confirmed
+# label, never a guessed one.
+_FEATURE_SEARCH = re.compile(
+    r"\bfeature(?:\s+type)?\s*[:\s]\s*([A-Za-z0-9][A-Za-z0-9 \-]{1,40}?)(?=[?.]|$)|"
+    r"\b(?:support|supports|with|has|have)\s+([A-Za-z0-9][A-Za-z0-9 \-]{1,40}?)\s+feature\b",
+    re.IGNORECASE,
+)
+
+
+def detect_feature_region_search(
+    question: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Deterministic (region, feature_label, feature_value) extraction for
+    a feature/region product-search question, or (None, None, None) if the
+    question doesn't match this narrow pattern -- see search_products_
+    combined() (aryx.graph.feature_search) for what consumes this.
+
+    Returns feature_label="Feature Type" whenever a feature value is
+    extracted -- the only human label confirmed real this session; never
+    a broader guess at other possible roles.
+    """
+    q = question or ""
+    if not _SEARCH_TRIGGER.search(q):
+        return None, None, None
+
+    region = None
+    region_match = _REGION_SEARCH.search(q)
+    if region_match:
+        region = (region_match.group(1) or region_match.group(2) or "").strip() or None
+
+    feature_value = None
+    feature_match = _FEATURE_SEARCH.search(q)
+    if feature_match:
+        feature_value = (
+            feature_match.group(1) or feature_match.group(2) or ""
+        ).strip() or None
+    feature_label = "Feature Type" if feature_value else None
+
+    if region is None and feature_value is None:
+        return None, None, None
+    return region, feature_label, feature_value
+
+
 @dataclass
 class GatewayDecision:
     """Outcome of one gateway classify call for the turn orchestrator."""

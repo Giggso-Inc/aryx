@@ -104,13 +104,24 @@ class GraphReader:
         return _describe_schema(self._query, self.distinct_types(), sample_per_type)
 
     def find_entities(self, ontology_type: str | None = None,
-                      name: str | None = None, limit: int = 50,
+                      name: str | None = None, *,
+                      attrs: dict[str, str] | None = None,
+                      limit: int = 50,
                       offset: int = 0) -> list[dict[str, Any]]:
-        """Find entities filtered by type and/or case-insensitive name match.
+        """Find entities filtered by type, name, and/or attribute-value predicates.
 
         Args:
             ontology_type: Exact ontology type to match, or None for any.
             name: Substring matched case-insensitively against the name, or None.
+            attrs: Optional {attribute_key: value} predicates, ANDed together
+                with everything else. Each value is matched case-insensitively
+                against the node property's string form (mirrors `name`'s own
+                CONTAINS-on-lowered-string approach, not exact-typed equality,
+                since node property types are whatever the ingest pipeline
+                happened to store). Keys are validated against
+                ^[A-Za-z_][A-Za-z0-9_]*$ and rejected otherwise — Cypher
+                property names cannot be parameterized the way values can,
+                so an unvalidated key would be a straight injection path.
             limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
             offset: Rows to skip before applying limit — paginate a
                 single ontology_type past the ARYX_GRAPH_QUERY_LIMIT cap by
@@ -123,7 +134,7 @@ class GraphReader:
         """
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
         skip = max(0, int(offset))
-        return _find_entities(self._query, ontology_type, name, capped, skip)
+        return _find_entities(self._query, ontology_type, name, capped, skip, attrs)
 
     def neighbors(self, entity_id: int) -> list[dict[str, Any]]:
         """Return one-hop related entities in both directions."""

@@ -9,6 +9,7 @@ GraphReader keeps a thin one-line delegating method for each.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from aryx.graph.reader_entity import _entity
@@ -81,14 +82,23 @@ def _describe_schema(query: _Query, types: list[str], sample_per_type: int) -> d
 
 def _find_entities(
     query: _Query, ontology_type: str | None, name: str | None,
-    capped: int, skip: int,
+    capped: int, skip: int, attrs: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Find entities filtered by type and/or case-insensitive name match.
+    """Find entities filtered by type, name, and/or attribute-value predicates.
 
     `capped`/`skip` are resolved by the caller (GraphReader.find_entities),
     since capping reads `get_settings().graph_query_limit` — kept in
     reader.py so existing `aryx.graph.reader.get_settings` patches keep
     intercepting it.
+
+    `attrs` — {attribute_key: value} predicates, ANDed together with
+    everything else. Each value is matched case-insensitively against the
+    node property's string form (mirrors `name`'s own CONTAINS-on-lowered-
+    string approach, not exact-typed equality, since node property types
+    are whatever the ingest pipeline happened to store). Keys are validated
+    against ^[A-Za-z_][A-Za-z0-9_]*$ and rejected otherwise — Cypher
+    property names cannot be parameterized the way values can, so an
+    unvalidated key would be a straight injection path.
     """
     clauses: list[str] = []
     params: dict[str, Any] = {}
@@ -98,6 +108,15 @@ def _find_entities(
     if name:
         clauses.append("toLower(e.name) CONTAINS toLower($name)")
         params["name"] = name
+    if attrs:
+        for i, (key, value) in enumerate(attrs.items()):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                raise ValueError(f"find_entities: invalid attribute key {key!r}")
+            pname = f"attr_val_{i}"
+            clauses.append(
+                f"toLower(toString(e.{key})) CONTAINS toLower(toString(${pname}))"
+            )
+            params[pname] = value
     where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
     rows = query(
         f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, properties(e) "

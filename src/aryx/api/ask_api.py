@@ -22,6 +22,7 @@ from aryx.cpq.intent_gateway.intent_gateway import (
     AskRouteDecision,
     classify_ask_route,
     classify_intent as gateway_classify_intent,
+    detect_feature_region_search,
     hard_off_topic,
     mark_top_level_route_used,
     soft_quote_heuristic,

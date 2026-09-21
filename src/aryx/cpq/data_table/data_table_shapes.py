@@ -58,6 +58,20 @@ def _is_hierarchy_shaped(keys: set[str]) -> bool:
     return "Product" in keys and "cpqModelName" in keys
 
 
+def _is_attr_var_mapping_shaped(keys: set[str]) -> bool:
+    # e.g. attrToVarMapping.csv -- maps a human-readable role/label (e.g.
+    # "Feature Type", "Region") to the real variable_name a model's rows
+    # actually use, per (cpqModel, group). Confirmed real (2026-09-15
+    # hardcoding audit): APX1000/"Feature Type" -> systemEnhancementFeature
+    # Type_astro. Deliberately NOT registered in _SHAPE_DETECTORS/
+    # _detect_shape below -- it's consumed by its own standalone loader
+    # (_load_attr_var_mapping_rows), not pooled into _load_all_tables()'s
+    # 5 fixed buckets, since every one of that function's existing callers
+    # unpacks its return value by fixed position and a 6th bucket would
+    # break all of them.
+    return {"cpqModel", "group", "attributeName", "attributeVariable"} <= keys
+
+
 def _is_series_mapping_shaped(keys: set[str]) -> bool:
     # e.g. Seriesmodelsmapping.csv -- maps a (region, country, ...)
     # condition to the real CPQModel variant that actually applies,

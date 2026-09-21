@@ -373,97 +373,97 @@
     ],
     [
       "sales_streamlit/app.py",
-      66,
+      128,
       "_mcp_client"
     ],
     [
       "sales_streamlit/app.py",
-      68,
+      130,
       "_mcp_client"
     ],
     [
       "sales_streamlit/app.py",
-      72,
+      134,
       "_msi_client"
     ],
     [
       "sales_streamlit/app.py",
-      74,
+      136,
       "_msi_client"
     ],
     [
       "sales_streamlit/app.py",
-      78,
+      140,
       "_workflow_store"
     ],
     [
       "sales_streamlit/app.py",
-      83,
+      145,
       "_workflow_store"
     ],
     [
       "sales_streamlit/app.py",
-      86,
+      148,
       "_load_messages"
     ],
     [
       "sales_streamlit/app.py",
-      91,
+      153,
       "_load_messages"
     ],
     [
       "sales_streamlit/app.py",
-      94,
+      156,
       "_show_workflow"
     ],
     [
       "sales_streamlit/app.py",
-      115,
+      177,
       "_show_workflow"
     ],
     [
       "sales_streamlit/app.py",
-      118,
+      180,
       "_run_msi"
     ],
     [
       "sales_streamlit/app.py",
-      164,
+      226,
       "_confirm_message"
     ],
     [
       "sales_streamlit/app.py",
-      181,
+      243,
       "<try>"
     ],
     [
       "sales_streamlit/app.py",
-      210,
+      272,
       "_render_message"
     ],
     [
       "sales_streamlit/app.py",
-      327,
+      389,
       "_render_chat"
     ],
     [
       "sales_streamlit/app.py",
-      353,
+      415,
       "<try>"
     ],
     [
       "sales_streamlit/app.py",
-      366,
+      428,
       "main"
     ],
     [
       "sales_streamlit/app.py",
-      370,
+      432,
       "<try>"
     ],
     [
       "sales_streamlit/app.py",
-      397,
+      470,
       "<try>"
     ],
     [
@@ -7928,23 +7928,18 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      45,
+      46,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      57,
+      58,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      67,
+      68,
       "ask_router"
-    ],
-    [
-      "src/aryx/api/ask_api.py",
-      76,
-      "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
@@ -7953,17 +7948,22 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      80,
+      78,
+      "get_llm_config"
+    ],
+    [
+      "src/aryx/api/ask_api.py",
+      81,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      82,
+      83,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      84,
+      85,
       "ask_router"
     ],
     [
@@ -8420,6 +8420,21 @@
       "src/aryx/api/ask_dispatch/ask_dispatch_query_approval_decline.py",
       131,
       "_dispatch_decline"
+    ],
+    [
+      "src/aryx/api/ask_feature_region_search.py",
+      42,
+      "_route_feature_region_search"
+    ],
+    [
+      "src/aryx/api/ask_feature_region_search.py",
+      62,
+      "<try>"
+    ],
+    [
+      "src/aryx/api/ask_feature_region_search.py",
+      76,
+      "_route_feature_region_search"
     ],
     [
       "src/aryx/api/ask_gateway/ask_gateway_compound_split.py",
@@ -9253,12 +9268,12 @@
     ],
     [
       "src/aryx/api/ask_run_ask.py",
-      27,
+      28,
       "run_ask"
     ],
     [
       "src/aryx/api/ask_run_ask.py",
-      143,
+      163,
       "run_ask"
     ],
     [
@@ -10308,12 +10323,12 @@
     ],
     [
       "src/aryx/api/graph_api.py",
-      23,
+      71,
       "_overview_payload"
     ],
     [
       "src/aryx/api/graph_api.py",
-      140,
+      221,
       "create_app"
     ],
     [
@@ -12498,42 +12513,42 @@
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      351,
+      415,
       "classify_intent"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      430,
+      494,
       "_classify_with_timeout"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      647,
+      711,
       "classify_intent"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      757,
+      821,
       "_parse_route"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      812,
+      876,
       "_parse_route"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      822,
+      886,
       "classify_ask_route"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      959,
+      1023,
       "<try>"
     ],
     [
       "src/aryx/cpq/intent_gateway/intent_gateway.py",
-      1018,
+      1082,
       "classify_ask_route"
     ],
     [
