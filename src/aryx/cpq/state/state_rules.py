@@ -73,6 +73,17 @@ class HidingRule:
     script: str | None = None
     conditions: list[tuple[int, str, str]] | None = None
     condition_operator: str = "4"
+    dt_whitelist_substitute: bool = False
+    """True for a narrow, explicitly-named set of "...If No Value(s)
+    Available"-shaped hiding rules whose BmFunction script is missing from
+    ingestion (docs/APX900_Hybrid_Combiner_Missing_Script_Issue.md) --
+    substitutes a real Data Table whitelist check (resolve_whitelist_values)
+    for the missing script's condition, rather than dropping the rule
+    entirely (see CpqEngine.load_hiding_rules/apply_hiding_rules). Never set
+    generically -- only for rule names this codebase has individually
+    confirmed follow the "hide when no legal value is available right now"
+    semantics via live evidence, the same discipline _CONFIRMED_DEAD_ATTRS
+    and similar named carve-outs elsewhere in engine.py already use."""
 
 
 @dataclass

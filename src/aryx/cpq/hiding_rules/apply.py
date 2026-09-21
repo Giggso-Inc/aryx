@@ -21,6 +21,9 @@ def apply_hiding_rules(
     rules: list[HidingRule],
     bml_eval: BmlEvaluator | None = None,
     filled_multi: dict[str, list[str]] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> tuple[list[ConfigAttr], list[str], set[str]]:
     """Apply hiding rules against current filled values.
 
@@ -39,6 +42,15 @@ def apply_hiding_rules(
     (operators "7"/"8"). Script-backed rules are unaffected — they
     already read `filled` directly via bml_eval, a separate contract.
 
+    workspace_id/catalog_prefix/dt_cache — only consulted for rules with
+    dt_whitelist_substitute=True (see that field's own docstring and
+    hiding_rules.type11._DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES);
+    `None`/default keeps every existing caller's behavior unchanged,
+    including for such rules (no workspace_id means "can't check the
+    Data Table," which falls back to the same "leave visible" safe
+    default as an unknown script outcome — never hides more aggressively
+    for lack of context).
+
     Returns:
       filtered_attrs — attrs still visible after rules are applied
       rule_messages  — human-readable list of rules that fired (for reporting)
@@ -56,6 +68,59 @@ def apply_hiding_rules(
     for rule in rules:
         target = by_rule_id.get(rule.target_attr_id)
         if not target:
+            continue
+        if rule.dt_whitelist_substitute:
+            # Missing-script substitute (see HidingRule.dt_whitelist_
+            # substitute's own docstring): hide only when a real,
+            # ingested constraint-shaped Data Table row CONFIRMS no
+            # legal value exists for this attr right now (resolve_
+            # whitelist_values returns [], never None -- None means "no
+            # Data Table coverage at all," which must NOT be treated as
+            # "confirmed no value," same never-guess distinction that
+            # function's own docstring already establishes).
+            if workspace_id is not None:
+                # Lazy import (both names): aryx.cpq.engine imports the
+                # `hiding_rules` package at module scope before
+                # `_cpq_model_candidates` is defined further down in
+                # engine.py -- a top-level import here would be a
+                # circular-import ordering error. `dt_resolve_whitelist_
+                # values` is looked up here too, not bound at module
+                # scope, so a test's `monkeypatch.setattr("aryx.cpq.
+                # engine.dt_resolve_whitelist_values", ...)` is actually
+                # observed (a module-scope `from ... import` would have
+                # bound this file's own separate name instead, silently
+                # missing the patch -- same pitfall already documented
+                # for the re-export hubs elsewhere in this codebase).
+                import aryx.cpq.engine as _engine_module  # noqa: PLC0415
+                base_model = filled.get("modelSelectionbaseModel_astro", "")
+                product = filled.get("productSelectionProduct_all", "")
+                if base_model:
+                    candidates = _engine_module._cpq_model_candidates(
+                        product, workspace_id, catalog_prefix, dt_cache,
+                        base_model=base_model,
+                    )
+                    legal_results = [
+                        _engine_module.dt_resolve_whitelist_values(
+                            cm, base_model, target.variable_name, filled,
+                            workspace_id, catalog_prefix, dt_cache,
+                        )
+                        for cm in candidates
+                    ]
+                    if legal_results and all(r == [] for r in legal_results):
+                        hidden_eids.add(target.entity_id)
+                        messages.append(
+                            f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
+                        )
+                        rule_trace.record_fire(
+                            rule_type="hiding", rule_id=rule.rule_name,
+                            attr=target.variable_name, outcome="hide",
+                            bml_tier="dt_whitelist_substitute",
+                        )
+                        continue
+            # Unconfirmed (no workspace_id, no base model yet, no Data
+            # Table coverage, or a real legal value exists) -- leave
+            # visible, the same safe default as an unresolvable script.
+            hidden_eids.discard(target.entity_id)
             continue
         if rule.script is not None:
             if bml_eval is None:

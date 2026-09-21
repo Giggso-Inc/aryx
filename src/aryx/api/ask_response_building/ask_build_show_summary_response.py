@@ -73,7 +73,8 @@ def _build_show_summary_response(
         req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     hidden_vns = _cpq_engine.apply_hiding_rules(
-        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)[2]
     visible_attrs = [a for a in attrs if a.variable_name not in hidden_vns]
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     summary = _cpq_summary_text(

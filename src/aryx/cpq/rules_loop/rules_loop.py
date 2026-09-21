@@ -38,12 +38,20 @@ def evaluate_rules_loop(
     display_order: dict[str, int] | None = None,
     workspace_id: int | None = None,
     catalog_prefix: str = "",
+    product_anchor_hint: str | None = None,
 ) -> tuple[list[Any], dict[str, str], dict[str, str], dict[int, list[str]]]:
     """Run hide → recommend → constrain → auto-fill until state is stable.
 
     workspace_id/catalog_prefix — passed straight through to auto_fill's
     real-Data-Table fallback; `None` (the default) keeps every existing
     caller's behavior unchanged.
+
+    product_anchor_hint — the customer's own original wording (see
+    CpqSession.product_anchor_question), passed straight through to
+    every internal `auto_fill` call's own Hardware-Version-not-
+    applicable override (see that param's own docstring there);
+    `None` (the default) keeps every existing caller's behavior
+    unchanged.
 
     display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2d:
     passed straight through to every internal `auto_fill` call so the
@@ -96,7 +104,7 @@ def evaluate_rules_loop(
         con_rules=con_rules, bml_eval=bml_eval, country=country,
         negated_vns=negated_vns, skip_always_ask=skip_always_ask,
         display_order=display_order, workspace_id=workspace_id,
-        catalog_prefix=catalog_prefix,
+        catalog_prefix=catalog_prefix, product_anchor_hint=product_anchor_hint,
     )
 
     # cpq_step start/done -- the per-pass "cpq_perf: pass N total ...s"

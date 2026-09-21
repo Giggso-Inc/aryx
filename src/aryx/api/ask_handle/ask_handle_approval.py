@@ -50,7 +50,8 @@ def _handle_approval(
     hints = hints or {}
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
-        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)[2]
     _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
         req.workspace_id, catalog_prefix, attrs)
     if session.model_leaf_resolved:

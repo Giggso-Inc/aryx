@@ -155,6 +155,91 @@ def resolve_product_cpq_models_from_rows(
     return tuple(sorted(product_to_models.get(norm, ())))
 
 
+# Guard against a spurious substring match on a very short real product
+# token (e.g. a 2-character code) matching purely by coincidence inside an
+# unrelated raw sentence -- same minimum-length discipline already used by
+# CpqEngine.resolve_product_hint's own Pass 2 (_HINT_MIN_PHRASE_LEN).
+_HINT_MATCH_MIN_LEN = 4
+
+
+def resolve_product_cpq_models_from_hint(
+    hint_text: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> tuple[str, ...]:
+    """Like `resolve_product_cpq_models_from_rows`, but for free/raw text
+    (e.g. a customer's own "I want APX 3000 for United States") instead of
+    an already-exact product name -- breaks the chicken-and-egg gap where
+    a device name is only known from what the customer originally typed,
+    before `productSelectionProduct_all` itself has been answered (docs/
+    Hardware_Version_APX3000_Product_Anchoring_Issue.md v2.2's merged
+    recommendation, step 1).
+
+    Reuses the SAME cached product-name -> CPQModel map `resolve_product_
+    cpq_models_from_rows` already builds and memoizes (one O(constraint_
+    rows) scan per (workspace_id, catalog_prefix), never repeated) --
+    every real, ingested product name is checked as a case-insensitive
+    substring match against `hint_text`, mirroring `resolve_product_hint`'s
+    own Pass 2 matching style.
+
+    Returns () (never guesses) when:
+      - no real product name matches at all, or
+      - 2+ DISTINCT real product names both match (genuinely ambiguous --
+        e.g. a raw sentence long enough to coincidentally contain two real
+        catalog product strings), or
+      - the only match is shorter than _HINT_MATCH_MIN_LEN characters (too
+        short to trust as a real, deliberate mention rather than
+        coincidental overlap).
+
+    Callers must treat an empty result exactly like an unresolvable hint --
+    fall through to whatever behavior applies when the device is genuinely
+    unknown, never assume it means "no real catalog data exists."
+    """
+    # Same product-name -> CPQModel(s) map resolve_product_cpq_models_
+    # from_rows itself builds -- memoized in `cache` under the identical
+    # key when a cache dict is supplied (so a caller sharing one per-turn
+    # cache across both functions never pays the O(constraint_rows) scan
+    # twice), but computed fresh (never persisted) when `cache` is None,
+    # exactly like every other Data Table resolver in this module.
+    key = ("_product_to_cpq_models", workspace_id, catalog_prefix)
+    if cache is not None and key in cache:
+        product_to_models: dict[str, set[str]] = cache[key]
+    else:
+        constraint_rows, _, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+        product_to_models = {}
+        for row in constraint_rows:
+            cm = row.get("CPQModel")
+            if not cm or _is_stale_cpq_model(cm):
+                continue
+            for i in range(1, 20):
+                if row.get(f"attr{i}") == "productSelectionProduct_all":
+                    val = row.get(f"val{i}")
+                    if val:
+                        product_to_models.setdefault(
+                            str(val).strip().upper(), set(),
+                        ).add(cm)
+                    break
+        if cache is not None:
+            cache[key] = product_to_models
+    if not product_to_models:
+        return ()
+
+    hint_norm = " ".join((hint_text or "").strip().upper().split())
+    if not hint_norm:
+        return ()
+
+    matched_products: set[str] = set()
+    for product_name in product_to_models:
+        candidate = " ".join(product_name.split())
+        if len(candidate) < _HINT_MATCH_MIN_LEN:
+            continue
+        if candidate in hint_norm:
+            matched_products.add(product_name)
+
+    if len(matched_products) != 1:
+        return ()
+    return tuple(sorted(product_to_models[next(iter(matched_products))]))
+
+
 # ---------------------------------------------------------------------------
 # Feature/region search (Phase 2 of the 2026-09-15/16 feature/region search
 # plan). Both resolvers below are REVERSE lookups relative to the resolvers

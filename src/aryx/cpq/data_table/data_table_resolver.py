@@ -48,6 +48,7 @@ from aryx.cpq.data_table.data_table_loader import (
 )
 from aryx.cpq.data_table.data_table_product import (
     resolve_product_cpq_model_family,
+    resolve_product_cpq_models_from_hint,
     resolve_product_cpq_models_from_rows,
     resolve_region_allow_value,
     resolve_variable_name_for_role,
@@ -68,6 +69,7 @@ __all__ = [
     "governed_required_attr_names_for_base_model",
     "resolve_invalid_product_variant",
     "resolve_product_cpq_model_family",
+    "resolve_product_cpq_models_from_hint",
     "resolve_product_cpq_models_from_rows",
     "resolve_region_allow_value",
     "resolve_variable_name_for_role",

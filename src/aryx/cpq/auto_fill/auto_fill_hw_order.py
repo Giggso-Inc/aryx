@@ -6,6 +6,10 @@ COMPLIANCE_PLAN_2026-09-03.md).
 `_PRODUCT_LINE_SELECTOR_EXACT` are read off the engine MODULE object
 (never patched by any test, but kept consistent with this file's own
 `engine.<name>` convention for the two predicates that need `self`).
+
+The one-sided "confirmed not applicable for this device" check itself
+(`_hardware_version_confirmed_not_applicable`) lives on `CpqEngine` in
+`engine.py`, not here — its own docstring explains why.
 """
 
 from __future__ import annotations
@@ -67,6 +71,10 @@ def order_pending_hardware_before_product(
     filled: dict[str, str],
     attrs: list["Any"],
     display_order: dict[str, int] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+    product_anchor_hint: str | None = None,
 ) -> list["Any"]:
     """Defer Product until Hardware is filled; sort pending by dependency.
 
@@ -84,20 +92,33 @@ def order_pending_hardware_before_product(
     constraint (Product's options are genuinely unconstrained without
     it), not just an ordering preference, so it still applies first;
     display_order only changes the final sort key.
+
+    workspace_id/catalog_prefix/cache/product_anchor_hint — same
+    one-sided "confirmed not applicable for THIS specific device"
+    override as auto_fill's is_decision_attr check (see
+    CpqEngine._hardware_version_confirmed_not_applicable's own
+    docstring); `None` (every default) keeps this function's existing
+    behavior for every caller that doesn't pass them.
     """
     if not pending:
         return pending
+
+    def _hw_forced(a: "Any") -> bool:
+        return engine._is_hardware_version_attr(a) and not (
+            engine._hardware_version_confirmed_not_applicable(
+                product_anchor_hint, workspace_id, catalog_prefix, cache,
+            )
+        )
+
     if display_order is not None:
         # Deferral still applies (see docstring); ranking is layout
         # position, with anything absent from the map (shouldn't
         # happen once display_order-gated §2c is active, since
         # pending would only ever hold decision attrs/grid selectors —
         # both real layout members) sorted after everything ranked.
-        catalog_has_hw = any(engine._is_hardware_version_attr(a) for a in attrs)
+        catalog_has_hw = any(_hw_forced(a) for a in attrs)
         if catalog_has_hw:
-            hw_vns = {
-                a.variable_name for a in attrs if engine._is_hardware_version_attr(a)
-            }
+            hw_vns = {a.variable_name for a in attrs if _hw_forced(a)}
             hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
             if not hw_filled:
                 pending = [a for a in pending if not engine._is_product_line_selector(a)]
@@ -106,7 +127,7 @@ def order_pending_hardware_before_product(
             key=lambda a: display_order.get(a.variable_name, 10**9),
         )
 
-    catalog_has_hw = any(engine._is_hardware_version_attr(a) for a in attrs)
+    catalog_has_hw = any(_hw_forced(a) for a in attrs)
     if not catalog_has_hw:
         # Non-hardware catalog (e.g. pure software): keep country first,
         # then original relative order.
@@ -120,9 +141,7 @@ def order_pending_hardware_before_product(
         rest = [a for a in pending if a not in countryish]
         return countryish + rest
 
-    hw_vns = {
-        a.variable_name for a in attrs if engine._is_hardware_version_attr(a)
-    }
+    hw_vns = {a.variable_name for a in attrs if _hw_forced(a)}
     hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
 
     # Drop product-line selectors from pending until hardware is known.
@@ -135,7 +154,7 @@ def order_pending_hardware_before_product(
         vn_flat = a.variable_name.lower().replace("_", "")
         if any(dk in vn_flat for dk in _engine_module._DECISION_REQUIRED_KEYS):
             return (0, a.order)
-        if engine._is_hardware_version_attr(a):
+        if _hw_forced(a):
             return (1, a.order)
         if engine._is_product_line_selector(a):
             return (3, a.order)

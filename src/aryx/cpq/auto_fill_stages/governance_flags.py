@@ -39,7 +39,23 @@ def stage_governance_flags(
         # Hardware Version is MANDATORY on hardware-based catalogs
         # (APX/aSTRO25) — never blind first-by-order; must be asked
         # (or matched from NL) before Product is even eligible.
-        or engine._is_hardware_version_attr(attr)
+        # EXCEPT when the customer's own original wording already
+        # confidently resolves to a specific device real
+        # attrSequence data confirms never governs Hardware
+        # Version at all (docs/Hardware_Version_APX3000_Product_
+        # Anchoring_Issue.md v2.2 — e.g. "I want APX 3000", which
+        # has no Hardware Version concept on the real system,
+        # unlike APX NEXT). One-sided check — see
+        # _hardware_version_confirmed_not_applicable's own
+        # docstring for exactly when this can fire; every
+        # unresolved/ambiguous case keeps today's behavior.
+        or (
+            engine._is_hardware_version_attr(attr)
+            and not engine._hardware_version_confirmed_not_applicable(
+                scope.product_anchor_hint, scope.workspace_id, scope.catalog_prefix,
+                ctx.dt_cache,
+            )
+        )
         # productSelectionProduct_all is a shared, catalog-wide
         # option list (e.g. 325 product-line codes across every
         # product family) with no rule reliably narrowing it to the
