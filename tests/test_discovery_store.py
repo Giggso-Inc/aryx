@@ -295,6 +295,85 @@ class TestSerializeDeserializeRoundTrip:
         restored = _deserialize_data(_serialize_data(data))
         assert restored["tabular"][0]["data"] == raw_csv
 
+    def test_source_bytes_deduplicated_across_split_plans(self) -> None:
+        """Regression test for the 2026-09-15 incident: an XML upload split
+        into many tabular plans (one per detected entity type) previously
+        base64-encoded and JSON-serialized the SAME original file's bytes
+        once per plan. For a 240MB file split into 32 tables that meant
+        ~7.7GB of duplicated base64 text built in memory before a single
+        byte reached the database — the write never completed and the job
+        sat frozen at 30% with no error. Each unique source_filename's bytes
+        must now be encoded exactly once regardless of how many plans
+        reference it, and every plan must still get its own correct bytes
+        back after deserialize."""
+        raw_source = b"<root>" + b"x" * 1000 + b"</root>"
+        num_split_plans = 32
+        data = {
+            "mentions": [], "summary": {},
+            "tabular": [
+                {
+                    "filename": f"table_{i}.csv", "data": f"id\n{i}\n".encode(),
+                    "ontology_type": f"Type{i}", "match_keys": ["id"],
+                    "source_filename": "big.xml", "source_bytes": raw_source,
+                }
+                for i in range(num_split_plans)
+            ],
+        }
+
+        raw = gzip.decompress(base64.b64decode(json.loads(_serialize_data(data))))
+        serialized = json.loads(raw)
+
+        # The whole point: one encoded copy of the source file, not 32.
+        assert list(serialized["_source_files_bytes"].keys()) == ["big.xml"]
+        assert len(serialized["_source_files_bytes"]) == 1
+        for plan in serialized["tabular"]:
+            assert "source_bytes" not in plan
+            assert plan["_source_bytes_ref"] == "big.xml"
+
+        restored = _deserialize_data(_serialize_data(data))
+        assert len(restored["tabular"]) == num_split_plans
+        for i, plan in enumerate(restored["tabular"]):
+            assert plan["source_bytes"] == raw_source
+            assert plan["filename"] == f"table_{i}.csv"
+            assert plan["data"] == f"id\n{i}\n".encode()
+            assert "_source_bytes_ref" not in plan  # internal ref key doesn't leak out
+
+    def test_source_bytes_deduplicated_across_two_distinct_source_files(self) -> None:
+        """A batch containing plans from two different source XML/XLSX
+        uploads must keep each source file's bytes separate — dedup is
+        keyed by source_filename, not collapsed globally."""
+        source_a = b"<a/>" * 50
+        source_b = b"<b/>" * 80
+        data = {
+            "mentions": [], "summary": {},
+            "tabular": [
+                {"filename": "a1.csv", "data": b"x\n1\n", "ontology_type": "A",
+                 "match_keys": ["x"], "source_filename": "a.xml", "source_bytes": source_a},
+                {"filename": "a2.csv", "data": b"x\n2\n", "ontology_type": "A2",
+                 "match_keys": ["x"], "source_filename": "a.xml", "source_bytes": source_a},
+                {"filename": "b1.csv", "data": b"y\n3\n", "ontology_type": "B",
+                 "match_keys": ["y"], "source_filename": "b.xml", "source_bytes": source_b},
+            ],
+        }
+
+        restored = _deserialize_data(_serialize_data(data))
+        by_filename = {p["filename"]: p for p in restored["tabular"]}
+        assert by_filename["a1.csv"]["source_bytes"] == source_a
+        assert by_filename["a2.csv"]["source_bytes"] == source_a
+        assert by_filename["b1.csv"]["source_bytes"] == source_b
+
+    def test_plan_without_source_bytes_is_unaffected(self) -> None:
+        """A plain CSV upload (no xlsx/xml source_bytes) must round-trip
+        without the optional dedup fields ever being introduced."""
+        data = {
+            "mentions": [], "summary": {},
+            "tabular": [{"filename": "x.csv", "data": b"a,b\n1,2\n",
+                        "ontology_type": "X", "match_keys": ["a"]}],
+        }
+        restored = _deserialize_data(_serialize_data(data))
+        assert "_source_files_bytes" not in restored
+        assert "source_bytes" not in restored["tabular"][0]
+
     def test_legacy_uncompressed_json_still_reads(self) -> None:
         """A plain JSON dict (not base64/gzip-wrapped) must still deserialize
         -- covers rows written before this encoding existed, and the "{}"

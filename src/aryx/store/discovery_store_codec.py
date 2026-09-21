@@ -80,6 +80,69 @@ def _discovery_hook(d: dict) -> Any:
     return d
 
 
+def _dedupe_tabular_source_bytes(data: dict) -> dict:
+    """Deduplicate each source file's bytes across split-table plans.
+
+    An XML/XLSX upload is split into one tabular plan per detected entity
+    type (doc_discovery.read_files's converted_tabular), and every one of
+    those plans carries its own `source_bytes` reference to the SAME
+    original file so downstream code (doc_discovery._persist_tabular_sources)
+    can regroup them by source_filename at confirm time. Encoding
+    source_bytes independently per plan used to base64+JSON-serialize the
+    same multi-hundred-MB source file once per split table (32x for a
+    32-entity-type XML) -- for a 240MB upload that meant ~7.7GB of
+    duplicated base64 text built in memory before a single byte reached
+    the database, which silently stalled the write with no exception
+    (incident 2026-09-15, discovery 0206aacbfc4c4de897e507cdc86724a0).
+
+    Each unique source_filename's bytes are pulled out exactly once into a
+    top-level `_source_files_bytes` map (left as raw `bytes` objects --
+    `_DiscoveryEncoder.default()` already base64-encodes any `bytes` value
+    generically, so this doesn't need its own manual encoding step); every
+    plan referencing that file keeps only a `_source_bytes_ref` key instead
+    of its own copy.
+    """
+    if "tabular" not in data:
+        return data
+    out = dict(data)
+    source_bytes_by_file: dict[str, bytes] = {}
+    tabular_out = []
+    for p in out["tabular"]:
+        plan = dict(p)
+        src_name = plan.get("source_filename")
+        src_bytes = plan.get("source_bytes")
+        if src_name is not None and isinstance(src_bytes, (bytes, bytearray)):
+            if src_name not in source_bytes_by_file:
+                source_bytes_by_file[src_name] = bytes(src_bytes)
+            plan.pop("source_bytes")
+            plan["_source_bytes_ref"] = src_name
+        tabular_out.append(plan)
+    out["tabular"] = tabular_out
+    if source_bytes_by_file:
+        out["_source_files_bytes"] = source_bytes_by_file
+    return out
+
+
+def _rehydrate_tabular_source_bytes(data: dict) -> dict:
+    """Inverse of `_dedupe_tabular_source_bytes` — restores each plan's
+    `source_bytes` from the shared dedup map. A no-op for data with no
+    `_source_files_bytes` map (plain CSV/JSON uploads, or rows written
+    before this dedup existed)."""
+    if "_source_files_bytes" not in data:
+        return data
+    out = dict(data)
+    source_files_bytes = out.pop("_source_files_bytes")
+    tabular_out = []
+    for p in out.get("tabular", []):
+        plan = dict(p)
+        ref = plan.pop("_source_bytes_ref", None)
+        if ref is not None:
+            plan["source_bytes"] = source_files_bytes[ref]
+        tabular_out.append(plan)
+    out["tabular"] = tabular_out
+    return out
+
+
 def _serialize_data(data: dict) -> str:
     """Return data_json's column value: gzip-compressed JSON, base64-encoded.
 
@@ -87,6 +150,7 @@ def _serialize_data(data: dict) -> str:
     holding valid JSON on both backends — no BYTEA/BLOB column or migration
     needed, just a different encoding of the same text column.
     """
+    data = _dedupe_tabular_source_bytes(data)
     raw = json.dumps(data, cls=_DiscoveryEncoder).encode("utf-8")
     compressed = gzip.compress(raw)
     return json.dumps(base64.b64encode(compressed).decode("ascii"))
@@ -99,7 +163,8 @@ def _deserialize_data(s: str) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     compressed = base64.b64decode(parsed)
     raw = gzip.decompress(compressed)
-    return json.loads(raw, object_hook=_discovery_hook)
+    data = json.loads(raw, object_hook=_discovery_hook)
+    return _rehydrate_tabular_source_bytes(data)
 
 
 def _row_to_dict(values: tuple) -> dict[str, Any]:
