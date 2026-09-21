@@ -14,12 +14,14 @@
 | 5 | `9fad76d4` (#336) | `4a873b40` | Low risk, as planned |
 | 6 | `8e60e0ca` (#339) | `67c3d72f` | Biggest single-file delegation depth — see its section |
 
-**Follow-up work still open:**
-1. Implement `OracleGraphReader.find_entities(attrs=...)` (flagged under
-   "Second non-negotiable constraint" below, deferred out of commit #4)
-   — without it, everything #331 added (feature/region search) silently
-   doesn't work on any OCI/Oracle-backed stack. This is now the only
-   remaining item from this plan.
+**Follow-up work: landed.** `OracleGraphReader.find_entities(attrs=...)`
+(flagged under "Second non-negotiable constraint" below, deferred out of
+commit #4) shipped in response to a Raven Review finding on PR #344 — see
+Part B below for the fix and an important correction to this section's
+original SQL design (the originally-planned bind-the-JSON-path approach
+doesn't work against real Oracle; caught before merge, but still not
+verified against a live ADB instance). Nothing else remains open from this
+plan.
 
 ## Execution plan for the two remaining items (2026-09-21 follow-up)
 
@@ -108,47 +110,69 @@ parameter-threading files last (highest risk of a subtle scoping mistake).
 
 ### Part B — OracleGraphReader.find_entities(attrs=...)
 
-**Target:** `src/aryx/graph/oracle_graph_reader_basic.py:76-110`, current
-signature `find_entities(self, ontology_type=None, name=None, limit=50,
-offset=0)` — add a keyword-only `attrs: dict[str, str] | None = None`.
+**Status: LANDED** (fix for a Raven Review finding on PR #344, aryx-
+enterprise — the review correctly identified this gap as a live-breaking
+bug, not just a theoretical limitation: every graph-side region/feature
+search crashed on `dev_oci`'s own Oracle backend, masked as a silent empty
+result via chat and a hard 500 via the direct API, and none of `e564b6bb`'s
+own 8 new test files covered `OracleGraphReader` at all).
 
-**Design, mirroring the already-shipped Cypher-side implementation**
-(`reader_queries.py:111-119`, added in commit #4/`e564b6bb`): for each
-`(key, value)` in `attrs`, validate `key` against
-`re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)` (raise `ValueError` on
-failure — Oracle `JSON_VALUE` path expressions can't be bind-parameterized
-any more than a Cypher property name can, same injection reasoning), then
-append a clause using Oracle's native JSON path syntax against the
-existing `attributes` column:
+**Target:** `src/aryx/graph/oracle_graph_reader_basic.py:76-110`, added a
+keyword-only `attrs: dict[str, str] | None = None`.
+
+**Design actually shipped — corrected from this section's original plan.**
+The design below (kept struck through for the record) proposed binding the
+JSON key itself via `'$.' || :key_N`. **This does not work**: Oracle raises
+`ORA-40454: path expression not a literal` — `JSON_VALUE`'s path argument
+must be a compile-time literal, not a bind variable or a runtime-built
+expression (Oracle's `PASSING` clause lets you bind *values* referenced
+inside an otherwise-literal path, e.g. a filter threshold, but not the
+field/key name itself). Caught by web research before implementing, not
+by a live Oracle instance (none available in this environment) — exactly
+the kind of untested-SQL mistake this whole finding was about, so treat as
+still needing live verification against a real ADB before fully trusting.
+
+The actual fix keeps the same regex-validated-key approach (`re.fullmatch
+(r"[A-Za-z_][A-Za-z0-9_]*", key)`, `ValueError` on failure) but embeds the
+validated key directly into the literal SQL path text, binding only the
+value:
 ```
-LOWER(JSON_VALUE(attributes, '$.' || :key_N)) LIKE '%' || LOWER(:val_N) || '%'
+LOWER(JSON_VALUE(attributes, '$.{key}')) LIKE '%' || LOWER(:attr_val_N) || '%'
 ```
-extending the same named-dict-bind style (`:ws`, `:typ`, `:name`) this
-exact method already uses — do not switch to the positional `:1`/`:2`
-style some sibling methods in the same file use.
+This is safe because the key has already been validated to contain only
+`[A-Za-z_][A-Za-z0-9_]*` — no way to break out of the string literal —
+the same reasoning Cypher's `e.{key}` property-name interpolation already
+uses elsewhere in this codebase for an identical "can't bind a name"
+constraint.
 
-**New import needed:** `re` — not currently imported anywhere in
-`oracle_graph_reader*.py` (confirmed via grep; only the Falkor-side files
-import it).
+~~append a clause using Oracle's native JSON path syntax against the
+existing `attributes` column:~~
+~~`LOWER(JSON_VALUE(attributes, '$.' || :key_N)) LIKE '%' || LOWER(:val_N) || '%'`~~
 
-**Test coverage:** no existing Oracle-side test for this method/feature
-(`test_oracle_graph_reader_shortest_path_scope.py` and
-`test_oracle_graph_subgraph_large_workspace_perf.py` exist but don't touch
-`find_entities`). Create a new file,
-`tests/test_oracle_graph_reader_find_entities_attrs.py`, mirroring
-`tests/test_graph_find_entities_attrs_2026_09_15.py`'s 4 cases (adds-
-where-clause-and-params, multiple-attrs-ANDed, invalid-key-rejected,
-no-attrs-backward-compat) but asserting Oracle SQL/bind shape instead of
-Cypher.
+Uses the same named-dict-bind style (`:ws`, `:typ`, `:name`) this method
+already used — did not switch to the positional `:1`/`:2` style some
+sibling methods in the same file use.
 
-**Also update:** `search_by_feature()`/`search_products_combined()`
-(`graph/feature_search.py`) and the `/entities/search` endpoint
-(`api/graph_api.py`) call `reader.find_entities(attrs=...)` polymorphically
-— once `OracleGraphReader` implements the same signature, these should work
-unchanged via duck typing. Verify this live against the OCI stack after
-implementing, not just via unit tests with a fake reader (same lesson as
-this whole session's earlier SVX investigation: a mocked reader can't catch
-a real Oracle SQL syntax error).
+**New import added:** `re`, plus a module-level `_ATTR_KEY_RE` compiled
+pattern (not currently imported anywhere else in `oracle_graph_reader*.py`
+— confirmed via grep; only the Falkor-side files import it).
+
+**Test coverage:** new file `tests/test_oracle_graph_reader_find_entities_
+attrs.py`, mirroring `tests/test_graph_find_entities_attrs_2026_09_15.py`'s
+4 cases (adds-JSON_VALUE-clause-and-binds-the-value, multiple-attrs-ANDed,
+invalid-key-rejected, no-attrs-backward-compat) but asserting Oracle SQL/
+bind shape instead of Cypher — plus an explicit assertion that the key
+itself is never bound as a parameter (`attr_key_0` not in params), since
+that would silently reintroduce the ORA-40454 mistake.
+
+**Verified duck-typing end-to-end** (not just unit tests against a fake
+reader): constructed a real `OracleGraphReader` with a mocked connection
+pool and called `search_by_feature()` (`graph/feature_search.py`) against
+it directly — confirms the exact `TypeError` scenario from the Raven
+Review no longer reproduces. **Still not verified against a live Oracle
+instance** (none available here) — the JSON_VALUE syntax itself should be
+smoke-tested against the real OCI stack before fully trusting it, same
+caution this section already carried before the fix landed.
 
 ## Goal, one sentence
 
