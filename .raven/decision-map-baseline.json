@@ -14043,12 +14043,12 @@
     ],
     [
       "src/aryx/source/source_catalog_delete_download.py",
-      129,
+      132,
       "xml_download_payload"
     ],
     [
       "src/aryx/source/source_catalog_delete_download.py",
-      188,
+      191,
       "xml_download_payload"
     ],
     [
@@ -14123,27 +14123,27 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      403,
+      454,
       "<if>"
     ],
     [
       "src/aryx/store/entity_store.py",
-      425,
+      476,
       "create_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      441,
+      492,
       "update_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      451,
+      502,
       "delete_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      460,
+      511,
       "delete_entities_by_type"
     ],
     [
@@ -15248,12 +15248,12 @@
     ],
     [
       "src/aryx/worker/fn_handler.py",
-      30,
+      45,
       "handler"
     ],
     [
       "src/aryx/worker/fn_handler.py",
-      75,
+      80,
       "<try>"
     ],
     [

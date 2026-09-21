@@ -87,9 +87,12 @@ def xlsx_download_payload(
 ) -> tuple[bytes, str, str] | None:
     """Same shape as xml_download_payload — download the original workbook
     (asset_key=None) or one generated sheet CSV (asset_key set). Unlike XML's
-    legacy-prefix case, an xlsx catalog row always carries content_b64 for
-    the source workbook itself, so there's no synthetic-manifest fallback
-    path to mirror."""
+    legacy-prefix case, there's no synthetic-manifest fallback for a missing
+    top-level content_b64 here: a workbook over _MAX_INLINE_CONTENT_BYTES
+    (2026-09-16) has content_b64=None just like a legacy row would, and this
+    function simply returns None (download unavailable) rather than
+    reconstructing anything — xml_download_payload's manifest path has no
+    xlsx equivalent."""
     payload_rows_by_dataset = payload_rows_by_dataset or {}
     meta = _xlsx_meta(row)
     if meta is None or meta.get("deleted"):

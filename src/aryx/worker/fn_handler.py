@@ -26,6 +26,21 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["handler"]
 
+# Kept in step with file_ingest_api.py's own _MAX_FILE. Raised 2026-09-11
+# (PR #326) to 500 MB; this constant went stale at the old 250 MB
+# generation and started rejecting valid 400-500 MB files on this
+# OCI-Functions path that the direct-upload path already accepted --
+# confirmed 2026-09-16 during the jsonb-string-limit incident sweep.
+# Base64 inflates size by ~4/3, so a 500 MB raw file needs headroom well
+# past 500 MB here -- 800 MB encoded covers ~600 MB raw, the same ~20%
+# margin the previous 250->300 MB generation used. NOTE: this is Aryx's
+# own app-level guard, not a confirmed OCI Functions platform payload
+# ceiling -- if the real OCI Functions invoke limit is lower than this, a
+# large payload will still fail, just with an OCI-side error instead of
+# this one. That platform limit hasn't been verified in this codebase
+# and should be checked before relying on this path for very large files.
+_MAX_ENCODED_B64_BYTES = 800 * 1024 * 1024  # ~600 MB decoded ceiling
+
 
 def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
     """OCI Functions entry point — invoked per document, runs full aryx pipeline."""
@@ -47,17 +62,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
     workspace_id  = int(payload.get("workspace_id", 1))
     filename      = payload["filename"]
     encoded_b64   = payload["file_b64"]
-    # Kept in step with file_ingest_api.py's own _MAX_FILE (raised 2026-09 to
-    # 250 MB after a real 223 MB MSI catalog export was rejected). Base64
-    # inflates size by ~4/3, so a 250 MB raw file needs headroom well past
-    # 250 MB here -- 400 MB encoded covers ~300 MB raw with margin. NOTE:
-    # this is Aryx's own app-level guard, not a confirmed OCI Functions
-    # platform payload ceiling -- if the real OCI Functions invoke limit is
-    # lower than this, a large payload will still fail, just with an
-    # OCI-side error instead of this one. That platform limit hasn't been
-    # verified in this codebase and should be checked before relying on
-    # this path for very large files.
-    if len(encoded_b64) > 400 * 1024 * 1024:  # ~300 MB decoded ceiling
+    if len(encoded_b64) > _MAX_ENCODED_B64_BYTES:
         raise ValueError(f"fn_handler: file_b64 exceeds size limit ({len(encoded_b64)} bytes encoded)")
     file_bytes    = base64.b64decode(encoded_b64)
     ontology_type = payload["ontology_type"]
