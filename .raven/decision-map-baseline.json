@@ -3323,17 +3323,17 @@
     ],
     [
       "shay_backend/app/routes/gg_datasources/processing.py",
-      85,
+      91,
       "bulk_manage_connections"
     ],
     [
       "shay_backend/app/routes/gg_datasources/processing.py",
-      106,
+      112,
       "<if>"
     ],
     [
       "shay_backend/app/routes/gg_datasources/processing.py",
-      130,
+      136,
       "bulk_manage_connections"
     ],
     [
@@ -3563,7 +3563,7 @@
     ],
     [
       "shay_backend/app/routes/messages/mentions.py",
-      57,
+      65,
       "<try>"
     ],
     [
@@ -6713,17 +6713,17 @@
     ],
     [
       "shay_backend/app/services/email_service/core.py",
-      22,
+      31,
       "__init__"
     ],
     [
       "shay_backend/app/services/email_service/core.py",
-      72,
+      81,
       "_send_email"
     ],
     [
       "shay_backend/app/services/email_service/core.py",
-      75,
+      84,
       "<try>"
     ],
     [

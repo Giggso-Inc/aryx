@@ -15,6 +15,15 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# smtplib.SMTP() with no timeout blocks on the OS socket default (can hang
+# indefinitely on a slow/unresponsive server) -- _send_email is called
+# synchronously from async route/background-task code with no
+# asyncio.to_thread offload, so an unbounded hang here blocks the whole
+# event loop, not just the caller. Live incident 2026-09-22: this
+# contributed to a QueuePool exhaustion (a DB session held open across a
+# stuck send blocked every other request from getting a connection).
+_SMTP_TIMEOUT_SECONDS = 15
+
 
 class CoreMixin:
     """SMTP configuration, template file loading, and email dispatch."""
@@ -74,7 +83,7 @@ class CoreMixin:
         recipient = msg['To']
         try:
             logger.debug("SMTP connect — host=%s port=%s", self.host, self.port)
-            server = smtplib.SMTP(self.host, self.port)
+            server = smtplib.SMTP(self.host, self.port, timeout=_SMTP_TIMEOUT_SECONDS)
 
             if self.use_tls or self.port == 587:
                 server.starttls()

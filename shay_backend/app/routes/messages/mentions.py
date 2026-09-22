@@ -52,7 +52,15 @@ async def process_mention_notifications(
         redirect_url: Pre-constructed URL to redirect to view the message/thread
         notification_settings_url: Pre-constructed URL to notification settings page
     """
-    # Create new session for background task
+    # Create new session for background task. Scoped to the DB-only work
+    # (lookups + preference checks) -- closed before any email is sent, so
+    # a slow/stuck SMTP call (core.py's _send_email is a blocking,
+    # unbounded smtplib call) never holds a pool connection hostage. Live
+    # incident 2026-09-22: this session used to stay open across the whole
+    # send loop, and a burst of mentions could exhaust the connection pool
+    # (QueuePool limit of size 10 overflow 20 reached) purely from emails
+    # queued behind a slow SMTP round-trip, unrelated to genuine DB load.
+    recipients: list[User] = []
     async with AsyncSessionLocal() as db:
         try:
             # Get comment author
@@ -85,32 +93,42 @@ async def process_mention_notifications(
             if not mentioned_users:
                 return  # No users found for mentions
 
-            # Process each mentioned user
+            # Decide who should be notified while the session is still
+            # open -- nothing past this point needs `db`.
             for mentioned_user in mentioned_users:
                 # Skip if user mentions themselves
                 if mentioned_user.id == comment_author.id:
                     continue
 
-                # Check if notification should be sent
                 should_send = await should_send_mention_notification(
                     mentioned_user,
                     channel.id,
                     db
                 )
-
                 if should_send:
-                    # Send notification email with pre-constructed URLs
-                    await send_mention_notification_email(
-                        mentioned_user,
-                        comment_author,
-                        channel,
-                        content,
-                        redirect_url,
-                        notification_settings_url,
-                        db
-                    )
+                    recipients.append(mentioned_user)
 
         except Exception as e:
             print(f"❌ Error processing mention notifications: {e}")
+            import traceback
+            print(f"📋 Error traceback: {traceback.format_exc()}")
+            return
+
+    # `db` is closed at this point -- send_mention_notification_email's own
+    # `db` parameter is unused (kept only for call-signature parity, see
+    # its docstring), so `None` is safe here.
+    for mentioned_user in recipients:
+        try:
+            await send_mention_notification_email(
+                mentioned_user,
+                comment_author,
+                channel,
+                content,
+                redirect_url,
+                notification_settings_url,
+                None,
+            )
+        except Exception as e:
+            print(f"❌ Error sending mention notification to {mentioned_user.id}: {e}")
             import traceback
             print(f"📋 Error traceback: {traceback.format_exc()}")

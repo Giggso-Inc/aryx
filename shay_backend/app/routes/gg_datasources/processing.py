@@ -61,6 +61,12 @@ async def _process_datasource_background(datasource_id: str) -> None:
             ds.updated_at = datetime.utcnow()
             await db.commit()
 
+            # Close before the (simulated) long operation so this
+            # connection isn't held from the pool for its duration --
+            # matches the sibling implementation in
+            # datasources/process_datasource.py.
+            await db.close()
+
             await asyncio.sleep(5)
 
             async with AsyncSessionLocal() as db2:
