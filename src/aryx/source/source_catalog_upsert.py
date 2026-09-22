@@ -19,6 +19,7 @@ from aryx.source.source_catalog_meta import (
     _generic_meta,
     _xml_meta,
 )
+from aryx.source.source_catalog_oracle_budget import apply_oracle_json_budget
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def upsert_xml_catalog_entry(
         ),
         None,
     )
-    config = xml_catalog_config(source_filename, xml_bytes, assets)
+    config = apply_oracle_json_budget(xml_catalog_config(source_filename, xml_bytes, assets))
     if existing:
         return store.update(
             int(existing["id"]),
@@ -246,7 +247,7 @@ def upsert_xlsx_catalog_entry(
         ),
         None,
     )
-    config = xlsx_catalog_config(source_filename, xlsx_bytes, assets)
+    config = apply_oracle_json_budget(xlsx_catalog_config(source_filename, xlsx_bytes, assets))
     if existing:
         return store.update(
             int(existing["id"]),
