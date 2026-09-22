@@ -1,4 +1,4 @@
-"""Oracle ADB 23ai workspace store — replaces psycopg.connect() with oracledb.
+"""Oracle ADB 26ai workspace store — replaces psycopg.connect() with oracledb.
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03),
 `_parse_brief` moved to `oracle_workspace_helpers.py` (zero patch risk).
@@ -34,7 +34,7 @@ _TRUNCATE_SQLS = {t: f"DELETE FROM {t}" for t in _PARTITIONED}
 
 
 class OracleWorkspaceStore:
-    """WorkspaceStore backed by Oracle ADB 23ai via oracledb.
+    """WorkspaceStore backed by Oracle ADB 26ai via oracledb.
 
     Matches the WorkspaceStore public API so call-sites need no changes.
     Postgres partition management (_attach_partitions / _drop_partitions) is

@@ -16,6 +16,7 @@ from typing import Any
 
 from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api.ask_feature_region_search import _route_feature_region_search
 from aryx.api.ask_response_building import ask_finish_cpq_result as _ask_finish_cpq_result_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_response_building.ask_finish_cpq_result import _route_quote
@@ -66,6 +67,25 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if _ask_api_module.hard_off_topic(req.question):
         _ask_api_module.logger.info("cpq_router: hard_off_topic → standard Ask")
         return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
+
+    # Feature/region product search (2026-09-16) -- deterministic, narrow
+    # regex trigger, checked before any CPQ/gateway work so it never
+    # competes with or consumes the top-level gateway's one-LLM-call
+    # budget for the turn. A false negative here just falls through to the
+    # existing router unchanged; see detect_feature_region_search's own
+    # docstring for why a false positive is guarded against instead.
+    fr_region, fr_feature_label, fr_feature_value = (
+        _ask_api_module.detect_feature_region_search(req.question)
+    )
+    if fr_region or fr_feature_value:
+        _ask_api_module.logger.info(
+            "cpq_router: feature_region_search region=%r feature_label=%r "
+            "feature_value=%r → search_products_combined",
+            fr_region, fr_feature_label, fr_feature_value,
+        )
+        return _route_feature_region_search(
+            req, reader, fr_region, fr_feature_label, fr_feature_value,
+        )
 
     det_is_cpq = _ask_finish_cpq_result_module._deterministic_cpq_gate(req, reader)
     soft_quote = _ask_api_module.soft_quote_heuristic(req.question)

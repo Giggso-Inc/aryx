@@ -56,7 +56,7 @@ class IngestSettingsMixin(BaseSettings):
             "in one INSERT/UPDATE (DiscoveryStore._serialize_data: gzip then "
             "base64-encoded so the value stays a plain JSON string -- no "
             "BYTEA column or migration needed, works unchanged on both "
-            "Postgres and Oracle ADB 23ai). A multi-file tabular batch "
+            "Postgres and Oracle ADB 26ai). A multi-file tabular batch "
             "(e.g. dozens of BigMachines/Oracle CPQ CSV catalog exports) "
             "whose compressed size exceeds this is rejected with a clear "
             "error at the application layer instead of being attempted as "

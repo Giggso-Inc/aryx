@@ -9,7 +9,7 @@ Aryx is a knowledge graph platform that ingests records from heterogeneous sourc
 Two backend modes exist behind the same application code:
 
 - **Local (default dev)** — PostgreSQL 16 + FalkorDB + Ollama, via `docker-compose.yml`.
-- **Oracle (OCI deployment)** — Oracle Autonomous Database 23ai holds both the Aryx schema and Shay's own schema in one instance, with the graph as Oracle's SQL/PGQ property graph (no separate FalkorDB), OCI GenAI for LLM/embeddings, and OCI Document Understanding for parsing — via `docker-compose-oci.yml`. See `docs/OCI_DEPLOYMENT_PLAN.md` for setup.
+- **Oracle (OCI deployment)** — Oracle Autonomous Database 26ai holds both the Aryx schema and Shay's own schema in one instance, with the graph as Oracle's SQL/PGQ property graph (no separate FalkorDB), OCI GenAI for LLM/embeddings, and OCI Document Understanding for parsing — via `docker-compose-oci.yml`. See `docs/OCI_DEPLOYMENT_PLAN.md` for setup.
 
 ## Interactive Diagrams
 

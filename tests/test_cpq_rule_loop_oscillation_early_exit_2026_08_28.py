@@ -48,7 +48,7 @@ def _install_controlled_pass_body(monkeypatch, eng, *, always_resync):
     """
     pass_markers: list[int] = []
 
-    def _fake_apply_hiding_rules(attrs, filled, hiding_rules, bml_eval=None, filled_multi=None):
+    def _fake_apply_hiding_rules(attrs, filled, hiding_rules, bml_eval=None, filled_multi=None, **kwargs):
         pass_markers.append(len(pass_markers))
         return attrs, [], set()
 

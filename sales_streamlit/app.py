@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -60,6 +61,67 @@ def _configured_workspaces() -> dict[str, str]:
             "ARYX_SALES_WORKSPACES must be a JSON object of {label: token}"
         )
     return parsed
+
+
+def _allowed_labels_for_actor(actor_id: str, workspaces: dict[str, str]) -> list[str]:
+    """Return the subset of `workspaces` this actor is allowed to select.
+
+    Previously every actor who could open this Streamlit instance could pick
+    ANY configured workspace label from the sidebar dropdown and get that
+    workspace's sales_cpq token -- the token itself is properly
+    workspace-scoped at the MCP layer, but nothing above it checked that the
+    logged-in rep actually belongs to the workspace they picked. A rep
+    authenticated for Workspace A could select Workspace B and act there.
+
+    ARYX_SALES_WORKSPACE_MEMBERS holds {label: [email, ...]} (emails matched
+    case-insensitively, same normalization resolve_actor_id() already uses
+    for the "sso:<sha256>" actor id, so raw emails never need to round-trip
+    back out of the hash). A member list containing "*" explicitly opts a
+    workspace into being reachable by anonymous session-scoped actors --
+    intended only for local/dev use where ARYX_SALES_ALLOW_SESSION_ACTOR is
+    already set.
+
+    Single-workspace deployments (the common case today) are unaffected:
+    with only one configured label there is nothing to choose between, so no
+    membership config is required. A deployment serving 2+ workspaces must
+    set ARYX_SALES_WORKSPACE_MEMBERS explicitly -- refusing to silently fall
+    back to "everyone sees everything" once there is more than one workspace
+    to leak into.
+    """
+    if len(workspaces) <= 1:
+        return list(workspaces.keys())
+
+    raw = os.environ.get("ARYX_SALES_WORKSPACE_MEMBERS", "").strip()
+    if not raw:
+        raise RuntimeError(
+            "This deployment serves more than one workspace "
+            "(ARYX_SALES_WORKSPACES has 2+ entries) but "
+            "ARYX_SALES_WORKSPACE_MEMBERS is not set -- refusing to show "
+            "every workspace to every user. Set it to a JSON object of "
+            "{label: [allowed email, ...]}."
+        )
+    try:
+        members = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ARYX_SALES_WORKSPACE_MEMBERS must be valid JSON") from exc
+    if not isinstance(members, dict):
+        raise RuntimeError("ARYX_SALES_WORKSPACE_MEMBERS must be a JSON object")
+
+    allowed = []
+    for label in workspaces:
+        emails = members.get(label, [])
+        if not isinstance(emails, list):
+            raise RuntimeError(f"ARYX_SALES_WORKSPACE_MEMBERS[{label!r}] must be a list")
+        if actor_id.startswith("sso:"):
+            digests = {
+                f"sso:{hashlib.sha256(str(e).casefold().encode('utf-8')).hexdigest()}"
+                for e in emails
+            }
+            if actor_id in digests:
+                allowed.append(label)
+        elif actor_id.startswith("session:") and "*" in emails:
+            allowed.append(label)
+    return allowed
 
 
 @st.cache_resource
@@ -374,20 +436,31 @@ def main() -> None:
                 "No sales workspace configured — set ARYX_SALES_WORKSPACES "
                 "(or ARYX_SALES_MCP_API_KEY for a single workspace)"
             )
+        actor_id = resolve_actor_id(
+            st.context.headers, st.session_state, st.query_params,
+        )
+        allowed_labels = _allowed_labels_for_actor(actor_id, workspaces)
+        if not allowed_labels:
+            raise RuntimeError(
+                "Your account is not a member of any configured workspace — "
+                "ask an admin to add you to ARYX_SALES_WORKSPACE_MEMBERS"
+            )
         with st.sidebar:
             st.subheader("Workspace")
             selected_label = st.selectbox(
-                "Workspace", list(workspaces.keys()), key="sales_workspace_label",
+                "Workspace", allowed_labels, key="sales_workspace_label",
             )
+        if selected_label not in allowed_labels:
+            # Defense in depth: a stale widget value from before a membership
+            # change (or a tampered session_state key) must not silently
+            # fall through to a workspace this actor is no longer allowed.
+            raise RuntimeError("Workspace selection is no longer valid for your account")
         if st.session_state.get("_active_sales_workspace") != selected_label:
             # A leftover thread_id from the previous workspace's token scope
             # would just silently render empty (different workspace_id) —
             # clear it so switching workspaces starts a clean chat instead.
             st.session_state["_active_sales_workspace"] = selected_label
             st.session_state.pop("sales_thread_id", None)
-        actor_id = resolve_actor_id(
-            st.context.headers, st.session_state, st.query_params,
-        )
         client = _mcp_client(workspaces[selected_label])
     except Exception as exc:  # noqa: BLE001
         st.error(f"Application configuration error: {exc}")

@@ -19,7 +19,7 @@
 | File | Change |
 |---|---|
 | `src/aryx/store/migrations/0029_discovery.sql` | NEW — `aryx_discovery` table (Postgres) |
-| `src/aryx/store/migrations_oracle/0033_discovery.sql` | NEW — `aryx_discovery` table (Oracle ADB 23ai) |
+| `src/aryx/store/migrations_oracle/0033_discovery.sql` | NEW — `aryx_discovery` table (Oracle ADB 26ai) |
 | `src/aryx/queries/upsert_discovery.sql` | NEW — Postgres `INSERT ... ON CONFLICT` upsert |
 | `src/aryx/queries/oracle/upsert_discovery.sql` | NEW — Oracle `MERGE INTO ... USING dual` upsert override |
 | `src/aryx/queries/select_discovery.sql` | NEW — workspace-scoped SELECT |
@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_aryx_discovery_workspace
     ON aryx_discovery (workspace_id, created_at DESC);
 ```
 
-### Oracle ADB 23ai: `src/aryx/store/migrations_oracle/0033_discovery.sql`
+### Oracle ADB 26ai: `src/aryx/store/migrations_oracle/0033_discovery.sql`
 
 Lowercase table name (Oracle stores unquoted identifiers as uppercase internally — `aryx_discovery` and `ARYX_DISCOVERY` are the same object; lowercase is used in SQL for consistency with the rest of the codebase). Uses `CLOB` for JSON columns, `TIMESTAMP WITH TIME ZONE`, `SYSTIMESTAMP`. Idempotent via `EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955`.
 

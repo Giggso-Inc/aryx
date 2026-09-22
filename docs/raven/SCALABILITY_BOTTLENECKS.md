@@ -467,7 +467,7 @@ The lack of correlation between duration and match count confirms the refetch
 in-memory join, is the dominant cost.
 
 ### Cost Impact
-- Each refetch is a real network round-trip to Oracle ADB 23ai (`us-chicago-1`)
+- Each refetch is a real network round-trip to Oracle ADB 26ai (`us-chicago-1`)
   plus per-row LOB/JSON decode — no dollar cost (no LLM call), but this is the
   single largest time cost in the pipeline once resolution/relate are fixed (P9).
 - On a 30-type workspace this stage alone was projected to take 25-40 minutes —

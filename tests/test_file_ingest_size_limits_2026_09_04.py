@@ -2,12 +2,13 @@
 (aSTRO25_ConfigData.xml, 223 MB) was rejected by the /admin/ingest/file
 endpoint's _MAX_FILE cap, which was still set to the original 50 MB.
 _MAX_FILE/_MAX_TOTAL raised to 250 MB/750 MB with headroom for that file
-plus room to grow. The status endpoint and error messages now derive
-their reported limits from the constants themselves (max_file_mb =
-_MAX_FILE // (1024*1024)) instead of separate hardcoded literals, so
-they can never drift out of sync with the real limit again the way the
-module docstring already had (it said "2 MB/50 MB" while the constants
-were 50 MB/500 MB).
+plus room to grow, then raised again 2026-09-11 to 500 MB/1500 MB at the
+operator's request (see test_file_ingest_size_limits_2026_09_11.py). The
+status endpoint and error messages derive their reported limits from the
+constants themselves (max_file_mb = _MAX_FILE // (1024*1024)) instead of
+separate hardcoded literals, so they can never drift out of sync with the
+real limit again the way the module docstring already had (it said "2 MB/50
+MB" while the constants were 50 MB/500 MB).
 """
 from __future__ import annotations
 
@@ -33,27 +34,29 @@ def _get_handler():
 
 def test_constants_raised_to_cover_real_223mb_catalog_export() -> None:
     from aryx.api.file_ingest import file_ingest_api as m
-    assert m._MAX_FILE == 250 * 1024 * 1024
-    assert m._MAX_TOTAL == 750 * 1024 * 1024
+    assert m._MAX_FILE == 500 * 1024 * 1024
+    assert m._MAX_TOTAL == 1500 * 1024 * 1024
     real_file_size = 223 * 1024 * 1024
-    assert real_file_size < m._MAX_FILE, "the file that triggered this fix must now fit"
+    assert real_file_size < m._MAX_FILE, "the file that triggered this fix must still fit"
+    assert m._MAX_FILE >= 250 * 1024 * 1024, "must never regress below this fix's original raise"
 
 
 def test_status_endpoint_reports_the_real_current_limits() -> None:
+    from aryx.api.file_ingest import file_ingest_api as m
     from aryx.api.file_ingest.file_ingest_api import file_ingest_router
     router = file_ingest_router()
     status_fn = next(
         r for r in router.routes if r.path == "/admin/ingest/supported"
     ).endpoint
     result = status_fn()
-    assert result["max_file_mb"] == 250
-    assert result["max_total_mb"] == 750
+    assert result["max_file_mb"] == m._MAX_FILE // (1024 * 1024)
+    assert result["max_total_mb"] == m._MAX_TOTAL // (1024 * 1024)
 
 
 def test_file_under_new_limit_is_accepted(monkeypatch) -> None:
-    """Regression guard: a file between the old (50 MB) and new (250 MB)
-    cap -- exactly the shape of file this fix exists for -- must not be
-    rejected."""
+    """Regression guard: a file between the old (50 MB) and this fix's
+    original 250 MB cap -- exactly the shape of file this fix exists for --
+    must not be rejected."""
     mock_future = MagicMock()
     mock_executor = MagicMock()
     mock_executor.submit.return_value = mock_future
@@ -74,11 +77,14 @@ def test_file_under_new_limit_is_accepted(monkeypatch) -> None:
     mock_future.add_done_callback.assert_called_once()
 
 
-def test_file_over_new_limit_still_rejected_with_accurate_message() -> None:
-    """A file genuinely over the new 250 MB cap must still be rejected --
-    this fix raises the ceiling, it doesn't remove it -- and the error
-    message must report the real current limit, not a stale literal."""
-    mock_file = _mock_file("huge.xml", 260 * 1024 * 1024)
+def test_file_over_current_limit_still_rejected_with_accurate_message() -> None:
+    """A file genuinely over whatever the current cap is must still be
+    rejected -- this fix raises the ceiling, it doesn't remove it -- and
+    the error message must report the real current limit, not a stale
+    literal."""
+    from aryx.api.file_ingest import file_ingest_api as m
+    over_limit_size = m._MAX_FILE + 10 * 1024 * 1024
+    mock_file = _mock_file("huge.xml", over_limit_size)
 
     with patch("aryx.api.file_ingest.file_ingest_api.get_settings") as mock_cfg:
         mock_cfg.return_value.rdb_dsn = "postgresql://x"
@@ -90,5 +96,5 @@ def test_file_over_new_limit_still_rejected_with_accurate_message() -> None:
             ))
 
     assert exc_info.value.status_code == 400
-    assert "250 MB" in exc_info.value.detail
+    assert f"{m._MAX_FILE // (1024 * 1024)} MB" in exc_info.value.detail
     assert "huge.xml" in exc_info.value.detail

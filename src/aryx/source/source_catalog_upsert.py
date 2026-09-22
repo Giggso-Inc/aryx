@@ -6,6 +6,7 @@ Split out of `source_catalog.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,60 @@ from aryx.source.source_catalog_meta import (
     _generic_meta,
     _xml_meta,
 )
+
+logger = logging.getLogger(__name__)
+
+# Postgres hard limit: a single jsonb scalar string cannot exceed
+# 268,435,455 bytes (psycopg.errors.ProgramLimitExceeded: "string too long
+# to represent as jsonb string"). Real incident 2026-09-16: an XML upload's
+# base64-encoded bytes (raw size * 4/3) exceeded this, crashing the confirm
+# job for the WHOLE batch at DatasourceStore.add()'s Json(config) write --
+# xml_catalog_config/xml_asset_record/xlsx_catalog_config/xlsx_asset_record
+# all embed a full file/asset's bytes as one base64 JSONB string.
+#
+# Capped well under the hard limit (170 MiB raw -> ~227 MiB encoded) rather
+# than right up against it, since JSON/network overhead on top of the raw
+# base64 string isn't free either.
+#
+# When raw content exceeds this cap, content_b64 is omitted (None) rather
+# than raising -- every read site (xml_download_payload, xlsx_download_
+# payload, _preview_rows) already has a documented fallback for a missing
+# content_b64 (the "legacy" manifest-reconstruction path for XML, or
+# rebuilding a CSV asset from currently-ingested rows), so this degrades
+# original-file download/preview for oversized files instead of failing
+# the entire confirm job.
+_MAX_INLINE_CONTENT_BYTES = 170 * 1024 * 1024
+
+
+def _safe_content_fields(raw_bytes: bytes, *, source_filename: str) -> dict[str, Any]:
+    """{"content_b64": <str>}, or {"content_b64": None, "content_omitted_
+    oversized": True} if `raw_bytes` would exceed Postgres's single-jsonb-
+    string limit -- see _MAX_INLINE_CONTENT_BYTES above.
+
+    The explicit content_omitted_oversized marker matters: without it, a
+    real current row with content_b64 omitted for size is indistinguishable
+    from a genuine pre-migration legacy placeholder row (which also has no
+    content_b64) to find_legacy_xml_row's fallback heuristic (not content_b64
+    + assets + matching filename) -- confirmed exploitable in PR #334's own
+    review (2026-09-16): a real oversized upload whose generated-asset
+    dataset names happen to share the file's own stem would get matched as
+    "legacy" and have its real config silently overwritten by
+    upsert_legacy_xml_catalog_entry. Callers merge this dict's keys into
+    their config dict (`**_safe_content_fields(...)`) rather than setting
+    a single "content_b64" key directly, so the marker is only ever present
+    when it's true -- never a stray "content_omitted_oversized": False on
+    every normal-sized row.
+    """
+    if len(raw_bytes) > _MAX_INLINE_CONTENT_BYTES:
+        logger.warning(
+            "source_catalog: omitting content_b64 for %r -- %d raw bytes "
+            "exceeds the %d byte inline cap (Postgres's jsonb single-string "
+            "limit); original-file download/preview falls back to the "
+            "reconstructed-from-assets path instead",
+            source_filename, len(raw_bytes), _MAX_INLINE_CONTENT_BYTES,
+        )
+        return {"content_b64": None, "content_omitted_oversized": True}
+    return {"content_b64": base64.b64encode(raw_bytes).decode("ascii")}
 
 
 def generic_catalog_config(
@@ -50,7 +105,7 @@ def xml_catalog_config(
             _XML_KEY: {
                 "source_filename": source_filename,
                 "content_type": "application/xml",
-                "content_b64": base64.b64encode(xml_bytes).decode("ascii"),
+                **_safe_content_fields(xml_bytes, source_filename=source_filename),
                 "generated_assets": assets,
                 "deleted": False,
             },
@@ -94,7 +149,7 @@ def xml_asset_record(
         "dataset": dataset,
         "ontology_type": ontology_type,
         "content_type": "text/csv",
-        "content_b64": base64.b64encode(content_bytes).decode("ascii"),
+        **_safe_content_fields(content_bytes, source_filename=filename),
         "deleted": False,
     }
 
@@ -148,7 +203,7 @@ def xlsx_catalog_config(
             _XLSX_KEY: {
                 "source_filename": source_filename,
                 "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "content_b64": base64.b64encode(xlsx_bytes).decode("ascii"),
+                **_safe_content_fields(xlsx_bytes, source_filename=source_filename),
                 "generated_assets": assets,
                 "deleted": False,
             },
@@ -169,7 +224,7 @@ def xlsx_asset_record(
         "dataset": dataset,
         "ontology_type": ontology_type,
         "content_type": "text/csv",
-        "content_b64": base64.b64encode(content_bytes).decode("ascii"),
+        **_safe_content_fields(content_bytes, source_filename=filename),
         "deleted": False,
     }
 
@@ -210,6 +265,19 @@ def upsert_xlsx_catalog_entry(
 
 
 def find_legacy_xml_row(datasources: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
+    """A row with legacy_prefix set is unambiguously a pre-migration
+    placeholder. The fallback branch below (no legacy_prefix, but no
+    content_b64 either) used to assume that combination was ALSO always a
+    legacy row -- true only because every real upload always had a
+    content_b64 before the 2026-09-16 size cap. A real, current oversized
+    upload now also has content_b64=None, and can share the fallback's
+    filename/asset-shape match if its generated-asset dataset names happen
+    to collide with `prefix` (confirmed exploitable in PR #334's own
+    review). content_omitted_oversized (set by _safe_content_fields)
+    distinguishes "no content because legacy placeholder" from "no content
+    because a real file was too large to inline" -- only the former may
+    match here.
+    """
     expected_name = f"{prefix}.xml"
     for row in datasources:
         meta = _xml_meta(row)
@@ -219,6 +287,7 @@ def find_legacy_xml_row(datasources: list[dict[str, Any]], prefix: str) -> dict[
             return row
         if (
             not meta.get("content_b64")
+            and not meta.get("content_omitted_oversized")
             and bool(_asset_rows(meta))
             and (meta.get("source_filename") or row.get("name")) == expected_name
         ):

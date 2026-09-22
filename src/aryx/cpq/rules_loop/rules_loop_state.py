@@ -56,3 +56,4 @@ class LoopScope:
     display_order: dict[str, int] | None
     workspace_id: int | None
     catalog_prefix: str
+    product_anchor_hint: str | None = None

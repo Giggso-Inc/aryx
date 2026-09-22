@@ -34,7 +34,7 @@ class OracleCursorWrapper:
         self._out_vars: list[Any] = []  # filled by _translate_sql for RETURNING
         self._conflict_ignore: bool = False  # set when ON CONFLICT DO NOTHING was stripped
 
-        # Oracle 23ai native JSON columns may arrive as a Python str (JSON text)
+        # Oracle 26ai native JSON columns may arrive as a Python str (JSON text)
         # or as a Python dict (OSON binary), depending on how the value was stored.
         # This handler normalises all DB_TYPE_JSON fetches to Python native types so
         # callers never receive raw JSON strings from SELECT queries.

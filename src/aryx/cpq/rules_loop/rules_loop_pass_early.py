@@ -80,7 +80,9 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # Apply hiding rules first so auto_fill only fills visible attrs
     state.attrs, _msgs, hidden_vns = engine.apply_hiding_rules(
         state.attrs, state.filled, scope.hiding_rules,
-        bml_eval=scope.bml_eval, filled_multi=state.multi)
+        bml_eval=scope.bml_eval, filled_multi=state.multi,
+        workspace_id=scope.workspace_id, catalog_prefix=scope.catalog_prefix,
+        dt_cache=state.dt_cache)
 
     # docs/CPQ_HIDDEN_VALUE_TEMPORARY_VS_CONFIRMED_PLAN_2026_08_16.md --
     # strip filled/multi for `hidden_vns` UNLESS a core decision anchor

@@ -38,6 +38,53 @@ from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
 
+# Diagnostic for the 2026-09-16 confirm-job incident: a documents-source
+# confirm failed with Postgres's "string too long to represent as jsonb
+# string" (a single JSONB scalar string over 268435455 bytes). Every per-
+# record/per-merge path upstream (chunk_pages' hard character-count slicing,
+# extract_mentions' per-chunk LLM payloads, both survivorship merge paths)
+# was traced and proven bounded well under this by static analysis -- none
+# of them explained it. The client holds the actual failing document, so
+# this can't be reproduced locally; logging the real oversized attribute
+# key at the point of failure (well before Postgres's hard limit) is the
+# fastest way to find it without needing the file itself. Diagnostic only:
+# logs and continues, never truncates or otherwise changes what gets saved.
+_ATTR_SIZE_WARN_BYTES = 5 * 1024 * 1024
+
+
+def _log_oversized_entity_attributes(ontology_type: str, attributes: dict[str, Any]) -> None:
+    """PR #334 review (N2): this runs on every entity in every save batch,
+    so the common case (small, string-valued attributes -- the overwhelming
+    majority in this ingestion path) must stay cheap. A str/bytes value's
+    own length is already a close-enough proxy for its json.dumps length
+    (quoting/escaping adds a little, irrelevant at the MB-plus scale this
+    diagnostic cares about) -- skip the full serialize for those, and only
+    pay for an exact json.dumps once, on the actual largest value, if the
+    cheap total already crossed the warn threshold.
+    """
+    try:
+        total = 0
+        worst_key: str | None = None
+        worst_size = 0
+        for key, value in attributes.items():
+            size = len(value) if isinstance(value, (str, bytes)) else len(json.dumps(value, default=str))
+            total += size
+            if size > worst_size:
+                worst_size, worst_key = size, key
+        if total > _ATTR_SIZE_WARN_BYTES:
+            worst_value = attributes.get(worst_key)
+            exact_size = (
+                len(worst_value) if isinstance(worst_value, (str, bytes))
+                else len(json.dumps(worst_value, default=str))
+            )
+            logger.warning(
+                "entity attributes unusually large: ontology_type=%s total_bytes=%d "
+                "largest_key=%r largest_key_bytes=%d all_keys=%r",
+                ontology_type, total, worst_key, exact_size, list(attributes.keys()),
+            )
+    except Exception:  # noqa: BLE001 -- diagnostic must never break a real save
+        logger.debug("oversized-attribute diagnostic failed", exc_info=True)
+
 
 class EntityStore:
     """Loads landed records and persists resolved entities + members."""
@@ -99,11 +146,13 @@ class EntityStore:
         entity_ids = _fetch_entity_ids(cur, total)
         logger.info("entities ids fetched count=%d", total)
 
-        entity_rows = [
-            (eid, self._ws, entity.ontology_type,
-             Json(entity.attributes, dumps=_dumps), entity.confidence)
-            for eid, (entity, _) in zip(entity_ids, results)
-        ]
+        entity_rows = []
+        for eid, (entity, _) in zip(entity_ids, results):
+            _log_oversized_entity_attributes(entity.ontology_type, entity.attributes)
+            entity_rows.append((
+                eid, self._ws, entity.ontology_type,
+                Json(entity.attributes, dumps=_dumps), entity.confidence,
+            ))
         if entity_rows:
             cur.executemany(load("insert_entity"), entity_rows)
         logger.info("entities inserted %d (bulk)", total)
@@ -161,11 +210,13 @@ class EntityStore:
         entity_ids = [row[0] for row in cur.fetchall()]
         logger.info("entities ids fetched count=%d", total)
 
-        entity_rows = [
-            (eid, self._ws, entity.ontology_type,
-             Json(entity.attributes, dumps=_dumps), entity.confidence)
-            for eid, (entity, _) in zip(entity_ids, results)
-        ]
+        entity_rows = []
+        for eid, (entity, _) in zip(entity_ids, results):
+            _log_oversized_entity_attributes(entity.ontology_type, entity.attributes)
+            entity_rows.append((
+                eid, self._ws, entity.ontology_type,
+                Json(entity.attributes, dumps=_dumps), entity.confidence,
+            ))
         if entity_rows:
             cur.executemany(load("insert_entity_with_id"), entity_rows)
         logger.info("entities inserted %d (bulk)", total)

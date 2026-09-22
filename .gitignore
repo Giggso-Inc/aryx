@@ -8,6 +8,7 @@
 *.key
 *.p12
 *.pfx
+.claude/settings.local.json
 manifest.secrets.json
 .raven/manifest.secrets.json
 .raven/.cache/

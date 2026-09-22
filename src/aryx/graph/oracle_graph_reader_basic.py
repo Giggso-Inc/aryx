@@ -6,10 +6,13 @@ via grep.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from aryx.config import get_settings
 from aryx.graph.oracle_graph_reader_helpers import _entity, _parse_attrs
+
+_ATTR_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class _OracleGraphBasicReadMixin:
@@ -74,13 +77,27 @@ class _OracleGraphBasicReadMixin:
         }
 
     def find_entities(self, ontology_type: str | None = None,
-                      name: str | None = None, limit: int = 50,
-                      offset: int = 0) -> list[dict[str, Any]]:
-        """Find entities filtered by type and/or case-insensitive name substring.
+                      name: str | None = None, attrs: dict[str, Any] | None = None,
+                      limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """Find entities filtered by type, case-insensitive name substring,
+        and/or JSON attribute values.
 
         Args:
             ontology_type: Exact ontology type to match, or None for any.
             name: Substring matched case-insensitively against the name, or None.
+            attrs: {key: value} matched case-insensitively against the
+                entity's JSON `attributes` column, ANDed with type/name —
+                mirrors GraphReader.find_entities' own attrs= contract.
+                Keys are validated against ^[A-Za-z_][A-Za-z0-9_]*$ and
+                rejected otherwise (raises ValueError): Oracle's JSON_VALUE
+                path expression must be a compile-time literal (ORA-40454
+                on a bind variable), so the key is embedded directly into
+                the SQL text rather than bound — the same reasoning
+                Cypher's e.{key} interpolation already documents for
+                property names, values still bound. See docs/oci-oracle/
+                DEV_RV_MSI_INTO_DEV_OCI_INTEGRATION_PLAN_2026-09-21.md's
+                Part B for why the originally-planned '$.' || :key_N
+                bind-the-path approach doesn't work.
             limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
             offset: Rows to skip before applying limit — see GraphReader.find_entities.
 
@@ -95,6 +112,16 @@ class _OracleGraphBasicReadMixin:
         if name:
             clauses.append("LOWER(name) LIKE '%' || LOWER(:name) || '%'")
             params["name"] = name
+        if attrs:
+            for i, (key, value) in enumerate(attrs.items()):
+                if not _ATTR_KEY_RE.fullmatch(key):
+                    raise ValueError(f"find_entities: invalid attribute key {key!r}")
+                pname = f"attr_val_{i}"
+                clauses.append(
+                    f"LOWER(JSON_VALUE(attributes, '$.{key}')) "  # nosec S608 — key validated above
+                    f"LIKE '%' || LOWER(:{pname}) || '%'"
+                )
+                params[pname] = value
         where = " AND ".join(clauses)
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
         skip = max(0, int(offset))

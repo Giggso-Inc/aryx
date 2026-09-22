@@ -40,7 +40,7 @@ All variables use the `ARYX_` prefix (consistent with existing config).
 | `ARYX_LLM_CHEAP_MODEL` | model string | *(backend default)* | Override cheap-tier model |
 | `ARYX_LLM_FRONTIER_BACKEND` | `local \| oci` | `local` | Frontier-tier LLM — Anthropic Claude vs OCI GenAI Command R+ |
 | `ARYX_LLM_FRONTIER_MODEL` | model string | *(backend default)* | Override frontier-tier model |
-| `ARYX_DB_BACKEND` | `local \| oci` | `local` | Relational store — Postgres vs Oracle ADB 23ai *(Phase 2)* |
+| `ARYX_DB_BACKEND` | `local \| oci` | `local` | Relational store — Postgres vs Oracle ADB 26ai *(Phase 2)* |
 | `ARYX_WORKER_BACKEND` | `local \| oci_functions \| oci_dataflow` | `local` | Pipeline worker — ThreadPoolExecutor vs OCI Functions vs OCI Data Flow *(Phase 2)* |
 | `ARYX_GRAPH_BACKEND` | `falkordb \| oci_graph` | `falkordb` | Graph store — FalkorDB vs Oracle Graph Studio *(Phase 2)* |
 
@@ -117,7 +117,7 @@ ARYX_OCI_COMPARTMENT_ID=ocid1.compartment.oc1..xxxx
 | Embed | nomic-embed-text · dim=768 | cohere.embed-multilingual-v3.0 · dim=1024 |
 | LLM cheap | broker catalog (Ollama / Anthropic cheap) | cohere.command-r-16k |
 | LLM frontier | broker catalog (Anthropic claude-3) | cohere.command-r-plus |
-| DB | Postgres (psycopg3) | Oracle ADB 23ai (python-oracledb) — Phase 2 |
+| DB | Postgres (psycopg3) | Oracle ADB 26ai (python-oracledb) — Phase 2 |
 | Worker | ThreadPoolExecutor | OCI Functions (per-doc) or OCI Data Flow (batch) — Phase 2 |
 | Graph | FalkorDB (redis) | Oracle Graph Studio — Phase 2 |
 
@@ -190,7 +190,7 @@ only when the corresponding env var is set.
 
 ### Oracle ADB setup checklist
 
-1. Provision Oracle Autonomous Database 23ai in your compartment
+1. Provision Oracle Autonomous Database 26ai in your compartment
 2. Download wallet and set `TNS_ADMIN` to the wallet directory
 3. Create application user with `DWROLE` grant
 4. Set `ARYX_OCI_ADB_DSN=aryx_high` (or your service name from `tnsnames.ora`)
@@ -200,7 +200,7 @@ only when the corresponding env var is set.
 
 Property Graph backing tables are created by `graph_schema.sql` (run separately
 after migrations complete). The `CREATE PROPERTY GRAPH` DDL requires Oracle
-Database 23ai — confirm your ADB version supports SQL/PGQ before enabling.
+Database 26ai — confirm your ADB version supports SQL/PGQ before enabling.
 
 ### OCI Data Flow note
 

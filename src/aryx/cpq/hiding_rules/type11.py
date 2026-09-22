@@ -13,6 +13,28 @@ import time
 from aryx.cpq.engine import logger
 from aryx.cpq.state import HidingRule
 
+# Live-confirmed (2026-09-21, docs/APX900_Hybrid_Combiner_Missing_Script_
+# Issue.md): the "Hide Optional Peripherals 900 MHz Hybrid Combiner For G
+# Series If No Value Available" hiding rule's own BmFunction script was
+# never ingested -- this loader would otherwise drop it entirely
+# (script_missing branch below), leaving op900MHzHybridCombiner_astro asked
+# unconditionally with a blind-filled default for every product in this
+# family, including APX 900 configurations where it genuinely has no legal
+# value yet. The rule's own name states its real condition plainly ("if no
+# value available"), which is exactly the distinction resolve_whitelist_
+# values already makes ([] = confirmed no legal value under this context,
+# None = no Data Table coverage at all, real list = a legal value exists) --
+# so this rule is kept (not dropped) with dt_whitelist_substitute=True,
+# letting apply_hiding_rules substitute that real Data Table check for the
+# missing script instead of guessing. Narrow, named allowlist -- NOT a
+# generic substitution for every "...If No Value(s) Available" rule with a
+# missing script (dozens exist in this catalog); each would need its own
+# live confirmation before joining this set, same discipline as
+# _CONFIRMED_DEAD_ATTRS (aryx.cpq.data_table_bridge.attr_governance).
+_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES: frozenset[str] = frozenset({
+    "Hide Optional Peripherals 900 MHz Hybrid Combiner For G Series If No Value Available",
+})
+
 
 def _load_type11_hiding_rules(
     engine, workspace_id: int, catalog_prefix: str, _t0: float,
@@ -67,6 +89,21 @@ def _load_type11_hiding_rules(
                 script = scripts.get(fn_id)
                 if not script:
                     script_missing += 1
+                    if rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES:
+                        # Confirmed narrow carve-out (see that set's own
+                        # docstring) -- substitute a real Data Table
+                        # whitelist check for the missing script instead
+                        # of dropping the rule (apply_hiding_rules
+                        # handles dt_whitelist_substitute=True).
+                        for target_attr_id, _action_type in targets:
+                            rules.append(HidingRule(
+                                rule_name=rule_name or str(eid),
+                                condition_attr_id=0,
+                                condition_value="",
+                                target_attr_id=target_attr_id,
+                                dt_whitelist_substitute=True,
+                            ))
+                        continue
                     logger.warning(
                         "cpq: hiding rule %r references function_id=%d "
                         "but no BmFunction script was found", rule_name, fn_id)

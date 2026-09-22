@@ -13,7 +13,7 @@
 1. Tenancy & Auth       ← prereq for everything
 2. Compartment          ← logical grouping
 3. VCN + Networking     ← prereq for ADB, Compute, Functions
-4. Oracle ADB 23ai      ← prereq for Select AI, migrations
+4. Oracle ADB 26ai      ← prereq for Select AI, migrations
 5. OCI Object Storage   ← prereq for Document Understanding
 6. OCI Generative AI    ← prereq for ADB Select AI credential
 7. ADB Post-Config      ← requires ADB + GenAI both ready
@@ -130,7 +130,7 @@ No aryx env vars needed for the VCN itself. The VCN ID is used when creating Fun
 
 ---
 
-## Service 4 — Oracle ADB 23ai
+## Service 4 — Oracle ADB 26ai
 
 **Console path:** Oracle Database → Autonomous Database → Create Autonomous Database  
 **aryx backend toggle:** `ARYX_DB_BACKEND=oci`  
@@ -144,7 +144,7 @@ No aryx env vars needed for the VCN itself. The VCN ID is used when creating Fun
 | Database name | `ARYXDB` |
 | Workload type | Transaction Processing |
 | Deployment type | Serverless |
-| Database version | 23ai |
+| Database version | 26ai |
 | ECPU count | 1 (Always Free) ⬆️ 2–4 ECPUs for Small/Large |
 | Storage | 20 GB (Always Free) ⬆️ 100–500 GB for paid |
 | Auto scaling | Disabled (Always Free) |
@@ -536,7 +536,7 @@ OCI_REGION=us-chicago-1
 # OCI_CONFIG_FILE=~/.oci/config
 # OCI_CONFIG_PROFILE=DEFAULT
 
-# ── Database — Oracle ADB 23ai ────────────────────────────────────────────────
+# ── Database — Oracle ADB 26ai ────────────────────────────────────────────────
 ARYX_DB_BACKEND=oci
 
 ARYX_OCI_ADB_DSN=aryxdb_high
@@ -631,7 +631,7 @@ Add all required policies in one place: **Identity → Policies → Create Polic
 
 | Service | Free Tier | Upgrade trigger |
 |---------|-----------|----------------|
-| Oracle ADB 23ai | 1 OCPU + 20 GB (Always Free) | Storage > 20 GB or need > 1 OCPU |
+| Oracle ADB 26ai | 1 OCPU + 20 GB (Always Free) | Storage > 20 GB or need > 1 OCPU |
 | OCI Compute (app VM) | 4 OCPU + 24 GB A1.Flex (Always Free) | Need x86 or > 24 GB RAM |
 | OCI Object Storage | 20 GB / month (Always Free) | Total stored docs > 20 GB |
 | OCI Functions | 2M calls + 400K GB-sec / month (Always Free) | > ~2,000 docs/month |

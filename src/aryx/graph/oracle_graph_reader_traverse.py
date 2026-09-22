@@ -154,14 +154,14 @@ class _OracleGraphTraverseMixin:
         return result
 
     def shortest_path(self, src: int, dst: int, max_hops: int = 6) -> list[dict[str, Any]]:
-        """Return shortest path using Oracle 23ai SQL/PGQ GRAPH_TABLE ONE ROW PER STEP.
+        """Return shortest path using Oracle 26ai SQL/PGQ GRAPH_TABLE ONE ROW PER STEP.
 
         ONE ROW PER STEP (v1, e, v2) returns one row per edge in the path, each
         carrying (left_vertex, edge, right_vertex) properties. We collect all steps
         then resolve entity details for each unique vertex.
         """
         hops = max(1, min(int(max_hops), 10))
-        # ONE ROW PER STEP is the correct Oracle 23ai syntax for path traversal.
+        # ONE ROW PER STEP is the correct Oracle 26ai syntax for path traversal.
         # LISTAGG inside COLUMNS is not valid in GRAPH_TABLE context.
         sql = f"""
             SELECT v1_id, rel_name, v2_id

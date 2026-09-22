@@ -1,7 +1,7 @@
 """DB-backed document-discovery store: replaces the in-memory dict in discoveries.py.
 
 Persists /admin/docs/read results so discoveries survive container restarts and
-scale across multiple API instances.  Works on both Postgres and Oracle ADB 23ai
+scale across multiple API instances.  Works on both Postgres and Oracle ADB 26ai
 via the shared pool factory — oracle_pool.py handles all SQL translation.
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), the pure
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class DiscoveryStore:
-    """Persists document discoveries (Postgres + Oracle ADB 23ai)."""
+    """Persists document discoveries (Postgres + Oracle ADB 26ai)."""
 
     def __init__(self, dsn: str) -> None:
         """Acquire the shared connection pool for this DSN."""

@@ -38,6 +38,7 @@ def run_auto_fill(
     _default_fill_signatures: dict[str, tuple] | None = None,
     _signature_exclude_vns: frozenset[str] | None = None,
     grid_declined_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
 ) -> tuple[dict[str, str], dict[str, str], list[Any]]:
     """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -92,6 +93,16 @@ def run_auto_fill(
     data table (`_KNOWN_MISSING_DATA_TABLES`) is warned-and-skipped
     instead of asked forever. `None` (the default) is a complete no-op,
     identical to every caller that doesn't pass it.
+
+    product_anchor_hint — the customer's own original wording (e.g.
+    "I want APX 3000 for United States", CpqSession.product_anchor_
+    question) — optional, `None` (default) keeps every existing
+    caller's behavior unchanged. Only consulted by the Hardware
+    Version decision-attr check below (see _hardware_version_
+    confirmed_not_applicable's own docstring); a device this hint
+    can't confidently resolve, or one where real attrSequence data
+    doesn't rule it out, leaves Hardware Version exactly as mandatory
+    as it always was.
 
     workspace_id — optional; when supplied, an attribute whose only
     governing rule is script-based and failed to resolve
@@ -227,7 +238,7 @@ def run_auto_fill(
         country, rec_rules, negated_vns, skip_always_ask, bml_eval,
         validation_rules, display_order, workspace_id, catalog_prefix,
         _dt_cache, hiding_rules, _default_fill_signatures, _signature_exclude_vns,
-        grid_declined_vns,
+        grid_declined_vns, product_anchor_hint,
     )
 
     for attr in attrs:
@@ -240,6 +251,8 @@ def run_auto_fill(
     # other attrs -> Product last; Product deferred until Hardware filled.
     pending = engine._order_pending_hardware_before_product(
         pending, ctx.filled, attrs, display_order=display_order,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        cache=_dt_cache, product_anchor_hint=product_anchor_hint,
     )
 
     return ctx.filled, ctx.display_filled, pending

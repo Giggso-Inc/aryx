@@ -28,6 +28,8 @@ from aryx.source.source_catalog_detail import (
 )
 from aryx.source.source_catalog_meta import _display_kind, source_actions
 from aryx.source.source_catalog_upsert import (
+    _MAX_INLINE_CONTENT_BYTES,
+    _safe_content_fields,
     find_generic_source_row,
     find_legacy_xml_row,
     generic_catalog_config,
@@ -45,7 +47,9 @@ from aryx.source.source_catalog_upsert import (
 )
 
 __all__ = [
+    "_MAX_INLINE_CONTENT_BYTES",
     "_display_kind",
+    "_safe_content_fields",
     "build_source_catalog",
     "build_source_catalog_from_counts",
     "build_source_detail",

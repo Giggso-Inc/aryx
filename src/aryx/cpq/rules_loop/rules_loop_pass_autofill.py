@@ -52,6 +52,7 @@ def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopS
         _dt_cache=state.dt_cache, hiding_rules=scope.hiding_rules,
         _default_fill_signatures=state.default_fill_signatures,
         _signature_exclude_vns=frozenset(state.oscillating_vns),
+        product_anchor_hint=scope.product_anchor_hint,
     )
     logger.info(
         "cpq_perf: auto_fill took %.3fs pass=%d", time.monotonic() - _t0, pass_num,

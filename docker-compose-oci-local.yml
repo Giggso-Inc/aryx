@@ -1,10 +1,12 @@
 # aryx OCI-mode stack, backed by a LOCAL Oracle container instead of the
-# real cloud Oracle ADB 23ai instance — see
+# real cloud Oracle ADB 26ai instance — see
 # docs/LOCAL_OCI_ORACLE_STACK_PLAN_2026-09-15.md for the full plan this
-# implements.
+# implements. The local container itself stays on Oracle 23ai (see the
+# `oracle:` service comment below for why) — a known, accepted version
+# gap from the real 26ai cloud instance, not a mismatch to fix here.
 #
 # What this replaces vs docker-compose-oci.yml:
-#   Oracle ADB 23ai (cloud, TLS/wallet)  → oracle (local container, plain TCP)
+#   Oracle ADB 26ai (cloud, TLS/wallet)  → oracle (local container, plain TCP, 23ai)
 #
 # What stays exactly the same as docker-compose-oci.yml:
 #   every non-database OCI backend (worker, parse, embed, LLM, object
@@ -41,10 +43,16 @@ services:
 
   # ── Local Oracle Database 23ai Free — replaces the cloud ADB instance ───────
   # gvenzl/oracle-free: the standard community image for local Oracle dev.
-  # Checked directly (Docker Hub) before choosing this: no 24/25/26 tag
-  # exists as of this writing -- 23ai is also the version that actually
-  # matches the real ADB instance's feature set (JSON, VECTOR, SQL/PGQ)
-  # this stack is meant to mirror, so it's the right choice regardless.
+  # Checked directly (Docker Hub) before choosing this: no free/dev
+  # container image matching the real cloud instance's 26ai version
+  # exists as of this writing (gvenzl/oracle-free's own 26 Dockerfile
+  # tracks Enterprise-only "AI Database 26ai" builds, not yet published
+  # as a pullable free-tier tag) -- 23ai is the closest available local
+  # substitute, still sharing the feature set this stack actually
+  # exercises (JSON, VECTOR, SQL/PGQ), so it's the right choice for now.
+  # This IS a real version gap from the cloud ADB, not something to
+  # "fix" by editing this file -- re-check for a 26ai free tag
+  # periodically and switch when one ships.
   oracle:
     image: gvenzl/oracle-free:23-slim
     environment:

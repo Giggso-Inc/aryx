@@ -35,6 +35,7 @@ from aryx.cpq.bml.bml import (
 from aryx.cpq.data_table.data_table_resolver import resolve_whitelist_values as dt_resolve_whitelist_values
 from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family
 from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows
+from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_models_from_hint as dt_resolve_product_cpq_models_from_hint
 from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value as dt_resolve_region_allow_value
 from aryx.cpq.data_table.data_table_resolver import resolve_invalid_product_variant as dt_resolve_invalid_product_variant
 from aryx.cpq.data_table.data_table_resolver import discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model
@@ -708,6 +709,7 @@ class FillScope:
     display_order: dict[str, int] | None
     workspace_id: int | None
     catalog_prefix: str
+    product_anchor_hint: str | None
     signature_exclude_vns: frozenset[str] | None
     grid_declined_vns: "frozenset[str] | None"
     governed: set[int]
@@ -1153,9 +1155,13 @@ class CpqEngine:
         rules: list[HidingRule],
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         return hiding_rules.apply_hiding_rules(
             attrs, filled, rules, bml_eval, filled_multi,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix, dt_cache=dt_cache,
         )
 
     # ── Recommendation rule loader ────────────────────────────────────────────
@@ -1368,12 +1374,13 @@ class CpqEngine:
         display_order: dict[str, int] | None = None,
         workspace_id: int | None = None,
         catalog_prefix: str = "",
+        product_anchor_hint: str | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         return rules_loop.evaluate_rules_loop(
             self, attrs, hints, filled, hiding_rules, rec_rules, con_rules,
             bml_eval, filled_source, filled_multi, dropped_multi, country,
             negated_vns, skip_always_ask, rule_conflict_order, display_order,
-            workspace_id, catalog_prefix,
+            workspace_id, catalog_prefix, product_anchor_hint,
         )
 
 
@@ -1590,6 +1597,7 @@ class CpqEngine:
         _default_fill_signatures: dict[str, tuple] | None = None,
         _signature_exclude_vns: frozenset[str] | None = None,
         grid_declined_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         return auto_fill_run.run_auto_fill(
             self, attrs, hints, already_filled, constrained_opts, filled_source,
@@ -1597,7 +1605,7 @@ class CpqEngine:
             country, rec_rules, negated_vns, skip_always_ask, bml_eval,
             validation_rules, display_order, workspace_id, catalog_prefix,
             _dt_cache, hiding_rules, _default_fill_signatures, _signature_exclude_vns,
-            grid_declined_vns,
+            grid_declined_vns, product_anchor_hint,
         )
 
     @staticmethod
@@ -1636,9 +1644,61 @@ class CpqEngine:
         filled: dict[str, str],
         attrs: list["ConfigAttr"],
         display_order: dict[str, int] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+        product_anchor_hint: str | None = None,
     ) -> list["ConfigAttr"]:
         return auto_fill_hw_order.order_pending_hardware_before_product(
             self, pending, filled, attrs, display_order,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+            cache=cache, product_anchor_hint=product_anchor_hint,
+        )
+
+    @staticmethod
+    def _hardware_version_confirmed_not_applicable(
+        hint_text: str | None, workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> bool:
+        """True ONLY when a specific device can be confidently resolved
+        from `hint_text` (the customer's own original wording, e.g. "I
+        want APX 3000 for United States" — see CpqSession.product_
+        anchor_question) AND real attrSequence data confirms Hardware
+        Version is never governed for ANY of its real CPQModel
+        candidates (docs/Hardware_Version_APX3000_Product_Anchoring_
+        Issue.md v2.2's merged recommendation).
+
+        Every other outcome — no hint, no workspace_id, no confident
+        single product match (resolve_product_cpq_models_from_hint's own
+        "never guess" contract — see its docstring), or Hardware Version
+        IS governed for at least one resolved candidate — returns False,
+        preserving today's exact behavior (still treated as a mandatory
+        anchor). Deliberately one-sided: can only ever make Hardware
+        Version LESS forced, never more, and only when the underlying
+        data gives a real, unambiguous answer.
+
+        Kept as real logic here (not delegated to auto_fill_hw_order,
+        despite that module holding the rest of the hardware-ordering
+        code) so this module's own `dt_resolve_product_cpq_models_from_
+        hint`/`dt_attr_ever_governed_for_cpq_model` names are what
+        actually execute — tests patch those two names by dotted path
+        (`aryx.cpq.engine.<name>`), and a delegate elsewhere would bind
+        its own separate copies at import time, silently missing the
+        patch (same re-export-hub pitfall documented elsewhere in this
+        codebase).
+        """
+        if not hint_text or workspace_id is None:
+            return False
+        candidates = dt_resolve_product_cpq_models_from_hint(
+            hint_text, workspace_id, catalog_prefix, cache,
+        )
+        if not candidates:
+            return False
+        return not any(
+            dt_attr_ever_governed_for_cpq_model(
+                cm, "hWVersion_astro", workspace_id, catalog_prefix, cache,
+            )
+            for cm in candidates
         )
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────

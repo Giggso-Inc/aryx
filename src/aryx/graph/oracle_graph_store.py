@@ -1,4 +1,4 @@
-"""Oracle Property Graph writer — stores entities/relationships in ADB 23ai backing tables.
+"""Oracle Property Graph writer — stores entities/relationships in ADB 26ai backing tables.
 
 As of the Raven Style Compliance Plan's Phase 2b (2026-09-03), split into
 `oracle_graph_store_helpers.py` (attr sanitization, chunking, display-name
@@ -22,7 +22,7 @@ __all__ = ["OracleGraphStore"]
 
 
 class OracleGraphStore(_OracleGraphBatchMixin):
-    """Writes entity / provenance / relationship data to Oracle ADB 23ai backing tables."""
+    """Writes entity / provenance / relationship data to Oracle ADB 26ai backing tables."""
 
     def __init__(self, dsn: str, workspace_id: int) -> None:
         """Connect to Oracle pool and scope all writes to workspace_id."""

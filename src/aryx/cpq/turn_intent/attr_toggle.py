@@ -86,7 +86,8 @@ def detect_attr_activation(
     if not _ADD_VERB_RE.search(question):
         return None
     _visible_now, _msgs, hidden_now = engine.apply_hiding_rules(
-        attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi)
+        attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix)
     q_lower = question.lower()
     for attr in attrs:
         vn = attr.variable_name

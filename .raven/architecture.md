@@ -52,7 +52,7 @@ diagrams of both.
 - **Graph projection** (`graph/`) — wipe-and-rebuild projection of
   ontology/entities/relationships. Local: `falkor_store.py` → FalkorDB with
   Cypher/provenance threads. OCI: `oracle_graph_store.py` + `oracle_graph_reader.py`
-  → ADB 23ai backing tables (`aryx_graph_vertex/edge/source/provenance`) with
+  → ADB 26ai backing tables (`aryx_graph_vertex/edge/source/provenance`) with
   `CREATE PROPERTY GRAPH` DDL and SQL/PGQ traversals; activated by
   `ARYX_GRAPH_BACKEND=oci_graph`. Container and pipeline routing points updated
   transparently in `ports/container.py` and `pipeline/orchestrate.py`.
@@ -131,12 +131,12 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
 
 ### Deployment Topology
 - Cloud: AWS (secrets via `boto3` / Secrets Manager / SSM) or OCI (Document
-  Understanding, GenAI, ADB 23ai, Functions, Data Flow — enabled per-service
+  Understanding, GenAI, ADB 26ai, Functions, Data Flow — enabled per-service
   via `ARYX_*_BACKEND` env vars; all OCI services share one compartment ID +
   IAM instance principal auth)
 - Compute: containerized 12-factor `worker`; production orchestrator (ECS/EKS/OCI)
   decided at rollout — not yet fixed
-- Database: PostgreSQL 16 (source of truth) OR Oracle ADB 23ai (`ARYX_DB_BACKEND=oci`; 42 Oracle migrations, oracledb wrapper pool, dialect-aware query loader). One Oracle ADB instance holds both the Aryx schema and Shay's own schema (created via SQLAlchemy on first boot, no Alembic on Oracle).
+- Database: PostgreSQL 16 (source of truth) OR Oracle ADB 26ai (`ARYX_DB_BACKEND=oci`; 42 Oracle migrations, oracledb wrapper pool, dialect-aware query loader). One Oracle ADB instance holds both the Aryx schema and Shay's own schema (created via SQLAlchemy on first boot, no Alembic on Oracle).
 - Graph: FalkorDB (rebuildable projection) OR Oracle Property Graph (`ARYX_GRAPH_BACKEND=oci_graph`; backing relational tables + `CREATE PROPERTY GRAPH` + SQL/PGQ)
 - Worker: ThreadPoolExecutor (local) OR OCI Functions (`ARYX_WORKER_BACKEND=oci_functions`, per-doc detached invoke) OR OCI Data Flow (`oci_dataflow`, batch Spark)
 - Local dev: `docker-compose.yml` — `postgres` (host port 55432), `falkordb`

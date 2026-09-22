@@ -40,6 +40,7 @@ def build_fill_context_and_scope(
     _default_fill_signatures: dict[str, tuple] | None,
     _signature_exclude_vns: frozenset[str] | None,
     grid_declined_vns: frozenset[str] | None,
+    product_anchor_hint: str | None = None,
 ) -> tuple[FillContext, FillScope]:
     dt_cache: dict[tuple[int, str], tuple] = _dt_cache if _dt_cache is not None else {}
     filled: dict[str, str] = dict(already_filled or {})
@@ -98,6 +99,7 @@ def build_fill_context_and_scope(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules, display_order=display_order,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        product_anchor_hint=product_anchor_hint,
         signature_exclude_vns=_signature_exclude_vns,
         grid_declined_vns=grid_declined_vns, governed=governed,
         rule_governed=rule_governed, rec_by_target=rec_by_target,

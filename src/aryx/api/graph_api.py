@@ -4,13 +4,61 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 from aryx import explore
 from aryx.config import get_settings
+from aryx.cpq.engine import CpqEngine
 from aryx.graph import GraphReader
+from aryx.graph.feature_search import search_by_feature, search_products_combined
 from aryx.ports import ports
 from aryx.raven_log import new_span_id, new_trace_id, raven_log
 from aryx.store.entity_store import EntityStore
+
+# Stateless -- mirrors ask_api.py's own module-level singleton (CpqEngine
+# takes no constructor args; all state is passed explicitly per call).
+_cpq_engine = CpqEngine()
+
+
+class EntitySearchRequest(BaseModel):
+    """Body for POST /entities/search -- Phase 1 (graph) + Phase 2 (Postgres
+    Data Table) feature/region search, plus the merge between them
+    (2026-09-15/16 andie analysis). A JSON body avoids the query-string
+    encoding edge cases a repeated ?attr= param would hit for multi-word
+    attribute values (e.g. "Base Model").
+
+    Three effective modes, chosen by which fields are set:
+    - Neither `region` nor (`feature_label` + `feature_value`) given: graph
+      search only (find_entities(attrs=...), or search_by_feature() when
+      with_hiding_rules=True) -- unchanged from Phase 1 alone.
+    - `region` and/or (`feature_label` + `feature_value`) given, with no
+      `ontology_type`/`name`/`attrs`: Postgres Data Table search only,
+      cross-referenced against the graph by name where a match exists.
+    - Both sides given: the full merge, one entry per model with `source`
+      indicating which side(s) matched.
+
+    with_hiding_rules=False (default) is equivalent to find_entities(attrs=...)
+    alone -- cheap, no CpqEngine/Postgres round-trip. Set True to additionally
+    annotate each graph candidate with hidden_by_rule/hiding_rule_names.
+    Ignored once a Postgres-side filter is set, since search_products_
+    combined() always attaches graph context to Data-Table-only matches
+    that exist in the graph -- there's no cheaper graph-less variant of
+    that path.
+    """
+
+    ontology_type: str | None = None
+    name: str | None = None
+    attrs: dict[str, str] | None = None
+    filled: dict[str, str] | None = None
+    limit: int = 50
+    with_hiding_rules: bool = False
+
+    # Phase 2 / merge fields -- see Phase2_DataTable_Schema_Audit.md.
+    region: str | None = None
+    feature_label: str | None = None
+    feature_value: str | None = None
+    cpq_model: str | None = None
+    catalog_prefix: str = ""
 
 
 def _reader(workspace_id: int = 1) -> GraphReader:
@@ -57,6 +105,39 @@ def graph_router() -> APIRouter:
         reader: GraphReader = Depends(_reader),
     ) -> list[dict[str, Any]]:
         return reader.find_entities(ontology_type=type, name=name, limit=limit)
+
+    @router.post("/entities/search")
+    def search_entities(
+        body: EntitySearchRequest, workspace_id: int = 1,
+        reader: GraphReader = Depends(_reader),
+    ) -> list[dict[str, Any]]:
+        """Attribute-aware entity search -- Phase 1 of feature/region search.
+
+        Lets a caller search by attribute value (e.g. {"Region": "US"} or
+        {"Feature Type": "Encryption"}) instead of only by exact ontology_type
+        or name (Phase 1), by a Data Table region/feature constraint that
+        never reaches FalkorDB (Phase 2), or both merged in one call -- see
+        EntitySearchRequest's own docstring for which fields select which
+        mode.
+        """
+        if body.region or (body.feature_label and body.feature_value):
+            return search_products_combined(
+                reader, _cpq_engine, workspace_id,
+                region=body.region, feature_label=body.feature_label,
+                feature_value=body.feature_value, ontology_type=body.ontology_type,
+                name=body.name, attrs=body.attrs, cpq_model=body.cpq_model,
+                filled=body.filled, limit=body.limit, catalog_prefix=body.catalog_prefix,
+            )
+        if body.with_hiding_rules:
+            return search_by_feature(
+                reader, _cpq_engine, workspace_id,
+                ontology_type=body.ontology_type, name=body.name,
+                attrs=body.attrs, filled=body.filled, limit=body.limit,
+            )
+        return reader.find_entities(
+            ontology_type=body.ontology_type, name=body.name,
+            attrs=body.attrs, limit=body.limit,
+        )
 
     @router.get("/graph")
     def full_graph(

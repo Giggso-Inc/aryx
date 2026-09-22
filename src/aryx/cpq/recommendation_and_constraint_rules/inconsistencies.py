@@ -69,7 +69,8 @@ def find_rule_inconsistencies(
     by_vn = {a.variable_name: a for a in attrs}
 
     _visible, _msgs, hidden_vns = engine.apply_hiding_rules(
-        attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi)
+        attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix)
     for vn in hidden_vns:
         if filled.get(vn):
             issues.append({

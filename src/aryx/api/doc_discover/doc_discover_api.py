@@ -30,10 +30,11 @@ from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 # Kept in sync with file_ingest_api.py's own _MAX_FILE -- same class of
-# upload, same real-world file sizes (2026-09: a real MSI catalog export
-# is 223 MB), separate endpoint duplicating the same constant rather than
+# upload. Raised once already (to 250 MB, covering a real 223 MB MSI
+# catalog export), raised again 2026-09-11 to 500 MB at the operator's
+# request. Separate endpoint duplicating the same constant rather than
 # sharing it.
-_MAX_FILE = 250 * 1024 * 1024
+_MAX_FILE = 500 * 1024 * 1024
 
 
 class ConfirmRequest(BaseModel):

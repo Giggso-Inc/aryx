@@ -6,34 +6,42 @@ Branch: `feat/local-oci-oracle-stack-2026-09-15` → `dev_oci`
 
 Add a new compose file that runs the same OCI code path
 (`ARYX_DB_BACKEND=oci`) — `api`, `shay-api`, `web` — against a **local**
-Oracle container instead of the real cloud Oracle ADB 23ai instance, so
+Oracle container instead of the real cloud Oracle ADB 26ai instance, so
 OCI-specific database/graph behavior can be developed and tested without
 touching the shared cloud instance or needing its credentials for the DB
 layer specifically.
 
-## Why not Oracle 26ai
+## Why the local container is still Oracle 23ai, not 26ai
+
+**Update (2026-09-21): the real cloud instance is confirmed Oracle ADB
+26ai**, not 23ai as this section originally assumed when written
+2026-09-15 — the analysis below is corrected accordingly. This is now a
+known, accepted version gap between local dev and cloud, not a
+mismatch this plan should try to close.
 
 Checked directly (Docker Hub) rather than assumed: `gvenzl/oracle-free`
 — the standard community image for local Oracle development, and the
 only realistic way to get a local Oracle container without Oracle's own
-gated container registry — has no `24`, `25`, or `26` tag. Its newest
-published tag is `23` (`latest` and `23` point to the same image
-digest). I could not reach Oracle's own official release-notes page to
-independently confirm or deny a "26ai" product release (`oracle.com`
-returned a 403 to the fetch tool available here) — so this isn't a
-claim that Oracle 26ai doesn't exist as a product, only that **no
-pullable local container image for it exists today** through the
-standard route this plan relies on.
+gated container registry — has no pullable free-tier `26` tag as of
+this writing. Its build repo (`gvenzl/oci-oracle-free`) does carry a
+`Dockerfile.26` targeting "Oracle AI Database 26ai Free", confirming
+26ai is a real, shipping Oracle product (not the open question this
+section originally left unresolved) — but that Dockerfile had not yet
+produced a published `gvenzl/oracle-free:26*` tag on Docker Hub at
+time of writing, only `23`/`23.26.x` tags (the `23.26.x` numbering is
+Oracle's own release-train scheme for the 23ai generation, unrelated to
+the separate 26ai product line).
 
-This doesn't cost the plan anything: **23ai is the correct version to
-use regardless** — it's the same major version family as the real cloud
-ADB instance this whole effort is meant to mirror (JSON columns,
-`VECTOR`, and SQL/PGQ property graphs — the exact features
-`oracle_graph_reader_traverse.py`'s `shortest_path()` depends on — are
-all present in 23ai, cloud and free editions alike). Matching versions
-is the point; a hypothetical 26ai image, even if one existed, would
-risk behavioral drift from the real ADB instance this stack is
-supposed to approximate.
+Given that, 23ai remains the right **local** choice for now: it's the
+closest available free-tier substitute sharing the feature set this
+plan actually exercises (JSON columns, `VECTOR`, and SQL/PGQ property
+graphs — the exact features `oracle_graph_reader_traverse.py`'s
+`shortest_path()` depends on — are present in both 23ai and 26ai). It
+is knowingly NOT the same major version as the real 26ai cloud
+instance this stack approximates, so any behavior specific to 26ai-only
+features (if any turn up) won't reproduce locally — re-check Docker Hub
+for a `26ai` free tag periodically and switch `docker-compose-oci-
+local.yml`'s `oracle` image once one ships.
 
 ## Scope
 

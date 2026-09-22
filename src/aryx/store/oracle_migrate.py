@@ -1,4 +1,4 @@
-"""Apply Oracle ADB 23ai DDL migrations from store/migrations_oracle/."""
+"""Apply Oracle ADB 26ai DDL migrations from store/migrations_oracle/."""
 from __future__ import annotations
 
 import logging

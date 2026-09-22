@@ -1,6 +1,6 @@
 """File ingest API: upload up to 50 files (JSON/CSV/PDF/DOCX/PPTX/images).
 
-Limits: 250 MB per file, 750 MB total per request, max 50 files.
+Limits: 500 MB per file, 1500 MB total per request, max 50 files.
 JSON/CSV go through the standard entity pipeline.
 Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→entity.
 
