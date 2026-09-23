@@ -32,6 +32,7 @@ of failing the whole confirm job.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from aryx.raven_log import new_span_id, new_trace_id, raven_log
@@ -58,6 +59,13 @@ def _content_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def _source_filename(config: dict[str, Any]) -> str:
+    for meta in config.get(_CATALOG_KEY, {}).values():
+        if isinstance(meta, dict) and meta.get("source_filename"):
+            return str(meta["source_filename"])
+    return "unknown"
+
+
 def apply_oracle_json_budget(config: dict[str, Any]) -> dict[str, Any]:
     """Strip `content_b64` from the largest entries (in place) until
     `config`'s total embedded-content size fits under Oracle's native JSON
@@ -70,6 +78,7 @@ def apply_oracle_json_budget(config: dict[str, Any]) -> dict[str, Any]:
     total = sum(len(e["content_b64"]) for e in entries)
     if total <= _MAX_ORACLE_JSON_OBJECT_BYTES:
         return config
+    started = time.monotonic()
     stripped_bytes: list[int] = []
     for entry in sorted(entries, key=lambda e: len(e["content_b64"]), reverse=True):
         removed = len(entry["content_b64"])
@@ -85,6 +94,13 @@ def apply_oracle_json_budget(config: dict[str, Any]) -> dict[str, Any]:
         error_code="ORACLE_JSON_BUDGET_STRIPPED",
         trace_id=new_trace_id(), span_id=new_span_id(),
         context={
+            "task_id": _source_filename(config),
+            "final_status": "stripped",
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            "stage": "oracle_json_budget",
+            "result": "content_stripped",
+            "reason_code": "ORACLE_JSON_BUDGET_EXCEEDED",
+            "impact_scope": "catalog_entries",
             "entries_stripped": len(stripped_bytes),
             "bytes_freed": sum(stripped_bytes),
             "final_total_bytes": total,
