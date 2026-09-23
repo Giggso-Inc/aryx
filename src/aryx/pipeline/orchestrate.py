@@ -24,11 +24,12 @@ from aryx.pipeline.enrich.enrich import _build_type_ancestors, _infer_schema_fk_
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
-from aryx.project import project_graph
+from aryx.project import project_auto
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
+from aryx.store.projection_store import ProjectionStore
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +273,10 @@ def run_pipeline(
                         ) from exc
                 else:
                     graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
-                logger.info("project stage — calling project_graph ws=%s", workspace_id)
-                counts = project_graph(
-                    estore, graph_inst,
+                logger.info("project stage — calling project_auto ws=%s", workspace_id)
+                pstore = ProjectionStore(dsn, workspace_id=workspace_id)
+                counts = project_auto(
+                    estore, pstore, graph_inst,
                     type_ancestors=type_ancestors, workspace_id=workspace_id,
                     on_progress=on_progress, pct_range=(90, 95),
                 )

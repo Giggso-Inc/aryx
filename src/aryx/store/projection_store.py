@@ -35,7 +35,7 @@ class ProjectionStore:
         """Record a successful projection at now()."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(load("upsert_projection_state"), (self._ws,))
+                cur.execute(load("upsert_projection_state"), {"workspace_id": self._ws})
 
     def total_entities(self) -> int:
         """Entity count for the dirty-ratio mode decision."""

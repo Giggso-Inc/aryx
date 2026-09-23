@@ -1,14 +1,14 @@
 # Ingestion Pipeline: Parallel/Spark Migration Analysis
 
-**Status:** Phase 1 ✅ done, Phase 2 ✅ done, Phase 3 ✅ done, Phase 4 🟡 in
-progress (§8) — worker count raised, a hidden progress-reporting
-bottleneck found and fixed, candidate batching implemented, Resolve-stage
-embedding prefetch parallelized, and a real correctness bug found + fixed
-(both Postgres and Oracle) in graph projection's existing incremental
-write path — all live-verified against the real LLM/broker/Oracle ADB.
-Branch `perf/ingest-parallel-2026-09-23` (holds all phases), pushed, not
-yet PR'd. Phase 4's pipeline wiring (`orchestrate.py` → `project_auto`)
-deliberately not done yet — see §8 Phase 4.
+**Status:** Phase 1 ✅ done, Phase 2 ✅ done, Phase 3 ✅ done, Phase 4 ✅
+done (§8) — worker count raised, a hidden progress-reporting bottleneck
+found and fixed, candidate batching implemented, Resolve-stage embedding
+prefetch parallelized, and graph projection's existing incremental write
+path found, fixed (three separate correctness bugs, both Postgres and
+Oracle), and wired into the confirm pipeline (`orchestrate.py` →
+`project_auto`) — all live-verified against the real LLM/broker/Oracle
+ADB. Branch `perf/ingest-parallel-2026-09-23` (holds all phases), pushed,
+not yet PR'd.
 
 **Date:** 2026-09-23
 **Trigger:** Evaluating OCI AIDP (Spark clusters + Workflows) as a parallel-execution
@@ -554,11 +554,15 @@ the actual code change was small once the safe boundary was identified.
 
 ### Phase 4 — Step 10: Graph projection (biggest cost, hardest fix)
 
-**Status:** 🟡 In progress (2026-09-23) — investigated, found the redesign
-this plan called for **already exists** but is unused by the confirm
-pipeline, and found + fixed a real correctness bug blocking it from being
-safely wired in. Wiring it into `orchestrate.py` itself is deliberately
-**not done yet** — see "Not done" below.
+**Status:** ✅ Done (2026-09-23) — investigated, found the redesign this
+plan called for **already exists** but was unused by the confirm
+pipeline, found + fixed the correctness bug blocking it from being safely
+wired in, found + fixed a second, independent live-only Oracle bind bug
+while wiring it in, and wired `project_auto` into `orchestrate.py`. All
+live-verified end-to-end against the real Oracle ADB: full rebuild on
+first run, correct fall-through to incremental on the second, with the
+relationship-only-change fix (Step 2/3 below) proven through the full
+wiring, not just direct `ProjectionStore` calls.
 
 **What:** The graph-write stage — 35% of total time (45m39s), the single
 largest cost measured. `orchestrate.py`'s confirm pipeline always calls
@@ -628,42 +632,70 @@ relationship between two pre-existing entities, and confirmed
 `tombstones()` (the fixed `MINUS` query) all execute correctly and return
 the right rows.
 
-**Not done, deliberately:** `orchestrate.py` still calls `project_graph()`
-directly — `project_auto` is not wired into the confirm pipeline. That's a
-separate, explicit next step, held back per direction after this
-investigation surfaced the correctness bug above: fix the bug first,
-confirm it's solid, decide on wiring separately rather than bundling a
-data-correctness fix with a pipeline behavior change in one step.
+**Step 4 — a second, independent live-only bug found while wiring in.**
+Live-testing the full `project_auto` path against real Oracle ADB (not
+just direct `ProjectionStore` calls) surfaced a third pre-existing bug:
+`advance_watermark()`'s Oracle override (`upsert_projection_state.sql`)
+references its one bind param (`:1`) **twice** — once in the `MERGE ...
+USING DUAL ON` clause, once in the `INSERT VALUES` — and oracledb's
+thin-mode driver requires one positional value per *occurrence* of a
+numbered placeholder when params are passed as a tuple, not one per
+distinct name (`DPY-4009: 2 positional bind values are required but 1
+were provided`). Every full-rebuild run calls `advance_watermark()`, so
+this would have broken on Oracle the moment `project_auto` actually ran —
+invisible to any mock-based test, since it depends on the real driver's
+bind-counting behavior, not on parsing logic. Fixed by switching the bind
+to a named param (`:workspace_id`) passed as a dict — oracledb correctly
+dedupes a named bind referenced multiple times, unlike a positional one.
+Live-verified: full-rebuild → incremental → relationship correctly
+picked up, all through `project_auto`, against the real ADB.
+
+**Step 5 — wired in.** `orchestrate.py` now constructs a `ProjectionStore`
+and calls `project_auto()` instead of `project_graph()` directly.
+`project_auto()` gained `on_progress`/`pct_range` passthrough (only
+`project_graph`'s branch has real per-row scaled progress;
+`project_incremental` has no equivalent internal granularity, so that
+branch reports once at the window's start and once at its end — a
+deliberate, documented trade-off, not an oversight: unlike the original
+full-rebuild timeout-watchdog problem this docstring references, an
+incremental run only touches what's dirty since the last watermark, so it
+is expected to be fast enough that start/end-only reporting is fine).
+Added direct test coverage for `project_auto`'s mode-picking logic itself
+(previously untested — only its two branches were), which was a real gap
+flagged during the original investigation.
 
 **Risk:** Was High per the original plan's framing (a from-scratch
-redesign); the bug-fix work done so far was Low-Medium (additive schema
-change, existing tests plus new characterization tests, live-verified
-against real Oracle ADB). Wiring `project_auto` into `orchestrate.py`
-remains a separate, not-yet-assessed risk — it changes confirm's actual
-runtime behavior, unlike the fix above which only corrects an existing,
-already-shipped code path's correctness.
+redesign); the actual work landed Low-Medium — three additive/corrective
+fixes (schema column, bind-style, pipeline wiring), each backed by a
+characterization test proving the bug and a fix test proving the
+resolution, all live-verified against the real Oracle ADB rather than
+trusted from mocks alone.
 
-**Expected win:** Unknown until wired in and measured — likely large for
-routine "add a few more files" confirms on an established workspace
-(dirty ratio well under the 30% `ARYX_PROJECT_DIRTY_MAX` threshold), no
-win (correctly falls back to full rebuild) for a workspace's first large
-confirm or any run touching most of the graph.
+**Expected win:** Proportional to how much of the graph is actually dirty
+on a given confirm run — large for routine "add a few more files"
+confirms on an established workspace (dirty ratio well under the 30%
+`ARYX_PROJECT_DIRTY_MAX` threshold), no win (correctly falls back to full
+rebuild) for a workspace's first large confirm or any run touching most
+of the graph. Not yet measured against a real multi-file confirm job —
+the live verification here used small, targeted scenarios (2-entity,
+single-relationship), matching the "keep tests small" direction rather
+than re-running the full 32-file job.
 
 **Effort:** Lower than originally scoped — the hard part (the redesign)
-already existed; effort so far went into finding and fixing the
-correctness gap that was blocking it from being safe to use, not into
-building new write-model architecture.
+already existed; effort went into finding and fixing three correctness
+gaps (two DB-portability bugs, one relationship-staleness bug) that were
+blocking safe use, not into building new write-model architecture.
 
 ---
 
-**Summary:** Phases 1–3 are done. Phase 2 was the biggest quick win
+**Summary:** All four phases are done. Phase 2 was the biggest quick win
 available; Phase 3 confirmed via investigation that only its embedding
 fetch (not the whole block loop) was safe to parallelize, and captured
 most of the stage's win from that alone. Phase 4's own investigation
 found its "redesign the write path" step was already done by someone
 else's earlier work (`project_incremental`/`project_auto`) — the real
-blocker was a correctness bug keeping it unsafe to use, now found and
-fixed for both Postgres and Oracle. Wiring it into the confirm pipeline
-is the remaining step, deliberately deferred to keep the correctness fix
-and the pipeline behavior change as separate, individually reviewable
-steps.
+blockers were three separate correctness bugs (relationship staleness,
+missing Oracle `EXCEPT`→`MINUS` override, an Oracle repeated-bind driver
+quirk) keeping it unsafe to use, each found and fixed with its own
+characterization test and live verification against the real Oracle ADB,
+then wired into the confirm pipeline as the final step.
