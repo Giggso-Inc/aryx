@@ -16,12 +16,15 @@ scaled by real rows written.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from aryx.graph.falkor_store import FalkorStore
 from aryx.project import project_graph, project_incremental
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _FakeGraphHandle:
@@ -199,13 +202,16 @@ def test_project_graph_without_on_progress_is_unaffected():
 class _FakeProjectionStore:
     """Minimal double for project_incremental's ProjectionStore side."""
 
-    def __init__(self, n_dirty=10, n_rels=5, tombstones=None):
+    def __init__(self, n_dirty=10, n_rels=5, tombstones=None,
+                 relationship_dirty_ids=None):
         self._dirty = [(i, "T", {"name": f"e{i}"}) for i in range(n_dirty)]
         self._rels = [(i, (i + 1) % max(n_dirty, 1), "REL") for i in range(n_rels)]
         self._tombstones = tombstones or []
+        self._relationship_dirty_ids = relationship_dirty_ids or []
         self.marked_projected: list[int] = []
         self.unmarked_projected: list[int] = []
         self.watermark_advanced = False
+        self.relationships_for_calls: list[list[int]] = []
 
     def watermark(self):
         return None
@@ -213,10 +219,14 @@ class _FakeProjectionStore:
     def dirty_entities(self, since):
         return self._dirty
 
+    def dirty_relationship_entity_ids(self, since):
+        return self._relationship_dirty_ids
+
     def provenance_for(self, entity_ids):
         return [(i, "xml", "f.xml", f"r{i}") for i in entity_ids]
 
     def relationships_for(self, entity_ids):
+        self.relationships_for_calls.append(list(entity_ids))
         return self._rels
 
     def tombstones(self):
@@ -289,3 +299,76 @@ def test_project_incremental_falls_back_to_per_row_without_batch_support():
     assert result["entities"] == 3
     assert sum(1 for c in calls if c[0] == "entity") == 3
     assert sum(1 for c in calls if c[0] == "provenance") == 3
+
+
+class TestRelationshipOnlyDirtyEntities:
+    """docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md Phase 4:
+    inserting a relationship never touches either endpoint's
+    aryx_entity.updated_at, so a new edge between two entities that were
+    BOTH already resolved in an earlier run must still reach
+    relationships_for() -- via dirty_relationship_entity_ids(), not via
+    dirty_entities()."""
+
+    def test_relationships_for_is_called_with_relationship_dirty_ids_too(self, store):
+        # No attribute-dirty entities at all (n_dirty=0) -- the only reason
+        # relationships_for() should be called with anything is the
+        # relationship-dirty ids below. Before the fix, edge_scope_ids
+        # would have been empty and relationships_for() skipped entirely.
+        pstore = _FakeProjectionStore(
+            n_dirty=0, n_rels=1, relationship_dirty_ids=[7, 9],
+        )
+
+        result = project_incremental(store=None, pstore=pstore, graph=store)
+
+        assert pstore.relationships_for_calls == [[7, 9]]
+        assert result["relationships"] == 1
+
+    def test_relationship_dirty_ids_union_with_attribute_dirty_ids_deduped(self, store):
+        pstore = _FakeProjectionStore(
+            n_dirty=3, n_rels=1, relationship_dirty_ids=[1, 5],
+        )
+
+        project_incremental(store=None, pstore=pstore, graph=store)
+
+        # dirty_entities gives ids 0,1,2 (n_dirty=3); relationship-dirty
+        # adds 1 (already present) and 5 (new) -> {0,1,2,5}.
+        assert pstore.relationships_for_calls == [[0, 1, 2, 5]]
+
+    def test_no_relationship_dirty_ids_keeps_original_scope(self, store):
+        """Regression guard: with no relationship-only changes, the edge
+        scope is exactly the attribute-dirty ids, same as before this fix."""
+        pstore = _FakeProjectionStore(n_dirty=3, n_rels=1)
+
+        project_incremental(store=None, pstore=pstore, graph=store)
+
+        assert pstore.relationships_for_calls == [[0, 1, 2]]
+
+
+class TestOracleProjectionQueryOverrides:
+    """Postgres's select_tombstones.sql uses EXCEPT, which has no Oracle
+    equivalent (Oracle needs MINUS) -- ProjectionStore.tombstones() would
+    raise ORA-00905 (invalid SQL) against Oracle without this override.
+    select_dirty_entities.sql and select_dirty_relationship_entity_ids.sql
+    use only plain %s params (no EXCEPT/ANY), so they need no override --
+    oracle_sql_translate's generic %s -> :N translation is enough for both,
+    live-verified against a real Oracle ADB during Phase 4 development."""
+
+    def test_select_tombstones_has_an_oracle_override_using_minus(self):
+        sql = (ROOT / "src" / "aryx" / "queries" / "oracle" /
+               "select_tombstones.sql").read_text(encoding="utf-8")
+        code_lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
+        code = "\n".join(code_lines)
+        assert "MINUS" in code
+        assert "EXCEPT" not in code
+
+    def test_dirty_relationship_query_needs_no_oracle_override(self):
+        """Regression guard: if this ever grows an EXCEPT/ANY(), it would
+        need a queries/oracle/ override like select_tombstones.sql above --
+        this test fails loudly instead of silently breaking on Oracle."""
+        oracle_override = (ROOT / "src" / "aryx" / "queries" / "oracle" /
+                            "select_dirty_relationship_entity_ids.sql")
+        assert not oracle_override.exists()
+        sql = (ROOT / "src" / "aryx" / "queries" /
+               "select_dirty_relationship_entity_ids.sql").read_text(encoding="utf-8")
+        assert "ANY(" not in sql
+        assert "EXCEPT" not in sql

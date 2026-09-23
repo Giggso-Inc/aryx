@@ -1,11 +1,14 @@
 # Ingestion Pipeline: Parallel/Spark Migration Analysis
 
-**Status:** Phase 1 ✅ done, Phase 2 ✅ done, Phase 3 ✅ done (§8) — worker
-count raised, a hidden progress-reporting bottleneck found and fixed,
-candidate batching implemented, and Resolve-stage embedding prefetch
-parallelized, all live-verified against the real LLM/broker. Branch
-`perf/ingest-parallel-2026-09-23` (holds all phases), pushed, not yet PR'd.
-Phase 4 not started.
+**Status:** Phase 1 ✅ done, Phase 2 ✅ done, Phase 3 ✅ done, Phase 4 🟡 in
+progress (§8) — worker count raised, a hidden progress-reporting
+bottleneck found and fixed, candidate batching implemented, Resolve-stage
+embedding prefetch parallelized, and a real correctness bug found + fixed
+(both Postgres and Oracle) in graph projection's existing incremental
+write path — all live-verified against the real LLM/broker/Oracle ADB.
+Branch `perf/ingest-parallel-2026-09-23` (holds all phases), pushed, not
+yet PR'd. Phase 4's pipeline wiring (`orchestrate.py` → `project_auto`)
+deliberately not done yet — see §8 Phase 4.
 
 **Date:** 2026-09-23
 **Trigger:** Evaluating OCI AIDP (Spark clusters + Workflows) as a parallel-execution
@@ -551,35 +554,116 @@ the actual code change was small once the safe boundary was identified.
 
 ### Phase 4 — Step 10: Graph projection (biggest cost, hardest fix)
 
+**Status:** 🟡 In progress (2026-09-23) — investigated, found the redesign
+this plan called for **already exists** but is unused by the confirm
+pipeline, and found + fixed a real correctness bug blocking it from being
+safely wired in. Wiring it into `orchestrate.py` itself is deliberately
+**not done yet** — see "Not done" below.
+
 **What:** The graph-write stage — 35% of total time (45m39s), the single
-largest cost measured. Currently does `clear()` then rebuilds the entire
-workspace graph from scratch, every time.
+largest cost measured. `orchestrate.py`'s confirm pipeline always calls
+`project_graph()`, which does `clear()` then rebuilds the entire workspace
+graph from scratch, every run.
 
-**Work, in order:**
-1. **Investigate the write path** (`project_full.py`) to design an
-   incremental/partitioned write model — e.g. writing only what changed,
-   instead of clearing and rebuilding everything.
-2. Redesign the write logic to that model.
-3. Only after step 2, add parallelism (more threads, or Spark) — there's
-   nothing to parallelize until the write path itself has independent pieces
-   to hand out.
+**Step 1 — investigation result: the incremental write model this plan
+called for already exists, just isn't wired to confirm.**
+- `project_incremental.py` (dirty-set update, G8) and `project_auto()`
+  (`src/aryx/project/__init__.py` — picks incremental vs. full rebuild
+  based on watermark + dirty-ratio) already exist, are already tested, and
+  are already used in production — but only by `data_api.py`'s
+  `_rebuild_graph_projection` (an admin rebuild endpoint), never by
+  `orchestrate.py`'s confirm pipeline, which hardcodes `project_graph()`
+  directly and never even constructs a `ProjectionStore`. So this is not
+  "design + build a redesign" (the High-risk/High-effort framing this plan
+  originally had) — it's "wire an existing path in safely."
 
-**Risk:** High. This is a real architecture change to how the graph store
-gets written, not a config tweak — get it wrong and the graph could end up
-incomplete or inconsistent.
+**Step 2 — investigation found a real correctness bug in that existing
+path.** The dirty set is computed purely from `aryx_entity.updated_at`
+(`WHERE updated_at >= watermark`) vs. a watermark — no graph diffing.
+Checked every write path to `aryx_entity`: the 1 INSERT and all 4 UPDATE
+queries correctly set `updated_at`. But `insert_relationship.sql` — the
+query the `dimension_link` stage uses to create new entity-to-entity
+relationships — does **not** touch either endpoint's `updated_at`.
+`project_incremental`'s relationship fetch
+(`relationships_for(dirty_ids)`) only pulls edges touching already-dirty
+entity ids. Net effect: a new relationship created between two entities
+that were **both** already resolved in an earlier run — exactly what
+`dimension_link` does routinely — was silently dropped by an incremental
+projection run. No error, no log, just a missing edge. Confirmed as a
+real, pre-existing bug via a characterization test (fails against the
+original code, passes after the fix) and a live reproduction against the
+real Oracle ADB.
 
-**Expected win:** Biggest of all four phases (45m39s today) — but also the
-only one that requires a redesign before any parallelization is even
-possible, per §6.
+**Step 3 — fix applied, both backends.** Added `aryx_relationship.updated_at`
+(migration `0045_relationship_dirty_tracking.sql`, Postgres and Oracle
+variants) and a new query, `select_dirty_relationship_entity_ids.sql`,
+returning entity ids touched by a relationship change since the watermark.
+`project_incremental()` now unions those ids with the attribute-dirty ids
+before calling `relationships_for()`, so a relationship-only change is
+picked up without needing to touch either entity's own `updated_at` (which
+would have incorrectly implied the entity's attributes changed too).
+Entity nodes and provenance writes are unaffected — only the relationship
+fetch scope widened.
 
-**Effort:** High — this is its own project, not a quick fix. Recommend
-scoping it as a separate follow-up investigation once Phases 1–3 are done.
+**Step 3b — Oracle-specific fix, live-verified.** While investigating,
+found `select_tombstones.sql` (used by both `project_incremental` and
+`project_auto`'s dirty-ratio check) has no Oracle override and uses
+Postgres's `EXCEPT`, which is not valid Oracle syntax (Oracle needs
+`MINUS`) — a second, independent pre-existing bug that would have broken
+the entire incremental path on Oracle regardless of the relationship fix
+above. `select_provenance_for_entities.sql` and
+`select_relationships_for_entities.sql` already had correct
+JSON_TABLE-based Oracle overrides (found only after listing the
+`queries/oracle/` directory directly — an earlier keyword-grep pass missed
+them and wrongly suggested they were broken too; corrected before making
+any change there). Added the missing `select_tombstones.sql` Oracle
+override; the new `select_dirty_relationship_entity_ids.sql` needs no
+override (plain `%s` + `UNION`, no `EXCEPT`/`ANY()`, auto-translates via
+`oracle_sql_translate.py`) — confirmed by running the real translator
+against it. Live-verified end-to-end against the real Oracle ADB
+(currently the active test environment): applied the new migration,
+confirmed the `updated_at` column and index exist, inserted a real
+relationship between two pre-existing entities, and confirmed
+`dirty_relationship_entity_ids()` + `relationships_for()` +
+`tombstones()` (the fixed `MINUS` query) all execute correctly and return
+the right rows.
+
+**Not done, deliberately:** `orchestrate.py` still calls `project_graph()`
+directly — `project_auto` is not wired into the confirm pipeline. That's a
+separate, explicit next step, held back per direction after this
+investigation surfaced the correctness bug above: fix the bug first,
+confirm it's solid, decide on wiring separately rather than bundling a
+data-correctness fix with a pipeline behavior change in one step.
+
+**Risk:** Was High per the original plan's framing (a from-scratch
+redesign); the bug-fix work done so far was Low-Medium (additive schema
+change, existing tests plus new characterization tests, live-verified
+against real Oracle ADB). Wiring `project_auto` into `orchestrate.py`
+remains a separate, not-yet-assessed risk — it changes confirm's actual
+runtime behavior, unlike the fix above which only corrects an existing,
+already-shipped code path's correctness.
+
+**Expected win:** Unknown until wired in and measured — likely large for
+routine "add a few more files" confirms on an established workspace
+(dirty ratio well under the 30% `ARYX_PROJECT_DIRTY_MAX` threshold), no
+win (correctly falls back to full rebuild) for a workspace's first large
+confirm or any run touching most of the graph.
+
+**Effort:** Lower than originally scoped — the hard part (the redesign)
+already existed; effort so far went into finding and fixing the
+correctness gap that was blocking it from being safe to use, not into
+building new write-model architecture.
 
 ---
 
 **Summary:** Phases 1–3 are done. Phase 2 was the biggest quick win
 available; Phase 3 confirmed via investigation that only its embedding
 fetch (not the whole block loop) was safe to parallelize, and captured
-most of the stage's win from that alone. Phase 4 is the biggest remaining
-win but the most work, and shouldn't be started until its own write-path
-investigation is done.
+most of the stage's win from that alone. Phase 4's own investigation
+found its "redesign the write path" step was already done by someone
+else's earlier work (`project_incremental`/`project_auto`) — the real
+blocker was a correctness bug keeping it unsafe to use, now found and
+fixed for both Postgres and Oracle. Wiring it into the confirm pipeline
+is the remaining step, deliberately deferred to keep the correctness fix
+and the pipeline behavior change as separate, individually reviewable
+steps.

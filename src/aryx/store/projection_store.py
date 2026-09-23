@@ -52,6 +52,26 @@ class ProjectionStore:
                 cur.execute(load("select_dirty_entities"), (self._ws, since))
                 return [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
+    def dirty_relationship_entity_ids(self, since: Any) -> list[int]:
+        """Entity ids touched by a relationship created/changed since the
+        watermark, independent of whether the entities' own attributes
+        changed.
+
+        Needed because inserting a relationship (e.g. the dimension_link
+        stage connecting two already-resolved entities) does not touch
+        either endpoint's aryx_entity.updated_at. Without this,
+        project_incremental()'s relationships_for(dirty_ids) call would
+        never see an edge between two otherwise-unchanged entities, since
+        neither endpoint would be in the entity-attribute dirty set —
+        silently dropping the edge from an incremental (non-full)
+        projection run.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_dirty_relationship_entity_ids"),
+                            (self._ws, since, self._ws, since))
+                return [r[0] for r in cur.fetchall()]
+
     def tombstones(self) -> list[int]:
         """Projected entity ids that no longer exist in Postgres."""
         with self._pool.connection() as conn:
