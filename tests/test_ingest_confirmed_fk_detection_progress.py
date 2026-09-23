@@ -24,7 +24,8 @@ def _csv_plan(filename: str, otype: str) -> dict:
     }
 
 
-def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=None):
+def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=None,
+          monotonic_values=None, progress_min_interval_s=2.0):
     data = {
         "mentions": [],
         "tabular": [_csv_plan("a.csv", "A"), _csv_plan("b.csv", "B")],
@@ -35,6 +36,13 @@ def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=No
         if detect_dynamic_fk_links_impl is not None
         else {"return_value": []}
     )
+    monotonic_patch = (
+        patch("aryx.pipeline.doc_discovery.doc_discovery.time.monotonic",
+              side_effect=monotonic_values)
+        if monotonic_values is not None
+        else patch("aryx.pipeline.doc_discovery.doc_discovery.time.monotonic",
+                    return_value=0.0)
+    )
     with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings") as mock_settings, \
          patch("aryx.pipeline.doc_discovery.doc_discovery.DatasourceStore", return_value=MagicMock()), \
          patch("aryx.pipeline.doc_discovery.doc_discovery.run_pipeline"), \
@@ -44,12 +52,14 @@ def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=No
          patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links_workspace", return_value=[]), \
          patch("aryx.pipeline.doc_discovery.doc_discovery._persist_tabular_sources"), \
          patch("aryx.pipeline.doc_discovery.doc_discovery.restore_generic_source_entry"), \
-         patch("aryx.pipeline.doc_discovery.doc_discovery.detect_dynamic_fk_links", **dfk_kwargs):
+         patch("aryx.pipeline.doc_discovery.doc_discovery.detect_dynamic_fk_links", **dfk_kwargs), \
+         monotonic_patch:
         settings_mock = MagicMock()
         settings_mock.rdb_dsn = "postgresql://x"
         settings_mock.graph_url = "redis://x"
         settings_mock.ingest_workers = 1
         settings_mock.ingest_relate = True
+        settings_mock.fk_dynamic_progress_report_min_interval_s = progress_min_interval_s
         mock_settings.return_value = settings_mock
         ingest_confirmed(
             data, [], ["a.csv", "b.csv"], broker=MagicMock(),
@@ -80,7 +90,10 @@ def test_dynamic_fk_on_progress_reports_through_to_update_stage():
     """The slow, uncapped, per-candidate LLM-judge stage must report
     incremental progress — this is the actual long pole that looked
     identical to a hang without it (near-zero CPU, no log output for
-    9+ minutes on a real batch)."""
+    9+ minutes on a real batch). Calls spaced >= the throttle interval
+    apart (see the throttle tests below for the 2026-09-23 Phase 2 fix)
+    must all still reach update_stage — throttling must never suppress
+    genuinely-spaced-out progress, only a rapid-fire burst."""
     def _fake_detect(plans, broker, already_linked=None, log_id=None, on_progress=None):
         if on_progress is not None:
             on_progress(1, 3)
@@ -88,12 +101,76 @@ def test_dynamic_fk_on_progress_reports_through_to_update_stage():
             on_progress(3, 3)
         return []
 
-    jobs = _run(detect_dynamic_fk_links_impl=_fake_detect)
+    jobs = _run(detect_dynamic_fk_links_impl=_fake_detect,
+                monotonic_values=[0.0, 3.0, 6.0], progress_min_interval_s=2.0)
     details = [c.args[3] for c in jobs.update_stage.call_args_list
                if c.args[1] == "FK Detection"]
     assert any("1/3" in d for d in details)
     assert any("2/3" in d for d in details)
     assert any("3/3" in d for d in details)
+
+
+def test_dynamic_fk_progress_is_throttled_for_rapid_candidates():
+    """2026-09-23 (Phase 2, docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_
+    2026-09-23.md): live-measured, jobs.update_stage() (2 DB round-trips)
+    called once per candidate became the dominant bottleneck once more
+    workers made LLM judging itself faster than that write — 2186
+    candidates at ~1.1s/write is ~40 minutes of pure sequential DB writes,
+    regardless of worker count. Candidates arriving faster than the
+    throttle interval must NOT each get their own update_stage call."""
+    total = 10
+
+    def _fake_detect(plans, broker, already_linked=None, log_id=None, on_progress=None):
+        if on_progress is not None:
+            for i in range(1, total + 1):
+                on_progress(i, total)
+        return []
+
+    # All candidates arrive at the same instant (no real time passes
+    # between them). The very first call always reports immediately (so
+    # the stage visibly starts without waiting a full throttle interval),
+    # candidates 2-9 collapse into nothing (same instant, throttled), and
+    # the last (is_last) always reports regardless of timing.
+    jobs = _run(detect_dynamic_fk_links_impl=_fake_detect,
+                monotonic_values=[0.0] * total, progress_min_interval_s=2.0)
+    details = [c.args[3] for c in jobs.update_stage.call_args_list
+               if c.args[1] == "FK Detection"]
+    dynamic_fk_details = [d for d in details if "Judging candidate" in d]
+    assert dynamic_fk_details == [
+        "Judging candidate foreign keys (1/10)…",
+        f"Judging candidate foreign keys ({total}/{total})…",
+    ], (
+        "rapid-fire candidates sharing one instant must collapse to just "
+        "the first (immediate) and last (always-reports) calls, not one "
+        "update_stage call per candidate"
+    )
+
+
+def test_dynamic_fk_progress_final_candidate_always_reports():
+    """The last candidate must always report regardless of throttle
+    timing, so the stage ends at an accurate 100% rather than whatever
+    percentage happened to be written last before throttling kicked in."""
+    total = 5
+
+    def _fake_detect(plans, broker, already_linked=None, log_id=None, on_progress=None):
+        if on_progress is not None:
+            for i in range(1, total + 1):
+                on_progress(i, total)
+        return []
+
+    # Every candidate arrives well within the throttle window of the
+    # previous one (0.1s apart, interval=2.0s) -- only candidate 1 (the
+    # first, always-unthrottled call) and candidate 5 (is_last) should
+    # reach update_stage.
+    jobs = _run(detect_dynamic_fk_links_impl=_fake_detect,
+                monotonic_values=[0.0, 0.1, 0.2, 0.3, 0.4], progress_min_interval_s=2.0)
+    details = [c.args[3] for c in jobs.update_stage.call_args_list
+               if c.args[1] == "FK Detection"]
+    dynamic_fk_details = [d for d in details if "Judging candidate" in d]
+    assert dynamic_fk_details == [
+        "Judging candidate foreign keys (1/5)…",
+        "Judging candidate foreign keys (5/5)…",
+    ]
 
 
 def test_dynamic_fk_progress_wiring_survives_a_failing_update_stage_call():

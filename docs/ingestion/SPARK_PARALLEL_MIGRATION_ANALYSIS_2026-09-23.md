@@ -1,7 +1,10 @@
 # Ingestion Pipeline: Parallel/Spark Migration Analysis
 
-**Status:** Phase 1 ✅ done (§8) — `perf/ingest-parallel-phase1-2026-09-23`,
-commit `1ec72c08`, pushed, not yet PR'd. Phases 2–4 not started.
+**Status:** Phase 1 ✅ done, Phase 2 ✅ done (§8) — worker count raised, a
+hidden progress-reporting bottleneck found and fixed, and candidate
+batching implemented, all live-verified against the real LLM. Branch
+`perf/ingest-parallel-2026-09-23` (holds all phases), pushed, not yet PR'd.
+Phases 3–4 not started.
 
 **Date:** 2026-09-23
 **Trigger:** Evaluating OCI AIDP (Spark clusters + Workflows) as a parallel-execution
@@ -373,31 +376,105 @@ ineffective — see the corrected section above.)*
 
 ### Phase 2 — Step 5: Dynamic FK judging (biggest current cost, easiest big win)
 
+**Status:** ✅ Done (2026-09-23). Worker count raised, a hidden
+progress-reporting bottleneck found and fixed, and candidate batching
+implemented — all live-verified against the real LLM (small, targeted
+tests, not full 32-file/2186-candidate re-runs, per direction to keep
+verification cheap once the mechanism is confirmed working).
+
 **What:** The LLM judging loop that's currently 29% of total pipeline time
 (38m44s in the measured run).
 
-**Work, in order:**
-1. Raise `ARYX_FK_DYNAMIC_JUDGE_WORKERS` from 4 to something like 16–20 (one
-   config value) and re-measure on a real job.
-2. If LLM provider rate limits become the new ceiling, that tells us the real
-   limit — no code change needed to learn this, just the config bump + a test
-   run.
-3. Optional stretch goal: batch multiple candidates into one LLM call (see
-   earlier discussion) — bigger win, but needs accuracy testing since it
-   changes what the LLM sees per call.
+**Step 1 result — raised `ARYX_FK_DYNAMIC_JUDGE_WORKERS` 4 → 16, live-tested
+on the same real job:**
 
-**Risk:** Low for step 1 (pure concurrency, no accuracy change). Medium for
-step 3 (batching could affect judgment accuracy — must be tested before
-trusting it).
+| Metric | 4 workers (baseline) | 16 workers |
+|---|---|---|
+| Total LLM-judging time (log timestamps, first→last verdict) | 38m44s (2324s) | **11m47s (707s)** |
+| Per-candidate | 1.06s | 0.32s |
+| Speedup | — | **3.29x** |
 
-**Expected win:** Potentially cuts 38m44s down significantly — this is the
-single best return-on-effort in the whole plan, and it's what Spark/AIDP
-would eventually replace the thread pool with, if this stage's volume ever
-outgrows one container's threads.
+The LLM judging itself scaled almost exactly as expected (theoretical max
+4x from a 4x worker increase). No rate limiting or errors from the LLM
+provider at 16 workers.
 
-**Effort:** Very low for the worker-count test (config change + one test
-run). Medium for the batching stretch goal (prompt + schema redesign +
-accuracy validation).
+**But that speedup didn't reach the job's actual completion time — a second,
+previously-hidden bottleneck was exposed and had to be fixed too.** The
+per-candidate progress callback (`_dynamic_fk_progress` →
+`jobs.update_stage()`) does **two DB round-trips per call** (an `UPDATE` +
+an `INSERT` into a job-events table), called once per candidate — 2186
+sequential round-trips to cloud Oracle ADB, live-measured at ~1.09s/call.
+At the original 4-worker default this was invisible, hidden inside LLM
+latency that was already slower than the write. Once workers dropped LLM
+latency to 0.32s/candidate, the ~1.09s/write became the new dominant cost
+— live-confirmed via a stalled progress counter (still crawling forward 5+
+minutes after all 2186 LLM verdicts had already logged). Extrapolated, the
+unthrottled write alone would cost ~2186 × 1.09s ≈ 40 minutes — erasing the
+entire worker-count win.
+
+**Fix applied:** throttled `_dynamic_fk_progress` to report at most once
+per `ARYX_FK_DYNAMIC_PROGRESS_REPORT_MIN_INTERVAL_S` (default 2.0s)
+wall-clock time, always reporting the first call immediately (so the UI
+shows the stage starting without delay) and the last call unconditionally
+(so the stage always ends at an accurate 100%, not a stale intermediate
+count). This is a real behavior change to existing, tested code — added
+new tests for the throttling behavior itself and fixed one existing test
+whose rapid-fire synchronous calls would otherwise have been (correctly)
+throttled down to fewer `update_stage` calls than it asserted.
+
+**Step 2 result — worker count + throttle fix together, re-verified live:**
+progress reporting kept pace with actual LLM completion in real time (no
+lag), confirmed via ~0.32s/candidate progress cadence matching the
+16-worker judging rate exactly, across 1,313+ candidates before the
+verification job was stopped (no need to run it to full completion once
+the mechanism was confirmed — see the small-test note below).
+
+**Step 3 — candidate batching, implemented and live-tested:**
+`ARYX_FK_DYNAMIC_JUDGE_BATCH_SIZE` (default 5) groups N candidates into one
+LLM call instead of one call per candidate. Verified with small, targeted
+live tests against the real LLM (5-8 synthetic candidates, not the full
+dataset):
+
+- 5 candidates, batch size 5 → 1 LLM call, correct verdicts on all 5
+  (3 genuinely-linked pairs found, 2 genuinely-unlinked pairs rejected).
+- 8 candidates, batch size 5 → 2 LLM calls (5 + 3), correct verdicts on
+  all 8.
+
+**Two real bugs found and fixed via this live testing — neither was
+catchable by mocked unit tests, since both are about how the real LLM
+responds, not the parsing logic in isolation:**
+1. The model returned verdicts keyed `"pair_index"` instead of the
+   schema's required `"index"` — silently discarding every verdict in the
+   batch (judgments themselves were correct, only the key name drifted).
+   Fixed by accepting common index-key aliases, with a positional fallback
+   when the response has exactly one verdict per candidate but no
+   recognizable index key at all.
+2. The model omitted the `reason` field entirely for batched verdicts,
+   even though the original per-candidate version reliably included it —
+   undermining this stage's whole "why is this pair linked" auditability.
+   Fixed by making the system prompt explicitly require a reason on every
+   verdict, not just marking it required in the JSON schema (which alone
+   wasn't enough to reliably elicit it). Confirmed fixed: subsequent test
+   runs returned meaningful reasons for every verdict.
+
+**Failure semantics changed, by design:** a failed LLM call now costs a
+whole batch's verdicts (fail-open as not-linked, logged) instead of one
+candidate's — a real trade-off of fewer/larger calls, not a bug.
+`ARYX_FK_DYNAMIC_JUDGE_BATCH_SIZE=1` recovers the exact original
+one-call-per-candidate behavior if this trade-off is ever undesirable for
+a given deployment.
+
+**Risk:** Low for the worker-count change and throttle fix (no accuracy
+impact — reporting/concurrency only). Batching's accuracy risk was real
+and specifically why small live tests (not just mocks) were required
+before trusting it — both bugs found were response-format issues, not
+judgment-quality issues; the actual link/no-link decisions were correct
+in every test run.
+
+**Effort:** Low for worker count + throttle (one config value, one
+throttle wrapper). Medium for batching (schema/prompt redesign, index-
+mapping robustness, two rounds of live-test-driven fixes) — matching the
+Medium estimate in the original plan.
 
 ---
 
