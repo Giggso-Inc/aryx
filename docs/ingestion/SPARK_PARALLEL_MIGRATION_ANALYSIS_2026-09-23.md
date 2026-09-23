@@ -1,10 +1,11 @@
 # Ingestion Pipeline: Parallel/Spark Migration Analysis
 
-**Status:** Phase 1 ✅ done, Phase 2 ✅ done (§8) — worker count raised, a
-hidden progress-reporting bottleneck found and fixed, and candidate
-batching implemented, all live-verified against the real LLM. Branch
+**Status:** Phase 1 ✅ done, Phase 2 ✅ done, Phase 3 ✅ done (§8) — worker
+count raised, a hidden progress-reporting bottleneck found and fixed,
+candidate batching implemented, and Resolve-stage embedding prefetch
+parallelized, all live-verified against the real LLM/broker. Branch
 `perf/ingest-parallel-2026-09-23` (holds all phases), pushed, not yet PR'd.
-Phases 3–4 not started.
+Phase 4 not started.
 
 **Date:** 2026-09-23
 **Trigger:** Evaluating OCI AIDP (Spark clusters + Workflows) as a parallel-execution
@@ -480,27 +481,71 @@ Medium estimate in the original plan.
 
 ### Phase 3 — Step 7: Resolve stage (needs investigation before any change)
 
-**What:** The record-matching stage (`resolution/run.py`) — currently a plain
-sequential loop over "blocks" (groups of similar records), no concurrency.
+**Status:** ✅ Done (2026-09-23). Investigated first, per plan — found the
+block loop itself is NOT safely parallelizable, but the embedding fetch
+inside it is. Parallelized only that, live-verified against the real
+broker.
 
-**Work, in order:**
-1. **Investigate first** — confirm whether each block can really be processed
-   independently, or whether one block's result can affect another's (this
-   was flagged as unverified in §5/§6, not confirmed either way).
-2. Only if step 1 confirms independence: parallelize by block, same
-   `ThreadPoolExecutor` pattern as Phases 1–2.
+**What:** The record-matching stage (`resolution/run.py`) — a sequential
+loop over "blocks" (groups of similar records) that scores pairs, routes
+them (auto-merge / LLM-adjudicate / human-review / reject), and mutates a
+shared `UnionFind` clustering structure.
 
-**Risk:** Medium — unlike Phases 1–2, we don't yet know this one is safe to
-parallelize. Skipping the investigation step and parallelizing blindly could
-silently change matching results.
+**Step 1 — investigation result: blocks are NOT independent, but embedding
+fetch is.**
+- `MultiKeyBlocker.block()` deliberately places each record into up to 3
+  *overlapping* blocks (prefix / token-set / Soundex keys) — not a disjoint
+  partition. The block loop mutates a single shared `UnionFind`
+  (unsynchronized plain dict, path-compression on `find()`), plus shared
+  `pair_scores`/`band_counts` dicts, across all blocks. Naively running the
+  block loop itself on a `ThreadPoolExecutor` would race on all three.
+- Inside each block, though, `_block_embeddings()` (the per-block Ollama
+  embedding call) and `score_pair()` are pure, side-effect-free functions —
+  no shared state, safe to run concurrently across blocks.
+- A small 96-record/61-block synthetic live test against the real broker
+  (with timing instrumentation, not the full pipeline) measured where
+  Resolve's time actually goes: **embedding 22.66s of 22.97s total
+  (98.7%)**, scoring 0.29s, routing 0.00s — decisively confirming embedding
+  is the only cost worth parallelizing, and that leaving the routing loop
+  sequential loses almost nothing.
 
-**Expected win:** Unknown until measured — this stage's share of total time
-wasn't isolated in §3's timing breakdown (it's folded into the "21s" for
-Discover+Resolve+Seed on the last plan, so it's small for this particular
-job, but could matter more on other datasets).
+**Step 2 — fix applied:** added `ARYX_ER_EMBED_WORKERS` (default 8).
+`resolve()` now prefetches every multi-member block's embeddings
+concurrently via `ThreadPoolExecutor`/`as_completed` **before** the main
+block loop runs, into an `embeddings_by_block` dict; the loop itself
+(scoring, routing, `UnionFind`/`pair_scores`/`band_counts` mutation) is
+completely unchanged and still fully sequential.
 
-**Effort:** Medium — the investigation itself is the main cost; the actual
-code change (if safe) is small.
+**Step 3 — verification.** Existing test suite
+(`test_resolution_logging.py`, `test_exact_id_resolution.py`,
+`test_adjudication.py`, `test_chunked_resolution.py`,
+`test_partition_pair_scores.py`, `test_resolve_run_wiring.py`) updated to
+set `er_embed_workers` on the two settings mocks that exercise `resolve()`
+end-to-end — all green (2 unrelated pre-existing failures in
+`test_adjudication.py` confirmed via `git stash` to fail identically on
+the pre-Phase-3 code, not caused by this change). A separate small live
+test against the real broker ran `resolve()` twice on the same 12-record/
+4-cluster dataset — once with `er_embed_workers=1`, once with `=8` — and
+asserted the captured cluster membership was byte-identical between the
+two runs, confirming the parallel prefetch doesn't change matching
+results.
+
+**Risk:** Low, as executed — the investigation is exactly what kept this
+low: only the pure, side-effect-free embedding call was parallelized, and
+the identical-output live test is direct evidence the change is safe.
+
+**Expected win:** Roughly proportional to `er_embed_workers` on any run
+with multiple multi-member blocks needing embeddings, up to network/Ollama
+throughput limits — this stage's share of total time wasn't isolated in
+§3's timing breakdown for the original real job (folded into the "21s" for
+Discover+Resolve+Seed on the last plan, so small there), but the 96-record
+synthetic test showed embedding dominates Resolve's cost whenever blocks
+are non-trivial, so the win scales with dataset size and duplicate
+density, not with this particular job.
+
+**Effort:** Medium, as estimated — investigation (measuring where Resolve's
+time goes, confirming block independence doesn't hold) was the main cost;
+the actual code change was small once the safe boundary was identified.
 
 ---
 
@@ -532,8 +577,9 @@ scoping it as a separate follow-up investigation once Phases 1–3 are done.
 
 ---
 
-**Summary:** Phase 1 and Phase 2's first step are safe, cheap, and should
-happen first — Phase 2 especially, since it's the biggest quick win
-available. Phase 3 needs an investigation before any code changes. Phase 4 is
-the biggest total win but the most work, and shouldn't be started until its
-own write-path investigation is done.
+**Summary:** Phases 1–3 are done. Phase 2 was the biggest quick win
+available; Phase 3 confirmed via investigation that only its embedding
+fetch (not the whole block loop) was safe to parallelize, and captured
+most of the stage's win from that alone. Phase 4 is the biggest remaining
+win but the most work, and shouldn't be started until its own write-path
+investigation is done.

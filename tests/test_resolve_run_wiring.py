@@ -41,6 +41,7 @@ def test_review_band_pair_reaches_adjudication_store() -> None:
         mock_settings.return_value.er_review = 0.0  # everything scoring > 0 goes to review band
         mock_settings.return_value.embed_batch_size = 50
         mock_settings.return_value.max_pairs_per_block = 500
+        mock_settings.return_value.er_embed_workers = 8
 
         resolve_run(run_id=99, ontology_type="Company", key_attrs=["name"],
                    store=store, broker=broker, workspace_id=5)

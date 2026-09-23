@@ -67,6 +67,7 @@ def test_resolve_gives_each_cluster_only_its_own_pair_scores() -> None:
         mock_settings.return_value.er_review = 0.7
         mock_settings.return_value.embed_batch_size = 50
         mock_settings.return_value.max_pairs_per_block = 500
+        mock_settings.return_value.er_embed_workers = 8
 
         results = resolve(records, broker, "Company")
 
