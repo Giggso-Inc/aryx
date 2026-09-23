@@ -55,6 +55,16 @@ class FkDetectionSettingsMixin(BaseSettings):
             "Override with ARYX_FK_DYNAMIC_JUDGE_WORKERS."
         ),
     )
+    fk_schema_batch_workers: int = Field(
+        default=4,
+        description=(
+            "Concurrent LLM calls for schema-level FK inference batches "
+            "(ThreadPoolExecutor) — each batch covers a different, "
+            "non-overlapping subset of entity types plus the shared anchor "
+            "type, so batches never depend on each other's results. "
+            "Override with ARYX_FK_SCHEMA_BATCH_WORKERS."
+        ),
+    )
     fk_prefix_transform_lengths: str = Field(
         default="2,3,4",
         description=(
