@@ -884,11 +884,16 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         """_CHUNK_MAX_ROWS=500 (raised from 25 -- see P8/graph-projection fix
         in docs/SCALABILITY_BOTTLENECKS.md: the row cap, not the byte cap,
         was the binding constraint and caused far more round-trips to Oracle
-        Cloud than the byte budget actually required)."""
+        Cloud than the byte budget actually required).
+
+        Chunks now run concurrently by default (Phase 4 Part B,
+        oracle_graph_batch_workers) -- completion order isn't guaranteed by
+        ThreadPoolExecutor/as_completed, so this asserts the set of chunk
+        sizes, not submission order."""
         store, calls = self._make_store()
         rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
         store.add_entities_batch(rows)
-        self.assertEqual(calls, [500, 500, 250])
+        self.assertEqual(sorted(calls), [250, 500, 500])
 
     def test_add_entities_batch_small_batch_single_chunk(self) -> None:
         store, calls = self._make_store()
@@ -897,15 +902,136 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         self.assertEqual(calls, [30])
 
     def test_add_relationships_batch_chunks_at_500(self) -> None:
+        """Order-independent for the same reason as the entities test above."""
         store, calls = self._make_store()
         rows = [(i, i + 1, "rel") for i in range(1050)]
         store.add_relationships_batch(rows)
-        self.assertEqual(calls, [500, 500, 50])
+        self.assertEqual(sorted(calls), [50, 500, 500])
 
     def test_add_entities_batch_empty_is_noop(self) -> None:
         store, calls = self._make_store()
         store.add_entities_batch([])
         self.assertEqual(calls, [])
+
+
+class TestGraphStoreBatchConcurrency(unittest.TestCase):
+    """Phase 4 Part B: add_entities_batch/add_relationships_batch run their
+    independent chunks concurrently, each on its own pooled connection --
+    never sharing one connection across threads (the pattern already
+    proven safe for ProjectionStore/schema-FK batches/embedding prefetch
+    in Phases 1-3)."""
+
+    def _make_store(self, workers: int = 4) -> tuple:
+        """Return (OracleGraphStore, chunk_sizes, connection_ids_used)."""
+        from contextlib import contextmanager
+        import threading
+
+        chunk_sizes: list[int] = []
+        conn_ids: list[int] = []
+        lock = threading.Lock()
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                with lock:
+                    chunk_sizes.append(len(rows))
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def __init__(self):
+                with lock:
+                    conn_ids.append(id(self))
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = workers
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return store, chunk_sizes, conn_ids
+
+    def test_multiple_chunks_use_separate_connections_when_concurrent(self) -> None:
+        store, chunk_sizes, conn_ids = self._make_store(workers=4)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+
+        store.add_entities_batch(rows)
+
+        self.assertEqual(sorted(chunk_sizes), [250, 500, 500])
+        # 3 chunks -> 3 distinct connections, never one shared across chunks.
+        self.assertEqual(len(conn_ids), 3)
+        self.assertEqual(len(set(conn_ids)), 3)
+
+    def test_workers_1_falls_back_to_one_connection_sequential(self) -> None:
+        """Regression guard: oracle_graph_batch_workers=1 must reproduce the
+        original pre-Phase-4-Part-B behavior exactly -- one connection for
+        the whole batch, chunks in submission order."""
+        store, chunk_sizes, conn_ids = self._make_store(workers=1)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+
+        store.add_entities_batch(rows)
+
+        self.assertEqual(chunk_sizes, [500, 500, 250])
+        self.assertEqual(len(set(conn_ids)), 1)
+
+    def test_relationships_batch_also_uses_separate_connections(self) -> None:
+        store, chunk_sizes, conn_ids = self._make_store(workers=4)
+        rows = [(i, i + 1, "rel") for i in range(1050)]
+
+        store.add_relationships_batch(rows)
+
+        self.assertEqual(sorted(chunk_sizes), [50, 500, 500])
+        self.assertEqual(len(set(conn_ids)), 3)
+
+    def test_on_batch_final_total_is_correct_regardless_of_completion_order(self) -> None:
+        store, _chunk_sizes, _conn_ids = self._make_store(workers=4)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+        totals: list[int] = []
+
+        store.add_entities_batch(rows, on_batch=totals.append)
+
+        self.assertEqual(len(totals), 3)
+        # Running total must be monotonically increasing and end at the
+        # full row count, regardless of which chunk completed first.
+        self.assertEqual(totals[-1], 1250)
+        self.assertTrue(all(a < b for a, b in zip(totals, totals[1:])))
+
+
+class TestOracleGraphBatchWorkersDefault(unittest.TestCase):
+    """Default stays 4 despite a mixed live measurement against a real
+    Oracle ADB (docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-
+    23.md Phase 4 Part B): entities regressed (68.0s -> 74.7s at workers=4),
+    relationships were roughly flat (25.7s -> 24.0s). One measurement on
+    one ADB tier wasn't treated as reason enough to disable the mechanism
+    by default -- ARYX_ORACLE_GRAPH_BATCH_WORKERS=1 opts out."""
+
+    def test_default_is_four(self) -> None:
+        from aryx.config import Settings
+        self.assertEqual(Settings.model_fields["oracle_graph_batch_workers"].default, 4)
+
+    def test_env_override(self) -> None:
+        from aryx.config import Settings
+        with patch.dict("os.environ", {"ARYX_ORACLE_GRAPH_BATCH_WORKERS": "1"}):
+            s = Settings(_env_file=None)
+            self.assertEqual(s.oracle_graph_batch_workers, 1)
 
 
 # ── JSON output type handler tests ───────────────────────────────────────────

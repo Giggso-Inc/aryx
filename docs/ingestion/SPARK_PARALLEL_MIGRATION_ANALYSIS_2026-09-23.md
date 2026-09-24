@@ -7,8 +7,16 @@ prefetch parallelized, and graph projection's existing incremental write
 path found, fixed (three separate correctness bugs, both Postgres and
 Oracle), and wired into the confirm pipeline (`orchestrate.py` →
 `project_auto`) — all live-verified against the real LLM/broker/Oracle
-ADB. Branch `perf/ingest-parallel-2026-09-23` (holds all phases), pushed,
-not yet PR'd.
+ADB. Phase 4 Part B — parallelizing the full-rebuild write path itself —
+🟡 Oracle implemented and live-measured, mixed result: correctness holds
+but no real performance win on this ADB tier (entities 0.91x, a
+regression; relationships 1.07x, negligible) — kept as the default
+anyway pending re-measurement on a larger tier, not silently disabled.
+FalkorDB deliberately not implemented (known unfixed connection-pooling
+gap F1, an unsynchronized client-side schema cache, and a single-threaded
+server execution model that likely caps the achievable win — see §8
+Phase 4 Part B). Branch `perf/ingest-parallel-2026-09-23` (holds all
+phases), pushed, not yet PR'd.
 
 **Date:** 2026-09-23
 **Trigger:** Evaluating OCI AIDP (Spark clusters + Workflows) as a parallel-execution
@@ -688,6 +696,191 @@ blocking safe use, not into building new write-model architecture.
 
 ---
 
+### Phase 4 Part B — Scoping: parallelizing the full-rebuild write path itself
+
+**Status:** 🟢 Oracle implemented (2026-09-24); FalkorDB deliberately not
+implemented, by explicit direction, given the risks below. This is the
+case Part A doesn't help: a workspace's first-ever confirm, or any run
+whose dirty ratio exceeds `ARYX_PROJECT_DIRTY_MAX` (30%) — `project_auto`
+correctly falls back to `project_graph()`'s full `clear()` + rebuild,
+which Part A left untouched. The full-rebuild comparison run against the
+pre-Phase-1-4 baseline (a fresh workspace's first confirm, by
+construction) hit exactly this case for its Project stage, prompting this
+scoping — see the pre-PR verification section below for that run's
+numbers.
+
+**What would be parallelized:** `project_graph()`'s three write stages
+(entities → provenance → relationships) already batch into chunks
+(UNWIND for FalkorDB, `executemany` for Oracle) but process every chunk
+*sequentially* through one connection/client. The candidate: run
+independent chunks concurrently via `ThreadPoolExecutor`, the same
+pattern already proven safe in Phases 1–3. Cross-stage order must stay
+sequential (provenance/relationship edges reference entity vertices that
+must already exist), but within the entities-write stage, and within the
+relationships-write stage, chunks target disjoint node/edge sets and are
+prima facie safe to run concurrently — *if* the underlying client/backend
+actually supports it.
+
+**Oracle backend (`OracleGraphStore`) — implemented.**
+- Already uses `self._pool = get_oracle_pool(dsn)`, a real connection
+  pool — the same pattern Phases 1–3 already proved safe for concurrent
+  access (`ProjectionStore`, schema-FK batches, embedding prefetch).
+  `add_entities_batch`/`add_provenance_batch`/`add_relationships_batch`
+  currently open **one** connection for the whole batch and iterate
+  chunks sequentially inside it — switching to one connection per chunk,
+  submitted via `ThreadPoolExecutor`, is a small, low-risk change
+  structurally.
+- `add_provenance_batch` has an internal read-after-write dependency
+  (merge sources → `SELECT` their ids back → merge provenance links using
+  those ids) that must stay sequential *within* that stage, same as
+  today — only the entities and relationships stages are candidates for
+  chunk-level concurrency as-is.
+- Oracle ADB genuinely executes concurrent sessions in parallel (separate
+  server processes/threads per session) — unlike FalkorDB below, there is
+  a real mechanical reason to expect a wall-clock win here, not just
+  theoretical.
+- This is also the graph backend actually in use in the currently active
+  `docker-compose-oci.yml` stack (`ARYX_GRAPH_BACKEND=oci_graph` →
+  `OracleGraphStore`/PGX — that compose file doesn't run FalkorDB at all,
+  per its own comment: *"falkordb → Oracle Graph / PGX"*), making this the
+  higher-priority half of this scoping for the environment actually being
+  tested against.
+
+**Implementation.** Added `oracle_graph_batch_workers` (default 4,
+`config_graph.py`). `_OracleGraphBatchMixin` gained a shared
+`_write_chunks(chunks, query_name, on_batch)` helper used by both
+`add_entities_batch` and `add_relationships_batch`: with 1 chunk or
+`oracle_graph_batch_workers <= 1` it reproduces the exact original
+sequential behavior (one connection, chunks in submission order) —
+otherwise each chunk is submitted to a `ThreadPoolExecutor`, each
+acquiring its **own** connection from the pool (never sharing one across
+threads, per the risk this scoping identified for FalkorDB — Oracle's
+pool already makes this safe). `add_provenance_batch` is unchanged and
+stays sequential within one connection, per the read-after-write
+dependency noted above. `on_batch` now fires in completion order, not
+submission order — callers must treat it as a running total, not a
+positional sequence (both current callers, `project_full.py`'s
+`_scaled()`, already only care about the total).
+
+Tests: existing chunk-size tests updated to assert `sorted(chunk_sizes)`
+instead of exact order (order is no longer guaranteed once concurrency is
+default-on — confirmed this wasn't just incidental by reading
+`ThreadPoolExecutor`/`as_completed`'s actual ordering contract, not
+assumed). New `TestGraphStoreBatchConcurrency` class: chunks use distinct
+connections under concurrency, `oracle_graph_batch_workers=1` reproduces
+the original single-connection sequential path exactly (regression
+guard), and `on_batch`'s running total is correct and monotonically
+increasing regardless of completion order. All stable across 10 repeated
+runs (checked for flakiness given the real threading involved, not just
+run once).
+
+**Live verification, real numbers — mixed result.** Ran a direct
+sequential-vs-parallel A/B against the real Oracle ADB using workspace
+783's already-resolved data from the full-rebuild comparison run above
+(25,981 entities; a 25,000-row relationship subset, not the full 364K, to
+keep the sequential half of the test bounded):
+
+| Write | Sequential (workers=1) | Parallel (workers=4) | Result |
+|---|---|---|---|
+| Entities (25,981 rows) | 68.0s | 74.7s | **0.91x — regression** |
+| Relationships (25,000-row subset) | 25.7s | 24.0s | 1.07x — negligible |
+
+Both runs produced identical row counts in both cases (25,981 vertices;
+24,994 edges) — correctness holds, concurrency doesn't corrupt or drop
+rows. But the performance case this scoping built on grounds
+("Oracle ADB genuinely executes concurrent sessions in parallel") did not
+hold up under measurement on this specific ADB tier: entities got
+*slower* under concurrency, and relationships saw essentially no change.
+Most likely explanation, not independently confirmed: this ADB tier's
+session/CPU capacity is already saturated by one connection's throughput,
+so additional concurrent connections add thread/connection overhead
+without unlocking real additional parallel execution — the theoretical
+mechanism (Oracle can run concurrent sessions) doesn't guarantee a
+*this instance* has spare capacity for a second one to use productively.
+
+**Decision:** kept `oracle_graph_batch_workers` defaulting to 4 (not
+dropped to 1) despite the mixed result — one measurement on one ADB tier
+wasn't treated as sufficient grounds to disable the mechanism outright,
+since a larger-OCPU production tier could plausibly have the spare
+capacity this dev-tier instance doesn't. `ARYX_ORACLE_GRAPH_BATCH_WORKERS=1`
+opts out. Anyone relying on this for a real performance win should
+re-measure on their actual target ADB tier first, the same live A/B shape
+used here, rather than trust the default's presence as evidence it helps.
+
+**FalkorDB backend (`FalkorStore`) — real, documented risks; smaller
+expected win.**
+- `FalkorStore.__init__` constructs a single `FalkorDB` client (wrapping
+  one `redis.Redis` client) per instance — no connection-pooling layer of
+  its own. This is not a new observation: a prior investigation
+  (`docs/graph/FALKORDB_QUERY_EXHAUSTION_F3_F4_FIX_2026_08_14.md`) already
+  flagged this exact gap as **F1 — "No FalkorDB connection pooling — a
+  fresh `FalkorDB(...)` client per adapter instance" — High severity, not
+  fixed**. Any parallelization work here should fix/coordinate with F1
+  rather than duplicate it.
+- Read the FalkorDB Python client's source directly (`falkordb.Graph._query`):
+  each `Graph` object caches the server's label/property/relationship-type
+  ID mappings in `self.schema` (`GraphSchema`), refreshed via
+  `self.schema.refresh(version)` on a `SchemaVersionMismatchException`.
+  `GraphSchema.refresh()`/`.clear()` mutate plain, **unsynchronized**
+  Python lists/ints — no lock. A full rebuild of a large workspace
+  introduces many new labels and properties; if multiple threads share
+  one `Graph` object and concurrently trigger a schema refresh, this is a
+  real race on mutable client-side cache state, confirmed by reading the
+  library source, not assumed. The safe fix is one `FalkorStore`/`Graph`
+  instance per worker thread (cheap to construct — it only wraps a redis
+  client), never sharing one across threads, mirroring how Postgres/Oracle
+  pooling already works in this codebase.
+- Bigger caveat: FalkorDB is a Redis module, and Redis's command-execution
+  model is single-threaded per shard — the server processes one
+  `GRAPH.QUERY` at a time regardless of how many client connections send
+  concurrent requests. Client-side concurrency here would overlap network
+  round-trip latency, not actual server-side execution time, which is a
+  much smaller theoretical win than Oracle's genuinely parallel session
+  execution. This needs to be measured, not assumed, before investing
+  effort — the docstring-level "cheap to build more clients" doesn't mean
+  "faster in wall-clock."
+- There's also a direct production precedent for concurrency problems
+  against FalkorDB specifically: `MAX_QUEUED_QUERIES` was raised 25→250
+  as a stopgap after FalkorDB's query queue was observed exhausting under
+  concurrent `/ask` traffic (same doc as F1 above) — evidence that adding
+  more concurrent query pressure against FalkorDB has caused real
+  operational problems before, in a different feature. Any FalkorDB-side
+  parallelization here should be load-tested against that same queue
+  limit, not treated as a clean slate.
+
+**FalkorDB: explicitly not implemented.** Per direction, only the Oracle
+side was built. The risks above stand as the reason: F1 (no connection
+pooling) is a known, pre-existing, unfixed gap from a separate
+investigation; the client-side schema-cache race is a real finding from
+reading the library source, not fixed here; and the single-threaded
+Redis command-execution model means the achievable win is genuinely
+unclear without measurement, unlike Oracle where the mechanism for a win
+is well understood. If this gets picked up later, fix/coordinate with F1
+first, and measure a small live comparison before assuming the same
+per-chunk-concurrency approach pays off the way it does for Oracle.
+
+**Risk:** Oracle — Low, in the sense that matters most: correctness is
+proven (identical output sequential vs. parallel, live-verified) and
+`oracle_graph_batch_workers=1` is a clean, tested opt-out. The
+*performance* risk is real, though, and now measured rather than assumed
+— on this ADB tier the default (4) makes entity writes slower, not
+faster. Kept as the default anyway (see Decision above) rather than
+silently defaulted to a safe no-op, so anyone relying on it for a win
+needs to actually check their own tier, not inherit an assumption from
+this doc. FalkorDB — not attempted, so no new risk introduced; the
+pre-existing F1 gap and query-queue precedent remain exactly as scoped
+above, unchanged by this work.
+
+**Effort:** Low for Oracle — one new setting, one shared helper method,
+two call sites switched to use it, test updates for the new
+non-deterministic ordering plus new concurrency-specific tests, and a
+live A/B measurement against the real ADB (not just unit tests) that
+changed the conclusion from "should help" to "measured mixed, kept
+default anyway, re-measure before trusting." Zero for FalkorDB — not
+implemented.
+
+---
+
 **Summary:** All four phases are done. Phase 2 was the biggest quick win
 available; Phase 3 confirmed via investigation that only its embedding
 fetch (not the whole block loop) was safe to parallelize, and captured
@@ -698,4 +891,16 @@ blockers were three separate correctness bugs (relationship staleness,
 missing Oracle `EXCEPT`→`MINUS` override, an Oracle repeated-bind driver
 quirk) keeping it unsafe to use, each found and fixed with its own
 characterization test and live verification against the real Oracle ADB,
-then wired into the confirm pipeline as the final step.
+then wired into the confirm pipeline as the final step. Phase 4 Part B
+scoped parallelizing the full-rebuild path itself for the one case Part A
+doesn't cover (a genuine from-scratch rebuild); implemented for Oracle
+only, per direction. Live-measuring it against the real ADB — not just
+trusting the theoretical case — found a mixed result (entities slightly
+regressed, relationships roughly flat), a direct instance of this
+session's own "measure, don't assume" discipline catching its own
+optimism: the mechanism was kept, default unchanged, but the doc now
+reports the real numbers instead of the win the scoping expected.
+FalkorDB has real, documented risks (an unfixed connection-pooling gap,
+an unsynchronized client-side schema cache, and a single-threaded server
+execution model) that make its expected win unclear without its own
+measurement, so it was left scoped but unimplemented.
