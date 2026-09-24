@@ -14218,32 +14218,32 @@
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      54,
+      68,
       "_json_output_handler"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      64,
+      78,
       "execute"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      74,
+      88,
       "<if>"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      106,
+      120,
       "executemany"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      141,
+      155,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      191,
+      205,
       "executemany_returning"
     ],
     [

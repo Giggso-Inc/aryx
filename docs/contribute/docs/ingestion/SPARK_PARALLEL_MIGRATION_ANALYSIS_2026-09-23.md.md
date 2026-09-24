@@ -1,11 +1,11 @@
 # Attribution — docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md
 
-Last updated: 2026-09-24T10:36:17.163626+00:00
-Total lines: 969
-Lines AI-generated: 433 (44.7%)
+Last updated: 2026-09-24T11:19:39.658683+00:00
+Total lines: 1134
+Lines AI-generated: 573 (50.5%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 536
+Lines unattributed: 561
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -50,6 +50,7 @@ Owner (most recent author): m.munir@giggso.com
 | 860-878 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T09:16:41.754063+00:00 |  |
 | 879-893 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102260+00:00 | pre-commit gap — unattributed by the local hook |
 | 894-903 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131061+00:00 | pre-commit gap — unattributed by the local hook |
-| 904-930 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:27:48.239387+00:00 |  |
-| 931-948 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131189+00:00 | pre-commit gap — unattributed by the local hook |
-| 949-969 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:28:20.961982+00:00 |  |
+| 904-923 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:17:10.563688+00:00 | pre-commit gap — unattributed by the local hook |
+| 924-1079 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T11:13:25.041541+00:00 |  |
+| 1080-1102 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:17:10.563906+00:00 | pre-commit gap — unattributed by the local hook |
+| 1103-1134 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T11:13:42.364223+00:00 |  |

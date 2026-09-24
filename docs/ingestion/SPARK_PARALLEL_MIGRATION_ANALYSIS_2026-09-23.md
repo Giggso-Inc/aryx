@@ -936,6 +936,146 @@ implemented.
 
 ---
 
+### Phase 4 Part C — `OracleCursorWrapper` fetch `arraysize`, found during pre-PR verification
+
+**What:** While running the full pre-PR comparison below, `EntityStore.
+list_relationships()` — a plain, already-indexed `SELECT ... WHERE
+workspace_id = :ws`, no join, no sort — took **946.87s (~15.8 min)** to
+stream 364,454 rows, and `list_entities()` took 67-81s for 25,981 rows.
+Neither of these went through any code Phase 1-4 touched; this was found
+by investigating *why* the read side was still slow even after the
+MERGE→INSERT write-side fix above.
+
+**Root cause:** `OracleCursorWrapper` (`store/oracle_cursor.py`) wraps
+`oracledb` cursors to match psycopg3's API so `EntityStore` code (written
+against psycopg3-style `conn.cursor(name)` / `cur.fetchmany(size)`) works
+unchanged against Oracle. But `fetchmany(size)` only controls how many
+rows are handed to *Python* per call — the number of rows the server
+actually sends per *network round-trip* is `cursor.arraysize`, which the
+wrapper never set, leaving it at `oracledb`'s default of 100. `cursor(
+name)` also silently drops `name` (no Oracle equivalent of a psycopg
+named/holdable server-side cursor), so there was no server-side cursor
+tuning happening either. Net effect: `list_relationships()`'s
+`fetchmany(500)` (500 = this project's `batch_size` convention) still
+cost the server ~5 round-trips per call, regardless of the 500 requested
+— **364,454/100 ≈ 3,645 round-trips**, not the ~729 the `batch_size=500`
+convention implies.
+
+**Confirmed, not assumed:** measured the ADB's actual steady-state
+round-trip latency directly — 20 repeated `SELECT 1 FROM DUAL` calls on
+an already-open, already-authenticated session (so connection/TLS setup
+is excluded): avg **240.5ms**, steady-state min **225ms**. 3,645
+round-trips × ~0.225s ≈ 820s, close to the observed 946.87s (remaining
+gap plausibly server-side processing + connection-acquisition overhead
+not isolated by this test). This is a round-trip-*count* problem, not a
+bandwidth problem — raw TCP connect to the ADB host measured ~250-280ms
+one-time, well below what 3,645 round-trips at steady state would cost.
+
+**Fix:** set `arraysize = 500` and `prefetchrows = 500` once, in
+`OracleCursorWrapper.__init__`, rather than at each call site. Chosen
+over fixing `list_relationships()`/`list_entities()` individually because
+the bug is in the wrapper (every cursor made through it inherits the
+same unset-arraysize problem), not in any specific caller — `list_
+entities()` has the identical pattern and wasn't separately flagged
+before this investigation, and any future streaming-read call site would
+otherwise silently inherit the same tax. The existing `itersize` property
+(already used by `chunk_backend.py`/`postgres.py` with `itersize =
+10_000`) still works as an override for callers that want a different
+value; 500 is just the new baseline default, matching this project's
+existing `batch_size` convention.
+
+**Live-verified:** confirmed on an actual cursor object post-fix —
+`cur._cur.arraysize == 500`, `cur._cur.prefetchrows == 500` — not just
+that the source text changed. `TestGraphStoreBatchConcurrency`'s 2
+pre-existing flaky/timing-dependent test failures (confirmed via `git
+stash` to fail identically on the unmodified branch) are unrelated;
+120/122 tests pass with this change.
+
+**Risk:** Low — pure network-fetch tuning, no query/result-shape change.
+`arraysize`/`prefetchrows` only affect how many network round-trips a
+fetch costs, not which rows are returned or in what order.
+
+---
+
+### Pre-PR live verification — full comparison against the pre-Phase-1-4 baseline
+
+**Run:** real `project_graph()` (workspace 783's already-resolved data:
+25,981 entities, 364,454 relationships — reused across two attempts this
+session, so the count is reproducible, not a one-off), full end-to-end
+timing with `on_progress` events, executed inside `aryx-api-1` with all
+of Phase 1-4 + Part B (MERGE→INSERT) + Part C (`arraysize`) applied. A
+first attempt (before Part C existed) stalled on the pre-fix code for
+18+ minutes inside `list_relationships()`, exactly the bottleneck Part C
+above documents — it was stopped (clean `SIGTERM`, not `-9`) and re-run
+after deploying the Part C fix into the container, rather than waited out.
+
+| Metric | Pre-Phase-1-4 baseline (`bd8750b9`, stage 7e) | This run (Phases 1-4 + Part B/C) | Change |
+|---|---|---|---|
+| Project graph (clear + full rebuild) | **45m39s** (2,739s) | **543.6s (9.1 min)** | **~5.04x faster — 36m35s saved on this stage alone** |
+| Entities written | 38,591 graph nodes (baseline log) / "1 entity" (see caveat) | 25,981 | not directly comparable, see caveat below |
+| Relationships written | 346,344 | 364,454 | +5.2% — see caveat below |
+| Provenance links | not separately logged in baseline | 25,837 | n/a |
+
+**Stage breakdown of the 543.6s** (from `on_progress` events):
+- Entities: 0 → 109.2s (25,981 rows)
+- Provenance: 109.2s → 181.2s (25,837 rows, 71.9s)
+- Relationships (read + dedup + INSERT, not separately instrumented —
+  `add_relationships_batch` has no `on_batch` callback wired in
+  `project_full.py`): 181.2s → 543.5s (362.3s for 364,454 rows)
+
+The relationships phase alone (362.3s) is still far below the *old*
+code's `list_relationships()` **read-only** time (946.87s) at a *higher*
+row count (364,454 vs the 364,454 read in that isolated measurement —
+same run, same data) — confirming Part C's fix lands in practice, not
+just in the round-trip arithmetic, even bundled together with the
+dedup + INSERT write work that follows it in this combined window.
+
+**What this means for the full confirm job:** the baseline's total was
+2h11m58s with this one stage at 45m39s (35%). Substituting this run's
+9m4s for that stage (all else held equal, which is an approximation —
+see caveat) would put the total around **1h34m23s**, a **~28% cut to
+the full job** from fixing this single stage.
+
+**Correctness — results match structurally, not byte-for-byte:**
+- Relationship count (364,454) is stable and reproducible across both
+  attempts this session using the same underlying `EntityStore` data —
+  not a fluke of one run.
+- Provenance (25,837) vs entities (25,981): a 144-row gap. Not
+  investigated further here — plausibly a small number of entities
+  legitimately have no provenance record (e.g. derived/synthetic
+  entities), but this wasn't confirmed against the schema/pipeline
+  logic, so treat it as a flagged-not-explained observation, not a
+  known-safe fact.
+
+**Caveats — this is not a byte-identical replay of the baseline job:**
+1. **Baseline's "1 entity" figure** (§3 above, from the original job's
+   reconstructed log line) almost certainly reflects a quirk in how that
+   stat was captured/logged for that specific run, not a real count for
+   a 346,344-relationship workspace — an entity count that low is
+   structurally implausible for that much relationship volume. This was
+   not independently re-derivable (the original job's raw data wasn't
+   available in this session) and is called out here as unresolved
+   rather than silently treated as "1" or dropped.
+2. **346,344 vs 364,454 relationships (+5.2%)**: workspace 783 is a
+   different underlying dataset than the original baseline job
+   (`bd8750b9`), not a re-run of the identical input files. The two
+   counts are close enough in order of magnitude that the Project-graph
+   *stage* comparison above is meaningful (same stage, comparable scale,
+   same backend), but they are not the same input data, so this
+   difference is not evidence of either a regression or an improvement
+   in relationship-detection correctness — it simply reflects that a
+   different workspace was used. No attempt was made in this session to
+   re-run the original 32-file source ingest from scratch to get a
+   byte-identical comparison.
+3. Only the Project-graph stage was re-measured end-to-end here. The
+   other baseline-cited stages (dynamic-FK judging, fk_link/relate-
+   isolated/dimension_link) were separately investigated earlier this
+   session (see the stage-by-stage improvement analysis above) and found
+   largely unchanged by Phases 1-4 except where explicitly noted — this
+   verification does not re-confirm those numbers, only Project-graph.
+
+---
+
 **Summary:** All four phases are done. Phase 2 was the biggest quick win
 available; Phase 3 confirmed via investigation that only its embedding
 fetch (not the whole block loop) was safe to parallelize, and captured
@@ -966,4 +1106,29 @@ it grew out of. FalkorDB has real, documented risks (an unfixed
 connection-pooling gap, an unsynchronized client-side schema cache, and a
 single-threaded server execution model) that make its expected win
 unclear without its own measurement, so it was left scoped but
-unimplemented.
+unimplemented. Part C — found while running the pre-PR full comparison
+below — was a third, independent bottleneck on the *read* side: `Oracle
+CursorWrapper` never tuned `arraysize`/`prefetchrows`, so every streaming
+read (`list_entities()`, `list_relationships()`) paid one network
+round-trip per 100 rows instead of per 500, regardless of the caller's
+requested batch size — confirmed against this ADB's measured ~225-240ms
+steady-state round-trip latency, not assumed. Fixed once, in the wrapper,
+so every current and future streaming-read call site benefits, not just
+the one that surfaced it.
+
+**Pre-PR full verification (the original ask for this window):** ran the
+real `project_graph()` full-rebuild end-to-end with all of Phases 1-4 +
+Parts B/C applied, against the same-shape data used throughout this
+investigation (25,981 entities, 364,454 relationships). Result: **543.6s
+(9.1 min) vs. the pre-Phase-1-4 baseline's 45m39s for the identical
+stage — a ~5.04x speedup**, saving ~36.5 minutes off the single largest
+cost identified in this entire document. Extrapolated to the full
+2h11m58s baseline job (holding all other stages constant, since only
+this stage was re-measured), that's roughly a 28% cut to total confirm-
+job wall-clock from this one fix. Relationship counts were stable and
+reproducible across repeated runs against the same data; the baseline's
+own relationship/entity counts aren't from an identical input dataset
+(different workspace), so the correctness comparison is structural
+(same stage, same backend, comparable scale) rather than byte-for-byte —
+see the caveats in the verification section above for exactly what was
+and wasn't independently confirmed.
