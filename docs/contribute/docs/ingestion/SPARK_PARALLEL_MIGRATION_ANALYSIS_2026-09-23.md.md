@@ -1,11 +1,11 @@
 # Attribution — docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md
 
-Last updated: 2026-09-24T09:18:38.126230+00:00
-Total lines: 906
-Lines AI-generated: 412 (45.5%)
+Last updated: 2026-09-24T10:36:17.163626+00:00
+Total lines: 969
+Lines AI-generated: 433 (44.7%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 494
+Lines unattributed: 536
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -13,8 +13,8 @@ Owner (most recent author): m.munir@giggso.com
 | 1-2 | m.munir@giggso.com | — | — | — | — | — | 2026-09-23T13:50:04.190667+00:00 | pre-commit gap — unattributed by the local hook |
 | 3-7 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.101683+00:00 | pre-commit gap — unattributed by the local hook |
 | 8-9 | m.munir@giggso.com | — | — | — | — | — | 2026-09-23T13:50:04.190828+00:00 | pre-commit gap — unattributed by the local hook |
-| 10-19 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T09:16:51.739625+00:00 |  |
-| 20-85 | m.munir@giggso.com | — | — | — | — | — | 2026-09-23T13:50:04.190828+00:00 | pre-commit gap — unattributed by the local hook |
+| 10-23 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:27:58.985723+00:00 |  |
+| 24-85 | m.munir@giggso.com | — | — | — | — | — | 2026-09-23T13:50:04.190828+00:00 | pre-commit gap — unattributed by the local hook |
 | 86-133 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-23T11:02:04.285069+00:00 |  |
 | 134-163 | m.munir@giggso.com | — | — | — | — | — | 2026-09-23T13:50:04.190964+00:00 | pre-commit gap — unattributed by the local hook |
 | 164-164 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-23T11:02:13.403481+00:00 |  |
@@ -44,10 +44,12 @@ Owner (most recent author): m.munir@giggso.com
 | 708-720 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102022+00:00 | pre-commit gap — unattributed by the local hook |
 | 721-721 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T07:24:37.480174+00:00 |  |
 | 722-762 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102085+00:00 | pre-commit gap — unattributed by the local hook |
-| 763-806 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T09:16:26.313479+00:00 |  |
-| 807-814 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102156+00:00 | pre-commit gap — unattributed by the local hook |
-| 815-838 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T07:25:01.504410+00:00 |  |
-| 839-859 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102210+00:00 | pre-commit gap — unattributed by the local hook |
+| 763-800 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.130857+00:00 | pre-commit gap — unattributed by the local hook |
+| 801-850 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:27:29.566347+00:00 |  |
+| 851-859 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102210+00:00 | pre-commit gap — unattributed by the local hook |
 | 860-878 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T09:16:41.754063+00:00 |  |
 | 879-893 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T09:18:38.102260+00:00 | pre-commit gap — unattributed by the local hook |
-| 894-906 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T09:17:07.134302+00:00 |  |
+| 894-903 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131061+00:00 | pre-commit gap — unattributed by the local hook |
+| 904-930 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:27:48.239387+00:00 |  |
+| 931-948 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131189+00:00 | pre-commit gap — unattributed by the local hook |
+| 949-969 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:28:20.961982+00:00 |  |

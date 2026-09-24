@@ -8,14 +8,19 @@ path found, fixed (three separate correctness bugs, both Postgres and
 Oracle), and wired into the confirm pipeline (`orchestrate.py` →
 `project_auto`) — all live-verified against the real LLM/broker/Oracle
 ADB. Phase 4 Part B — parallelizing the full-rebuild write path itself —
-🟡 Oracle implemented and live-measured, mixed result: correctness holds
-but no real performance win on this ADB tier (entities 0.91x, a
-regression; relationships 1.07x, negligible) — kept as the default
-anyway pending re-measurement on a larger tier, not silently disabled.
-FalkorDB deliberately not implemented (known unfixed connection-pooling
-gap F1, an unsynchronized client-side schema cache, and a single-threaded
-server execution model that likely caps the achievable win — see §8
-Phase 4 Part B). Branch `perf/ingest-parallel-2026-09-23` (holds all
+🟢 Oracle implemented and live-measured: the concurrency mechanism alone
+gave no real win (entities 0.91x, a regression; relationships 1.07x,
+negligible), which prompted re-investigating instead of stopping there —
+found and fixed the real bottleneck: a 500-row `MERGE` batch hung 180+
+seconds against the real ADB with zero conflicts possible, where the
+equivalent plain `INSERT` completed in under a second. The full-rebuild
+path now uses INSERT instead of MERGE (live-verified: 500 entities in
+1.6s, 500 relationships in 0.8s, vs. MERGE's 180+s hang); the incremental
+path is untouched and still uses MERGE. FalkorDB deliberately not
+implemented (known unfixed connection-pooling gap F1, an unsynchronized
+client-side schema cache, and a single-threaded server execution model
+that likely caps the achievable win — see §8 Phase 4 Part B). Branch
+`perf/ingest-parallel-2026-09-23` (holds all
 phases), pushed, not yet PR'd.
 
 **Date:** 2026-09-23
@@ -807,6 +812,48 @@ opts out. Anyone relying on this for a real performance win should
 re-measure on their actual target ADB tier first, the same live A/B shape
 used here, rather than trust the default's presence as evidence it helps.
 
+**Follow-up finding — MERGE itself, not concurrency, was the real
+bottleneck.** The "no real win" result above prompted re-investigating the
+original assumption (client-side concurrency helps) instead of just
+accepting it. Live-testing in isolation found the actual cause: a 500-row
+`MERGE ... executemany()` batch **hung for 180+ seconds** against the
+real Oracle ADB — confirmed on a completely fresh, never-touched workspace
+(so no lock contention was possible) via a fine-grained, step-by-step
+diagnostic that isolated the hang to the `executemany()` call itself. The
+equivalent 500-row plain `INSERT ... executemany()` batch completed in
+well under a second, every time, at multiple row counts. This explains
+the earlier concurrency result: if MERGE's per-row existence-check is
+this expensive, no amount of client-side parallelism can fix it — the
+work itself needs to shrink.
+
+**Fix, implemented and live-verified:** `project_graph()`'s full-rebuild
+path (the only place this applies — it always calls `clear()` first, so
+no existing rows can ever conflict, unlike the incremental path) now
+writes via plain `INSERT` instead of `MERGE`. New Oracle queries
+`insert_graph_vertex.sql`/`insert_graph_edge.sql`; `add_entities_batch`/
+`add_relationships_batch` gained a `full_rebuild: bool = False` parameter
+selecting the query, defaulting to the original MERGE behavior so
+`project_incremental()` (which never calls `clear()` and may legitimately
+need to update existing rows) is unaffected. `add_relationships_batch`
+also deduplicates by `(workspace_id, source, target, name)` when
+`full_rebuild=True` — the RDB's `aryx_relationship` table has no
+uniqueness constraint on that triple, and unlike MERGE (which silently
+absorbs an accidental duplicate as a no-op re-match), a plain INSERT
+would raise `ORA-00001` on one. `FalkorStore`'s equivalent methods accept
+(and ignore) the same parameter for call-site parity — FalkorDB's Cypher
+`MERGE` has no evidence of the same pathology.
+
+Live-verified end-to-end with the real `OracleGraphStore` methods (not
+raw SQL) on a fresh workspace: 500 entities in 1.60s and 500
+relationships in 0.80s via `full_rebuild=True` — versus MERGE's 180+
+second hang at the same scale, which never completed. The incremental
+(`full_rebuild=False`, MERGE) path was re-checked too and still works
+correctly for a small update. This is the change that actually closes
+most of the gap Phase 4 Part B originally set out to close — Part A only
+helps incremental confirms, and the concurrency-only version of Part B
+measured no real win, but avoiding MERGE's per-row cost entirely on the
+full-rebuild path is a large, confirmed, mechanism-understood win.
+
 **FalkorDB backend (`FalkorStore`) — real, documented risks; smaller
 expected win.**
 - `FalkorStore.__init__` constructs a single `FalkorDB` client (wrapping
@@ -859,24 +906,32 @@ is well understood. If this gets picked up later, fix/coordinate with F1
 first, and measure a small live comparison before assuming the same
 per-chunk-concurrency approach pays off the way it does for Oracle.
 
-**Risk:** Oracle — Low, in the sense that matters most: correctness is
-proven (identical output sequential vs. parallel, live-verified) and
-`oracle_graph_batch_workers=1` is a clean, tested opt-out. The
-*performance* risk is real, though, and now measured rather than assumed
-— on this ADB tier the default (4) makes entity writes slower, not
-faster. Kept as the default anyway (see Decision above) rather than
-silently defaulted to a safe no-op, so anyone relying on it for a win
-needs to actually check their own tier, not inherit an assumption from
-this doc. FalkorDB — not attempted, so no new risk introduced; the
-pre-existing F1 gap and query-queue precedent remain exactly as scoped
-above, unchanged by this work.
+**Risk:** Concurrency piece — Low: correctness is proven (identical output
+sequential vs. parallel, live-verified) and `oracle_graph_batch_workers=1`
+is a clean, tested opt-out; the *performance* risk is real and measured
+(this ADB tier's default makes entity writes slower, not faster) but
+scoped to a config value, not a correctness concern. MERGE→INSERT piece —
+Low: `full_rebuild=True` is only reachable from `project_graph()`, which
+always calls `clear()` immediately before, so the "no conflicts possible"
+assumption the plain INSERT depends on is structurally guaranteed, not
+just usually true; the relationship-dedup guard covers the one real gap
+(no RDB uniqueness constraint on the edge triple) that INSERT is stricter
+about than MERGE was. `project_incremental()` is untouched — still MERGE,
+still upsert-safe. FalkorDB — not attempted, so no new risk introduced;
+the pre-existing F1 gap and query-queue precedent remain exactly as
+scoped above, unchanged by this work.
 
-**Effort:** Low for Oracle — one new setting, one shared helper method,
-two call sites switched to use it, test updates for the new
-non-deterministic ordering plus new concurrency-specific tests, and a
-live A/B measurement against the real ADB (not just unit tests) that
-changed the conclusion from "should help" to "measured mixed, kept
-default anyway, re-measure before trusting." Zero for FalkorDB — not
+**Effort:** Low-Medium for Oracle overall — the concurrency mechanism
+(one new setting, one shared helper method, two call sites, ordering-
+related test updates) turned out to be the smaller and less impactful
+half of this work. The bigger, more valuable piece came from not
+stopping at "concurrency didn't help": two new Oracle query files, a
+`full_rebuild` parameter threaded through both graph-store
+implementations (Oracle: real behavior change; FalkorDB: accepted no-op
+for parity), a relationship-dedup guard, new tests for both the query
+selection and the dedup, and a live A/B (500-row MERGE vs. INSERT, real
+ADB, fresh workspace) that took the investigation from "no win" to "the
+single biggest lever in this entire phase." Zero for FalkorDB — not
 implemented.
 
 ---
@@ -894,13 +949,21 @@ characterization test and live verification against the real Oracle ADB,
 then wired into the confirm pipeline as the final step. Phase 4 Part B
 scoped parallelizing the full-rebuild path itself for the one case Part A
 doesn't cover (a genuine from-scratch rebuild); implemented for Oracle
-only, per direction. Live-measuring it against the real ADB — not just
-trusting the theoretical case — found a mixed result (entities slightly
-regressed, relationships roughly flat), a direct instance of this
-session's own "measure, don't assume" discipline catching its own
-optimism: the mechanism was kept, default unchanged, but the doc now
-reports the real numbers instead of the win the scoping expected.
-FalkorDB has real, documented risks (an unfixed connection-pooling gap,
-an unsynchronized client-side schema cache, and a single-threaded server
-execution model) that make its expected win unclear without its own
-measurement, so it was left scoped but unimplemented.
+only, per direction. Live-measuring the concurrency mechanism against the
+real ADB — not just trusting the theoretical case — found a mixed result
+(entities slightly regressed, relationships roughly flat), a direct
+instance of this session's own "measure, don't assume" discipline
+catching its own optimism. Rather than stop there, the negative result
+prompted a deeper look, which found the actual bottleneck: MERGE's
+per-row existence-check, not connection concurrency — a 500-row MERGE
+batch hung 180+ seconds against the real ADB with zero conflicts
+possible, while the equivalent plain INSERT completed in under a second.
+The full-rebuild path now uses INSERT (safe because it always follows
+`clear()`), live-verified end-to-end; the incremental path is untouched
+and still correctly uses MERGE. This turned out to be the single largest,
+best-confirmed win in the whole phase — bigger than the concurrency idea
+it grew out of. FalkorDB has real, documented risks (an unfixed
+connection-pooling gap, an unsynchronized client-side schema cache, and a
+single-threaded server execution model) that make its expected win
+unclear without its own measurement, so it was left scoped but
+unimplemented.

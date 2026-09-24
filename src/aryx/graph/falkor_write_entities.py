@@ -66,6 +66,7 @@ class _FalkorEntityWriteMixin:
         entities: list[tuple[int, str, dict[str, Any], list[str] | None, str | None]],
         batch_size: int = 500,
         on_batch: "Callable[[int], None] | None" = None,
+        full_rebuild: bool = False,
     ) -> int:
         """Write multiple entity nodes in batched UNWIND queries.
 
@@ -79,6 +80,13 @@ class _FalkorEntityWriteMixin:
 
         on_batch — optional callback invoked with the running total of
         rows written after each UNWIND batch, for sub-progress reporting.
+
+        full_rebuild — accepted for call-site parity with
+        OracleGraphStore.add_entities_batch (project_graph() always passes
+        it) but unused here: FalkorDB's Cypher MERGE has no equivalent to
+        the pathological executemany() MERGE cost that motivated Oracle's
+        insert_graph_vertex fast path (docs/ingestion/SPARK_PARALLEL_
+        MIGRATION_ANALYSIS_2026-09-23.md Phase 4 Part B follow-up).
         """
         groups: dict[tuple[str, ...], list[tuple[int, str, dict[str, Any], str | None]]] = {}
         for entity_id, ontology_type, attributes, labels, iri in entities:

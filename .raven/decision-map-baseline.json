@@ -63,12 +63,12 @@
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      64,
+      102,
       "<try>"
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      70,
+      108,
       "pending"
     ],
     [
@@ -13503,8 +13503,13 @@
     ],
     [
       "src/aryx/graph/falkor_write_entities.py",
-      116,
+      124,
       "add_entities_batch"
+    ],
+    [
+      "src/aryx/graph/oracle_graph_store_batch.py",
+      210,
+      "<if>"
     ],
     [
       "src/aryx/llm/llm_providers_anthropic.py",
@@ -13878,17 +13883,17 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      128,
+      129,
       "<try>"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      144,
+      145,
       "read_files"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      330,
+      358,
       "<if>"
     ],
     [
@@ -14003,17 +14008,17 @@
     ],
     [
       "src/aryx/project/project_full.py",
-      112,
+      113,
       "<if>"
     ],
     [
       "src/aryx/project/project_full.py",
-      124,
+      125,
       "<if>"
     ],
     [
       "src/aryx/project/project_full.py",
-      141,
+      143,
       "project_graph"
     ],
     [

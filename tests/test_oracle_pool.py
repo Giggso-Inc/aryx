@@ -1034,6 +1034,123 @@ class TestOracleGraphBatchWorkersDefault(unittest.TestCase):
             self.assertEqual(s.oracle_graph_batch_workers, 1)
 
 
+class TestGraphStoreFullRebuildInsert(unittest.TestCase):
+    """Phase 4 Part B follow-up: project_graph()'s full-rebuild path uses
+    plain INSERT (insert_graph_vertex/insert_graph_edge), not MERGE --
+    live-measured that a 500-row MERGE executemany() batch hung 180+
+    seconds against a real Oracle ADB with zero conflicting rows and zero
+    lock contention, while the equivalent INSERT batch completed in well
+    under a second (docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-
+    09-23.md). project_incremental() must keep using MERGE -- it never
+    calls clear(), so rows may legitimately already exist."""
+
+    def _make_store(self):
+        """Return (store, sql_seen, rows_seen) -- sql_seen/rows_seen are
+        parallel lists, one entry per executemany() call."""
+        from contextlib import contextmanager
+
+        sql_seen: list[str] = []
+        rows_seen: list[list] = []
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                sql_seen.append(sql)
+                rows_seen.append(rows)
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = 1  # sequential -> deterministic sql_seen order
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return store, sql_seen, rows_seen
+
+    @staticmethod
+    def _code_only(sql: str) -> str:
+        return "\n".join(ln for ln in sql.splitlines() if not ln.strip().startswith("--"))
+
+    def test_entities_full_rebuild_uses_plain_insert(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+        rows = [(1, "T", {"name": "a"}, None, None)]
+
+        store.add_entities_batch(rows, full_rebuild=True)
+
+        code = self._code_only(sql_seen[0])
+        self.assertIn("INSERT INTO aryx_graph_vertex", code)
+        self.assertNotIn("MERGE", code)
+
+    def test_entities_default_still_uses_merge(self) -> None:
+        """Regression guard: project_incremental() calls this with no
+        full_rebuild kwarg, and must keep getting MERGE."""
+        store, sql_seen, _rows_seen = self._make_store()
+        rows = [(1, "T", {"name": "a"}, None, None)]
+
+        store.add_entities_batch(rows)
+
+        self.assertIn("MERGE INTO aryx_graph_vertex", sql_seen[0])
+
+    def test_relationships_full_rebuild_uses_plain_insert(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL")], full_rebuild=True)
+
+        code = self._code_only(sql_seen[0])
+        self.assertIn("INSERT INTO aryx_graph_edge", code)
+        self.assertNotIn("MERGE", code)
+
+    def test_relationships_default_still_uses_merge(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL")])
+
+        self.assertIn("MERGE INTO aryx_graph_edge", sql_seen[0])
+
+    def test_relationships_full_rebuild_deduplicates_before_insert(self) -> None:
+        """A plain INSERT has no upsert semantics -- an accidental
+        duplicate (source, target, name) from the RDB (which has no
+        uniqueness constraint on that triple) would raise ORA-00001
+        without this dedup, where MERGE silently absorbed it before."""
+        store, _sql_seen, rows_seen = self._make_store()
+
+        store.add_relationships_batch(
+            [(1, 2, "REL"), (1, 2, "REL"), (3, 4, "REL")], full_rebuild=True)
+
+        self.assertEqual(len(rows_seen[0]), 2)  # deduped: (1,2,REL) once + (3,4,REL)
+
+    def test_relationships_default_does_not_deduplicate(self) -> None:
+        """Regression guard: MERGE already handles duplicates safely, so
+        the incremental path's row count (and hence its on_batch totals)
+        must stay unchanged -- dedup is full_rebuild-only."""
+        store, _sql_seen, rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL"), (1, 2, "REL"), (3, 4, "REL")])
+
+        self.assertEqual(len(rows_seen[0]), 3)
+
+
 # ── JSON output type handler tests ───────────────────────────────────────────
 
 class TestJsonOutputTypeHandler(unittest.TestCase):
