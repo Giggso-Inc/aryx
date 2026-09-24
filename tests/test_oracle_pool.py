@@ -878,6 +878,17 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         store = _OracleGraphStore.__new__(_OracleGraphStore)
         store._workspace_id = 1
         store._pool = _FakePool()
+        # add_entities_batch/add_relationships_batch load their SQL via
+        # aryx.queries.load(), which only checks queries/oracle/ (where
+        # merge_graph_vertex.sql/merge_graph_edge.sql actually live) when
+        # _backend() returns "oci" -- ambient ARYX_DB_BACKEND/ARYX_OCI_MODE
+        # state (e.g. a locally checked-out .env file) can mask this in a
+        # dev shell, but a clean worktree/CI run with neither set hits a
+        # real FileNotFoundError. Patched directly rather than via env vars
+        # for the same reason tests/test_datasource_store.py does.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
         return store, executemany_calls
 
     def test_add_entities_batch_chunks_at_500(self) -> None:
@@ -967,6 +978,13 @@ class TestGraphStoreBatchConcurrency(unittest.TestCase):
         patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # See TestGraphStoreBatchChunking._make_store's comment: load()'s
+        # queries/oracle/ lookup (where merge_graph_vertex.sql/
+        # merge_graph_edge.sql live) depends on _backend()=="oci", which
+        # isn't guaranteed by ambient env alone in a clean worktree/CI run.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
         return store, chunk_sizes, conn_ids
 
     def test_multiple_chunks_use_separate_connections_when_concurrent(self) -> None:
@@ -1086,6 +1104,13 @@ class TestGraphStoreFullRebuildInsert(unittest.TestCase):
         patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # See TestGraphStoreBatchChunking._make_store's comment: load()'s
+        # queries/oracle/ lookup (where insert_graph_vertex.sql/
+        # insert_graph_edge.sql live) depends on _backend()=="oci", which
+        # isn't guaranteed by ambient env alone in a clean worktree/CI run.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
         return store, sql_seen, rows_seen
 
     @staticmethod
