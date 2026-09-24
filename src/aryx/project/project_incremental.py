@@ -68,7 +68,17 @@ def project_incremental(
     else:
         for entity_id, system, dataset, record_id in provenance:
             graph.add_provenance(entity_id, system, dataset, record_id)
-    relationships = pstore.relationships_for(dirty_ids) if dirty_ids else []
+    # A new relationship between two entities that were BOTH already
+    # resolved in an earlier run touches neither endpoint's
+    # aryx_entity.updated_at (docs/ingestion/SPARK_PARALLEL_MIGRATION_
+    # ANALYSIS_2026-09-23.md Phase 4) -- scoping relationships_for() to
+    # dirty_ids alone would silently drop that edge. Widen to also cover
+    # entities touched by a relationship change since the watermark; this
+    # does not affect provenance/node writes above, only which edges get
+    # (re-)MERGEd -- the entities themselves already exist in the graph.
+    relationship_dirty_ids = pstore.dirty_relationship_entity_ids(since)
+    edge_scope_ids = sorted(set(dirty_ids) | set(relationship_dirty_ids))
+    relationships = pstore.relationships_for(edge_scope_ids) if edge_scope_ids else []
     if hasattr(graph, "add_relationships_batch"):
         graph.add_relationships_batch(relationships)
     else:

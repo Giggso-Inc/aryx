@@ -8,8 +8,10 @@ via grep.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
+from aryx.config import get_settings
 from aryx.graph.oracle_graph_store_helpers import _display_name, _iter_chunks, _safe_attrs_json
 from aryx.queries import load
 
@@ -19,10 +21,63 @@ logger = logging.getLogger(__name__)
 class _OracleGraphBatchMixin:
     """Batch methods — one Oracle round-trip per phase, mixed into OracleGraphStore."""
 
+    def _write_chunks(
+        self,
+        chunks: list[list[dict]],
+        query_name: str,
+        on_batch: "Callable[[int], None] | None",
+    ) -> int:
+        """Execute one `executemany` per chunk, sequentially or concurrently.
+
+        Chunks must be independent (disjoint entity ids / edges) — used by
+        add_entities_batch and add_relationships_batch, not by
+        add_provenance_batch (which has an internal read-after-write
+        dependency between its three steps and stays sequential within one
+        connection). docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_
+        2026-09-23.md Phase 4 Part B.
+
+        Concurrent chunks each acquire their own connection from the pool
+        (never share one across threads) -- the same pattern already
+        proven safe for ProjectionStore/schema-FK batches/embedding
+        prefetch in Phases 1-3. on_batch fires with the running total after
+        each chunk completes, in COMPLETION order, not submission order --
+        callers must treat it as a progress total, not a per-chunk sequence.
+        """
+        sql = load(query_name)
+        workers = max(1, get_settings().oracle_graph_batch_workers)
+        written = 0
+        if len(chunks) <= 1 or workers <= 1:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    for chunk in chunks:
+                        cur.executemany(sql, chunk)
+                        written += len(chunk)
+                        logger.info("graph %s chunk rows=%d done", query_name, len(chunk))
+                        if on_batch is not None:
+                            on_batch(written)
+            return written
+
+        def _write_one(chunk: list[dict]) -> int:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(sql, chunk)
+            return len(chunk)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_write_one, chunk) for chunk in chunks]
+            for future in as_completed(futures):
+                n = future.result()
+                written += n
+                logger.info("graph %s chunk rows=%d done", query_name, n)
+                if on_batch is not None:
+                    on_batch(written)
+        return written
+
     def add_entities_batch(
         self,
         rows: list[tuple[int, str, dict, list | None, str | None]],
         on_batch: "Callable[[int], None] | None" = None,
+        full_rebuild: bool = False,
     ) -> int:
         """Batch-upsert entity vertices in Oracle round-trips, one per chunk.
 
@@ -33,6 +88,19 @@ class _OracleGraphBatchMixin:
         on_batch — optional callback invoked with the running total of rows
         written after each executemany chunk, for sub-progress reporting
         (mirrors FalkorGraphStore.add_entities_batch).
+
+        full_rebuild — True only for project_graph()'s full-rebuild path
+        (clear() then rewrite everything), never for project_incremental().
+        Switches merge_graph_vertex (MERGE, upsert-safe for a possibly
+        non-empty graph) to insert_graph_vertex (plain INSERT, valid only
+        because clear() guarantees no existing rows can conflict). Not a
+        micro-optimization: live-measured (docs/ingestion/SPARK_PARALLEL_
+        MIGRATION_ANALYSIS_2026-09-23.md Phase 4 Part B follow-up), a
+        500-row MERGE executemany() batch hung 180+ seconds against a real
+        Oracle ADB with zero conflicting rows and zero lock contention;
+        the equivalent plain INSERT batch completed in well under a
+        second. Accepted (not used) by FalkorStore too, for call-site
+        parity -- FalkorDB's Cypher MERGE has no equivalent pathology.
         """
         if not rows:
             return 0
@@ -50,15 +118,9 @@ class _OracleGraphBatchMixin:
                 "attrs": _safe_attrs_json(attrs),
             }
         batch = list(seen.values())
-        written = 0
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                for chunk in _iter_chunks(batch, payload_key="attrs"):
-                    cur.executemany(load("merge_graph_vertex"), chunk)
-                    written += len(chunk)
-                    logger.info("graph vertices chunk rows=%d done", len(chunk))
-                    if on_batch is not None:
-                        on_batch(written)
+        chunks = list(_iter_chunks(batch, payload_key="attrs"))
+        query_name = "insert_graph_vertex" if full_rebuild else "merge_graph_vertex"
+        written = self._write_chunks(chunks, query_name, on_batch)
         logger.info("graph vertices batch done count=%d", len(rows))
         return written
 
@@ -126,21 +188,38 @@ class _OracleGraphBatchMixin:
     def add_relationships_batch(
         self,
         rows: list[tuple[int, int, str]],
+        full_rebuild: bool = False,
     ) -> None:
         """Batch-upsert relationship edges in one Oracle round-trip.
 
         Each row: (source_id, target_id, name).
+
+        full_rebuild — see add_entities_batch's docstring: switches
+        merge_graph_edge (MERGE) to insert_graph_edge (plain INSERT),
+        valid only for project_graph()'s clear()-then-rewrite path. The
+        RDB's aryx_relationship table has no uniqueness constraint on
+        (source, target, name) — MERGE silently absorbs an accidental
+        duplicate edge (a no-op re-match), but a plain INSERT would raise
+        ORA-00001 on one, so duplicates are deduplicated here first
+        (same (ws, src, tgt, name)-keyed pattern add_entities_batch
+        already uses for entity ids).
         """
         if not rows:
             return
         logger.info("graph edges batch start count=%d", len(rows))
-        batch = [
-            {"ws": self._workspace_id, "src": src, "tgt": tgt, "name": name}
-            for src, tgt, name in rows
-        ]
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                for i, chunk in enumerate(_iter_chunks(batch, payload_key="name")):
-                    cur.executemany(load("merge_graph_edge"), chunk)
-                    logger.info("graph edges chunk=%d rows=%d done", i + 1, len(chunk))
+        if full_rebuild:
+            seen: dict[tuple, dict] = {}
+            for src, tgt, name in rows:
+                seen[(self._workspace_id, src, tgt, name)] = {
+                    "ws": self._workspace_id, "src": src, "tgt": tgt, "name": name,
+                }
+            batch = list(seen.values())
+        else:
+            batch = [
+                {"ws": self._workspace_id, "src": src, "tgt": tgt, "name": name}
+                for src, tgt, name in rows
+            ]
+        chunks = list(_iter_chunks(batch, payload_key="name"))
+        query_name = "insert_graph_edge" if full_rebuild else "merge_graph_edge"
+        self._write_chunks(chunks, query_name, on_batch=None)
         logger.info("graph edges batch done count=%d", len(rows))

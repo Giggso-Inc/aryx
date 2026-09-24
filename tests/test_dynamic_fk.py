@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aryx.pipeline.dynamic_fk.dynamic_fk import (
+    _extract_verdicts_by_index,
     detect_dynamic_fk_links,
     estimate_join_fanout,
     generate_candidate_pairs,
@@ -39,6 +40,12 @@ def _settings(**overrides):
         fk_value_sample_size=200,
         fk_value_overlap_threshold=0.05,
         fk_dynamic_judge_workers=4,
+        # 1, not the real default of 5: existing tests below predate
+        # batching and assert one complete_json call per candidate — this
+        # keeps them exercising that exact behavior unchanged. Batching
+        # itself (including the real default) has its own dedicated tests
+        # further down, which override this explicitly.
+        fk_dynamic_judge_batch_size=1,
         fk_fanout_scan_rows=20000,
         fk_max_estimated_fanout=5000,
         fk_prefix_transform_lengths="2,3,4",
@@ -245,7 +252,7 @@ def test_accepted_verdict_produces_a_link():
     candidates = [_candidate(0)]
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
          patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
-               return_value={"linked": True, "reason": "same code space"}):
+               return_value={"verdicts": [{"index": 0, "linked": True, "reason": "same code space"}]}):
         links = judge_candidates_with_llm(candidates, broker=object())
     assert len(links) == 1
     assert links[0]["source_type"] == "TypeA0"
@@ -257,19 +264,24 @@ def test_rejected_verdict_produces_no_link():
     candidates = [_candidate(0)]
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
          patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
-               return_value={"linked": False, "reason": "coincidental overlap"}):
+               return_value={"verdicts": [{"index": 0, "linked": False, "reason": "coincidental overlap"}]}):
         links = judge_candidates_with_llm(candidates, broker=object())
     assert links == []
 
 
 def test_llm_failure_on_one_candidate_does_not_drop_others():
+    """With batch_size=1 (the test default — see _settings), each candidate
+    is still its own LLM call, so one call failing must not drop the other
+    candidate's verdict. (Batching's wider failure blast-radius — one
+    failed call costing a whole batch — has its own dedicated tests
+    further down.)"""
     candidates = [_candidate(0), _candidate(1)]
 
     def side_effect(*args, **kwargs):
         # args[2] is `user` in complete_json(broker, tier, system, user, schema)
         if "TypeA0" in args[3]:
             raise RuntimeError("provider error")
-        return {"linked": True, "reason": "ok"}
+        return {"verdicts": [{"index": 0, "linked": True, "reason": "ok"}]}
 
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
          patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
@@ -281,14 +293,14 @@ def test_llm_failure_on_one_candidate_does_not_drop_others():
 def test_no_hardcoded_cap_every_candidate_is_judged():
     """The explicit requirement: no cap on candidate pairs, so no node is
     silently dropped. Generate many candidates and assert every single one
-    receives an LLM verdict (call count == candidate count), regardless of
-    worker concurrency."""
+    receives an LLM verdict (call count == candidate count at batch_size=1),
+    regardless of worker concurrency."""
     candidates = [_candidate(i) for i in range(57)]
     call_count = {"n": 0}
 
     def side_effect(*args, **kwargs):
         call_count["n"] += 1
-        return {"linked": False, "reason": "no"}
+        return {"verdicts": [{"index": 0, "linked": False, "reason": "no"}]}
 
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=4)), \
          patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
@@ -305,12 +317,196 @@ def test_judge_workers_setting_bounds_concurrency_not_coverage():
 
         def side_effect(*args, **kwargs):
             call_count["n"] += 1
-            return {"linked": False, "reason": "no"}
+            return {"verdicts": [{"index": 0, "linked": False, "reason": "no"}]}
 
         with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=workers)), \
              patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
             judge_candidates_with_llm(candidates, broker=object())
         assert call_count["n"] == 10
+
+
+# ── batching (2026-09-23, Phase 2) ───────────────────────────────────────────
+
+def test_extract_verdicts_prefers_the_index_key():
+    verdicts = [{"index": 1, "linked": True}, {"index": 0, "linked": False}]
+    by_index = _extract_verdicts_by_index(verdicts, batch_len=2)
+    assert by_index[0]["linked"] is False
+    assert by_index[1]["linked"] is True
+
+
+def test_extract_verdicts_falls_back_to_known_aliases():
+    """Live-confirmed against the real OCI GenAI 'cheap' tier: the model
+    used 'pair_index' instead of the schema's 'index' key, despite it
+    being marked required — the judgments were correct, only the key name
+    drifted, so parsing must not discard a batch over this."""
+    verdicts = [{"pair_index": 0, "linked": True}, {"pair_index": 1, "linked": False}]
+    by_index = _extract_verdicts_by_index(verdicts, batch_len=2)
+    assert by_index[0]["linked"] is True
+    assert by_index[1]["linked"] is False
+
+
+def test_extract_verdicts_falls_back_to_response_order_when_no_index_key():
+    """No recognized index key anywhere, but exactly one verdict per
+    candidate -- treat the response as answered in order rather than
+    discarding every candidate."""
+    verdicts = [{"linked": True}, {"linked": False}, {"linked": True}]
+    by_index = _extract_verdicts_by_index(verdicts, batch_len=3)
+    assert by_index[0]["linked"] is True
+    assert by_index[1]["linked"] is False
+    assert by_index[2]["linked"] is True
+
+
+def test_extract_verdicts_no_positional_fallback_when_counts_mismatch():
+    """Falling back to response order is only safe when the count matches
+    the batch -- a mismatched count with no usable index is genuinely
+    unusable and must not be guessed at."""
+    verdicts = [{"linked": True}, {"linked": False}]
+    by_index = _extract_verdicts_by_index(verdicts, batch_len=3)
+    assert by_index == {}
+
+
+def test_extract_verdicts_out_of_range_index_is_ignored():
+    verdicts = [{"index": 0, "linked": True}, {"index": 99, "linked": True}]
+    by_index = _extract_verdicts_by_index(verdicts, batch_len=2)
+    assert list(by_index) == [0]
+
+
+def test_batch_judge_survives_llm_using_a_nonstandard_index_key_name():
+    """End-to-end through judge_candidates_with_llm, not just the helper in
+    isolation -- a batch response keyed by 'pair_index' must still produce
+    correct links, matching what was live-confirmed against the real LLM."""
+    candidates = [_candidate(0), _candidate(1)]
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [
+                   {"pair_index": 0, "linked": True, "reason": "yes"},
+                   {"pair_index": 1, "linked": False, "reason": "no"},
+               ]}):
+        links = judge_candidates_with_llm(candidates, broker=object())
+    assert len(links) == 1
+    assert links[0]["source_type"] == "TypeA0"
+
+
+
+def test_batch_size_groups_multiple_candidates_into_one_llm_call():
+    candidates = [_candidate(i) for i in range(10)]
+    call_count = {"n": 0}
+    batch_lens: list[int] = []
+
+    def side_effect(broker, tier, system, user, schema):
+        call_count["n"] += 1
+        n = user.count("Pair ")
+        batch_lens.append(n)
+        return {"verdicts": [
+            {"index": i, "linked": False, "reason": "no"} for i in range(n)
+        ]}
+
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
+        judge_candidates_with_llm(candidates, broker=object())
+    assert call_count["n"] == 2, "10 candidates at batch size 5 -> 2 LLM calls, not 10"
+    assert sorted(batch_lens) == [5, 5]
+
+
+def test_batch_size_default_is_five():
+    candidates = [_candidate(i) for i in range(11)]
+    call_count = {"n": 0}
+
+    def side_effect(broker, tier, system, user, schema):
+        call_count["n"] += 1
+        n = user.count("Pair ")
+        return {"verdicts": [
+            {"index": i, "linked": False, "reason": "no"} for i in range(n)
+        ]}
+
+    # Real Settings() default (config_fk_detection.py), not a test override.
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
+        judge_candidates_with_llm(candidates, broker=object())
+    assert call_count["n"] == 3, "11 candidates at the default batch size 5 -> ceil(11/5) = 3 calls"
+
+
+def test_batch_verdicts_map_back_to_the_right_candidate_by_index():
+    candidates = [_candidate(i) for i in range(3)]
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [
+                   {"index": 2, "linked": True, "reason": "r2"},
+                   {"index": 0, "linked": False, "reason": "r0"},
+                   {"index": 1, "linked": True, "reason": "r1"},
+               ]}):
+        links = judge_candidates_with_llm(candidates, broker=object())
+    linked_types = {lnk["source_type"] for lnk in links}
+    assert linked_types == {"TypeA2", "TypeA1"}, (
+        "verdicts arriving out of order and index-keyed must still map to "
+        "the correct candidate, not positionally"
+    )
+
+
+def test_batch_missing_verdict_for_an_index_defaults_to_not_linked():
+    candidates = [_candidate(i) for i in range(3)]
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [
+                   {"index": 0, "linked": True, "reason": "r0"},
+                   # index 1 missing entirely from the response
+                   {"index": 2, "linked": True, "reason": "r2"},
+               ]}):
+        links = judge_candidates_with_llm(candidates, broker=object())
+    linked_types = {lnk["source_type"] for lnk in links}
+    assert linked_types == {"TypeA0", "TypeA2"}
+    assert "TypeA1" not in linked_types, (
+        "a candidate with no verdict in the response must fail open as "
+        "not-linked, never crash or silently duplicate another's verdict"
+    )
+
+
+def test_one_failed_batch_does_not_drop_candidates_in_other_batches():
+    """Batching's real trade-off: a failed LLM call now costs a whole
+    batch's verdicts, not one candidate's — but it must still be scoped to
+    THAT batch only, never cascade to other batches judged concurrently."""
+    candidates = [_candidate(i) for i in range(10)]  # 2 batches of 5
+
+    def side_effect(broker, tier, system, user, schema):
+        if "TypeA0" in user:  # candidate 0 is in the first batch
+            raise RuntimeError("provider error for this batch")
+        n = user.count("Pair ")
+        return {"verdicts": [
+            {"index": i, "linked": True, "reason": "ok"} for i in range(n)
+        ]}
+
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=5)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
+        links = judge_candidates_with_llm(candidates, broker=object())
+    linked_types = {lnk["source_type"] for lnk in links}
+    # First batch (candidates 0-4) failed entirely -> none linked.
+    for i in range(5):
+        assert f"TypeA{i}" not in linked_types
+    # Second batch (candidates 5-9) succeeded -> all linked.
+    for i in range(5, 10):
+        assert f"TypeA{i}" in linked_types
+
+
+def test_batch_size_one_recovers_original_one_call_per_candidate_behavior():
+    candidates = [_candidate(i) for i in range(4)]
+    call_count = {"n": 0}
+
+    def side_effect(broker, tier, system, user, schema):
+        call_count["n"] += 1
+        assert user.count("Pair ") == 1
+        return {"verdicts": [{"index": 0, "linked": False, "reason": "no"}]}
+
+    with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings",
+               return_value=_settings(fk_dynamic_judge_batch_size=1)), \
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", side_effect=side_effect):
+        judge_candidates_with_llm(candidates, broker=object())
+    assert call_count["n"] == 4
 
 
 # docs/falkordb_high_cpu_2026-07-29.md follow-up — this stage previously had
@@ -322,7 +518,8 @@ def test_on_progress_called_once_per_candidate_with_final_totals():
     candidates = [_candidate(i) for i in range(6)]
     calls: list[tuple[int, int]] = []
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=3)), \
-         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [{"index": 0, "linked": False, "reason": "no"}]}):
         judge_candidates_with_llm(candidates, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
     assert len(calls) == 6
     assert all(total == 6 for _done, total in calls)
@@ -338,7 +535,8 @@ def test_on_progress_exception_does_not_break_judging():
         raise RuntimeError("job store unavailable")
 
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=2)), \
-         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": True, "reason": "yes"}):
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [{"index": 0, "linked": True, "reason": "yes"}]}):
         links = judge_candidates_with_llm(candidates, broker=object(), on_progress=_bad_progress)
     assert len(links) == 4
 
@@ -352,7 +550,8 @@ def test_detect_dynamic_fk_links_threads_on_progress_through():
     ]
     calls: list[tuple[int, int]] = []
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
-         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+         patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
+               return_value={"verdicts": [{"index": 0, "linked": False, "reason": "no"}]}):
         detect_dynamic_fk_links(plans, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
     assert calls, "on_progress must fire when detect_dynamic_fk_links actually judges candidates"
 
@@ -383,7 +582,7 @@ def test_end_to_end_finds_and_judges_a_real_relationship():
     ]
     with patch("aryx.pipeline.dynamic_fk.dynamic_fk.get_settings", return_value=_settings()), \
          patch("aryx.pipeline.dynamic_fk.dynamic_fk.complete_json",
-               return_value={"linked": True, "reason": "shared material code space"}):
+               return_value={"verdicts": [{"index": 0, "linked": True, "reason": "shared material code space"}]}):
         links = detect_dynamic_fk_links(plans, broker=object())
     assert len(links) == 1
     assert links[0]["source_type"] == "Transaction"

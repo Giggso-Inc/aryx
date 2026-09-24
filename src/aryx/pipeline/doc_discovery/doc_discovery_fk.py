@@ -28,6 +28,30 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     the pattern ``{TypeB}_id`` or ``{TypeB}_name`` (case-insensitive, singular
     or plural form) and builds a ``fk_links`` spec understood by
     ``run_pipeline``.  Only one edge spec is emitted per (source, target) pair.
+
+    Complexity note (2026-09-23, docs/ingestion/SPARK_PARALLEL_MIGRATION_
+    ANALYSIS_2026-09-23.md Phase 1 step 1): the original version of this
+    function compared every plan against every other plan directly — O(N^2)
+    in the number of plans, recomputing each target plan's tag/stem
+    candidates and id/name/match-key columns from scratch on every one of
+    those N^2 comparisons even though none of that depends on the source
+    plan at all. At 32 plans that's ~1,000 pair-checks (negligible,
+    confirmed <1% of a real ingest's wall-clock time). It does NOT stay
+    negligible as file/entity-type count grows — 200 plans is ~40,000
+    pair-checks, purely from this shape, nothing to do with row count.
+    Threading does NOT fix this (this is pure CPU-bound Python — string/
+    regex comparisons, no LLM/DB/network calls — so the GIL means more
+    threads run no more of it concurrently); the actual fix is algorithmic.
+    Pass 1 and Pass 3 below are rewritten to build a reverse index once
+    (O(N)) and look candidate source columns up in it (O(1) avg) instead of
+    re-scanning every other plan per plan. Pass 2's Rules A and C get the
+    same treatment; Rule B (substring containment, not exact-stem
+    equality) genuinely needs a different algorithm (e.g. Aho-Corasick
+    multi-pattern matching) to be sub-quadratic and is NOT fixed here —
+    left as-is, now only evaluated for pairs Rules A/C didn't already
+    resolve, with computation that depends only on the target plan hoisted
+    out of the per-source-plan loop (same win as Pass 1/3, just without the
+    full complexity-class fix for that one rule).
     """
     if len(plans) < 2:
         return []
@@ -83,62 +107,101 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     seen: set[tuple[str, str]] = set()
     links: list[dict] = []
 
-    for i, plan_a in enumerate(plans):
-        for j, plan_b in enumerate(plans):
-            if i == j:
-                continue
-            pair_key = (plan_a["ontology_type"], plan_b["ontology_type"])
-            if pair_key in seen:
-                continue
-            type_b = plan_b["ontology_type"]
-            type_b_l = type_b.lower()
-            singular_b = _singular(type_b_l)
-            # Candidate stems: every trailing-word-run of the de-camelCased
-            # type name (not just the last word), in both snake_case and
-            # joined form, singular and plural. Catches columns whose FK
-            # prefix carries more context than the last word alone, e.g.
-            # "attr_set_id" -> BmConfigAttrSet ("attr"+"set" suffix) or
-            # "config_attr_id" -> BmConfigAttr ("config"+"attr" suffix) —
-            # purely derived from the type name, no hardcoded column list.
-            _words = re.findall(r'[A-Z][a-z0-9]*', type_b)
-            tag_candidates: set[str] = {type_b_l, singular_b}
-            for k in range(1, len(_words) + 1):
-                suffix_words = _words[-k:]
-                for form in ("_".join(w.lower() for w in suffix_words),
-                             "".join(w.lower() for w in suffix_words)):
-                    tag_candidates.add(form)
-                    tag_candidates.add(_singular(form))
-            headers_b = plan_headers[j]
-            id_col = next((c for c in headers_b if c.lower() in id_names), None)
-            name_col = next((c for c in headers_b if c.lower() in name_names), None)
-            mk0 = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
+    # ── Pass 1: reverse-index build, once per plan (O(N)) ────────────────
+    # Everything below depends only on plan_b (the target), never on
+    # plan_a (the source) — hoisted out of the old per-pair loop so it
+    # runs once per plan instead of once per (plan_a, plan_b) pair.
+    stem_index: dict[str, list[int]] = {}       # stem -> [plan indices]
+    exact_type_index: dict[str, list[int]] = {}  # type_l/singular -> [plan indices]
+    id_col_of: list[str | None] = [None] * len(plans)
+    name_col_of: list[str | None] = [None] * len(plans)
+    mk0_of: list[str | None] = [None] * len(plans)
 
-            for col in plan_headers[i]:
-                col_l = col.lower()
-                target_attr: str | None = None
-                if col_l.endswith("_id") and col_l[:-3] in tag_candidates:
-                    target_attr = id_col or mk0
-                elif col_l.endswith("_name") and col_l[:-5] in tag_candidates:
-                    target_attr = name_col or mk0
-                elif col_l in (type_b_l, singular_b) and (id_col or name_col):
-                    target_attr = id_col or name_col
+    for j, plan_b in enumerate(plans):
+        type_b = plan_b["ontology_type"]
+        type_b_l = type_b.lower()
+        singular_b = _singular(type_b_l)
+        # Candidate stems: every trailing-word-run of the de-camelCased
+        # type name (not just the last word), in both snake_case and
+        # joined form, singular and plural. Catches columns whose FK
+        # prefix carries more context than the last word alone, e.g.
+        # "attr_set_id" -> BmConfigAttrSet ("attr"+"set" suffix) or
+        # "config_attr_id" -> BmConfigAttr ("config"+"attr" suffix) —
+        # purely derived from the type name, no hardcoded column list.
+        _words = re.findall(r'[A-Z][a-z0-9]*', type_b)
+        tag_candidates: set[str] = {type_b_l, singular_b}
+        for k in range(1, len(_words) + 1):
+            suffix_words = _words[-k:]
+            for form in ("_".join(w.lower() for w in suffix_words),
+                         "".join(w.lower() for w in suffix_words)):
+                tag_candidates.add(form)
+                tag_candidates.add(_singular(form))
+        for stem in tag_candidates:
+            stem_index.setdefault(stem, []).append(j)
+        exact_type_index.setdefault(type_b_l, []).append(j)
+        exact_type_index.setdefault(singular_b, []).append(j)
+
+        headers_b = plan_headers[j]
+        id_col_of[j] = next((c for c in headers_b if c.lower() in id_names), None)
+        name_col_of[j] = next((c for c in headers_b if c.lower() in name_names), None)
+        mk0_of[j] = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
+
+    # ── Pass 1: source-plan scan, index lookups instead of re-scanning ───
+    # For a FIXED source plan, the original scanned each target plan's
+    # columns in header order and used the FIRST match for THAT target —
+    # replicated here by scanning columns in order and, for each column,
+    # resolving every not-yet-resolved target it stem-matches; results are
+    # then emitted in target-plan order (not column-encounter order) so
+    # output order matches the original exactly, not just output content.
+    for i, plan_a in enumerate(plans):
+        resolved: dict[int, tuple[str, str]] = {}   # j -> (source_col, target_attr)
+        resolved_types: set[str] = set()             # target type strings already claimed this i
+        for col in plan_headers[i]:
+            col_l = col.lower()
+            if col_l.endswith("_id"):
+                rule, candidate_js = "id", stem_index.get(col_l[:-3], ())
+            elif col_l.endswith("_name"):
+                rule, candidate_js = "name", stem_index.get(col_l[:-5], ())
+            else:
+                rule, candidate_js = "exact", exact_type_index.get(col_l, ())
+            for j in candidate_js:
+                if j == i or j in resolved:
+                    continue
+                type_b = plans[j]["ontology_type"]
+                if type_b in resolved_types:
+                    continue
+                pair_key = (plan_a["ontology_type"], type_b)
+                if pair_key in seen:
+                    continue
+                if rule == "id":
+                    target_attr = id_col_of[j] or mk0_of[j]
+                elif rule == "name":
+                    target_attr = name_col_of[j] or mk0_of[j]
+                else:
+                    target_attr = id_col_of[j] or name_col_of[j]
                 if not target_attr:
                     continue
-                seen.add(pair_key)
-                src_upper = plan_a["ontology_type"].upper()
-                # Edge direction in link_by_attribute: target_type → source_type
-                # (parent has-child semantics). Name reflects that direction.
-                link = {
-                    "source_type": plan_a["ontology_type"],
-                    "source_attr": col,
-                    "target_type": type_b,
-                    "target_attr": target_attr,
-                    "name": f"{type_b.upper()}_HAS_{src_upper}",
-                }
-                links.append(link)
-                logger.info("fk-pass1 log_id=%s: %s.%s -> %s.%s (%s)",
-                            log_id, plan_a["ontology_type"], col, type_b, target_attr, link["name"])
-                break
+                resolved[j] = (col, target_attr)
+                resolved_types.add(type_b)
+
+        for j in sorted(resolved):
+            col, target_attr = resolved[j]
+            type_b = plans[j]["ontology_type"]
+            pair_key = (plan_a["ontology_type"], type_b)
+            seen.add(pair_key)
+            src_upper = plan_a["ontology_type"].upper()
+            # Edge direction in link_by_attribute: target_type → source_type
+            # (parent has-child semantics). Name reflects that direction.
+            link = {
+                "source_type": plan_a["ontology_type"],
+                "source_attr": col,
+                "target_type": type_b,
+                "target_attr": target_attr,
+                "name": f"{type_b.upper()}_HAS_{src_upper}",
+            }
+            links.append(link)
+            logger.info("fk-pass1 log_id=%s: %s.%s -> %s.%s (%s)",
+                        log_id, plan_a["ontology_type"], col, type_b, target_attr, link["name"])
 
     # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
     # Handles patterns that Pass 1 misses because they don't follow {type}_id.
@@ -147,92 +210,136 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     #   Rule A — shared match key:  same column name in A and B
     #   Rule B — stem reference:    column in A contains B's match-key stem
     #   Rule C — suffix match:      both columns share the same key suffix
+    #
+    # Rules A and C match on an EXACT string (the whole match-key value, or
+    # its suffix) — both indexable in O(N), same technique as Pass 1/3
+    # above. Rule B matches on SUBSTRING CONTAINMENT (B's match-key stem
+    # appearing anywhere inside A's column name) — a fundamentally
+    # different search problem that a simple exact-value index can't
+    # answer; making Rule B itself sub-quadratic needs a multi-pattern
+    # substring search structure (e.g. Aho-Corasick), not attempted here.
+    # Splitting A/B/C into three separate top-level passes (each still
+    # gated by the same `seen2` dedup, in the same A-then-B-then-C
+    # priority the original's per-column `continue` chain enforced) removes
+    # A's and C's O(N^2) redundant work entirely, and removes the
+    # per-(i,j) mk_b/mk_stem recomputation from Rule B's still-quadratic
+    # loop (hoisted below, computed once per plan instead of once per
+    # pair) — same net effect as Pass 1/3's fix for two of the three
+    # rules, real but smaller constant-factor relief for the third.
     seen2: set[tuple[str, str, str]] = set()  # (src_type, tgt_type, col_l)
+
+    mk_b_of: list[str | None] = [None] * len(plans)
+    mk_stem_of: list[str] = [""] * len(plans)
+    mk_b_index: dict[str, list[int]] = {}
+    suffix_index: dict[str, list[int]] = {}
+    for j in range(len(plans)):
+        mk_b = (plans[j].get("match_keys") or [None])[0]
+        if not mk_b:
+            continue
+        mk_b_l = mk_b.lower()
+        mk_stem = mk_b_l
+        for sfx in ("_code", "_id", "_num", "_key", "_ref", "_no", "_cage"):
+            if mk_b_l.endswith(sfx):
+                mk_stem = mk_b_l[: -len(sfx)]
+                break
+        mk_b_of[j] = mk_b
+        mk_stem_of[j] = mk_stem
+        mk_b_index.setdefault(mk_b_l, []).append(j)
+        mk_sfx = next((s for s in key_suffixes if mk_b_l.endswith(s)), None)
+        if mk_sfx:
+            suffix_index.setdefault(mk_sfx, []).append(j)
+
+    # Rule A — exact match-key equality, index lookup.
     for i, plan_a in enumerate(plans):
-        own_mk = (plan_a.get("match_keys") or [None])[0]
-        own_mk_l = (own_mk or "").lower()
+        own_mk_l = ((plan_a.get("match_keys") or [None])[0] or "").lower()
+        for col in plan_headers[i]:
+            col_l = col.lower()
+            if col_l == own_mk_l or not any(col_l.endswith(sfx) for sfx in key_suffixes):
+                continue
+            for j in mk_b_index.get(col_l, ()):
+                if j == i:
+                    continue
+                plan_b = plans[j]
+                pair_key = (plan_a["ontology_type"], plan_b["ontology_type"])
+                if pair_key in seen:
+                    continue
+                col2_key = (plan_a["ontology_type"], plan_b["ontology_type"], col_l)
+                if col2_key in seen2 or not _is_varying(i, col):
+                    continue
+                mk_b = mk_b_of[j]
+                seen2.add(col2_key)
+                links.append({
+                    "source_type": plan_a["ontology_type"], "source_attr": col,
+                    "target_type": plan_b["ontology_type"], "target_attr": mk_b,
+                    "name": f"{plan_b['ontology_type'].upper()}_HAS_{plan_a['ontology_type'].upper()}",
+                })
+                logger.info("fk-pass2-ruleA log_id=%s: %s.%s -> %s.%s",
+                            log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+
+    # Rule B — substring containment, still O(N^2 x cols) (see note above).
+    for i, plan_a in enumerate(plans):
+        own_mk_l = ((plan_a.get("match_keys") or [None])[0] or "").lower()
         for j, plan_b in enumerate(plans):
             if i == j:
                 continue
             pair_key = (plan_a["ontology_type"], plan_b["ontology_type"])
             if pair_key in seen:
                 continue
-            mk_b = (plan_b.get("match_keys") or [None])[0]
-            if not mk_b:
+            mk_b = mk_b_of[j]
+            mk_stem = mk_stem_of[j]
+            if not mk_b or len(mk_stem) < 3:
                 continue
             mk_b_l = mk_b.lower()
-            # Derive stem by stripping common key suffixes
-            mk_stem = mk_b_l
-            for sfx in ("_code", "_id", "_num", "_key", "_ref", "_no", "_cage"):
-                if mk_b_l.endswith(sfx):
-                    mk_stem = mk_b_l[: -len(sfx)]
-                    break
-            if len(mk_stem) < 3:
-                continue
-
             for col in plan_headers[i]:
                 col_l = col.lower()
                 col2_key = (plan_a["ontology_type"], plan_b["ontology_type"], col_l)
                 if col2_key in seen2:
                     continue
-                src_upper = plan_a["ontology_type"].upper()
-                # Rule A: column exactly equals B's match key and looks like a code
-                # column — catches shared identifier columns across entity types.
-                # Guards:
-                #   own_mk_l — skip when both A and B are siblings sharing a parent FK
-                #   _col_is_varying — skip single-value context fields
-                if (col_l == mk_b_l and col_l != own_mk_l
-                        and any(col_l.endswith(sfx) for sfx in key_suffixes)
-                        and _is_varying(i, col)):
-                    seen2.add(col2_key)
-                    links.append({
-                        "source_type": plan_a["ontology_type"],
-                        "source_attr": col,
-                        "target_type": plan_b["ontology_type"],
-                        "target_attr": mk_b,
-                        "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
-                    })
-                    logger.info("fk-pass2-ruleA log_id=%s: %s.%s -> %s.%s",
-                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
-                    continue
-                # Rule B: column contains B's match-key stem as a fragment AND has
-                # a key suffix — catches hierarchical/reference column patterns
                 if (mk_stem in col_l and col_l != mk_b_l
                         and any(col_l.endswith(sfx) for sfx in key_suffixes)
                         and _is_varying(i, col)
                         and _is_varying(j, mk_b)):
                     seen2.add(col2_key)
                     links.append({
-                        "source_type": plan_a["ontology_type"],
-                        "source_attr": col,
-                        "target_type": plan_b["ontology_type"],
-                        "target_attr": mk_b,
-                        "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
+                        "source_type": plan_a["ontology_type"], "source_attr": col,
+                        "target_type": plan_b["ontology_type"], "target_attr": mk_b,
+                        "name": f"{plan_b['ontology_type'].upper()}_HAS_{plan_a['ontology_type'].upper()}",
                     })
                     logger.info("fk-pass2-ruleB log_id=%s: %s.%s -> %s.%s",
                                 log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+
+    # Rule C — shared key-suffix, index lookup. Target cardinality guard:
+    # if the join target column has only one distinct value (e.g.
+    # company_id = constant) it cannot produce meaningful per-row joins —
+    # only false cartesian-product edges.
+    for i, plan_a in enumerate(plans):
+        own_mk_l = ((plan_a.get("match_keys") or [None])[0] or "").lower()
+        for col in plan_headers[i]:
+            col_l = col.lower()
+            col_sfx = next((s for s in key_suffixes if col_l.endswith(s)), None)
+            if not col_sfx:
+                continue
+            for j in suffix_index.get(col_sfx, ()):
+                if j == i:
                     continue
-                # Rule C: same key-suffix — both columns share a suffix like _CODE,
-                # signalling a replacement / alternate-entity reference.
-                # Target cardinality guard: if the join target column has only one
-                # distinct value (e.g. company_id = constant) it cannot produce
-                # meaningful per-row joins — only false cartesian-product edges.
-                col_sfx = next((s for s in key_suffixes if col_l.endswith(s)), None)
-                mk_sfx = next((s for s in key_suffixes if mk_b_l.endswith(s)), None)
-                if (col_sfx and mk_sfx and col_sfx == mk_sfx
-                        and col_l != mk_b_l and col_l != own_mk_l
-                        and _is_varying(i, col)
-                        and _is_varying(j, mk_b)):
-                    seen2.add(col2_key)
-                    links.append({
-                        "source_type": plan_a["ontology_type"],
-                        "source_attr": col,
-                        "target_type": plan_b["ontology_type"],
-                        "target_attr": mk_b,
-                        "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
-                    })
-                    logger.info("fk-pass2-ruleC log_id=%s: %s.%s -> %s.%s",
-                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+                plan_b = plans[j]
+                pair_key = (plan_a["ontology_type"], plan_b["ontology_type"])
+                if pair_key in seen:
+                    continue
+                mk_b = mk_b_of[j]
+                mk_b_l = mk_b.lower()
+                col2_key = (plan_a["ontology_type"], plan_b["ontology_type"], col_l)
+                if (col2_key in seen2 or col_l == mk_b_l or col_l == own_mk_l
+                        or not _is_varying(i, col) or not _is_varying(j, mk_b)):
+                    continue
+                seen2.add(col2_key)
+                links.append({
+                    "source_type": plan_a["ontology_type"], "source_attr": col,
+                    "target_type": plan_b["ontology_type"], "target_attr": mk_b,
+                    "name": f"{plan_b['ontology_type'].upper()}_HAS_{plan_a['ontology_type'].upper()}",
+                })
+                logger.info("fk-pass2-ruleC log_id=%s: %s.%s -> %s.%s",
+                            log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
     # _collect_tag injects {parent_tag}_id columns into child entity rows.
@@ -261,6 +368,22 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
         for k in range(len(plans))
     ]
 
+    # Reverse index: lowercased column name -> plan indices that have a
+    # column with that exact name (dedup'd per plan, header order
+    # preserved for the first-occurrence tie-break, same as the original
+    # per-plan `next(...)` scan). Built once (O(N x cols)) instead of the
+    # original's O(N^2 x cols) "for every element-type plan, rescan every
+    # other plan's full header list looking for one exact name".
+    col_index: dict[str, list[int]] = {}
+    for i in range(len(plans)):
+        seen_cols_i: set[str] = set()
+        for c in plan_headers[i]:
+            cl = c.lower()
+            if cl in seen_cols_i:
+                continue
+            seen_cols_i.add(cl)
+            col_index.setdefault(cl, []).append(i)
+
     seen3: set[tuple[str, str]] = set()
     for j, plan_b in enumerate(plans):
         elem_b = plan_elem_types[j]
@@ -273,18 +396,14 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
         target_attr = id_col_b or mk0_b
         if not target_attr:
             continue
-        for i, plan_a in enumerate(plans):
+        for i in col_index.get(fk_col_l, ()):
             if i == j:
                 continue
+            plan_a = plans[i]
             pair_key = (plan_a["ontology_type"], plan_b["ontology_type"])
             if pair_key in seen or pair_key in seen3:
                 continue
-            # Find matching column (case-insensitive)
-            actual_col = next(
-                (c for c in plan_headers[i] if c.lower() == fk_col_l), None
-            )
-            if actual_col is None:
-                continue
+            actual_col = next(c for c in plan_headers[i] if c.lower() == fk_col_l)
             seen3.add(pair_key)
             links.append({
                 "source_type": plan_a["ontology_type"],

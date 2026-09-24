@@ -99,6 +99,23 @@ class ResolutionSettingsMixin(BaseSettings):
             "ARYX_ER_MAX_EDGES_PER_RUN."
         ),
     )
+    er_embed_workers: int = Field(
+        default=8,
+        description=(
+            "Concurrent block-embedding calls (ThreadPoolExecutor) during "
+            "entity resolution (docs/ingestion/SPARK_PARALLEL_MIGRATION_"
+            "ANALYSIS_2026-09-23.md Phase 3). Live-measured: embedding is "
+            "~99% of resolve()'s wall-clock time on a realistic dataset "
+            "(scoring, routing, and union-find bookkeeping are comparatively "
+            "free) -- but the routing/union-find loop itself must stay "
+            "sequential (MultiKeyBlocker deliberately places each record in "
+            "up to 3 overlapping blocks, and UnionFind/pair_scores/"
+            "band_counts have no synchronization), so only the independent, "
+            "side-effect-free embedding calls are parallelized, prefetched "
+            "before that sequential loop runs. Override with "
+            "ARYX_ER_EMBED_WORKERS."
+        ),
+    )
     embed_batch_size: int = Field(
         default=50,
         description=(

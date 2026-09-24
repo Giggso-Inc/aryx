@@ -96,7 +96,8 @@ def project_graph(
             for eid, ot, attrs in entities
         ]
         n_entities = graph.add_entities_batch(
-            rows, on_batch=lambda done: _scaled(done, n_entities_total, "entities"))
+            rows, on_batch=lambda done: _scaled(done, n_entities_total, "entities"),
+            full_rebuild=True)
     else:
         n_entities = 0
         for entity_id, ontology_type, attributes in entities:
@@ -122,7 +123,8 @@ def project_graph(
 
     all_rels = list(store.list_relationships())
     if hasattr(graph, "add_relationships_batch"):
-        n_relationships = graph.add_relationships_batch(all_rels) or len(all_rels)
+        n_relationships = graph.add_relationships_batch(
+            all_rels, full_rebuild=True) or len(all_rels)
     else:
         for src, tgt, name in all_rels:
             graph.add_relationship(src, tgt, name)

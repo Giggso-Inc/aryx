@@ -878,17 +878,33 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         store = _OracleGraphStore.__new__(_OracleGraphStore)
         store._workspace_id = 1
         store._pool = _FakePool()
+        # add_entities_batch/add_relationships_batch load their SQL via
+        # aryx.queries.load(), which only checks queries/oracle/ (where
+        # merge_graph_vertex.sql/merge_graph_edge.sql actually live) when
+        # _backend() returns "oci" -- ambient ARYX_DB_BACKEND/ARYX_OCI_MODE
+        # state (e.g. a locally checked-out .env file) can mask this in a
+        # dev shell, but a clean worktree/CI run with neither set hits a
+        # real FileNotFoundError. Patched directly rather than via env vars
+        # for the same reason tests/test_datasource_store.py does.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
         return store, executemany_calls
 
     def test_add_entities_batch_chunks_at_500(self) -> None:
         """_CHUNK_MAX_ROWS=500 (raised from 25 -- see P8/graph-projection fix
         in docs/SCALABILITY_BOTTLENECKS.md: the row cap, not the byte cap,
         was the binding constraint and caused far more round-trips to Oracle
-        Cloud than the byte budget actually required)."""
+        Cloud than the byte budget actually required).
+
+        Chunks now run concurrently by default (Phase 4 Part B,
+        oracle_graph_batch_workers) -- completion order isn't guaranteed by
+        ThreadPoolExecutor/as_completed, so this asserts the set of chunk
+        sizes, not submission order."""
         store, calls = self._make_store()
         rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
         store.add_entities_batch(rows)
-        self.assertEqual(calls, [500, 500, 250])
+        self.assertEqual(sorted(calls), [250, 500, 500])
 
     def test_add_entities_batch_small_batch_single_chunk(self) -> None:
         store, calls = self._make_store()
@@ -897,15 +913,267 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         self.assertEqual(calls, [30])
 
     def test_add_relationships_batch_chunks_at_500(self) -> None:
+        """Order-independent for the same reason as the entities test above."""
         store, calls = self._make_store()
         rows = [(i, i + 1, "rel") for i in range(1050)]
         store.add_relationships_batch(rows)
-        self.assertEqual(calls, [500, 500, 50])
+        self.assertEqual(sorted(calls), [50, 500, 500])
 
     def test_add_entities_batch_empty_is_noop(self) -> None:
         store, calls = self._make_store()
         store.add_entities_batch([])
         self.assertEqual(calls, [])
+
+
+class TestGraphStoreBatchConcurrency(unittest.TestCase):
+    """Phase 4 Part B: add_entities_batch/add_relationships_batch run their
+    independent chunks concurrently, each on its own pooled connection --
+    never sharing one connection across threads (the pattern already
+    proven safe for ProjectionStore/schema-FK batches/embedding prefetch
+    in Phases 1-3)."""
+
+    def _make_store(self, workers: int = 4) -> tuple:
+        """Return (OracleGraphStore, chunk_sizes, connection_ids_used)."""
+        from contextlib import contextmanager
+        import threading
+
+        chunk_sizes: list[int] = []
+        conn_ids: list[int] = []
+        lock = threading.Lock()
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                with lock:
+                    chunk_sizes.append(len(rows))
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def __init__(self):
+                with lock:
+                    conn_ids.append(id(self))
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = workers
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # See TestGraphStoreBatchChunking._make_store's comment: load()'s
+        # queries/oracle/ lookup (where merge_graph_vertex.sql/
+        # merge_graph_edge.sql live) depends on _backend()=="oci", which
+        # isn't guaranteed by ambient env alone in a clean worktree/CI run.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
+        return store, chunk_sizes, conn_ids
+
+    def test_multiple_chunks_use_separate_connections_when_concurrent(self) -> None:
+        store, chunk_sizes, conn_ids = self._make_store(workers=4)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+
+        store.add_entities_batch(rows)
+
+        self.assertEqual(sorted(chunk_sizes), [250, 500, 500])
+        # 3 chunks -> 3 distinct connections, never one shared across chunks.
+        self.assertEqual(len(conn_ids), 3)
+        self.assertEqual(len(set(conn_ids)), 3)
+
+    def test_workers_1_falls_back_to_one_connection_sequential(self) -> None:
+        """Regression guard: oracle_graph_batch_workers=1 must reproduce the
+        original pre-Phase-4-Part-B behavior exactly -- one connection for
+        the whole batch, chunks in submission order."""
+        store, chunk_sizes, conn_ids = self._make_store(workers=1)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+
+        store.add_entities_batch(rows)
+
+        self.assertEqual(chunk_sizes, [500, 500, 250])
+        self.assertEqual(len(set(conn_ids)), 1)
+
+    def test_relationships_batch_also_uses_separate_connections(self) -> None:
+        store, chunk_sizes, conn_ids = self._make_store(workers=4)
+        rows = [(i, i + 1, "rel") for i in range(1050)]
+
+        store.add_relationships_batch(rows)
+
+        self.assertEqual(sorted(chunk_sizes), [50, 500, 500])
+        self.assertEqual(len(set(conn_ids)), 3)
+
+    def test_on_batch_final_total_is_correct_regardless_of_completion_order(self) -> None:
+        store, _chunk_sizes, _conn_ids = self._make_store(workers=4)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
+        totals: list[int] = []
+
+        store.add_entities_batch(rows, on_batch=totals.append)
+
+        self.assertEqual(len(totals), 3)
+        # Running total must be monotonically increasing and end at the
+        # full row count, regardless of which chunk completed first.
+        self.assertEqual(totals[-1], 1250)
+        self.assertTrue(all(a < b for a, b in zip(totals, totals[1:])))
+
+
+class TestOracleGraphBatchWorkersDefault(unittest.TestCase):
+    """Default stays 4 despite a mixed live measurement against a real
+    Oracle ADB (docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-
+    23.md Phase 4 Part B): entities regressed (68.0s -> 74.7s at workers=4),
+    relationships were roughly flat (25.7s -> 24.0s). One measurement on
+    one ADB tier wasn't treated as reason enough to disable the mechanism
+    by default -- ARYX_ORACLE_GRAPH_BATCH_WORKERS=1 opts out."""
+
+    def test_default_is_four(self) -> None:
+        from aryx.config import Settings
+        self.assertEqual(Settings.model_fields["oracle_graph_batch_workers"].default, 4)
+
+    def test_env_override(self) -> None:
+        from aryx.config import Settings
+        with patch.dict("os.environ", {"ARYX_ORACLE_GRAPH_BATCH_WORKERS": "1"}):
+            s = Settings(_env_file=None)
+            self.assertEqual(s.oracle_graph_batch_workers, 1)
+
+
+class TestGraphStoreFullRebuildInsert(unittest.TestCase):
+    """Phase 4 Part B follow-up: project_graph()'s full-rebuild path uses
+    plain INSERT (insert_graph_vertex/insert_graph_edge), not MERGE --
+    live-measured that a 500-row MERGE executemany() batch hung 180+
+    seconds against a real Oracle ADB with zero conflicting rows and zero
+    lock contention, while the equivalent INSERT batch completed in well
+    under a second (docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-
+    09-23.md). project_incremental() must keep using MERGE -- it never
+    calls clear(), so rows may legitimately already exist."""
+
+    def _make_store(self):
+        """Return (store, sql_seen, rows_seen) -- sql_seen/rows_seen are
+        parallel lists, one entry per executemany() call."""
+        from contextlib import contextmanager
+
+        sql_seen: list[str] = []
+        rows_seen: list[list] = []
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                sql_seen.append(sql)
+                rows_seen.append(rows)
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = 1  # sequential -> deterministic sql_seen order
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # See TestGraphStoreBatchChunking._make_store's comment: load()'s
+        # queries/oracle/ lookup (where insert_graph_vertex.sql/
+        # insert_graph_edge.sql live) depends on _backend()=="oci", which
+        # isn't guaranteed by ambient env alone in a clean worktree/CI run.
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
+        return store, sql_seen, rows_seen
+
+    @staticmethod
+    def _code_only(sql: str) -> str:
+        return "\n".join(ln for ln in sql.splitlines() if not ln.strip().startswith("--"))
+
+    def test_entities_full_rebuild_uses_plain_insert(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+        rows = [(1, "T", {"name": "a"}, None, None)]
+
+        store.add_entities_batch(rows, full_rebuild=True)
+
+        code = self._code_only(sql_seen[0])
+        self.assertIn("INSERT INTO aryx_graph_vertex", code)
+        self.assertNotIn("MERGE", code)
+
+    def test_entities_default_still_uses_merge(self) -> None:
+        """Regression guard: project_incremental() calls this with no
+        full_rebuild kwarg, and must keep getting MERGE."""
+        store, sql_seen, _rows_seen = self._make_store()
+        rows = [(1, "T", {"name": "a"}, None, None)]
+
+        store.add_entities_batch(rows)
+
+        self.assertIn("MERGE INTO aryx_graph_vertex", sql_seen[0])
+
+    def test_relationships_full_rebuild_uses_plain_insert(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL")], full_rebuild=True)
+
+        code = self._code_only(sql_seen[0])
+        self.assertIn("INSERT INTO aryx_graph_edge", code)
+        self.assertNotIn("MERGE", code)
+
+    def test_relationships_default_still_uses_merge(self) -> None:
+        store, sql_seen, _rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL")])
+
+        self.assertIn("MERGE INTO aryx_graph_edge", sql_seen[0])
+
+    def test_relationships_full_rebuild_deduplicates_before_insert(self) -> None:
+        """A plain INSERT has no upsert semantics -- an accidental
+        duplicate (source, target, name) from the RDB (which has no
+        uniqueness constraint on that triple) would raise ORA-00001
+        without this dedup, where MERGE silently absorbed it before."""
+        store, _sql_seen, rows_seen = self._make_store()
+
+        store.add_relationships_batch(
+            [(1, 2, "REL"), (1, 2, "REL"), (3, 4, "REL")], full_rebuild=True)
+
+        self.assertEqual(len(rows_seen[0]), 2)  # deduped: (1,2,REL) once + (3,4,REL)
+
+    def test_relationships_default_does_not_deduplicate(self) -> None:
+        """Regression guard: MERGE already handles duplicates safely, so
+        the incremental path's row count (and hence its on_batch totals)
+        must stay unchanged -- dedup is full_rebuild-only."""
+        store, _sql_seen, rows_seen = self._make_store()
+
+        store.add_relationships_batch([(1, 2, "REL"), (1, 2, "REL"), (3, 4, "REL")])
+
+        self.assertEqual(len(rows_seen[0]), 3)
 
 
 # ── JSON output type handler tests ───────────────────────────────────────────

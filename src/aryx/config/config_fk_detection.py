@@ -55,6 +55,48 @@ class FkDetectionSettingsMixin(BaseSettings):
             "Override with ARYX_FK_DYNAMIC_JUDGE_WORKERS."
         ),
     )
+    fk_dynamic_judge_batch_size: int = Field(
+        default=5,
+        description=(
+            "How many candidate pairs are judged in a SINGLE LLM call "
+            "(docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md "
+            "Phase 2). Fewer, larger calls cut the fixed per-call overhead "
+            "that dominates once ARYX_FK_DYNAMIC_JUDGE_WORKERS is raised "
+            "enough to make that overhead bigger than the LLM's own "
+            "response time. Every candidate still receives a verdict "
+            "(fail-open on error, same as before) -- the trade-off is that "
+            "one failed LLM call now costs a whole batch's verdicts instead "
+            "of one candidate's, not that any candidate is silently "
+            "skipped. Set to 1 to recover the original one-call-per-"
+            "candidate behavior exactly. Override with "
+            "ARYX_FK_DYNAMIC_JUDGE_BATCH_SIZE."
+        ),
+    )
+    fk_schema_batch_workers: int = Field(
+        default=4,
+        description=(
+            "Concurrent LLM calls for schema-level FK inference batches "
+            "(ThreadPoolExecutor) — each batch covers a different, "
+            "non-overlapping subset of entity types plus the shared anchor "
+            "type, so batches never depend on each other's results. "
+            "Override with ARYX_FK_SCHEMA_BATCH_WORKERS."
+        ),
+    )
+    fk_dynamic_progress_report_min_interval_s: float = Field(
+        default=2.0,
+        description=(
+            "Minimum wall-clock seconds between dynamic-FK judging progress "
+            "reports to the job store (JobStore.update_stage() does 2 DB "
+            "round-trips per call -- an UPDATE + an INSERT). Calling it once "
+            "per candidate (thousands of calls) is hidden inside per-"
+            "candidate LLM latency at low worker counts but becomes the "
+            "dominant bottleneck itself once ARYX_FK_DYNAMIC_JUDGE_WORKERS "
+            "is raised enough to make LLM latency faster than this write. "
+            "The final candidate always reports regardless of this "
+            "interval, so the stage still ends at an accurate 100%. "
+            "Override with ARYX_FK_DYNAMIC_PROGRESS_REPORT_MIN_INTERVAL_S."
+        ),
+    )
     fk_prefix_transform_lengths: str = Field(
         default="2,3,4",
         description=(

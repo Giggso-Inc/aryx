@@ -954,7 +954,8 @@ class TestOrchestratePairs:
              patch("aryx.pipeline.orchestrate._relate", side_effect=fake_relate), \
              patch("aryx.pipeline.orchestrate.discover", return_value=1), \
              patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
-             patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+             patch("aryx.pipeline.orchestrate.project_auto", return_value={}), \
+             patch("aryx.pipeline.orchestrate.ProjectionStore"), \
              patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
              patch("aryx.pipeline.orchestrate.StageTracker"), \
              patch("aryx.pipeline.orchestrate.PostgresStore"), \
@@ -993,7 +994,8 @@ class TestOrchestratePairs:
              patch("aryx.pipeline.orchestrate._relate", side_effect=fake_relate), \
              patch("aryx.pipeline.orchestrate.discover", return_value=1), \
              patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
-             patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+             patch("aryx.pipeline.orchestrate.project_auto", return_value={}), \
+             patch("aryx.pipeline.orchestrate.ProjectionStore"), \
              patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
              patch("aryx.pipeline.orchestrate.StageTracker"), \
              patch("aryx.pipeline.orchestrate.PostgresStore"), \

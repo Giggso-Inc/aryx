@@ -43,15 +43,25 @@ from aryx.pipeline.dynamic_fk.dynamic_fk_sampling import (
 
 logger = logging.getLogger(__name__)
 
-_JUDGE_SCHEMA: dict = {
+_BATCH_JUDGE_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "linked": {"type": "boolean"},
-        "cardinality": {"type": "string"},
-        "reason": {"type": "string"},
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "linked": {"type": "boolean"},
+                    "cardinality": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["index", "linked", "reason"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["linked", "reason"],
-    "additionalProperties": False,
+    "required": ["verdicts"],
 }
 
 
@@ -180,104 +190,183 @@ def generate_candidate_pairs(
     return candidates
 
 
-def _judge_one(candidate: dict, broker: Broker, log_id: str | None) -> dict | None:
-    """Stage 2: ask the LLM whether this candidate pair is a real relationship.
+# Live-confirmed (2026-09-23, real OCI GenAI "cheap" tier call): despite
+# _BATCH_JUDGE_SCHEMA requiring the key "index", the model returned
+# "pair_index" instead for every verdict in the response — the judgments
+# themselves were correct, only the index key name drifted. LLM structured
+# output does not reliably follow an exact property name even when the
+# schema marks it required, so parsing accepts common aliases, and falls
+# back to response order when no alias is present at all (a model that
+# just answers "in order" without indexing anything) rather than silently
+# discarding every candidate in the batch over a naming mismatch.
+_INDEX_KEY_ALIASES = ("index", "pair_index", "idx", "i")
 
-    Returns an fk_link spec if the LLM confirms a link, else None. Every
-    verdict — accepted or rejected — is logged with its reason, so "why is
-    this pair linked/unlinked" is always answerable from logs alone.
+
+def _extract_verdicts_by_index(verdicts: list, batch_len: int) -> dict[int, dict]:
+    by_index: dict[int, dict] = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        for key in _INDEX_KEY_ALIASES:
+            idx = v.get(key)
+            if isinstance(idx, int) and 0 <= idx < batch_len:
+                by_index[idx] = v
+                break
+    if by_index:
+        return by_index
+    # No usable index key on ANY verdict -- if the response has exactly one
+    # verdict per candidate, fall back to positional order rather than
+    # treating a fully-answered batch as fully missing.
+    if len(verdicts) == batch_len:
+        return {i: v for i, v in enumerate(verdicts) if isinstance(v, dict)}
+    return {}
+
+
+def _judge_batch(
+    batch: list[dict], broker: Broker, log_id: str | None,
+) -> list[dict | None]:
+    """Stage 2: ask the LLM to judge a BATCH of candidate pairs in one call.
+
+    Returns a list the same length as *batch*, positionally aligned — each
+    entry is an fk_link spec (linked) or None (not linked, or no verdict
+    came back for that index — same fail-open contract either way). Every
+    verdict — accepted, rejected, or missing — is logged with its reason,
+    so "why is this pair linked/unlinked" is always answerable from logs
+    alone, same as the pre-batching per-candidate version.
+
+    Trade-off, by design (2026-09-23, docs/ingestion/SPARK_PARALLEL_
+    MIGRATION_ANALYSIS_2026-09-23.md Phase 2): fewer, larger LLM calls cuts
+    the fixed per-call overhead that dominates at high concurrency, but one
+    failed call now costs a whole batch's verdicts instead of one
+    candidate's — every candidate in a failed batch is treated as
+    not-linked and logged, same fail-open behavior as a single-candidate
+    failure, just wider blast radius. ARYX_FK_DYNAMIC_JUDGE_BATCH_SIZE=1
+    recovers the original one-candidate-per-call behavior exactly.
     """
     system = (
-        "You determine whether two columns from two different data tables "
-        "reference the same real-world thing (a valid join key), based only "
-        "on the column names and sample values given. Consider derived or "
-        "partial relationships (e.g. one column being a truncated, coded, or "
-        "aggregated form of the other) as well as direct equality. Be "
-        "conservative: only say linked=true when the evidence genuinely "
-        "supports it."
+        "You determine, for EACH of several pairs of columns from "
+        "different data tables, whether the two columns reference the "
+        "same real-world thing (a valid join key), based only on the "
+        "column names and sample values given for that pair. Judge every "
+        "pair independently — one pair's evidence must never influence "
+        "another pair's verdict. Consider derived or partial relationships "
+        "(e.g. one column being a truncated, coded, or aggregated form of "
+        "the other) as well as direct equality. Be conservative: only say "
+        "linked=true when the evidence genuinely supports it. Return "
+        "exactly one verdict per pair, each tagged with that pair's index. "
+        "Every single verdict MUST include its own short reason (one "
+        "sentence) explaining that specific pair's decision — never omit "
+        "the reason field, even when linked=false."
     )
-    transform = candidate.get("transform")
-    transform_note = (
-        f"\nNote: this candidate was only found after applying a value "
-        f"transform — {transform}. The sample values shown below are AFTER "
-        f"that transform, not the raw column values. Judge whether this "
-        f"derived relationship (e.g. one column being a grouped/truncated "
-        f"code derived from the other) is a genuine one.\n"
-        if transform else ""
-    )
+    pair_blocks = []
+    for i, candidate in enumerate(batch):
+        transform = candidate.get("transform")
+        transform_note = (
+            f" (found via value transform: {transform} — sample values "
+            f"shown are AFTER that transform, not raw)"
+            if transform else ""
+        )
+        pair_blocks.append(
+            f"Pair {i}{transform_note}:\n"
+            f"  Table A type={candidate['type_a']!r} column={candidate['col_a']!r} "
+            f"sample values={candidate['samples_a']!r}\n"
+            f"  Table B type={candidate['type_b']!r} column={candidate['col_b']!r} "
+            f"sample values={candidate['samples_b']!r}\n"
+            f"  Cheap value-overlap ratio already measured: {candidate['overlap']:.3f}"
+        )
     user = (
-        f"Table A type={candidate['type_a']!r} column={candidate['col_a']!r} "
-        f"sample values={candidate['samples_a']!r}\n"
-        f"Table B type={candidate['type_b']!r} column={candidate['col_b']!r} "
-        f"sample values={candidate['samples_b']!r}\n"
-        f"Cheap value-overlap ratio already measured: {candidate['overlap']:.3f}\n"
-        f"{transform_note}"
-        "Is table A's column a valid reference to table B's column?"
+        f"Judge each of the following {len(batch)} pairs. For each, is "
+        "table A's column a valid reference to table B's column?\n\n"
+        + "\n\n".join(pair_blocks)
     )
     try:
-        result = complete_json(broker, "cheap", system, user, _JUDGE_SCHEMA)
+        result = complete_json(broker, "cheap", system, user, _BATCH_JUDGE_SCHEMA)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "fk_llm_verdict log_id=%s type_a=%s type_b=%s judge call failed: %s",
-            log_id, candidate["type_a"], candidate["type_b"], exc,
+            "fk_llm_verdict log_id=%s batch judge call failed for %d candidate(s): %s",
+            log_id, len(batch), exc,
         )
-        return None
-    linked = bool(result.get("linked"))
-    reason = str(result.get("reason", ""))[:200]
-    logger.info(
-        "fk_llm_verdict log_id=%s type_a=%s col_a=%s type_b=%s col_b=%s "
-        "linked=%s reason=%r",
-        log_id, candidate["type_a"], candidate["col_a"],
-        candidate["type_b"], candidate["col_b"], linked, reason,
-    )
-    if not linked:
-        return None
-    return {
-        "source_type": candidate["type_a"],
-        "source_attr": candidate["col_a"],
-        "target_type": candidate["type_b"],
-        "target_attr": candidate["col_b"],
-        "name": f"{candidate['type_b'].upper()}_HAS_{candidate['type_a'].upper()}",
-        "reason": reason,
-    }
+        return [None] * len(batch)
+
+    verdicts_by_index = _extract_verdicts_by_index(result.get("verdicts") or [], len(batch))
+
+    links: list[dict | None] = []
+    for i, candidate in enumerate(batch):
+        verdict = verdicts_by_index.get(i)
+        if verdict is None:
+            logger.warning(
+                "fk_llm_verdict log_id=%s type_a=%s type_b=%s batch "
+                "response missing verdict for index %d — treating as not linked",
+                log_id, candidate["type_a"], candidate["type_b"], i,
+            )
+            links.append(None)
+            continue
+        linked = bool(verdict.get("linked"))
+        reason = str(verdict.get("reason", ""))[:200]
+        logger.info(
+            "fk_llm_verdict log_id=%s type_a=%s col_a=%s type_b=%s col_b=%s "
+            "linked=%s reason=%r",
+            log_id, candidate["type_a"], candidate["col_a"],
+            candidate["type_b"], candidate["col_b"], linked, reason,
+        )
+        if not linked:
+            links.append(None)
+            continue
+        links.append({
+            "source_type": candidate["type_a"],
+            "source_attr": candidate["col_a"],
+            "target_type": candidate["type_b"],
+            "target_attr": candidate["col_b"],
+            "name": f"{candidate['type_b'].upper()}_HAS_{candidate['type_a'].upper()}",
+            "reason": reason,
+        })
+    return links
 
 
 def judge_candidates_with_llm(
     candidates: list[dict], broker: Broker, log_id: str | None = None,
     on_progress: "Callable[[int, int], None] | None" = None,
 ) -> list[dict]:
-    """Stage 2: judge every candidate pair concurrently.
+    """Stage 2: judge every candidate pair concurrently, batching several
+    per LLM call.
 
-    ARYX_FK_DYNAMIC_JUDGE_WORKERS bounds how many judge calls run at once —
-    it never caps how many candidates get judged. Every item in *candidates*
-    receives a verdict.
+    ARYX_FK_DYNAMIC_JUDGE_WORKERS bounds how many batch-judge calls run at
+    once. ARYX_FK_DYNAMIC_JUDGE_BATCH_SIZE (default 5) bounds how many
+    candidates go into one LLM call — fewer, larger calls cut the fixed
+    per-call overhead that dominates at high worker counts (see docs/
+    ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md Phase 2).
+    Neither setting caps how many candidates get judged — every item in
+    *candidates* receives a verdict (or a logged not-linked fallback if its
+    batch's call failed).
 
-    on_progress(done, total) — optional, called after each candidate's
-    verdict comes back (docs/falkordb_high_cpu_2026-07-29.md follow-up: this
-    stage can run for a long time with zero visibility — a live ingestion
-    job sat with no log output and near-zero CPU for 9+ minutes while
-    workers waited on individual LLM calls, indistinguishable from a hang
-    without this). Never lets a callback exception break judging.
+    on_progress(done, total) — optional, called once per CANDIDATE as its
+    verdict becomes available (not once per batch — batching changes how
+    many LLM calls happen, not this callback's granularity), so existing
+    callers (e.g. job-progress reporting) see the same per-candidate signal
+    regardless of batch size. Never lets a callback exception break judging.
     """
     if not candidates:
         return []
     settings = get_settings()
     workers = max(1, settings.fk_dynamic_judge_workers)
+    batch_size = max(1, settings.fk_dynamic_judge_batch_size)
+    batches = [candidates[i:i + batch_size] for i in range(0, len(candidates), batch_size)]
     total = len(candidates)
     done = 0
     links: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_judge_one, c, broker, log_id) for c in candidates]
+        futures = {pool.submit(_judge_batch, batch, broker, log_id): batch for batch in batches}
         for future in as_completed(futures):
-            link = future.result()
-            if link is not None:
-                links.append(link)
-            done += 1
-            if on_progress is not None:
-                try:
-                    on_progress(done, total)
-                except Exception:  # noqa: BLE001 — progress reporting must never break judging
-                    logger.warning("dynamic_fk on_progress callback failed", exc_info=True)
+            batch_links = future.result()
+            for link in batch_links:
+                if link is not None:
+                    links.append(link)
+                done += 1
+                if on_progress is not None:
+                    try:
+                        on_progress(done, total)
+                    except Exception:  # noqa: BLE001 — progress reporting must never break judging
+                        logger.warning("dynamic_fk on_progress callback failed", exc_info=True)
     return links
 
 

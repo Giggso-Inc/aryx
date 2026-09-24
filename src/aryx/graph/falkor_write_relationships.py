@@ -155,11 +155,16 @@ class _FalkorRelationshipMixin:
         self,
         rels: list[tuple[int, int, str]],
         batch_size: int = 500,
+        full_rebuild: bool = False,
     ) -> int:
         """Write multiple relationships in batched UNWIND queries.
 
         Uses UNWIND so N relationships cost ceil(N/batch_size) round-trips
         instead of N. Returns count of relationships written.
+
+        full_rebuild — accepted for call-site parity with
+        OracleGraphStore.add_relationships_batch, unused here (see
+        add_entities_batch's docstring above).
         """
         written = 0
         for i in range(0, len(rels), batch_size):

@@ -34,6 +34,20 @@ class OracleCursorWrapper:
         self._out_vars: list[Any] = []  # filled by _translate_sql for RETURNING
         self._conflict_ignore: bool = False  # set when ON CONFLICT DO NOTHING was stripped
 
+        # oracledb's default arraysize/prefetchrows is 100 -- far below this
+        # project's batch_size convention (500, see config_core.py). arraysize
+        # (not the size passed to fetchmany()) is what actually controls how
+        # many rows the server sends per network round-trip; leaving it at the
+        # default made streaming reads like EntityStore.list_relationships()
+        # issue ~1 round-trip per 100 rows regardless of the caller's
+        # fetchmany(500) batch size. Measured live: 364,454 rows took 946.87s
+        # (~3,645 round-trips at ~0.26s each against Oracle Cloud); raising
+        # both to 500 here (prefetchrows covers the first fetch, arraysize
+        # every fetch after) cuts round-trips ~5x for every cursor made
+        # through this wrapper. Callers can still override via itersize.
+        self._cur.arraysize = 500
+        self._cur.prefetchrows = 500
+
         # Oracle 26ai native JSON columns may arrive as a Python str (JSON text)
         # or as a Python dict (OSON binary), depending on how the value was stored.
         # This handler normalises all DB_TYPE_JSON fetches to Python native types so

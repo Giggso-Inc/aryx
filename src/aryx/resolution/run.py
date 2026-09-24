@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from aryx.broker import Broker
 from aryx.config import get_settings
@@ -222,10 +223,35 @@ def resolve(
     # the number of records n where n*(n-1)/2 ≤ max_pairs_per_block.
     _embed_cap = int((2 * max_pairs_per_block) ** 0.5) + 2  # n where n*(n-1)/2 ≤ max_pairs_per_block; +2 guards rounding
     blocks = block(records, run_id=run_id)
-    total_blocks = len(blocks)
+    block_items = list(blocks.items())
+    total_blocks = len(block_items)
     total_merged = 0
     logger.info("resolve run_id=%s blocks=%d records=%d", run_id, total_blocks, len(records))
-    for block_idx, group in enumerate(blocks.values()):
+
+    # Prefetch every multi-member block's embeddings concurrently (2026-09-23,
+    # docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md Phase 3).
+    # _block_embeddings has no shared state -- broker.embed() is an
+    # independent network call per block -- so this is safe to parallelize
+    # even though the routing/union-find loop below must stay sequential:
+    # MultiKeyBlocker deliberately places each record in up to 3 overlapping
+    # blocks (prefix/token-set/Soundex), and `union`/`pair_scores`/
+    # `band_counts` below have no synchronization, so naively parallelizing
+    # THAT loop would race. Live-measured: embedding is ~99% of resolve()'s
+    # wall-clock time on a realistic dataset (22.66s of 22.97s total, 96
+    # records / 61 blocks) -- scoring, routing, and union-find bookkeeping
+    # are comparatively free, so prefetching embeddings alone captures
+    # nearly the entire available win without touching the unsafe part.
+    embed_workers = max(1, get_settings().er_embed_workers)
+    embeddings_by_block: dict[str, dict[int, list[float]]] = {}
+    with ThreadPoolExecutor(max_workers=embed_workers) as pool:
+        future_to_key = {
+            pool.submit(_block_embeddings, group[:_embed_cap], broker, run_id): key
+            for key, group in block_items if len(group) > 1
+        }
+        for future in as_completed(future_to_key):
+            embeddings_by_block[future_to_key[future]] = future.result()
+
+    for block_idx, (block_key, group) in enumerate(block_items):
         if len(group) <= 1:
             # Size-1 blocks have no pairs — skip OCI embed API call entirely.
             logger.debug(
@@ -233,7 +259,7 @@ def resolve(
                 run_id, block_idx + 1, total_blocks, total_merged,
             )
             continue
-        embeddings = _block_embeddings(group[:_embed_cap], broker, run_id=run_id)
+        embeddings = embeddings_by_block.get(block_key, {})
         pairs_evaluated = 0
         block_merges = 0
         done = False

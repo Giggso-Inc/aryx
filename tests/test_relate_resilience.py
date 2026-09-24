@@ -324,7 +324,8 @@ def test_relate_isolated_runs_even_when_relate_flag_is_false():
          patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0) as mock_relate_isolated, \
          patch("aryx.pipeline.orchestrate.discover", return_value=1), \
          patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
-         patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+         patch("aryx.pipeline.orchestrate.project_auto", return_value={}), \
+         patch("aryx.pipeline.orchestrate.ProjectionStore"), \
          patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
          patch("aryx.pipeline.orchestrate.StageTracker"), \
          patch("aryx.pipeline.orchestrate.PostgresStore"), \
@@ -366,7 +367,7 @@ def test_relate_isolated_skipped_when_skip_graph_true():
          patch("aryx.pipeline.orchestrate.discover", return_value=1), \
          patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
          patch("aryx.pipeline.orchestrate.detect_and_link_dimensions", return_value=0), \
-         patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+         patch("aryx.pipeline.orchestrate.project_auto", return_value={}), \
          patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
          patch("aryx.pipeline.orchestrate.StageTracker"), \
          patch("aryx.pipeline.orchestrate.PostgresStore"), \
@@ -408,8 +409,9 @@ def test_done_progress_reports_real_entity_count_not_always_zero():
          patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0), \
          patch("aryx.pipeline.orchestrate.discover", return_value=1), \
          patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
-         patch("aryx.pipeline.orchestrate.project_graph",
+         patch("aryx.pipeline.orchestrate.project_auto",
                return_value={"entities": 1, "provenance": 32, "relationships": 0}), \
+         patch("aryx.pipeline.orchestrate.ProjectionStore"), \
          patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
          patch("aryx.pipeline.orchestrate.StageTracker"), \
          patch("aryx.pipeline.orchestrate.PostgresStore"), \

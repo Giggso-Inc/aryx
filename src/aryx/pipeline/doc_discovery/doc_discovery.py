@@ -25,6 +25,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -300,12 +301,39 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         _report_fk_stage(4, "Scanning for dynamic (value-overlap) foreign keys…")
         already_linked = {(lk["source_type"], lk["target_type"]) for lk in auto_fk}
 
+        # -inf, not 0.0: the first call must always report regardless of
+        # what time.monotonic()'s reference point happens to be (its epoch
+        # is unspecified — could itself be near 0 depending on platform).
+        _last_dynamic_fk_report = float("-inf")
+
         def _dynamic_fk_progress(done: int, total_candidates: int) -> None:
             # 5-10%: this stage alone can run for many minutes on a large
             # multi-table batch (every candidate gets its own LLM call, no
             # cap) — real "N/M judged" progress here is what would have
             # told us live whether the 9-minute-silent run was working or
             # actually hung, instead of guessing from CPU% and log gaps.
+            #
+            # Throttled (2026-09-23, docs/ingestion/SPARK_PARALLEL_MIGRATION_
+            # ANALYSIS_2026-09-23.md Phase 2): live-measured, calling
+            # _report_fk_stage() -> jobs.update_stage() (2 DB round-trips)
+            # once per candidate made the progress WRITES themselves the
+            # bottleneck once ARYX_FK_DYNAMIC_JUDGE_WORKERS was raised —
+            # 2186 candidates at ~1.1s/write is ~40 minutes of pure
+            # sequential DB round-trips on the main thread, regardless of
+            # how many workers finish the actual LLM judging concurrently.
+            # At the original default of 4 workers this was invisible
+            # (LLM latency alone was already >1s/candidate, so the write
+            # rode along inside it); it only became the dominant cost once
+            # more workers made LLM latency faster than the write itself.
+            # The final candidate always reports so the stage still ends
+            # at an accurate 100%, not a stale intermediate count.
+            nonlocal _last_dynamic_fk_report
+            now = time.monotonic()
+            is_last = done >= total_candidates
+            min_interval = get_settings().fk_dynamic_progress_report_min_interval_s
+            if not is_last and (now - _last_dynamic_fk_report) < min_interval:
+                return
+            _last_dynamic_fk_report = now
             pct = 5 + int(done * 5 / max(total_candidates, 1))
             _report_fk_stage(pct, f"Judging candidate foreign keys ({done}/{total_candidates})…")
 
