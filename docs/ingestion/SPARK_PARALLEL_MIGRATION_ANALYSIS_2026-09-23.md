@@ -239,9 +239,10 @@ than the ThreadPoolExecutor fix's win for these specific stages, see §6).
 | Dynamic FK judging (6b) | Yes — trivially | Wrap candidate list as a DataFrame/RDD, `mapPartitions` calling the LLM per row. Minimal logic change; real work is infra (cluster + catalog connection to reach whatever holds candidate data). |
 | Schema-FK inference (7c) | Yes — trivially | Same shape, 5 rows instead of thousands — Spark overhead would likely exceed the win. |
 | Relate / relate-isolated (7b) | Yes | Same pattern as above. |
-| Resolve blocking (7a) | **Unverified** | Would need to confirm block-level independence first; if confirmed, becomes a `groupBy`+`mapPartitions` on blocking key. |
+| Resolve blocking (7a) | **No** (was "Unverified" here — Phase 3, §8 below, answered this) | `MultiKeyBlocker.block()` places each record into up to 3 *overlapping* blocks, and the block loop mutates one shared, unsynchronized `UnionFind` + `pair_scores`/`band_counts` across all blocks — confirmed genuinely not partition-independent, not just unconfirmed. Only the per-block embedding fetch inside it is independent (which is what Phase 3 parallelized, in-process); the block/scoring/routing loop itself would need the same redesign as Project graph before it's Spark-shaped. |
 | Project graph (7e) | **No** | Would require replacing the `clear()`+full-rebuild contract with an incremental/partitioned write model — a genuine architecture change to `project_full.py`, not a backend swap. Graph writes (FalkorStore/OracleGraphStore) are also not natively Spark-partitionable targets. |
-| Mentions-by-type / last-plan-sees-all (1, 7) | **No** | The "last item sees everything" contract is the opposite of Spark's partition-independence assumption; would need redesign to a two-phase model (parallel per-type extraction, then a single aggregation/merge stage) before any of this is Spark-shaped. |
+| Mentions-by-type ingest (1) | **No** | This is a loop *inside* processing one file/plan (`doc_discovery.py:194-218`), deliberately sequential — unrelated to stage 7 below despite both historically being grouped together in this row. Not partition-independent; would need the same two-phase redesign (parallel per-type extraction, then a single aggregation/merge stage) as any genuinely sequential-by-contract stage. |
+| Non-last tabular plans (7) | **Partially — closer to Yes than the "(1, 7)" grouping this row used to imply.** | **Correction:** this was previously bundled with stage 1 above under one "No" verdict; that conflated two different things. Stage 7's 31 non-last files have **no cross-file shared mutable state** — that's exactly why they're already safely dispatched via `ThreadPoolExecutor` today (§5: "Already parallel (no work needed)"), each file's Discover→Resolve→Seed only needing to finish (in any order) before the *separate* last-plan step runs. That's the independent-units-then-aggregate shape Spark wants. The caveat: *within* each file, Resolve's block/scoring loop is still the same non-partition-independent code as the 7a row above — so a Spark migration here would parallelize *across files* (real, if modest, given `ingest_workers` can already do this in-process — see the live discussion above on raising it first) but not change the per-file Resolve internals, which stay sequential-except-embedding regardless of in-process-threads vs. Spark-executors. |
 
 **Infra requirements, regardless of which stages move:**
 - AIDP Workspace + a USER Cluster (Spark compute — the DEFAULT/master-catalog
@@ -1073,6 +1074,56 @@ the full job** from fixing this single stage.
    session (see the stage-by-stage improvement analysis above) and found
    largely unchanged by Phases 1-4 except where explicitly noted — this
    verification does not re-confirm those numbers, only Project-graph.
+
+---
+
+### Full stage-by-stage timing — before vs. after
+
+**Important scope note before reading this table:** the full 32-file,
+2h11m58s baseline job was never re-run end-to-end after Phases 1-4 —
+doing so would cost another ~1-2 hours of live LLM/DB time for stages
+already separately confirmed unchanged. Only **two** rows below have a
+real, live-measured "after" number, from the same real job / same-scale
+real data cited elsewhere in this doc:
+
+- **Dynamic FK judging (6b)** — Phase 2, §8: re-ran the *same real job's*
+  LLM judging with workers raised 4→16, measured via log timestamps.
+- **Project graph (7e)** — this session's pre-PR verification above: ran
+  the real `project_graph()` end-to-end against comparable-scale real
+  data (364,454 relationships vs. baseline's 346,344).
+
+Every other row is either **unchanged** (no code in that stage was
+touched by any phase) or **fixed at a mechanism level without a
+full-job re-measurement** (Phase 1's schema-FK slice, Phase 3's
+embedding prefetch) — both real, tested, live-verified fixes, but not
+separately re-timed against this specific 2,186-candidate/32-file job.
+The "Total (estimated)" row is arithmetic — baseline minus the two
+confirmed deltas, holding every other stage's baseline duration fixed —
+not a fresh measured total.
+
+| Stage | Baseline | After | Change |
+|---|---|---|---|
+| Queue → job start (API overhead) | 14s | 14s | Not touched |
+| Column-name + script-data-flow FK detection (3-4) | 20s | ~20s | Fixed algorithmically (O(N²)→O(N) reverse index, Phase 1) but baseline itself notes this is negligible at 32 plans — no measurable difference expected at this job's scale |
+| Workspace-level FK detection (5) | ~16s | ~16s | Not touched |
+| Dynamic FK — candidate generation (6a) | 52.8s | 52.8s | Not touched — flagged as a follow-up candidate, not acted on |
+| **Dynamic FK — LLM judging (6b)** | **38m44s** | **11m47s** | **✅ Live-measured, same real job — 3.29x (Phase 2)** |
+| Non-last plans, 31 files concurrent (7) | 19m14s | 19m14s | **Correction — not actually untouched.** `_run_one_plan()` (doc_discovery.py:388-391) only conditions `relate`/`skip_graph` on `is_last`; there's no `skip_resolve`. `run_pipeline()` runs Resolve unconditionally for every file via `resolve_run()`, which (for non-exact-id, non-chunked-threshold records) calls the same `resolution/run.py:resolve()` Phase 3 parallelized. So Phase 3's embedding-prefetch fix structurally applies inside this stage too, once per file, on top of the existing file-level `ThreadPoolExecutor`. What's genuinely unknown: how much of 19m14s was Resolve vs. Discover/Seed for this job, and whether these files' record counts even took the regular `resolve()` path (vs. chunked/exact-id, which the fix doesn't reach) — not instrumented, so left at baseline value rather than guessed. The baseline table's own "(Discover/Resolve-skip/Seed only)" label appears to be a pre-existing mislabel — Resolve is not skipped here, per the code just cited |
+| Last plan — Discover+Resolve+Seed (7a) | 21s | ~21s | Same Phase 3 mechanism as row 7 above (same `resolve()` call) — but this run's Resolve share was already folded into a negligible 21s and wasn't separately isolated. Mechanism is fixed and live-verified elsewhere (96-record synthetic test), not re-measured at this job's scale |
+| Last plan — Relate, main pass (7b) | 1m49s | 1m49s | Not touched (already threaded pre-existing) |
+| Schema-FK/fk_link/relate-isolated/dimension_link combined (7c/7d) | 22m55s | ~22m55s | Mostly unchanged — Phase 1 parallelized only the schema-FK slice (5 LLM calls, a small fraction of this window); fk_link/relate-isolated/dimension_link were investigated and confirmed **not** improved by any phase |
+| **Project graph, clear + full rebuild (7e)** | **45m39s** | **9m4s (543.6s)** | **✅ Live-measured, comparable-scale real data — 5.04x (Parts B+C, this session)** |
+| Wrap-up + validation + cache invalidation (8-9) | 22s | 22s | Not touched |
+| **Total** | **2h11m58s** | **≈1h8m26s (estimated)** | **≈48% cut — from summing only the two confirmed deltas above; every other row held at its baseline value** |
+
+**Reading this honestly:** the ~48% total-time estimate is a lower
+bound in one sense (the schema-FK/embedding-prefetch fixes almost
+certainly shave *something* off their rows too, just not quantified
+here) and an upper bound in another (a fresh full run could land
+anywhere depending on LLM latency variance, which the 6b measurement
+already showed swings meaningfully run-to-run). Treat "≈1h8m26s" as
+"at least this much better, probably somewhat more," not a number to
+quote as if it were itself a live measurement.
 
 ---
 
