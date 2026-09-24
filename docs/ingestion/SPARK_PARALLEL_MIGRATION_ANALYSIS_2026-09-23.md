@@ -998,6 +998,120 @@ fetch costs, not which rows are returned or in what order.
 
 ---
 
+### Live A/B — `ingest_workers` (stage 7, non-last tabular plans)
+
+**Why this was tested:** stage 7 (19m14s baseline, 15%) was initially
+marked "Not touched" in the stage-by-stage table above; investigating a
+direct question about why it costs 19 minutes found `ingest_workers`
+defaults to **3** ([config_ingest.py:104-108](../../src/aryx/config/config_ingest.py#L104-L108))
+— so "31 files concurrent" is actually only 3-way concurrent, ~10-11
+sequential rounds. Both Discover (extraction + Postgres writes) and
+Resolve (dominated by embedding calls per Phase 3's own measurement) are
+I/O-bound, not CPU/GIL-bound, making this structurally similar to dynamic-
+FK judging (6b), where raising workers gave a real 3.29x. This needed a
+live test, not an assumption — this session already hit one case (Oracle
+graph-write concurrency, Part B above) where the "should obviously help"
+theory measured as a regression.
+
+**Method:** real `CsvConnector` + real `Broker` (OCI GenAI embeddings,
+this stack's actual embed backend — `ARYX_EMBED_BACKEND=oci`, confirmed
+live, not Ollama, which doesn't resolve in this container) + real
+`run_pipeline()`, exactly matching `_run_one_plan()`'s non-last-plan
+shape (`skip_graph=True, relate=False`). 24 synthetic CSV files (20 rows
+each, 4 distinct `company` values so blocking/resolution does real, if
+modest, work — not a degenerate single-row case), `match_keys=["company"]`
+(a non-id-like key, so this exercises the real blocking+embedding path,
+not the `exact_ids` fast path). One fresh workspace per configuration
+(900201/900202/900203) to avoid cross-run interference. `ThreadPoolExecutor(
+max_workers=N)` dispatching all 24 files, for N in {3 (current default),
+8, 12}, timing wall-clock for all 24 to finish. A warm-up embed call was
+added before timing started, after a smoke-test run hit a 100s transient
+DNS/connect failure to the OCI GenAI endpoint on a cold container (a
+direct retry immediately after succeeded in 1.45s — confirmed transient,
+not persistent, via a raw socket + broker.embed() check before proceeding).
+
+**Results — real, positive, monotonic scaling:**
+
+| Workers | Elapsed (24 files) | vs. baseline (3) | Entities (correctness) |
+|---|---|---|---|
+| 3 (current default) | 111.68s | — | 96/96, 0 errors |
+| 8 | 70.61s | **1.58x** | 96/96, 0 errors |
+| 12 | 60.86s | **1.83x** | 96/96, 0 errors |
+
+Diminishing returns, as expected: 3→8 is a 2.67x worker increase for
+1.58x speedup; 8→12 is only a further 1.5x worker increase for 1.16x
+additional speedup (70.61/60.86) — consistent with per-file fixed
+overhead (landing writes, ontology seeding, entity save) not shrinking
+with worker count, and the number of dispatch "rounds" (24÷3=8, 24÷8=3,
+24÷12=2) running out of room to compress further.
+
+**Extrapolated to the real 19m14s baseline** (applying the same measured
+ratio, NOT re-measured against the real 31-file job — see caveats):
+workers=8 → **~12m10s** (~7m4s saved), workers=12 → **~10m29s** (~8m45s
+saved). This would move stage 7 from "not touched" to a third confirmed-
+mechanism win alongside 6b and 7e, though smaller in absolute terms than
+either.
+
+**Correctness:** identical entity count (96) across all three
+configurations, zero errors — concurrency doesn't drop or duplicate
+records at this scale.
+
+**Independent finding, not this test's main point:** `OntologyStore.
+seed_types()`'s docstring claims idempotency ("ON CONFLICT DO NOTHING"-
+shaped MERGE), but under genuine concurrent execution racing to seed the
+*same new* type for the first time, it can raise `ORA-00001` (unique
+constraint violation) — observed once each in the workers=3 and workers=8
+runs, not in workers=12 (timing-dependent, not eliminated, just didn't
+land that run). This is a known, real Oracle MERGE behavior under
+concurrency (two sessions can both evaluate the NOT MATCHED branch before
+either commits), not specific to this fix. It's caught and logged as a
+non-fatal warning by `run_pipeline()`'s existing `except Exception` guard
+around the seed call, so it doesn't break the pipeline — but it does mean
+the "idempotent" framing in that docstring is incomplete under real
+concurrency, and every non-last-plan file sharing an ontology type for
+the first time in a real confirm job hits this same race today,
+independent of anything in this PR. Flagged here as a finding, not fixed
+— out of scope for this investigation.
+
+**Caveats — read the extrapolation with real skepticism:**
+1. **Small, synthetic dataset.** 20 rows/file with only 4 distinct
+   blocking-key values is far simpler than real CPQ tabular data (hundreds
+   to thousands of rows/file, richer key structure). Per-file Resolve cost
+   here is dominated by 1-2 embedding calls per file; a real file with
+   more/larger blocks could have a different, likely *larger*, per-file
+   cost — which could make higher worker counts matter MORE (more parallel
+   headroom to exploit) or could hit connection-pool/embed-endpoint
+   throughput limits sooner. Not distinguishable without testing against
+   real-scale data.
+2. **No cross-stage connection pressure.** This test ran stage 7's work in
+   isolation. A real confirm job runs stages sequentially (6b's 16 workers,
+   then 7's N workers, then 7c's 4 workers, ...), so in practice they don't
+   overlap in time — but this wasn't independently re-confirmed here, only
+   assumed from the pipeline's own sequential stage ordering (§4).
+3. **The embedding endpoint's transient failure mode is a real
+   operational risk independent of worker count** — a single 100s+
+   DNS/connect hiccup (observed once, live, in this same session) would
+   dominate wall-clock regardless of `ingest_workers`, and MORE concurrent
+   workers means MORE simultaneous exposure to that failure mode, not
+   less. Raising `ingest_workers` doesn't reduce this risk and could
+   plausibly make a bad run worse (more calls in flight when a transient
+   outage hits).
+4. Not re-measured against the actual 31-file baseline job — the
+   ~12m10s/~10m29s extrapolated figures apply this test's measured ratio
+   to the baseline's 19m14s, holding the ratio constant, which is an
+   assumption, not a measurement.
+
+**Recommendation:** the direction (raise `ingest_workers` from 3) is
+well-supported by this real, live, correctness-verified test — but given
+caveats 1-3, this should be re-measured against a real, larger-scale
+confirm job (or at minimum a bigger synthetic test) before changing the
+default, the same "measure again before trusting it in production"
+discipline used for Oracle graph-write concurrency above. Not implemented
+as a default change in this PR — this section reports the test, it
+doesn't ship the change.
+
+---
+
 ### Pre-PR live verification — full comparison against the pre-Phase-1-4 baseline
 
 **Run:** real `project_graph()` (workspace 783's already-resolved data:

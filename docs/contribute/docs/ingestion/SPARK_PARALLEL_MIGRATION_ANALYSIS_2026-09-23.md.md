@@ -1,11 +1,11 @@
 # Attribution — docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md
 
-Last updated: 2026-09-24T11:32:23.767700+00:00
-Total lines: 1185
-Lines AI-generated: 391 (33.0%)
+Last updated: 2026-09-24T14:43:40.138881+00:00
+Total lines: 1299
+Lines AI-generated: 510 (39.3%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 794
+Lines unattributed: 789
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -55,8 +55,7 @@ Owner (most recent author): m.munir@giggso.com
 | 904-923 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:17:10.563688+00:00 | pre-commit gap — unattributed by the local hook |
 | 924-930 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741500+00:00 | pre-commit gap — unattributed by the local hook |
 | 931-948 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131189+00:00 | pre-commit gap — unattributed by the local hook |
-| 949-1079 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741648+00:00 | pre-commit gap — unattributed by the local hook |
-| 1080-1102 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:17:10.563906+00:00 | pre-commit gap — unattributed by the local hook |
-| 1103-1109 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741745+00:00 | pre-commit gap — unattributed by the local hook |
-| 1110-1111 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T11:25:23.018817+00:00 |  |
-| 1112-1185 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741829+00:00 | pre-commit gap — unattributed by the local hook |
+| 949-994 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741648+00:00 | pre-commit gap — unattributed by the local hook |
+| 995-1115 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T14:39:52.777907+00:00 |  |
+| 1116-1185 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T11:32:23.741829+00:00 | pre-commit gap — unattributed by the local hook |
+| 1186-1299 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T14:43:40.114305+00:00 | pre-commit gap — unattributed by the local hook |
