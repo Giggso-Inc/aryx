@@ -7,7 +7,7 @@ behavior).
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import (
     _BASE_MODEL_VN,
@@ -15,6 +15,8 @@ from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import (
 )
 from aryx.cpq.catalog_profile import CatalogProfile, shadow_check_role_vn
 from aryx.cpq.payload_building.anchor_exclusions import _data_table_resolved_anchor_vns
+from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
+from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 
@@ -294,3 +296,90 @@ def test_shadow_check_role_vn_wrapper_never_raises_if_candidates_lookup_fails():
     ):
         shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
     # No exception propagated -- that's the whole assertion.
+
+
+# ── gated wiring into run_early_pass (Hidden Master String role) ────────
+
+def _loop_state(**overrides) -> LoopState:
+    defaults = dict(
+        attrs=[], filled={"productSelectionProduct_all": "APX NEXT XE"},
+        display_filled={}, sources={}, multi={}, dropped={},
+    )
+    defaults.update(overrides)
+    return LoopState(**defaults)
+
+
+def _loop_scope(**overrides) -> LoopScope:
+    defaults = dict(
+        hints={}, hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        country=None, negated_vns=None, skip_always_ask=None, display_order=None,
+        workspace_id=704, catalog_prefix="Astro",
+    )
+    defaults.update(overrides)
+    return LoopScope(**defaults)
+
+
+def _mock_engine() -> MagicMock:
+    engine = MagicMock()
+    engine._compute_hidden_master_string.return_value = None
+    engine.apply_hiding_rules.return_value = ([], [], set())
+    engine._suppress_ungoverned_attrs.return_value = ([], set())
+    return engine
+
+
+def test_hidden_master_string_shadow_check_not_called_when_flag_disabled():
+    with (
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
+        ) as mock_shadow,
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = False
+        run_early_pass(_mock_engine(), 1, _loop_state(), _loop_scope())
+    mock_shadow.assert_not_called()
+
+
+def test_hidden_master_string_shadow_check_called_when_flag_enabled():
+    with (
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
+        ) as mock_shadow,
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+        run_early_pass(_mock_engine(), 1, _loop_state(), _loop_scope())
+    mock_shadow.assert_called_once_with(
+        "Hidden Master String", "hiddenMasterStringForAstroPortable_astro",
+        "APX NEXT XE", 704, "Astro", {},
+    )
+
+
+def test_hidden_master_string_shadow_check_skipped_when_already_computed_for_current_key():
+    """Even with the flag on, a pass where the hidden-master-string cache
+    is already fresh (matches _hidden_ms_key) must not re-run the shadow
+    check -- it only runs inside the same recompute guard as the real
+    _compute_hidden_master_string call."""
+    state = _loop_state(filled={
+        "productSelectionProduct_all": "APX NEXT XE",
+        "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
+        "hiddenMasterStringForAstroPortable_astro": "x@@@",
+        "_hiddenMasterStringForAstroPortable_astro_computed_for": "APX NEXT XE\x1fH55TGT9PW8AN",
+    })
+    with (
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
+        ) as mock_shadow,
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+        run_early_pass(_mock_engine(), 1, state, _loop_scope())
+    mock_shadow.assert_not_called()

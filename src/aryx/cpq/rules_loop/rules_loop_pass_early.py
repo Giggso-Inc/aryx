@@ -11,6 +11,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.config import get_settings
+from aryx.cpq.catalog_profile import shadow_check_role_vn
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
@@ -69,6 +71,21 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
         or state.filled.get("_hiddenMasterStringForAstroPortable_astro_computed_for")
         != _hidden_ms_key
     ):
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 follow-up:
+        # shadow-only comparison against CatalogProfile for this same
+        # literal -- never changes the real computation below. Gated
+        # off by default (catalog_profile_shadow_check_enabled). Unlike
+        # Base Model/Region, "Hidden Master String" has no live-
+        # confirmed attrToVarMapping role label -- this attribute is
+        # synthetic (computed from attrSequence, never a real catalog
+        # menu item), so it may simply never resolve to anything;
+        # shadow mode is how that gets confirmed either way.
+        if get_settings().catalog_profile_shadow_check_enabled:
+            shadow_check_role_vn(
+                "Hidden Master String", "hiddenMasterStringForAstroPortable_astro",
+                state.filled.get("productSelectionProduct_all", ""),
+                scope.workspace_id, scope.catalog_prefix, state.dt_cache,
+            )
         _hidden_ms = engine._compute_hidden_master_string(
             state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
             attrs=state.attrs,
