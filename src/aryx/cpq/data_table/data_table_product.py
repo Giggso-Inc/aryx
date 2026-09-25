@@ -6,12 +6,43 @@ Phase 2a, 2026-09-03).
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
+from aryx.cpq.data_table.data_table_cache import (
+    _cache_write_if_marker_unchanged,
+    _invalidate_on_marker_change,
+)
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
 from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped
 from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 from aryx.cpq.rdb.rdb import get_cpq_rdb
+
+logger = logging.getLogger(__name__)
+
+# Module-level, short-TTL cache for _load_attr_var_mapping_rows, mirroring
+# data_table_loader._TABLES_CACHE exactly (same problem, same fix): without
+# it, every call -- with no per-call `cache` passed -- pays a full fresh
+# rdb.fetch_all_entities_grouped_by_type(workspace_id) scan from scratch.
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 pilot follow-up: the
+# new shadow_check_role_vn() caller (catalog_profile.py) calls this on
+# every Base-Model-trigger cascade turn (Hardware Version/Product/Country/
+# Region changes) with no per-call cache of its own -- confirmed live
+# against workspace 704 that an uncached scan here costs ~265s (the same
+# 299,388-row materialization cost already measured for _load_all_tables'
+# sibling scan under T2), which would have reintroduced that exact latency
+# class into the cascade hot path. Added before shipping the shadow check,
+# not after a live regression -- same TTL/staleness tradeoff as
+# _TABLES_CACHE.
+_ATTR_VAR_MAPPING_CACHE: dict[tuple[int, str], tuple[float, list[dict[str, Any]]]] = {}
+_ATTR_VAR_MAPPING_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_ATTR_VAR_MAPPING_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_attr_var_mapping_cache() -> None:
+    """Test-isolation hook -- mirrors data_table_loader._clear_tables_cache."""
+    _ATTR_VAR_MAPPING_CACHE.clear()
 
 
 def resolve_region_allow_value(
@@ -281,10 +312,35 @@ def _load_attr_var_mapping_rows(
     Uses a cache key suffixed with "attr_var_mapping" so a `cache` dict
     shared with _load_all_tables() callers cannot collide on the same
     (workspace_id, catalog_prefix) key against a differently-shaped value.
+
+    Beneath the per-call `cache`, a MODULE-LEVEL short-TTL cache
+    (`_ATTR_VAR_MAPPING_CACHE`) also keys on (workspace_id, catalog_prefix)
+    and survives across separate top-level calls -- same pattern and same
+    reason as `_load_all_tables`'s own `_TABLES_CACHE`: a caller with no
+    per-call `cache` of its own (e.g. catalog_profile.shadow_check_role_vn,
+    called on every Base-Model-trigger cascade turn) must not pay a fresh
+    ~265s scan (workspace 704's live-measured cost) every single time.
     """
     key = (workspace_id, catalog_prefix, "attr_var_mapping")
     if cache is not None and key in cache:
         return cache[key]
+
+    _marker_at_read = _invalidate_on_marker_change(
+        _ATTR_VAR_MAPPING_CACHE, _ATTR_VAR_MAPPING_CACHE_LAST_SEEN_MARKER,
+    )
+    _mod_hit = _ATTR_VAR_MAPPING_CACHE.get(key)
+    if _mod_hit is not None:
+        _mod_ts, _mod_rows = _mod_hit
+        if time.monotonic() - _mod_ts < _ATTR_VAR_MAPPING_CACHE_TTL_SECONDS:
+            logger.info(
+                "cpq_perf: _load_attr_var_mapping_rows CACHE HIT (module) ws=%s prefix=%r",
+                workspace_id, catalog_prefix,
+            )
+            if cache is not None:
+                cache[key] = _mod_rows
+            return _mod_rows
+
+    _t0 = time.monotonic()
     rdb = get_cpq_rdb()
     rows: list[dict[str, Any]] = []
     # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2/data-table-resolution
@@ -296,8 +352,15 @@ def _load_attr_var_mapping_rows(
         for _eid, attrs in entities:
             if _is_attr_var_mapping_shaped(set(attrs.keys())):
                 rows.append(attrs)
+    logger.info(
+        "cpq_perf: _load_attr_var_mapping_rows MISS (fresh scan) took %.3fs ws=%s "
+        "prefix=%r rows=%d", time.monotonic() - _t0, workspace_id, catalog_prefix, len(rows),
+    )
     if cache is not None:
         cache[key] = rows
+    _cache_write_if_marker_unchanged(
+        _ATTR_VAR_MAPPING_CACHE, key, (time.monotonic(), rows), _marker_at_read,
+    )
     return rows
 
 

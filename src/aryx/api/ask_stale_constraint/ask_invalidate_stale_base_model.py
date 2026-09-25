@@ -1,12 +1,18 @@
 """Clearing the Data-Table-governed Base Model attribute when one of its
 real derivation inputs changes, split out of `api/ask_api.py` (Phase 4/
 11-phase ask_api decomposition, docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-
-03.md). Logic unchanged from the original inline definition.
+03.md). Pop logic unchanged from the original inline definition; the
+`workspace_id`/`catalog_prefix` params and the shadow-mode CatalogProfile
+comparison were added by CPQ_Hardcode_Audit_dev_oci_2026-09-25.md's T1
+Phase 3 pilot slice.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from aryx.config import get_settings
+from aryx.cpq.catalog_profile import shadow_check_role_vn
 
 # docs/CPQ_STALE_BASE_MODEL_CASCADE_CONFLICT_PLAN_2026_08_20.md
 _BASE_MODEL_VN = "modelSelectionbaseModel_astro"
@@ -30,7 +36,7 @@ _BASE_MODEL_TRIGGER_VNS = frozenset({
 
 def _invalidate_stale_base_model(
     session: Any, changed_attr: Any, dependent_eids: "set[int]",
-    by_eid: dict[int, Any],
+    by_eid: dict[int, Any], workspace_id: int, catalog_prefix: str = "",
 ) -> None:
     """Base Model (modelSelectionbaseModel_astro) is Data-Table-governed, not
     rule-graph-governed -- find_cascade_dependents can never see it as a
@@ -63,11 +69,25 @@ def _invalidate_stale_base_model(
     turn, and re-derivation itself is idempotent and cheap (a handful of
     Data Table row scans, no LLM call), so trading a rare redundant
     recompute for never missing a real one is the right side to err on.
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1/Phase 3 pilot slice:
+    `workspace_id`/`catalog_prefix` are new here only to feed a shadow,
+    log-only comparison (`shadow_check_role_vn`) against what a
+    CatalogProfile-style resolver would give for "Base Model" under the
+    session's actual CPQ model -- never changes which key gets popped.
+    Gated behind `catalog_profile_shadow_check_enabled` (default off):
+    live-confirmed this adds a real RDB round trip on an uncached first
+    hit, same always-on-cost concern `cpq_shadow_intent_enabled` already
+    guards against elsewhere in this codebase.
     """
     changed_names = {changed_attr.variable_name} | {
         by_eid[eid].variable_name for eid in dependent_eids if eid in by_eid
     }
     if changed_names & _BASE_MODEL_TRIGGER_VNS:
+        if get_settings().catalog_profile_shadow_check_enabled:
+            shadow_check_role_vn(
+                "Base Model", _BASE_MODEL_VN, session.product_name, workspace_id, catalog_prefix,
+            )
         session.filled.pop(_BASE_MODEL_VN, None)
         session.display_filled.pop(_BASE_MODEL_VN, None)
         session.filled_source.pop(_BASE_MODEL_VN, None)

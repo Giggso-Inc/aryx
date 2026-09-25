@@ -97,6 +97,28 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Override with ARYX_CPQ_INTENT_GEMINI_MODEL."
         ),
     )
+    catalog_profile_shadow_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 pilot slice: "
+            "run catalog_profile.shadow_check_role_vn alongside "
+            "_invalidate_stale_base_model's real Base-Model-clear (every "
+            "Hardware Version/Product/Country/Region change), comparing "
+            "today's hardcoded modelSelectionbaseModel_astro literal against "
+            "what the real attrToVarMapping-Data-Table-driven resolver "
+            "(resolve_variable_name_for_role) gives for the session's actual "
+            "CPQ model, logging any disagreement. Off by default for the "
+            "same reason as cpq_shadow_intent_enabled above -- this adds a "
+            "real RDB round trip (module-level 300s-TTL cached, but still "
+            "an unconditional extra call on the first hit and every TTL "
+            "expiry) to every one of this file's own unit tests and to the "
+            "real cascade hot path, and has not yet been validated against "
+            "live traffic. Override with "
+            "ARYX_CATALOG_PROFILE_SHADOW_CHECK_ENABLED=true to collect real "
+            "shadow-mode disagreement data before ever switching a literal "
+            "over to the resolved value."
+        ),
+    )
     cpq_intent_mode: str = Field(
         default="llm_first",
         description=(

@@ -21,6 +21,7 @@ import pytest
 
 from aryx.cpq.data_table import data_table_loader, data_table_product
 from aryx.cpq.data_table.data_table_resolver import (
+    _clear_attr_var_mapping_cache,
     _clear_tables_cache,
     resolve_variable_name_for_role,
     search_products_by_feature,
@@ -31,8 +32,10 @@ from aryx.cpq.data_table.data_table_resolver import (
 @pytest.fixture(autouse=True)
 def _clear_cache():
     _clear_tables_cache()
+    _clear_attr_var_mapping_cache()
     yield
     _clear_tables_cache()
+    _clear_attr_var_mapping_cache()
 
 
 class _FakeRdb:

@@ -8088,7 +8088,7 @@
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_cascade_invalidate_dependents.py",
-      107,
+      109,
       "_invalidate_cascade_dependents"
     ],
     [
@@ -8098,12 +8098,12 @@
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_cascade_multi_apply.py",
-      65,
+      68,
       "<if>"
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_cascade_multi_apply.py",
-      110,
+      113,
       "_apply_cascade_multi_changes"
     ],
     [
@@ -9938,7 +9938,7 @@
     ],
     [
       "src/aryx/api/ask_turn_steps/ask_step9_apply_result.py",
-      105,
+      106,
       "_step9_apply_pending_result"
     ],
     [

@@ -86,7 +86,9 @@ def _invalidate_cascade_dependents(
             session.filled_multi.pop(a.variable_name, None)
             session.display_filled.pop(a.variable_name, None)
             session.filled_source.pop(a.variable_name, None)
-    _invalidate_stale_base_model(session, changed_attr, dependent_eids, by_eid)
+    _invalidate_stale_base_model(
+        session, changed_attr, dependent_eids, by_eid, req.workspace_id, catalog_prefix,
+    )
 
     # Constraint scope for changed_attr — computed ONCE and reused for the
     # answer-match attempt, the rejected-option exclusion, and the retry
