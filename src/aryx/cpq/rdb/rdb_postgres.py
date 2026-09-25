@@ -107,6 +107,40 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: exact type fetch failed for %s", ontology_type, exc_info=True)
         return rows
 
+    def fetch_all_entities_grouped_by_type(
+        self, workspace_id: int,
+    ) -> dict[str, list[tuple[int, dict[str, Any]]]]:
+        """Every entity in this workspace, in ONE round trip, grouped by its
+        exact ontology_type.
+
+        CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2/data-table-resolution
+        follow-up (real-data testing against workspace 704, 2026-09-25):
+        both _load_all_tables() and _load_attr_var_mapping_rows() looped
+        list_ontology_types() (109 distinct types on this workspace) and
+        issued one fetch_entities_by_exact_type() round trip per type to
+        find every Data-Table-shaped row -- confirmed live, a single
+        resolve_region_allow_value() call took 411s this way. Both callers
+        already need every row of every type to classify by shape, so
+        there's nothing to filter server-side; only the round-trip count
+        was the problem. Replaces up to 109 separate queries with 1.
+        """
+        result: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT ontology_type, id, attributes FROM aryx_entity "
+                        "WHERE workspace_id = %s",
+                        (workspace_id,),
+                    )
+                    for otype, eid, attrs in cur.fetchall():
+                        if not otype:
+                            continue
+                        result.setdefault(otype, []).append((int(eid), _as_attrs(attrs)))
+        except Exception:
+            logger.debug("cpq rdb: fetch_all_entities_grouped_by_type failed", exc_info=True)
+        return result
+
     def list_ontology_types(self, workspace_id: int) -> list[str]:
         """Every distinct ontology_type ingested into this workspace.
 

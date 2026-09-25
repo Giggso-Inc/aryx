@@ -48,6 +48,12 @@ class _FakeRdb:
         rows = self._tables.get(ontology_type, [])
         return [(i, r) for i, r in enumerate(rows, start=1)]
 
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {
+            otype: [(i, r) for i, r in enumerate(rows, start=1)]
+            for otype, rows in self._tables.items()
+        }
+
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
     monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
@@ -228,8 +234,11 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
             return self._inner.list_ontology_types(workspace_id)
 
         def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
-            calls["n"] += 1
             return self._inner.fetch_entities_by_exact_type(workspace_id, ontology_type)
+
+        def fetch_all_entities_grouped_by_type(self, workspace_id):
+            calls["n"] += 1
+            return self._inner.fetch_all_entities_grouped_by_type(workspace_id)
 
     _patch_rdb(monkeypatch, _TABLES)
     inner = data_table_loader.get_cpq_rdb()
@@ -240,8 +249,12 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
         data_table_resolver.attr_ever_governed_for_cpq_model(
             "APXNEXT_BOM", attr, workspace_id=1, cache=cache,
         )
-    # One scan per ingested type across the whole cache lifetime, not one per attr.
-    assert calls["n"] == len(_TABLES)
+    # T2/data-table-resolution follow-up (real-data testing against
+    # workspace 704, 2026-09-25): _load_all_tables() now does ONE grouped
+    # query (fetch_all_entities_grouped_by_type) instead of one round trip
+    # per ingested type -- so a shared `cache` dict now means exactly one
+    # underlying call across the whole cache lifetime, not one per type.
+    assert calls["n"] == 1
 
 
 # --- Generalization: a differently-NAMED ingested table (any ontology_type
@@ -653,9 +666,9 @@ def test_module_cache_survives_a_60s_gap_between_calls(monkeypatch):
     calls = {"n": 0}
 
     class _CountingRdb(_FakeRdb):
-        def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
+        def fetch_all_entities_grouped_by_type(self, workspace_id):
             calls["n"] += 1
-            return super().fetch_entities_by_exact_type(workspace_id, ontology_type)
+            return super().fetch_all_entities_grouped_by_type(workspace_id)
 
     monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _CountingRdb(_TABLES))
 

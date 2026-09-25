@@ -287,8 +287,12 @@ def _load_attr_var_mapping_rows(
         return cache[key]
     rdb = get_cpq_rdb()
     rows: list[dict[str, Any]] = []
-    for ontology_type in rdb.list_ontology_types(workspace_id):
-        entities = rdb.fetch_entities_by_exact_type(workspace_id, ontology_type)
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2/data-table-resolution
+    # follow-up (real-data testing against workspace 704, 2026-09-25): same
+    # per-type-round-trip bug this function's own docstring already flags
+    # as a duplicate of _load_all_tables()'s scan loop -- fixed the same
+    # way, one grouped query instead of one round trip per ontology_type.
+    for entities in rdb.fetch_all_entities_grouped_by_type(workspace_id).values():
         for _eid, attrs in entities:
             if _is_attr_var_mapping_shaped(set(attrs.keys())):
                 rows.append(attrs)

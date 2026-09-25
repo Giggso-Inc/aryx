@@ -140,8 +140,12 @@ def _load_all_tables(
         "region_rule": region_rule_rows,
     }
 
-    for ontology_type in rdb.list_ontology_types(workspace_id):
-        entities = rdb.fetch_entities_by_exact_type(workspace_id, ontology_type)
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2/data-table-resolution
+    # follow-up (real-data testing against workspace 704, 2026-09-25): was
+    # list_ontology_types() + one fetch_entities_by_exact_type() round trip
+    # PER type (109 types here) -- confirmed live, ~411s for a single
+    # resolve_region_allow_value() call. One grouped query instead.
+    for ontology_type, entities in rdb.fetch_all_entities_grouped_by_type(workspace_id).items():
         if not entities:
             continue
         counts = {"constraint": 0, "sequence": 0, "hierarchy": 0, "series_mapping": 0, "region_rule": 0, None: 0}

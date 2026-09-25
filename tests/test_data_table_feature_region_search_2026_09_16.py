@@ -46,6 +46,12 @@ class _FakeRdb:
         rows = self._tables.get(ontology_type, [])
         return [(i, r) for i, r in enumerate(rows, start=1)]
 
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {
+            otype: [(i, r) for i, r in enumerate(rows, start=1)]
+            for otype, rows in self._tables.items()
+        }
+
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
     fake = _FakeRdb(tables)

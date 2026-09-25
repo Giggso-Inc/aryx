@@ -277,6 +277,7 @@ def test_end_to_end_concurrent_invalidation_does_not_resurrect_stale_data():
     key = (93, "")
     fake_rdb = MagicMock()
     fake_rdb.list_ontology_types.return_value = []
+    fake_rdb.fetch_all_entities_grouped_by_type.return_value = {}
 
     try:
         with patch.object(dtc, "_current_invalidation_marker", side_effect=[100.0, 200.0]), \
@@ -301,12 +302,13 @@ def test_load_all_tables_recomputes_after_marker_change_despite_valid_ttl():
 
     fake_rdb = MagicMock()
     fake_rdb.list_ontology_types.return_value = []
+    fake_rdb.fetch_all_entities_grouped_by_type.return_value = {}
 
     try:
         with patch.object(dtc, "_current_invalidation_marker", return_value=200.0), \
              patch.object(dtl, "get_cpq_rdb", return_value=fake_rdb):
             dtr._load_all_tables(93, "")
-        assert fake_rdb.list_ontology_types.called, (
+        assert fake_rdb.fetch_all_entities_grouped_by_type.called, (
             "the real fetch must run after a marker change, even though the "
             "seeded cache entry was still well within its own TTL"
         )
