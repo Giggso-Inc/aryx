@@ -10458,22 +10458,22 @@
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      104,
+      124,
       "delete_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      112,
+      132,
       "import_ontology"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      117,
+      137,
       "<try>"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      123,
+      143,
       "ontology_router"
     ],
     [
@@ -14153,7 +14153,7 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      511,
+      523,
       "delete_entities_by_type"
     ],
     [

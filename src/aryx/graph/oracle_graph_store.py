@@ -93,6 +93,27 @@ class OracleGraphStore(_OracleGraphBatchMixin):
             conn.execute(load("delete_graph_vertex_by_entity"),
                          (self._workspace_id, entity_id))
 
+    def remove_entities_by_type(self, ontology_type: str) -> None:
+        """Delete every entity vertex of a type, their edges, and their
+        provenance links -- the Oracle-graph counterpart of FalkorStore's
+        method of the same name.
+
+        CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9/T11 follow-up
+        (confirmed live, 2026-09-25): ontology_api.py::delete_type()
+        unconditionally instantiated FalkorStore for this cascade step
+        regardless of ARYX_GRAPH_BACKEND -- the same "assumes FalkorDB
+        everywhere" pattern already fixed once for admin_api.py::
+        rebuild_graph() (see that commit). On this OCI/Oracle Graph
+        deployment there is no FalkorDB to connect to at all, so every
+        DELETE /ontology/types/{name} call failed here even after the
+        RDB-side fetchall() bug (same endpoint, different cause) was fixed.
+        """
+        params = {"ws": self._workspace_id, "typ": ontology_type}
+        with self._pool.connection() as conn:
+            conn.execute(load("delete_graph_provenance_by_type"), params)
+            conn.execute(load("delete_graph_edge_by_type"), params)
+            conn.execute(load("delete_graph_vertex_by_type"), params)
+
     def add_relationship(self, source_id: int, target_id: int, name: str) -> None:
         """Add a directed relationship edge between two entities."""
         with self._pool.connection() as conn:
