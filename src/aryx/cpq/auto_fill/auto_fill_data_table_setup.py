@@ -12,13 +12,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from aryx.cpq.engine import (
-    _COUNTRY_TO_REGION,
     _cpq_model_candidates,
     _hiding_rule_needs_missing_data_table,
     dt_attr_ever_governed_for_cpq_model,
     dt_governed_attr_names_for_base_model,
     dt_resolve_region_allow_value,
 )
+from aryx.cpq.region_and_noise_constants import region_for_country
 
 
 @dataclass
@@ -64,7 +64,7 @@ def compute_data_table_setup(
         if bm_product:
             bm_country = filled.get("ultimateDestinationCountry") or country or ""
             bm_region = filled.get("modelSelectionRegion_astro") or (
-                _COUNTRY_TO_REGION.get(bm_country.strip().lower(), "") if bm_country else ""
+                region_for_country(bm_country) if bm_country else ""
             )
             if bm_region:
                 bm_primary_candidates = _cpq_model_candidates(

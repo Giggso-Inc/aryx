@@ -43,6 +43,16 @@ def resolve_region_allow_value(
     under. Returns None when zero ALLOW rows match this exact scope, or
     when 2+ DISTINCT allowed values exist (a genuine tie -- never guesses
     across one), so callers can safely fall through to asking instead.
+
+    `ruleType=DISALLOW` rows at the same scope veto the matching ALLOW
+    value -- previously read-but-ignored (this function filtered to ALLOW
+    rows only), which let a country/region-banned value get auto-filled
+    anyway (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2). Narrow and
+    additive: a DISALLOW row only suppresses the specific value it names,
+    at the same country/region scope it names -- it does not block the
+    whole attribute, and has zero effect when no DISALLOW rows exist for
+    this attribute (every existing caller/test, which only ever supplies
+    ALLOW rows, is unaffected).
     """
     _, _, _, _, region_rule_rows = _load_all_tables(workspace_id, catalog_prefix, cache)
     norm_model = (cpq_model or "").strip().upper()
@@ -51,12 +61,15 @@ def resolve_region_allow_value(
 
     country_values: set[str] = set()
     region_values: set[str] = set()
+    disallow_country_values: set[str] = set()
+    disallow_region_values: set[str] = set()
     for row in region_rule_rows:
         if row.get("attribute") != attr_var_name:
             continue
         if str(row.get("model") or "").strip().upper() != norm_model:
             continue
-        if str(row.get("ruleType") or "").strip().upper() != "ALLOW":
+        rule_type = str(row.get("ruleType") or "").strip().upper()
+        if rule_type not in ("ALLOW", "DISALLOW"):
             continue
         value = row.get("value")
         if not value:
@@ -66,14 +79,16 @@ def resolve_region_allow_value(
             continue
         row_country = str(row.get("UDCC") or "").strip().upper()
         if norm_country and row_country == norm_country:
-            country_values.add(value)
+            (country_values if rule_type == "ALLOW" else disallow_country_values).add(value)
         elif not row_country:
-            region_values.add(value)
+            (region_values if rule_type == "ALLOW" else disallow_region_values).add(value)
 
     if norm_country and len(country_values) == 1:
-        return next(iter(country_values))
+        candidate = next(iter(country_values))
+        return None if candidate in disallow_country_values else candidate
     if len(region_values) == 1:
-        return next(iter(region_values))
+        candidate = next(iter(region_values))
+        return None if candidate in disallow_region_values else candidate
     return None
 
 

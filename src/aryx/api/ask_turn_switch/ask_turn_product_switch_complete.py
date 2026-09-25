@@ -98,6 +98,16 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
     session.pending_switch_product = ""
     session.pending_switch_candidates = []
     session.pending_anchor = ""
+    # The pre-switch anchor text is stale once the switch completes, but
+    # was never cleared here -- _seed_product_select_from_anchor tries it
+    # as a fallback seed candidate (ranked ABOVE the already-confirmed new
+    # session.product_name) on every turn afterward, indefinitely, risking
+    # a fuzzy match against the OLD product's description instead of the
+    # new one (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3). pending_switch
+    # _question already carries this switch's own triggering text
+    # correctly (set/cleared by ask_step2_anchor_gates.py), so dropping
+    # this stale fallback removes a wrong-match risk, not a real signal.
+    session.product_anchor_question = ""
     _ask_api_module.logger.info(
         "cpq_switch: switched turn=%s new_product=%r country=%r — config state %s",
         session.turn, new_product, new_country or "(none — will be asked fresh)",

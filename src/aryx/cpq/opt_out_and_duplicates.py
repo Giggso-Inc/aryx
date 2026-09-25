@@ -53,10 +53,17 @@ _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS: frozenset[str] = frozenset({
 # phrasing is ambiguous about which is the real opt-out, and guessing
 # between them would be exactly the guess-risk this whole mechanism
 # exists to avoid, so it falls through to asking instead.
+#
+# n/a (with the slash) only, not bare "na" -- n/?a made the slash
+# optional, so an option literally named "NA" (a real region/country
+# code, not "not applicable") was wrongly treated as this attribute's
+# opt-out choice (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T7). "N/A" with
+# its delimiter is unambiguous and still matched; only the bare-code
+# collision is removed.
 _OPT_OUT_OPTION_RE = re.compile(
     r"\bnot\s+(?:required|needed|applicable)\b"
     r"|\bnone\s+(?:needed|required)\b"
-    r"|\bn/?a\b"
+    r"|\bn/a\b"
     r"|\bno(?:t)?\s+(?:action|service|item)s?\s+(?:required|needed)\b",
     re.IGNORECASE,
 )

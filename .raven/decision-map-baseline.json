@@ -7903,17 +7903,17 @@
     ],
     [
       "src/aryx/api/admin_api.py",
-      104,
+      105,
       "create_entity"
     ],
     [
       "src/aryx/api/admin_api.py",
-      126,
+      127,
       "update_entity"
     ],
     [
       "src/aryx/api/admin_api.py",
-      141,
+      143,
       "delete_entity"
     ],
     [
@@ -8248,27 +8248,27 @@
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      55,
+      56,
       "_safe_detect_product_mention"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      62,
+      63,
       "<try>"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      69,
+      70,
       "_mine_history_for_cpq_context"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      119,
+      120,
       "_current_turn_usage_dict"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      137,
+      138,
       "_current_turn_usage_dict"
     ],
     [
@@ -10008,7 +10008,7 @@
     ],
     [
       "src/aryx/api/ask_turn_switch/ask_turn_confirm_switch_anchor.py",
-      94,
+      99,
       "_handle_confirm_switch_anchor"
     ],
     [
@@ -10088,27 +10088,27 @@
     ],
     [
       "src/aryx/api/axioms_api.py",
-      72,
+      74,
       "delete_axiom"
     ],
     [
       "src/aryx/api/axioms_api.py",
-      84,
+      86,
       "shapes_router"
     ],
     [
       "src/aryx/api/axioms_api.py",
-      89,
+      91,
       "get_shapes"
     ],
     [
       "src/aryx/api/axioms_api.py",
-      111,
+      113,
       "get_shapes"
     ],
     [
       "src/aryx/api/axioms_api.py",
-      115,
+      117,
       "shapes_router"
     ],
     [
@@ -10153,47 +10153,47 @@
     ],
     [
       "src/aryx/api/data_api.py",
-      111,
+      112,
       "data_router"
     ],
     [
       "src/aryx/api/data_api.py",
-      127,
+      128,
       "entities"
     ],
     [
       "src/aryx/api/data_api.py",
-      131,
+      132,
       "<try>"
     ],
     [
       "src/aryx/api/data_api.py",
-      140,
+      141,
       "graph"
     ],
     [
       "src/aryx/api/data_api.py",
-      143,
+      144,
       "<try>"
     ],
     [
       "src/aryx/api/data_api.py",
-      308,
+      310,
       "delete_source"
     ],
     [
       "src/aryx/api/data_api.py",
-      344,
+      348,
       "delete_asset"
     ],
     [
       "src/aryx/api/data_api.py",
-      354,
+      361,
       "delete_source_with_path"
     ],
     [
       "src/aryx/api/data_api.py",
-      390,
+      397,
       "data_router"
     ],
     [
@@ -10388,92 +10388,92 @@
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      36,
+      37,
       "ontology_router"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      41,
+      42,
       "get_config"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      43,
+      44,
       "get_config"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      46,
+      47,
       "set_config"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      53,
+      54,
       "set_config"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      61,
+      62,
       "list_types"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      63,
+      64,
       "list_types"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      66,
+      67,
       "approve_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      69,
+      70,
       "approve_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      72,
+      73,
       "set_parent"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      77,
+      78,
       "set_parent"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      81,
+      82,
       "add_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      83,
+      84,
       "add_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      89,
+      90,
       "delete_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      102,
+      104,
       "delete_type"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      110,
+      112,
       "import_ontology"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      115,
+      117,
       "<try>"
     ],
     [
       "src/aryx/api/ontology/ontology_api.py",
-      121,
+      123,
       "ontology_router"
     ],
     [
@@ -10498,7 +10498,7 @@
     ],
     [
       "src/aryx/api/relationship_type_api.py",
-      56,
+      58,
       "delete_relationship_type"
     ],
     [
@@ -10523,7 +10523,7 @@
     ],
     [
       "src/aryx/api/workspace_api.py",
-      237,
+      243,
       "delete_workspace"
     ],
     [
@@ -10655,16 +10655,6 @@
       "src/aryx/connectors/pptx.py",
       39,
       "<try>"
-    ],
-    [
-      "src/aryx/cpq/auto_fill/auto_fill_data_table_setup.py",
-      33,
-      "compute_data_table_setup"
-    ],
-    [
-      "src/aryx/cpq/auto_fill/auto_fill_data_table_setup.py",
-      137,
-      "compute_data_table_setup"
     ],
     [
       "src/aryx/cpq/auto_fill/auto_fill_hw_order.py",
@@ -12983,12 +12973,12 @@
     ],
     [
       "src/aryx/cpq/payload_building/anchor_exclusions.py",
-      22,
+      23,
       "_data_table_resolved_anchor_vns"
     ],
     [
       "src/aryx/cpq/payload_building/anchor_exclusions.py",
-      88,
+      89,
       "_data_table_resolved_anchor_vns"
     ],
     [
@@ -15303,7 +15293,7 @@
     ],
     [
       "src/aryx/workspaces/__init__.py",
-      79,
+      86,
       "nuke"
     ],
     [

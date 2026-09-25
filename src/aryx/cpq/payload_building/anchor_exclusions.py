@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.region_and_noise_constants import region_for_country
 from aryx.cpq.state import ConfigAttr
 
 
@@ -64,7 +65,7 @@ def _data_table_resolved_anchor_vns(
         return frozenset()
     resolved_country = filled.get("ultimateDestinationCountry") or country or ""
     region = filled.get("modelSelectionRegion_astro") or (
-        _engine_module._COUNTRY_TO_REGION.get(resolved_country.strip().lower(), "")
+        region_for_country(resolved_country, _engine_module._COUNTRY_TO_REGION)
         if resolved_country else ""
     )
     if not region:

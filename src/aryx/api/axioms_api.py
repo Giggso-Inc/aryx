@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 
 from aryx import export_runtime
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
 from aryx.ontology.rdf.shapes import build_shapes_graph
 from aryx.store.axiom_store import VALID_KINDS, AxiomStore
@@ -62,8 +63,9 @@ def axioms_router() -> APIRouter:
                 "deduped": axiom_id is None}
 
     @router.delete("/{axiom_id}")
-    def delete_axiom(axiom_id: int, workspace_id: int = 1) -> dict[str, Any]:
+    def delete_axiom(axiom_id: int, workspace_id: int | None = None) -> dict[str, Any]:
         """Remove an axiom from a workspace (no-op when absent)."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /ontology/axioms/{id}")
         store = AxiomStore(get_settings().effective_dsn())
         try:
             store.delete(axiom_id, workspace_id)

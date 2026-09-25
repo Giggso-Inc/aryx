@@ -30,6 +30,7 @@ from aryx.store.entity_store import EntityStore
 from aryx.store.job_store import JobStore
 from aryx.workspaces import ws_graph
 from aryx.api.security import require_api_key, write_api_key
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 
 __all__ = [
     "EntityCreateRequest",
@@ -126,9 +127,10 @@ def admin_router() -> APIRouter:
         return {"status": "ok", "entity_id": entity_id, "ontology_type": ontology_type}
 
     @router.delete("/entities/{entity_id}")
-    def delete_entity(entity_id: int, workspace_id: int = 1,
+    def delete_entity(entity_id: int, workspace_id: int | None = None,
                       _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Delete an entity from Postgres and remove the node from FalkorDB."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /admin/entities/{id}")
         settings = get_settings()
         estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:

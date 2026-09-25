@@ -43,6 +43,43 @@ _COUNTRY_TO_REGION: dict[str, str] = {
     "new zealand": "APAC", "taiwan": "APAC", "hong kong": "APAC",
 }
 
+
+def region_for_country(raw_country: str, region_map: dict[str, str] | None = None) -> str:
+    """`_COUNTRY_TO_REGION`, but resolves an ISO alpha-2/alpha-3 code (e.g.
+    "CA", "DE") to its canonical name first, so only "us"/"uk"/"uae" being
+    literal keys in the map above no longer means every other country's
+    CODE silently fails to resolve a region (CPQ_Hardcode_Audit_dev_oci_
+    2026-09-25.md T5). Reuses the 249-country ISO alias system `country/
+    country_alias_data.py` already built for country *validation*, rather
+    than hand-adding more per-country literals to this map -- the same
+    fix shape as that system's own docstring describes for the analogous
+    bug it already closed elsewhere.
+
+    Falls back to the original direct-lookup behavior (plain lowercase/
+    strip, no alias resolution) when the alias system doesn't recognize
+    the input at all -- never worse than the pre-fix behavior, only
+    better for the codes/names it can now resolve.
+
+    `region_map` defaults to this module's own `_COUNTRY_TO_REGION` --
+    callers that need to keep an existing `patch("...`_COUNTRY_TO_REGION",
+    ...)` test point working (e.g. tests patching `aryx.cpq.engine.
+    _COUNTRY_TO_REGION`, which this function otherwise wouldn't see) pass
+    that same reference through explicitly.
+    """
+    from aryx.cpq.country.country_helpers import (
+        _country_alias_group, _country_canonical_name, _normalize_country_candidate,
+    )
+    table = region_map if region_map is not None else _COUNTRY_TO_REGION
+    normalized = _normalize_country_candidate(raw_country)
+    group = _country_alias_group(normalized)
+    if group is not None:
+        canonical = _country_canonical_name(group).lower()
+        region = table.get(canonical, "")
+        if region:
+            return region
+    return table.get(raw_country.strip().lower(), "")
+
+
 # CPQ layout-noise types — exclude from configuration conversation.
 _LAYOUT_TYPE_FRAGMENTS: frozenset[str] = frozenset({
     "layout", "prop", "css", "display_type", "view",

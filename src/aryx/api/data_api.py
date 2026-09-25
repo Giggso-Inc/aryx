@@ -30,6 +30,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from aryx import explore
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.api.data_api_pure import (
     _LegacyMetricReader,
     _asset_matches,
@@ -303,8 +304,9 @@ def data_router() -> APIRouter:
             store.close()
 
     @router.delete("/sources/{source_key}")
-    def delete_source(source_key: str, workspace_id: int = 1) -> dict:
+    def delete_source(source_key: str, workspace_id: int | None = None) -> dict:
         """Physically delete one source and its workspace data."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /sources/{source_key}")
         return _purge_source_from_workspace(source_key, workspace_id)
 
     @router.get("/sources/{source_key:path}/assets/{asset_key}/download")
@@ -339,8 +341,10 @@ def data_router() -> APIRouter:
             store.close()
 
     @router.delete("/sources/{source_key:path}/assets/{asset_key}")
-    def delete_asset(source_key: str, asset_key: str, workspace_id: int = 1) -> dict:
+    def delete_asset(source_key: str, asset_key: str, workspace_id: int | None = None) -> dict:
         """Physically delete one generated XML/XLSX asset dataset."""
+        workspace_id = resolve_workspace_id_warn(
+            workspace_id, "DELETE /sources/{source_key}/assets/{asset_key}")
         return _purge_asset_from_workspace(source_key, asset_key, workspace_id)
 
     @router.get("/sources/{source_key:path}/download", include_in_schema=False)
@@ -349,8 +353,11 @@ def data_router() -> APIRouter:
         return download_source(source_key, workspace_id)
 
     @router.delete("/sources/{source_key:path}", include_in_schema=False)
-    def delete_source_with_path(source_key: str, workspace_id: int = 1) -> dict:
-        """Support deletes for generic source keys containing encoded slashes."""
+    def delete_source_with_path(source_key: str, workspace_id: int | None = None) -> dict:
+        """Support deletes for generic source keys containing encoded slashes.
+        Forwards the raw (possibly None) workspace_id to delete_source, which
+        does the warn-mode resolution -- avoids double-logging the same
+        omitted-workspace_id warning at both this alias and the real route."""
         return delete_source(source_key, workspace_id)
 
     @router.get("/sources/{source_key:path}", include_in_schema=False)

@@ -22,6 +22,7 @@ from aryx.api.ontology import ontology_browse as _ob
 from aryx.api.ontology.ontology_api_export import export_graph_response
 from aryx.api.ontology.ontology_api_models import OntologyConfigRequest, OntologyImportRequest
 from aryx.api.security import write_api_key
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
 from aryx.ontology.rdf import available_formats
@@ -86,10 +87,11 @@ def ontology_router() -> APIRouter:
                             workspace_id=int(body.get("workspace_id", 1)))
 
     @router.delete("/types/{name}")
-    def delete_type(name: str, workspace_id: int = 1,
+    def delete_type(name: str, workspace_id: int | None = None,
                     _: str | None = Depends(write_api_key)) -> dict:
         """Remove a type and cascade: delete all its entity instances from
         Postgres and remove their nodes from FalkorDB, then drop the type."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /ontology/types/{name}")
         settings = get_settings()
         estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:

@@ -46,7 +46,22 @@ def stage_already_filled(
         # rule re-assertion (apply_recommendation_rules' truthy
         # check, not `in filled`) overrides it, exactly like it
         # would override any other stale value.
-        if ctx.filled[state.vn] == "" and ctx.sources.get(state.vn) == "user":
+        #
+        # Gated on `not attr.required`: honoring this on a genuinely
+        # required attribute let this stage mark it "done" while
+        # bom_gate_required.py's find_missing_required_fields() -- which
+        # correctly still treats an empty value as missing for required
+        # attrs -- would then block confirm anyway. That's not a
+        # deliberate two-tier design, it's the same "leave blank" shortcut
+        # applied somewhere it can't actually deliver on its promise
+        # (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T7). A required attr's
+        # clear now falls through to normal re-resolution/re-ask instead,
+        # so "tier0 says done" and "the gate says complete" agree again.
+        if (
+            not attr.required
+            and ctx.filled[state.vn] == ""
+            and ctx.sources.get(state.vn) == "user"
+        ):
             ctx.display_filled[state.vn] = "(none)"
             state.done = True
             return

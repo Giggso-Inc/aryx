@@ -626,6 +626,16 @@ class TestNuke(unittest.TestCase):
             result = store.nuke()
         self.assertEqual(result["workspaces_removed"], 1)
 
+    def test_workspace_ids_lists_the_real_removed_ids(self) -> None:
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: the API layer's
+        # graph-clearing loop needs the real ids, not just a count, to stop
+        # hardcoding a (1, 2, 3) range that misses any id > 3.
+        pool, cur = _make_pool_cursor(fetchall=[(2,), (5,), (7,)])
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.nuke()
+        self.assertEqual(result["workspace_ids"], [2, 5, 7])
+
 
 class TestPurgeData(unittest.TestCase):
     """purge_data() clears workspace data and replaces %(wid)s params."""

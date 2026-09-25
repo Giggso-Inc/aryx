@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from aryx.llm import llm_runtime
 from aryx.api.ask_request_models import Turn
+from aryx.api.ask_response_building.ask_cpq_summary_prompt import _CPQ_SEGMENT_DELIM
 from aryx.api.ask_standard_pipeline import _user_texts_from_history
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine
@@ -29,11 +30,11 @@ from aryx.store.pool import get_pool
 
 
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
-# Segments _cpq_summary_text asks the LLM to separate its reply by — one
-# lead-in sentence + one narration segment per category, code-assembled
-# with the real "• Category" headers afterwards (see _cpq_summary_text).
-# Distinctive enough that real narration text won't produce it by accident.
-_CPQ_SEGMENT_DELIM = "@@@"
+# _CPQ_SEGMENT_DELIM was independently re-declared here (same value, but a
+# second source of truth to drift out of sync with the real one) --
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T10/new-theme-C. Now imported
+# from ask_cpq_summary_prompt.py, which ask_cpq_summary_narrate.py already
+# correctly imports it from -- one declaration, not two.
 
 
 def _validate_workspace(workspace_id: int) -> None:

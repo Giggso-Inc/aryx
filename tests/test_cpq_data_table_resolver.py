@@ -767,6 +767,60 @@ def test_resolve_region_allow_value_none_on_no_match(monkeypatch):
     assert value is None
 
 
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2: a DISALLOW row at the same
+# model/region/attribute scope must veto that value, not be silently
+# ignored (the function used to filter to ruleType=ALLOW only).
+
+def test_resolve_region_allow_value_disallow_row_vetoes_the_matching_value(monkeypatch):
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8AN", "region": "NA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="NA", workspace_id=1,
+    )
+    assert value is None, "a DISALLOW row for this exact scope must veto the ALLOW value"
+
+
+def test_resolve_region_allow_value_disallow_row_at_a_different_scope_has_no_effect(monkeypatch):
+    """A DISALLOW row for a DIFFERENT model must not veto an unrelated
+    ALLOW match -- the veto is scoped, not global."""
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "SOME_OTHER_MODEL", "value": "H45TGT9PW8XN", "region": "EMEA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="EMEA", workspace_id=1,
+    )
+    assert value == "H45TGT9PW8XN"
+
+
+def test_resolve_region_allow_value_country_disallow_vetoes_only_the_country_override(monkeypatch):
+    """The country-scoped veto and the region-scoped veto are independent
+    -- a DISALLOW row for the region default must not block a valid,
+    separately-scoped country override."""
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8AN", "region": "NA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="NA", workspace_id=1, country="CA",
+    )
+    assert value == "H45TGT9CA01", "the country override is a different scope, not vetoed"
+
+
 _PRODUCT_CONSTRAINT_ROWS = [
     {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
      "attr1": "productSelectionProduct_all", "val1": "APX NEXT SINGLE BAND"},
