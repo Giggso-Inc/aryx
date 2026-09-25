@@ -65,6 +65,31 @@ def stage_already_filled(
             ctx.display_filled[state.vn] = "(none)"
             state.done = True
             return
+        if (
+            attr.required
+            and ctx.filled[state.vn] == ""
+            and ctx.sources.get(state.vn) == "user"
+        ):
+            # T7 follow-up (real-data testing against workspace 704,
+            # 2026-09-25): the `not attr.required` gate above only blocks
+            # the "(none)" shortcut -- a required attr's cleared empty
+            # value still fell through to the generic `else` at the
+            # bottom of this function, which unconditionally re-locks ANY
+            # already-filled value as done (matched_display falls back to
+            # the empty string itself when no menu option matches "").
+            # Confirmed live with a real required attribute
+            # (_BM_USER_CURRENCY): state.done stayed True and the attr
+            # never re-entered `pending` -- the customer was never
+            # re-asked, the exact "tier0 says done, the gate silently
+            # blocks confirm" problem this fix's own docstring claims to
+            # close. Pop and fall through to normal re-resolution instead,
+            # the same pattern the stale/dropped and
+            # default_first_available branches below already use for a
+            # value that can't be honored as-is.
+            ctx.filled.pop(state.vn, None)
+            ctx.display_filled.pop(state.vn, None)
+            ctx.sources.pop(state.vn, None)
+            return
         # Already answered in a prior turn — but a cascade may have
         # narrowed this attr's allowed set since then (single-select
         # counterpart of the multi-select re-validation below, §5/

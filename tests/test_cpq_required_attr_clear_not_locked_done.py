@@ -57,3 +57,25 @@ def test_required_attr_user_clear_is_not_locked_done():
         "a required attr's clear must not be silently accepted as a "
         "settled '(none)' answer the way an optional attr's is"
     )
+
+
+def test_required_attr_user_clear_is_actually_re_asked():
+    """T7 follow-up (real-data testing against workspace 704,
+    2026-09-25): the assertion above only checked the display label --
+    it passed even though the attribute was silently kept "done" and
+    never re-entered `pending` (confirmed live with a real required
+    attribute, _BM_USER_CURRENCY: state.done stayed True, pending stayed
+    empty). Not showing "(none)" is not the same as actually re-asking --
+    this is the behavior the original fix's own docstring claimed
+    ("falls through to normal re-resolution/re-ask") but never verified."""
+    engine = CpqEngine()
+    filled, display, pending = engine.auto_fill(
+        [_attr(required=True)], hints={},
+        already_filled={"someAttr_astro": ""},
+        filled_source={"someAttr_astro": "user"},
+    )
+    assert "someAttr_astro" not in filled, "cleared required attr must not stay locked in as filled"
+    assert any(a.variable_name == "someAttr_astro" for a in pending), (
+        "a required attr's clear must actually re-enter pending so the "
+        "customer is re-asked, not just displayed differently"
+    )
