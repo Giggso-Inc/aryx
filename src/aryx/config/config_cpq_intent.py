@@ -119,6 +119,26 @@ class CpqIntentSettingsMixin(BaseSettings):
             "over to the resolved value."
         ),
     )
+    model_policy_shadow_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 follow-up: "
+            "run model_policy.shadow_check_optional_empty_fill_vns alongside "
+            "try_multi_optional_empty's real _OPTIONAL_EMPTY_FILL_ACCEPTED_"
+            "VNS membership check (every multi-select, non-required, "
+            "non-grid-selector auto_fill attr), comparing today's hardcoded "
+            "constant's answer against what the new model_policy legacy "
+            "table gives for the session's actual CPQ model(s), logging any "
+            "disagreement. Off by default, same reason and same shape as "
+            "catalog_profile_shadow_check_enabled above -- this is the "
+            "'shadow' phase of T6's own proposed legacy-→shadow-→scoped-"
+            "→remove rollout: proves real-traffic agreement before "
+            "try_multi_optional_empty is ever switched to read from "
+            "model_policy instead of the hardcoded constant. Override with "
+            "ARYX_MODEL_POLICY_SHADOW_CHECK_ENABLED=true to collect real "
+            "shadow-mode disagreement data."
+        ),
+    )
     cpq_intent_mode: str = Field(
         default="llm_first",
         description=(

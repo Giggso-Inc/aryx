@@ -25,8 +25,25 @@ Standalone and NOT wired into any real call site yet -- this slice
 only proves the loader mechanism itself returns byte-identical values
 to today's hardcoded constants for APX NEXT; `opt_out_and_duplicates.py`
 itself is untouched.
+
+CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 follow-up: `shadow_check_
+optional_empty_fill_vns()` below is this module's first real-call-site
+touch -- a shadow-only comparison wired into `try_multi_optional_empty`
+(gated off by default), the "shadow" phase of T6's proposed legacy-→
+shadow-→scoped-→remove rollout. `duplicate_display_name_canonical_
+item_value`'s only real consumer, `apply_answer()`, has no `cpq_model`
+parameter and 15 call sites across 11 files -- widening its signature
+is real restructuring risk, not a safe next step, so that constant
+stays standalone for now.
 """
 from __future__ import annotations
+
+import logging
+from typing import Any
+
+from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
+
+logger = logging.getLogger(__name__)
 
 # "Legacy" policy table: today's exact, individually-verified behavior
 # per CPQModel, reproducing opt_out_and_duplicates.py's two hand-
@@ -65,3 +82,34 @@ def duplicate_display_name_canonical_item_value(cpq_model: str) -> dict[str, str
     return dict(_LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
         (cpq_model or "").strip().upper(), {},
     ))
+
+
+def shadow_check_optional_empty_fill_vns(
+    vn: str, legacy_membership: bool, product_name: str, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> None:
+    """Best-effort, log-only: for each CPQ model `product_name` resolves
+    to, compare `legacy_membership` (today's `_OPTIONAL_EMPTY_FILL_
+    ACCEPTED_VNS` membership check, computed by the caller) against
+    whether `vn` is in `optional_empty_fill_accepted_vns(model)`.
+    Never raises, never returns anything -- purely observational, same
+    contract as `catalog_profile.shadow_check_role_vn`."""
+    if workspace_id is None:
+        return
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+        for model in models:
+            policy_membership = vn in optional_empty_fill_accepted_vns(model)
+            if policy_membership != legacy_membership:
+                logger.warning(
+                    "ModelPolicy shadow mismatch: vn=%r model=%r "
+                    "legacy_membership=%r policy_membership=%r (ws=%s "
+                    "catalog_prefix=%r)",
+                    vn, model, legacy_membership, policy_membership,
+                    workspace_id, catalog_prefix,
+                )
+    except Exception:
+        logger.exception(
+            "ModelPolicy shadow check failed for vn=%r (ws=%s) -- "
+            "ignored, legacy path unaffected", vn, workspace_id,
+        )
