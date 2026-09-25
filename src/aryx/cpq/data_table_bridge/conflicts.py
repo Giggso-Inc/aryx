@@ -7,6 +7,7 @@ calls.
 
 from __future__ import annotations
 
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs,
@@ -35,7 +36,7 @@ def _invalidate_inconsistent_paired_values(
     """
     if workspace_id is None:
         return set()
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
@@ -69,7 +70,7 @@ def find_confirmed_data_table_conflicts(
     """
     if workspace_id is None:
         return set()
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
@@ -100,7 +101,7 @@ def _resolve_via_data_tables(
     """
     if workspace_id is None:
         return None
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return None
     product = filled.get("productSelectionProduct_all", "")
@@ -133,7 +134,7 @@ def _resolve_narrowed_legal_values(
     current filled state; `[v1, v2, ...]` -- the real, catalog-sourced
     legal set, however many members.
     """
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return None
     product = filled.get("productSelectionProduct_all", "")

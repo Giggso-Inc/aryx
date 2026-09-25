@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.engine import (
     _cpq_model_candidates,
     _hiding_rule_needs_missing_data_table,
@@ -45,6 +46,11 @@ def compute_data_table_setup(
     # question instead; every other optional multi-select is unaffected.
     grid_selector_vns = set(engine.resolve_array_grid_links(attrs).keys())
 
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 "scoped" rollout:
+    # resolved once, reused for every use of the Base Model key below --
+    # avoids repeating the same CatalogProfile lookup 3x in one call.
+    base_model_vn = resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache)
+
     # Base Model region-allow resolution (confirmed live, 2026-08-10):
     # NewCountryRegMapping-shaped ("region_rule") Data Table rows carry
     # a real per-(CPQModel, region[, country]) ALLOW default for
@@ -59,7 +65,7 @@ def compute_data_table_setup(
     # (see `resolve_region_allow_value`'s tie-safe contract); otherwise
     # falls through to the unconditional always-ask anchor unchanged.
     bm_region_allow_value: str | None = None
-    if workspace_id is not None and not filled.get("modelSelectionbaseModel_astro"):
+    if workspace_id is not None and not filled.get(base_model_vn):
         bm_product = filled.get("productSelectionProduct_all", "")
         if bm_product:
             bm_country = filled.get("ultimateDestinationCountry") or country or ""
@@ -72,7 +78,7 @@ def compute_data_table_setup(
                 )
                 for bm_cm in bm_primary_candidates:
                     bm_v = dt_resolve_region_allow_value(
-                        "modelSelectionbaseModel_astro", bm_cm, bm_region,
+                        base_model_vn, bm_cm, bm_region,
                         workspace_id, catalog_prefix, dt_cache, country=bm_country,
                     )
                     if bm_v:
@@ -97,7 +103,7 @@ def compute_data_table_setup(
     dt_governed_vns: set[str] = set()
     dt_candidates: tuple[str, ...] = ()
     if workspace_id is not None:
-        dt_base_model = filled.get("modelSelectionbaseModel_astro", "")
+        dt_base_model = filled.get(base_model_vn, "")
         if dt_base_model:
             dt_product = filled.get("productSelectionProduct_all", "")
             dt_primary_candidates = _cpq_model_candidates(

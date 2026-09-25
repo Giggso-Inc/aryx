@@ -74,9 +74,17 @@ def test_shadow_check_never_raises_even_if_resolver_blows_up():
     # No exception propagated -- that's the whole assertion.
 
 
-# ── gated wiring into _invalidate_stale_base_model ───────────────────────
+# ── real resolution wired into _invalidate_stale_base_model ─────────────
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 "scoped" rollout:
+# the pilot slice's gated shadow_check_role_vn call was replaced by an
+# unconditional call to resolve_base_model_vn(), which is itself gated
+# internally (catalog_profile_scoped_resolution_enabled, see catalog_
+# profile.py) -- see test_cpq_catalog_profile_scoped_resolution_2026_09_
+# 25.py for that function's own tests. These tests only cover this call
+# site's wiring: it must call resolve_base_model_vn with the right
+# arguments and pop under whatever key it returns.
 
-def test_shadow_check_not_called_when_flag_disabled():
+def test_resolve_base_model_vn_is_called_and_its_result_is_popped():
     session = CpqSession(
         product_name="APX NEXT XE",
         filled={_BASE_MODEL_VN: "BM_OLD"},
@@ -84,65 +92,60 @@ def test_shadow_check_not_called_when_flag_disabled():
         filled_source={_BASE_MODEL_VN: "cascade"},
     )
     hw_version = _attr(1, "hWVersion_astro")
-    with (
-        patch("aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.get_settings") as mock_cfg,
-        patch(
-            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.shadow_check_role_vn",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = False
-        _invalidate_stale_base_model(
-            session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=704,
-        )
-    mock_shadow.assert_not_called()
-    assert _BASE_MODEL_VN not in session.filled
-
-
-def test_shadow_check_called_when_flag_enabled():
-    session = CpqSession(
-        product_name="APX NEXT XE",
-        filled={_BASE_MODEL_VN: "BM_OLD"},
-        display_filled={_BASE_MODEL_VN: "BM_OLD"},
-        filled_source={_BASE_MODEL_VN: "cascade"},
-    )
-    hw_version = _attr(1, "hWVersion_astro")
-    with (
-        patch("aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.get_settings") as mock_cfg,
-        patch(
-            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.shadow_check_role_vn",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+        return_value=_BASE_MODEL_VN,
+    ) as mock_resolve:
         _invalidate_stale_base_model(
             session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=704,
             catalog_prefix="Astro",
         )
-    mock_shadow.assert_called_once_with(
-        "Base Model", _BASE_MODEL_VN, "APX NEXT XE", 704, "Astro",
-    )
+    mock_resolve.assert_called_once_with(session.filled, 704, "Astro")
     assert _BASE_MODEL_VN not in session.filled
 
 
-def test_shadow_check_not_called_when_no_trigger_fires():
-    """Even with the flag on, an unrelated attribute change must not
-    invoke the shadow check at all -- it only runs inside the branch that
-    actually pops Base Model."""
+def test_pops_under_whatever_key_resolve_base_model_vn_returns():
+    """If resolve_base_model_vn ever resolves to a DIFFERENT key than the
+    literal (only possible with catalog_profile_scoped_resolution_enabled
+    turned on for a workspace with real attrToVarMapping coverage), the
+    pop must follow that resolved key, not the hardcoded literal --
+    otherwise the stale value would never actually get cleared."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={"someOtherCatalogsBaseModelVn": "BM_OLD", _BASE_MODEL_VN: "unrelated"},
+        display_filled={"someOtherCatalogsBaseModelVn": "BM_OLD"},
+        filled_source={"someOtherCatalogsBaseModelVn": "cascade"},
+    )
+    hw_version = _attr(1, "hWVersion_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+        return_value="someOtherCatalogsBaseModelVn",
+    ):
+        _invalidate_stale_base_model(
+            session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert "someOtherCatalogsBaseModelVn" not in session.filled
+    assert "someOtherCatalogsBaseModelVn" not in session.display_filled
+    assert "someOtherCatalogsBaseModelVn" not in session.filled_source
+    # The literal key is untouched -- it was never the real key here.
+    assert session.filled[_BASE_MODEL_VN] == "unrelated"
+
+
+def test_resolve_base_model_vn_not_called_when_no_trigger_fires():
+    """An unrelated attribute change must not invoke resolution at all --
+    it only runs inside the branch that actually pops Base Model."""
     session = CpqSession(
         product_name="APX NEXT XE",
         filled={_BASE_MODEL_VN: "BM_OLD", "billingOption_astro": "NET30"},
     )
     billing = _attr(3, "billingOption_astro")
-    with (
-        patch("aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.get_settings") as mock_cfg,
-        patch(
-            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.shadow_check_role_vn",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+    ) as mock_resolve:
         _invalidate_stale_base_model(
             session, billing, dependent_eids=set(), by_eid={}, workspace_id=704,
         )
-    mock_shadow.assert_not_called()
+    mock_resolve.assert_not_called()
     assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
 
 

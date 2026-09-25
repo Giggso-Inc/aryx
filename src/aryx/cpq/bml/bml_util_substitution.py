@@ -20,6 +20,7 @@ import re
 import time
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table.data_table_cache import _cache_write_if_marker_unchanged, _invalidate_on_marker_change
 from aryx.cpq.engine import (
     _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE,
@@ -92,7 +93,7 @@ def _substitute_util_get_constraint_vals(
     if not attr_match:
         return script
     attr_var_name = attr_match.group(1)
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     product = filled.get("productSelectionProduct_all", "")
     if not base_model:
         return script

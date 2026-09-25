@@ -7,6 +7,7 @@ wrapper over already-external ``data_table_resolver`` calls.
 
 from __future__ import annotations
 
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.data_table.data_table_resolver import (
     attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model,
@@ -48,7 +49,7 @@ def _suppress_ungoverned_attrs(
     """
     if workspace_id is None:
         return attrs, set()
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return attrs, set()
     product = filled.get("productSelectionProduct_all", "")

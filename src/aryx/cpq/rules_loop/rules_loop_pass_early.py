@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from aryx.config import get_settings
-from aryx.cpq.catalog_profile import shadow_check_role_vn
+from aryx.cpq.catalog_profile import resolve_base_model_vn, shadow_check_role_vn
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
@@ -64,7 +64,9 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # the equality check on the very next turn.
     _hidden_ms_key = (
         state.filled.get("productSelectionProduct_all", "") + "\x1f"
-        + state.filled.get("modelSelectionbaseModel_astro", "")
+        + state.filled.get(
+            resolve_base_model_vn(state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache), "",
+        )
     )
     if (
         "hiddenMasterStringForAstroPortable_astro" not in state.filled

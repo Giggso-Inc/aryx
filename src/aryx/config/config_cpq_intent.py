@@ -146,6 +146,32 @@ class CpqIntentSettingsMixin(BaseSettings):
             "shadow-mode disagreement data."
         ),
     )
+    catalog_profile_scoped_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 'scoped' "
+            "rollout: makes resolve_base_model_vn() (and, if added later, "
+            "any sibling resolve_<role>_vn() function) actually GOVERN the "
+            "real key modelSelectionbaseModel_astro's value is read/popped "
+            "under, across all ~16 of that literal's real call sites, "
+            "instead of only shadow-logging. Off by default -- checked "
+            "FIRST, before any other work, in every one of those functions: "
+            "live-confirmed (a hung unit test caught this before it "
+            "shipped) that an ungated version pays a real, uncached "
+            "~265s-class RDB round trip on its first call in any 300s "
+            "window, and this is now called from ~16 sites, several in hot "
+            "loops (one per rules-loop pass) -- unconditionally live would "
+            "have been a severe latency regression on the very first turn "
+            "to reach any of them. When off, every one of those ~16 sites "
+            "behaves byte-identically to before this rollout (returns the "
+            "hardcoded literal immediately, no RDB call at all). Override "
+            "with ARYX_CATALOG_PROFILE_SCOPED_RESOLUTION_ENABLED=true only "
+            "for a deployment/workspace confirmed to have real "
+            "attrToVarMapping coverage -- as of 2026-09-25, live-checked: "
+            "none of the 24 real workspaces in this session's dev_oci "
+            "environment do."
+        ),
+    )
     cpq_intent_mode: str = Field(
         default="llm_first",
         description=(

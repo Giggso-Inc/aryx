@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.engine import _condition_value_matches
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.state import ConfigAttr, HidingRule
@@ -92,7 +93,9 @@ def apply_hiding_rules(
                 # missing the patch -- same pitfall already documented
                 # for the re-export hubs elsewhere in this codebase).
                 import aryx.cpq.engine as _engine_module  # noqa: PLC0415
-                base_model = filled.get("modelSelectionbaseModel_astro", "")
+                base_model = filled.get(
+                    resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), "",
+                )
                 product = filled.get("productSelectionProduct_all", "")
                 if base_model:
                     candidates = _engine_module._cpq_model_candidates(

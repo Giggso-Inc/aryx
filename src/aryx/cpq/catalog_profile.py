@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_product import resolve_variable_name_for_role
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 
@@ -76,6 +77,39 @@ class CatalogProfile:
             if resolved is not None:
                 return resolved
         return None
+
+    def resolved_vn_or(self, role: str, literal_vn: str) -> str:
+        """The real attrToVarMapping-resolved variable_name for `role`
+        when available, falling back to `literal_vn` otherwise --
+        CatalogProfile's own priority order, step 4 ("today's literal
+        where it exists, keeps APX NEXT identical"). This is the real,
+        governing resolution (unlike `shadow_check`, which only
+        observes): callers should use this value directly, not compare
+        against it. Logs a warning when the resolved value disagrees
+        with the literal -- same signal `shadow_check` surfaces, now
+        feeding the real decision instead of only observing it. Never
+        raises -- a resolution failure (e.g. an RDB error) must never
+        break the real path calling this; it just falls back to the
+        literal, exactly like "no attrToVarMapping coverage" does."""
+        try:
+            resolved = self.resolved_vn(role)
+        except Exception:
+            logger.exception(
+                "CatalogProfile resolution failed for role=%r literal=%r "
+                "(ws=%s) -- falling back to the literal",
+                role, literal_vn, self.workspace_id,
+            )
+            return literal_vn
+        if resolved is None:
+            return literal_vn
+        if resolved != literal_vn:
+            logger.warning(
+                "CatalogProfile resolved a different variable_name than "
+                "the literal for role=%r: literal=%r resolved=%r (ws=%s "
+                "catalog_prefix=%r) -- using the resolved value",
+                role, literal_vn, resolved, self.workspace_id, self.catalog_prefix,
+            )
+        return resolved
 
     def shadow_check(self, role: str, literal_vn: str) -> None:
         """Best-effort, log-only: for each of `self.cpq_models`,
@@ -133,3 +167,64 @@ def shadow_check_role_vn(
         )
         return
     profile.shadow_check(role, literal_vn)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 "scoped" rollout (T1): real, governing resolution for individual
+# roles -- one free function per role, each the SINGLE place its literal is
+# declared, so every one of that literal's call sites resolves through the
+# same function instead of independently re-declaring the string (the exact
+# T10 drift pattern this whole audit is about). Each falls back to today's
+# literal whenever resolution is unavailable, so a caller with no
+# workspace_id/product yet, or a workspace with no attrToVarMapping
+# coverage (confirmed live 2026-09-25: true for every real workspace this
+# session could check), behaves identically to before this existed.
+# ---------------------------------------------------------------------------
+
+BASE_MODEL_LITERAL = "modelSelectionbaseModel_astro"
+
+
+def resolve_base_model_vn(
+    filled: dict[str, str] | None, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> str:
+    """The real key `filled` stores Base Model's value under, for the
+    session's actual CPQ model -- resolves via `CatalogProfile.
+    resolved_vn_or`, falling back to `BASE_MODEL_LITERAL` when `filled`/
+    `workspace_id`/Product aren't available yet, or when the workspace's
+    attrToVarMapping data doesn't cover this role. Never raises.
+
+    Every real call site for this literal should go through this one
+    function rather than building its own `CatalogProfile` -- keeps
+    every site's resolution result identical within one turn (same
+    inputs -> same `_cpq_model_candidates` call -> same answer) instead
+    of risking independent drift.
+
+    Gated behind `catalog_profile_scoped_resolution_enabled` (default
+    off), checked FIRST, before anything else: live-confirmed (a hung
+    unit test caught this before it shipped) that an ungated version of
+    this function pays a real, uncached ~265s-class RDB round trip on
+    its first call in any 300s window -- and this function is now
+    called from ~16 sites, several in hot loops (one per rules-loop
+    pass). Unconditionally live across that many sites would have been
+    a severe latency regression on the very first turn to reach any of
+    them, the same class of bug this session already fixed twice
+    elsewhere. Off by default until a workspace with real
+    attrToVarMapping coverage exists to turn it on for.
+    """
+    if not get_settings().catalog_profile_scoped_resolution_enabled:
+        return BASE_MODEL_LITERAL
+    if not filled or workspace_id is None:
+        return BASE_MODEL_LITERAL
+    product = filled.get("productSelectionProduct_all", "")
+    if not product:
+        return BASE_MODEL_LITERAL
+    try:
+        profile = CatalogProfile.for_product(product, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "CatalogProfile resolution failed for role='Base Model' (ws=%s) "
+            "-- falling back to the literal", workspace_id,
+        )
+        return BASE_MODEL_LITERAL
+    return profile.resolved_vn_or("Base Model", BASE_MODEL_LITERAL)

@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 
 
 def mandatory_tier_c_vns(
@@ -60,7 +61,7 @@ def mandatory_tier_c_vns(
     """
     if not filled or workspace_id is None:
         return frozenset()
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return frozenset()
     product = filled.get("productSelectionProduct_all", "")

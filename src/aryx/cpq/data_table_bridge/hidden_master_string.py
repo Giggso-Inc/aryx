@@ -7,6 +7,7 @@ wrapper over already-external ``data_table_resolver`` calls.
 
 from __future__ import annotations
 
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.data_table.data_table_resolver import (
     governed_attr_names_for_base_model as dt_governed_attr_names_for_base_model,
@@ -35,7 +36,7 @@ def _compute_hidden_master_string(
     if workspace_id is None:
         return None
     product = filled.get("productSelectionProduct_all", "")
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not product or not base_model:
         return None
     cands = _cpq_model_candidates(
