@@ -14,6 +14,7 @@ from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import (
     _invalidate_stale_base_model,
 )
 from aryx.cpq.catalog_profile import shadow_check_role_vn
+from aryx.cpq.payload_building.anchor_exclusions import _data_table_resolved_anchor_vns
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 
@@ -141,3 +142,65 @@ def test_shadow_check_not_called_when_no_trigger_fires():
         )
     mock_shadow.assert_not_called()
     assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
+
+
+# ── gated wiring into _data_table_resolved_anchor_vns (Region role) ─────
+
+def test_region_shadow_check_not_called_when_flag_disabled():
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "ultimateDestinationCountry": "United States",
+    }
+    attr = _attr(1, "modelSelectionbaseModel_astro")
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
+        ) as mock_shadow,
+        patch("aryx.cpq.engine._cpq_model_candidates", return_value=()),
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = False
+        _data_table_resolved_anchor_vns(None, filled, [attr], 704)
+    mock_shadow.assert_not_called()
+
+
+def test_region_shadow_check_called_when_flag_enabled():
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "ultimateDestinationCountry": "United States",
+    }
+    attr = _attr(1, "modelSelectionbaseModel_astro")
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
+        ) as mock_shadow,
+        patch("aryx.cpq.engine._cpq_model_candidates", return_value=()),
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+        _data_table_resolved_anchor_vns(None, filled, [attr], 704, "Astro")
+    mock_shadow.assert_called_once_with(
+        "Region", "modelSelectionRegion_astro", "APX NEXT ENHANCED", 704, "Astro", None,
+    )
+
+
+def test_region_shadow_check_not_called_when_no_product():
+    """Even with the flag on, an empty product must not invoke the shadow
+    check at all -- it only runs after the function's own early-return
+    guards for filled/attrs/workspace_id/product."""
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
+        ) as mock_cfg,
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
+        ) as mock_shadow,
+    ):
+        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+        result = _data_table_resolved_anchor_vns(None, {}, [_attr(1, "x")], 704)
+    mock_shadow.assert_not_called()
+    assert result == frozenset()
