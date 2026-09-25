@@ -29,6 +29,7 @@ from falkordb import FalkorDB
 from aryx.config import get_settings
 from aryx.graph.reader_queries import (
     _all_relationships,
+    _count_entities,
     _describe_schema,
     _distinct_types,
     _find_entities,
@@ -98,6 +99,10 @@ class GraphReader:
     def distinct_types(self) -> list[str]:
         """Every distinct entity type in the graph — deterministic, no sampling."""
         return _distinct_types(self._query)
+
+    def count_entities(self, ontology_type: str | None = None) -> int:
+        """True entity count (optionally scoped to one type) — never capped."""
+        return _count_entities(self._query, ontology_type)
 
     def describe_schema(self, sample_per_type: int = 25) -> dict[str, Any]:
         """Describe the graph schema as it actually exists, for query generation."""

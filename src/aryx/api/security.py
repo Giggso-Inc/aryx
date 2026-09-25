@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 _EXEMPT_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
 _EXEMPT_PREFIXES = ("/mcp",)
 
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: all three .env.example*
+# files ship ARYX_INTERNAL_API_KEY set to this exact placeholder. A real
+# deployment that copies an example file and never rotates it would have
+# _verify_key() accept this publicly-known string as a valid shared
+# secret. Rejected outright below rather than trusted like any other
+# configured value -- a deployment still on the placeholder is treated
+# the same as one with no internal key configured at all (falls through
+# to McpTokenStore, which has its own real per-token verification).
+_PLACEHOLDER_INTERNAL_KEYS = frozenset({"change_me_internal_aryx_token"})
+_MIN_INTERNAL_KEY_LENGTH = 16
+
 
 def _has_authenticated_header(request: Request) -> bool:
     """Allow only verified Aryx API keys or verified bearer tokens."""
@@ -106,7 +117,12 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
 def _verify_key(key: str) -> bool:
     """Verify an API key against the shared internal key or McpTokenStore."""
     configured_internal_key = os.environ.get("ARYX_INTERNAL_API_KEY", "").strip()
-    if configured_internal_key and key == configured_internal_key:
+    if (
+        configured_internal_key
+        and configured_internal_key not in _PLACEHOLDER_INTERNAL_KEYS
+        and len(configured_internal_key) >= _MIN_INTERNAL_KEY_LENGTH
+        and key == configured_internal_key
+    ):
         return True
 
     try:

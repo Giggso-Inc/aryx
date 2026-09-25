@@ -260,3 +260,34 @@ class TestChatWorkspaceThreading:
             chat("answer", "sys", "user")  # no workspace_id
 
         assert captured.get("workspace_id") == 1
+
+
+# ---------------------------------------------------------------------------
+# _graph_stats — must use the true, uncapped count_entities(), not
+# len(find_entities(limit=500))
+# ---------------------------------------------------------------------------
+
+class TestGraphStatsUsesTrueCount:
+    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: the dashboard's entity
+    count was capped at 500 regardless of the workspace's real size."""
+
+    def test_graph_stats_reports_count_beyond_the_old_500_cap(self):
+        mock_reader = MagicMock()
+        mock_reader.count_entities.return_value = 8400
+        mock_reader.all_relationships.return_value = [MagicMock()] * 3
+
+        with patch("aryx.api.observability_api.ports") as mock_ports:
+            mock_ports.return_value.graph_reader.return_value = mock_reader
+            from aryx.api.observability_api import _graph_stats
+            result = _graph_stats(workspace_id=1)
+
+        assert result == {"entities": 8400, "relationships": 3}
+        mock_reader.find_entities.assert_not_called()
+
+    def test_graph_stats_fails_closed_to_zero_on_reader_error(self):
+        with patch("aryx.api.observability_api.ports") as mock_ports:
+            mock_ports.return_value.graph_reader.side_effect = RuntimeError("no graph")
+            from aryx.api.observability_api import _graph_stats
+            result = _graph_stats(workspace_id=1)
+
+        assert result == {"entities": 0, "relationships": 0}

@@ -10113,42 +10113,42 @@
     ],
     [
       "src/aryx/api/connect_api.py",
-      96,
+      97,
       "connect_router"
     ],
     [
       "src/aryx/api/connect_api.py",
-      100,
+      101,
       "connect"
     ],
     [
       "src/aryx/api/connect_api.py",
-      107,
+      108,
       "connect"
     ],
     [
       "src/aryx/api/connect_api.py",
-      111,
+      112,
       "discover"
     ],
     [
       "src/aryx/api/connect_api.py",
-      115,
+      116,
       "discover"
     ],
     [
       "src/aryx/api/connect_api.py",
-      118,
+      119,
       "ingest_multi"
     ],
     [
       "src/aryx/api/connect_api.py",
-      130,
+      132,
       "ingest_multi"
     ],
     [
       "src/aryx/api/connect_api.py",
-      133,
+      135,
       "connect_router"
     ],
     [
@@ -10373,17 +10373,17 @@
     ],
     [
       "src/aryx/api/observability_api.py",
-      56,
+      59,
       "observability_router"
     ],
     [
       "src/aryx/api/observability_api.py",
-      60,
+      63,
       "observability"
     ],
     [
       "src/aryx/api/observability_api.py",
-      71,
+      74,
       "observability_router"
     ],
     [
@@ -10503,7 +10503,7 @@
     ],
     [
       "src/aryx/api/security.py",
-      60,
+      71,
       "dispatch"
     ],
     [
@@ -10518,7 +10518,7 @@
     ],
     [
       "src/aryx/api/ssrf_guard.py",
-      51,
+      57,
       "check_outbound_url"
     ],
     [

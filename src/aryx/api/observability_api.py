@@ -45,9 +45,12 @@ def _recent_llm(conn: Any, workspace_id: int) -> list[dict[str, Any]]:
 
 
 def _graph_stats(workspace_id: int) -> dict[str, int]:
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: len(find_entities(limit=500))
+    # silently capped the dashboard's entity count at 500 regardless of the
+    # workspace's real size. count_entities() is a true, uncapped count.
     try:
         reader = ports().graph_reader(workspace_id)
-        return {"entities": len(reader.find_entities(limit=500)),
+        return {"entities": reader.count_entities(),
                 "relationships": len(reader.all_relationships())}
     except Exception:
         return {"entities": 0, "relationships": 0}

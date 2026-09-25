@@ -39,6 +39,21 @@ def _distinct_types(query: _Query) -> list[str]:
     return [r[0] for r in rows if r[0]]
 
 
+def _count_entities(query: _Query, ontology_type: str | None = None) -> int:
+    """True entity count — never sampled/capped, unlike find_entities(limit=N).
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: callers that only need a
+    count (workspace overview, observability dashboard) were doing
+    len(find_entities(limit=500)), silently under-reporting any workspace
+    with more than 500 entities.
+    """
+    if ontology_type:
+        rows = query("MATCH (e:Entity {type: $t}) RETURN count(e)", {"t": ontology_type})
+    else:
+        rows = query("MATCH (e:Entity) RETURN count(e)")
+    return int(rows[0][0]) if rows else 0
+
+
 def _describe_schema(query: _Query, types: list[str], sample_per_type: int) -> dict[str, Any]:
     """Describe the graph schema as it actually exists, for query generation.
 

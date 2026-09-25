@@ -41,6 +41,29 @@ class _OracleGraphBasicReadMixin:
                 )
                 return [r[0] for r in cur.fetchall() if r[0]]
 
+    def count_entities(self, ontology_type: str | None = None) -> int:
+        """True entity count (optionally scoped to one type) — never capped.
+
+        CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: callers that only need
+        a count were doing len(find_entities(limit=500)), silently
+        under-reporting any workspace with more than 500 entities.
+        """
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                if ontology_type:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM aryx_graph_vertex "
+                        "WHERE workspace_id = :1 AND type = :2",
+                        (self._workspace_id, ontology_type),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM aryx_graph_vertex WHERE workspace_id = :1",
+                        (self._workspace_id,),
+                    )
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+
     def describe_schema(self, sample_per_type: int = 25) -> dict[str, Any]:
         """Describe the actual stored schema for query generation (port parity).
 

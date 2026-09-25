@@ -28,21 +28,34 @@ def build(reader: GraphReader, workspace_id: int) -> str:
 
 
 def _kinds(reader: GraphReader) -> list[str]:
-    """Group entities by ontology type; show count + 3 sample names per kind."""
-    by_type: dict[str, list[str]] = {}
+    """List every entity type with its TRUE count + 3 sample names.
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: previously grouped a single
+    find_entities(limit=500) scan by type, so both the type list and the
+    per-type counts silently went wrong on any workspace with more than 500
+    entities (missing types entirely, under-counting the ones that did show
+    up). distinct_types() + count_entities(t) are each deterministic, no
+    sampling — same reasoning distinct_types()'s own docstring already gives
+    for why find_entities(limit=N) can't be used to discover types either.
+    """
     try:
-        for e in reader.find_entities(limit=500):
-            by_type.setdefault(e.get("type", "?"), []).append(e.get("name", ""))
+        types = reader.distinct_types()
     except Exception as exc:  # noqa: BLE001
         logger.debug("overview kinds skipped: %s", exc)
         return []
-    if not by_type:
+    if not types:
         return []
     lines = ["Kinds tracked:"]
-    for t in sorted(by_type):
-        samples = [n for n in by_type[t] if n][:3]
+    for t in sorted(types):
+        try:
+            count = reader.count_entities(t)
+            samples = [e.get("name", "") for e in reader.find_entities(ontology_type=t, limit=3)]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("overview kind %s skipped: %s", t, exc)
+            continue
+        samples = [n for n in samples if n]
         eg = f"  (e.g. {', '.join(samples)})" if samples else ""
-        lines.append(f"  - {t}: {len(by_type[t])} records{eg}")
+        lines.append(f"  - {t}: {count} records{eg}")
     return lines
 
 
