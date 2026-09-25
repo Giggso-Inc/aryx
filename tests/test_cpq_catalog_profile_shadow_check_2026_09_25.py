@@ -13,7 +13,7 @@ from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import (
     _BASE_MODEL_VN,
     _invalidate_stale_base_model,
 )
-from aryx.cpq.catalog_profile import shadow_check_role_vn
+from aryx.cpq.catalog_profile import CatalogProfile, shadow_check_role_vn
 from aryx.cpq.payload_building.anchor_exclusions import _data_table_resolved_anchor_vns
 from aryx.cpq.state import ConfigAttr, CpqSession
 
@@ -204,3 +204,93 @@ def test_region_shadow_check_not_called_when_no_product():
         result = _data_table_resolved_anchor_vns(None, {}, [_attr(1, "x")], 704)
     mock_shadow.assert_not_called()
     assert result == frozenset()
+
+
+# ── CatalogProfile class itself ──────────────────────────────────────────
+
+def test_for_product_resolves_cpq_models_once():
+    with patch(
+        "aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT", "APXNEXT_BOM"),
+    ) as mock_candidates:
+        profile = CatalogProfile.for_product("Product X", 704, "Astro")
+    mock_candidates.assert_called_once_with("Product X", 704, "Astro", None)
+    assert profile.workspace_id == 704
+    assert profile.catalog_prefix == "Astro"
+    assert profile.cpq_models == ("APXNEXT", "APXNEXT_BOM")
+
+
+def test_resolved_vn_returns_first_matching_candidates_result():
+    profile = CatalogProfile(
+        workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT", "APXNEXT_BOM"),
+    )
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=lambda model, role, *a, **k: (
+            "modelSelectionbaseModel_astro" if model == "APXNEXT" else None
+        ),
+    ) as mock_resolve:
+        assert profile.resolved_vn("Base Model") == "modelSelectionbaseModel_astro"
+    # Only the first (matching) candidate needs to be tried.
+    mock_resolve.assert_called_once()
+
+
+def test_resolved_vn_tries_every_candidate_before_giving_up():
+    profile = CatalogProfile(
+        workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT", "APXNEXT_BOM"),
+    )
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=lambda model, role, *a, **k: (
+            "modelSelectionbaseModel_astro" if model == "APXNEXT_BOM" else None
+        ),
+    ):
+        assert profile.resolved_vn("Base Model") == "modelSelectionbaseModel_astro"
+
+
+def test_resolved_vn_none_when_no_candidate_resolves():
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with patch("aryx.cpq.catalog_profile.resolve_variable_name_for_role", return_value=None):
+        assert profile.resolved_vn("Some Unmapped Role") is None
+
+
+def test_shadow_check_on_the_class_logs_mismatch(caplog):
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with (
+        patch(
+            "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+            return_value="someOtherVarName_astro",
+        ),
+        caplog.at_level(logging.WARNING, logger="aryx.cpq.catalog_profile"),
+    ):
+        profile.shadow_check("Base Model", "modelSelectionbaseModel_astro")
+    assert any("CatalogProfile shadow mismatch" in r.message for r in caplog.records)
+
+
+def test_shadow_check_on_the_class_never_raises():
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=RuntimeError("boom"),
+    ):
+        profile.shadow_check("Base Model", "modelSelectionbaseModel_astro")
+    # No exception propagated -- that's the whole assertion.
+
+
+def test_shadow_check_role_vn_wrapper_delegates_to_a_fresh_profile():
+    """The backward-compatible free function must build exactly one
+    CatalogProfile per call and delegate to its shadow_check -- not
+    duplicate the comparison logic."""
+    with (
+        patch("aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT",)),
+        patch.object(CatalogProfile, "shadow_check") as mock_method,
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704, "Astro")
+    mock_method.assert_called_once_with("Base Model", "modelSelectionbaseModel_astro")
+
+
+def test_shadow_check_role_vn_wrapper_never_raises_if_candidates_lookup_fails():
+    with patch(
+        "aryx.cpq.catalog_profile._cpq_model_candidates", side_effect=RuntimeError("boom"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    # No exception propagated -- that's the whole assertion.
