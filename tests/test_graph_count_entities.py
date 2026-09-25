@@ -79,3 +79,87 @@ def test_oracle_count_entities_scoped_to_type_adds_type_predicate():
 def test_oracle_count_entities_no_row_returns_zero():
     reader, cur = _make_oracle_reader(None)
     assert reader.count_entities() == 0
+
+
+# ---------------------------------------------------------------------------
+# type_overview() -- one grouped query (two on Oracle) instead of one
+# count_entities(t)/find_entities(ontology_type=t) round trip PER type.
+#
+# T11 follow-up (real-data testing against workspace 704, 2026-09-25): the
+# original per-type-loop version of ask_overview._kinds() measured at ~276s
+# against a 109-type/204k-entity real workspace. type_overview() is the fix.
+# ---------------------------------------------------------------------------
+
+def test_falkor_type_overview_uses_one_grouped_query():
+    reader = _make_falkor_reader([
+        ["Widget", 12000, ["Alpha", "Beta", "Gamma"]],
+        ["Gadget", 3, ["only-one"]],
+    ])
+    overview = reader.type_overview(sample_limit=3)
+    assert overview == {
+        "Widget": {"count": 12000, "samples": ["Alpha", "Beta", "Gamma"]},
+        "Gadget": {"count": 3, "samples": ["only-one"]},
+    }
+    assert reader._query.call_count == 1
+    cypher = reader._query.call_args[0][0]
+    assert "count(e)" in cypher
+    assert "collect(e.name)" in cypher
+    assert "[0..3]" in cypher
+
+
+def test_falkor_type_overview_drops_falsy_sample_names():
+    reader = _make_falkor_reader([["Widget", 2, ["Alpha", None, ""]]])
+    overview = reader.type_overview()
+    assert overview["Widget"]["samples"] == ["Alpha"]
+
+
+def test_falkor_type_overview_empty_graph_returns_empty_dict():
+    reader = _make_falkor_reader([])
+    assert reader.type_overview() == {}
+
+
+def _make_oracle_reader_multi(fetchall_returns):
+    with patch("aryx.store.oracle_pool.get_oracle_pool") as mock_get_pool:
+        mock_pool = MagicMock()
+        mock_get_pool.return_value = mock_pool
+        reader = OracleGraphReader("tcps://test:1522/db", workspace_id=7)
+    cur = MagicMock()
+    cur.fetchall.side_effect = fetchall_returns
+    mock_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = cur
+    return reader, cur
+
+
+def test_oracle_type_overview_issues_exactly_two_queries():
+    reader, cur = _make_oracle_reader_multi([
+        [("Widget", 12000), ("Gadget", 3)],
+        [("Widget", "Alpha"), ("Widget", "Beta"), ("Gadget", "only-one")],
+    ])
+    overview = reader.type_overview(sample_limit=3)
+    assert overview == {
+        "Widget": {"count": 12000, "samples": ["Alpha", "Beta"]},
+        "Gadget": {"count": 3, "samples": ["only-one"]},
+    }
+    assert cur.execute.call_count == 2
+    count_sql, count_params = cur.execute.call_args_list[0][0]
+    assert "GROUP BY type" in count_sql
+    assert count_params == (7,)
+    sample_sql, sample_params = cur.execute.call_args_list[1][0]
+    assert "ROW_NUMBER()" in sample_sql
+    assert sample_params == (7, 3)
+
+
+def test_oracle_type_overview_empty_workspace_returns_empty_dict():
+    reader, cur = _make_oracle_reader_multi([[], []])
+    assert reader.type_overview() == {}
+
+
+def test_oracle_type_overview_ignores_sample_rows_for_unknown_type():
+    """A sample row for a type absent from the count query (shouldn't
+    happen, but the two queries aren't transactionally linked) must not
+    crash or fabricate a type entry."""
+    reader, cur = _make_oracle_reader_multi([
+        [("Widget", 5)],
+        [("Widget", "Alpha"), ("Ghost", "phantom")],
+    ])
+    overview = reader.type_overview()
+    assert overview == {"Widget": {"count": 5, "samples": ["Alpha"]}}

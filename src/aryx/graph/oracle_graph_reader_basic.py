@@ -41,6 +41,44 @@ class _OracleGraphBasicReadMixin:
                 )
                 return [r[0] for r in cur.fetchall() if r[0]]
 
+    def type_overview(self, sample_limit: int = 3) -> dict[str, dict[str, Any]]:
+        """Per-type {count, samples} for every type in one round trip each.
+
+        docs/CPQ_HARDCODE_AUDIT_dev_oci_2026-09-25.md T11 follow-up: calling
+        count_entities(t)/find_entities(ontology_type=t, limit=N) once per
+        distinct type is a real-data-confirmed latency bug, not a
+        hypothetical one -- measured against workspace 704 (109 types,
+        204k entities), that loop took ~276s (~2.5s/type * 109), because
+        ask_overview.build() (which needs exactly this per-type count+
+        samples shape) runs on every non-quote /ask turn. Two grouped
+        queries here replace up to 218 round trips with 2.
+        """
+        limit = max(1, int(sample_limit))
+        overview: dict[str, dict[str, Any]] = {}
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT type, COUNT(*) FROM aryx_graph_vertex "
+                    "WHERE workspace_id = :1 GROUP BY type ORDER BY type",
+                    (self._workspace_id,),
+                )
+                for t, cnt in cur.fetchall():
+                    if t:
+                        overview[t] = {"count": int(cnt), "samples": []}
+
+                cur.execute(
+                    "SELECT type, name FROM ( "
+                    "  SELECT type, name, ROW_NUMBER() OVER "
+                    "    (PARTITION BY type ORDER BY entity_id) AS rn "
+                    "  FROM aryx_graph_vertex WHERE workspace_id = :1 "
+                    ") WHERE rn <= :2 ORDER BY type, rn",
+                    (self._workspace_id, limit),
+                )
+                for t, name in cur.fetchall():
+                    if t in overview and name:
+                        overview[t]["samples"].append(name)
+        return overview
+
     def count_entities(self, ontology_type: str | None = None) -> int:
         """True entity count (optionally scoped to one type) — never capped.
 

@@ -38,6 +38,7 @@ from aryx.graph.reader_queries import (
     _neighbors_batch,
     _provenance,
     _shortest_path,
+    _type_overview,
 )
 from aryx.graph.reader_subgraph import _build_subgraph
 
@@ -103,6 +104,10 @@ class GraphReader:
     def count_entities(self, ontology_type: str | None = None) -> int:
         """True entity count (optionally scoped to one type) — never capped."""
         return _count_entities(self._query, ontology_type)
+
+    def type_overview(self, sample_limit: int = 3) -> dict[str, dict[str, Any]]:
+        """Per-type {count, samples} for every type in a single query."""
+        return _type_overview(self._query, sample_limit)
 
     def describe_schema(self, sample_per_type: int = 25) -> dict[str, Any]:
         """Describe the graph schema as it actually exists, for query generation."""
