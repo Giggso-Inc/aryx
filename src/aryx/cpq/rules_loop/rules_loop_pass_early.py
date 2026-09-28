@@ -11,8 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from aryx.config import get_settings
-from aryx.cpq.catalog_profile import resolve_base_model_vn, shadow_check_role_vn
+from aryx.cpq.catalog_profile import resolve_base_model_vn, resolve_hidden_master_string_vn
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
@@ -68,33 +67,32 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
             resolve_base_model_vn(state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache), "",
         )
     )
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3: `hidden_ms_vn` is
+    # the real key this value is stored/checked under, falling back to the
+    # `hiddenMasterStringForAstroPortable_astro` literal when resolution is
+    # unavailable. This started as a shadow-only, log-only comparison
+    # (pilot slice, 2e89df8b) and became real once every other call site
+    # for this literal was switched over together (2026-09-25) -- this is
+    # the ONLY real call site (`_SYNTHETIC_ENGINE_VARS` in bom_gate_noise.py
+    # is a confirmed structural exclusion: `check_provenance` has no
+    # workspace_id/catalog_prefix in its signature at all, and widening it
+    # is the same class of restructuring risk already ruled out for T6's
+    # `mandatory_tier_c_vns`).
+    hidden_ms_vn = resolve_hidden_master_string_vn(
+        state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
+    )
+    _hidden_ms_computed_for_key = f"_{hidden_ms_vn}_computed_for"
     if (
-        "hiddenMasterStringForAstroPortable_astro" not in state.filled
-        or state.filled.get("_hiddenMasterStringForAstroPortable_astro_computed_for")
-        != _hidden_ms_key
+        hidden_ms_vn not in state.filled
+        or state.filled.get(_hidden_ms_computed_for_key) != _hidden_ms_key
     ):
-        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 follow-up:
-        # shadow-only comparison against CatalogProfile for this same
-        # literal -- never changes the real computation below. Gated
-        # off by default (catalog_profile_shadow_check_enabled). Unlike
-        # Base Model/Region, "Hidden Master String" has no live-
-        # confirmed attrToVarMapping role label -- this attribute is
-        # synthetic (computed from attrSequence, never a real catalog
-        # menu item), so it may simply never resolve to anything;
-        # shadow mode is how that gets confirmed either way.
-        if get_settings().catalog_profile_shadow_check_enabled:
-            shadow_check_role_vn(
-                "Hidden Master String", "hiddenMasterStringForAstroPortable_astro",
-                state.filled.get("productSelectionProduct_all", ""),
-                scope.workspace_id, scope.catalog_prefix, state.dt_cache,
-            )
         _hidden_ms = engine._compute_hidden_master_string(
             state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
-            attrs=state.attrs,
+            attrs=state.attrs, var_name=hidden_ms_vn,
         )
         if _hidden_ms is not None:
-            state.filled["hiddenMasterStringForAstroPortable_astro"] = _hidden_ms
-            state.filled["_hiddenMasterStringForAstroPortable_astro_computed_for"] = _hidden_ms_key
+            state.filled[hidden_ms_vn] = _hidden_ms
+            state.filled[_hidden_ms_computed_for_key] = _hidden_ms_key
 
     # Apply hiding rules first so auto_fill only fills visible attrs
     state.attrs, _msgs, hidden_vns = engine.apply_hiding_rules(

@@ -264,3 +264,48 @@ def resolve_region_vn(
         )
         return REGION_LITERAL
     return profile.resolved_vn_or("Region", REGION_LITERAL)
+
+
+HIDDEN_MASTER_STRING_LITERAL = "hiddenMasterStringForAstroPortable_astro"
+
+
+def resolve_hidden_master_string_vn(
+    filled: dict[str, str] | None, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> str:
+    """The real key `filled` stores the Hidden Master String's value
+    under, for the session's actual CPQ model -- resolves via
+    `CatalogProfile.resolved_vn_or`, falling back to
+    `HIDDEN_MASTER_STRING_LITERAL` when `filled`/`workspace_id`/Product
+    aren't available yet, or when the workspace's attrToVarMapping data
+    doesn't cover this role. Never raises.
+
+    Unlike Base Model/Region, "Hidden Master String" has no live-
+    confirmed attrToVarMapping role label -- this attribute is
+    synthetic (computed from the ingested attrSequence Data Table, never
+    a real catalog menu item a customer sees), so it may simply never
+    resolve to anything in any real catalog. That's fine: the fallback
+    contract here is identical either way, and this function exists so
+    the code path is ready the moment that assumption is ever proven
+    wrong, exactly like `resolve_base_model_vn`/`resolve_region_vn`.
+
+    Same contract, same gate (`catalog_profile_scoped_resolution_
+    enabled`), same reasoning as the other two -- see
+    `resolve_base_model_vn`'s docstring for the full safety rationale.
+    """
+    if not get_settings().catalog_profile_scoped_resolution_enabled:
+        return HIDDEN_MASTER_STRING_LITERAL
+    if not filled or workspace_id is None:
+        return HIDDEN_MASTER_STRING_LITERAL
+    product = filled.get("productSelectionProduct_all", "")
+    if not product:
+        return HIDDEN_MASTER_STRING_LITERAL
+    try:
+        profile = CatalogProfile.for_product(product, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "CatalogProfile resolution failed for role='Hidden Master String' "
+            "(ws=%s) -- falling back to the literal", workspace_id,
+        )
+        return HIDDEN_MASTER_STRING_LITERAL
+    return profile.resolved_vn_or("Hidden Master String", HIDDEN_MASTER_STRING_LITERAL)

@@ -383,59 +383,58 @@ def _mock_engine() -> MagicMock:
     return engine
 
 
-def test_hidden_master_string_shadow_check_not_called_when_flag_disabled():
+def test_resolve_hidden_master_string_vn_is_called_with_right_args():
     with (
         patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
-        ) as mock_shadow,
+            "aryx.cpq.rules_loop.rules_loop_pass_early.resolve_hidden_master_string_vn",
+            return_value="hiddenMasterStringForAstroPortable_astro",
+        ) as mock_resolve,
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.resolve_base_model_vn", return_value="modelSelectionbaseModel_astro"),
         patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
     ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = False
-        run_early_pass(_mock_engine(), 1, _loop_state(), _loop_scope())
-    mock_shadow.assert_not_called()
+        state = _loop_state()
+        run_early_pass(_mock_engine(), 1, state, _loop_scope())
+    mock_resolve.assert_called_once_with(state.filled, 704, "Astro", state.dt_cache)
 
 
-def test_hidden_master_string_shadow_check_called_when_flag_enabled():
+def test_hidden_master_string_written_under_whatever_key_resolve_returns():
+    """If resolve_hidden_master_string_vn ever resolves to a DIFFERENT key
+    than the literal (only possible with catalog_profile_scoped_
+    resolution_enabled turned on for a workspace with real attrToVarMapping
+    coverage), the computed value must be written/tracked under that
+    resolved key, not the hardcoded literal -- and passed through to
+    _compute_hidden_master_string's own var_name parameter too."""
+    engine = _mock_engine()
+    engine._compute_hidden_master_string.return_value = "x@@@"
     with (
         patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
-        ) as mock_shadow,
+            "aryx.cpq.rules_loop.rules_loop_pass_early.resolve_hidden_master_string_vn",
+            return_value="someOtherCatalogsHiddenMsVn",
+        ),
         patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
     ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
-        run_early_pass(_mock_engine(), 1, _loop_state(), _loop_scope())
-    mock_shadow.assert_called_once_with(
-        "Hidden Master String", "hiddenMasterStringForAstroPortable_astro",
-        "APX NEXT XE", 704, "Astro", {},
-    )
+        state = _loop_state()
+        run_early_pass(engine, 1, state, _loop_scope())
+    assert state.filled["someOtherCatalogsHiddenMsVn"] == "x@@@"
+    assert "_someOtherCatalogsHiddenMsVn_computed_for" in state.filled
+    assert "hiddenMasterStringForAstroPortable_astro" not in state.filled
+    engine._compute_hidden_master_string.assert_called_once()
+    assert engine._compute_hidden_master_string.call_args.kwargs["var_name"] == "someOtherCatalogsHiddenMsVn"
 
 
-def test_hidden_master_string_shadow_check_skipped_when_already_computed_for_current_key():
-    """Even with the flag on, a pass where the hidden-master-string cache
-    is already fresh (matches _hidden_ms_key) must not re-run the shadow
-    check -- it only runs inside the same recompute guard as the real
-    _compute_hidden_master_string call."""
+def test_hidden_master_string_recompute_skipped_when_already_computed_for_current_key():
+    """A pass where the hidden-master-string cache is already fresh
+    (matches _hidden_ms_key) must not recompute at all -- resolution
+    still runs (it's cheap/gated internally), but _compute_hidden_master_
+    string itself must not be called again."""
     state = _loop_state(filled={
         "productSelectionProduct_all": "APX NEXT XE",
         "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
         "hiddenMasterStringForAstroPortable_astro": "x@@@",
         "_hiddenMasterStringForAstroPortable_astro_computed_for": "APX NEXT XE\x1fH55TGT9PW8AN",
     })
-    with (
-        patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.rules_loop.rules_loop_pass_early.shadow_check_role_vn",
-        ) as mock_shadow,
-        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
-        run_early_pass(_mock_engine(), 1, state, _loop_scope())
-    mock_shadow.assert_not_called()
+    engine = _mock_engine()
+    with patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"):
+        run_early_pass(engine, 1, state, _loop_scope())
+    engine._compute_hidden_master_string.assert_not_called()
+    assert state.filled["hiddenMasterStringForAstroPortable_astro"] == "x@@@"

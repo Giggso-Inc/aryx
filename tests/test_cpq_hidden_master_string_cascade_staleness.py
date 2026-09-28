@@ -59,7 +59,7 @@ def test_master_string_recomputed_when_product_changes_mid_conversation():
 
     call_products: list[str] = []
 
-    def _fake_compute(self, filled, workspace_id, catalog_prefix, cache, attrs=None):
+    def _fake_compute(self, filled, workspace_id, catalog_prefix, cache, attrs=None, var_name=None, separator_var_name=None):
         product = filled.get("productSelectionProduct_all", "")
         call_products.append(product)
         # Product A's real sequence includes carrierSelectionMultiSelect_astro;
@@ -118,7 +118,7 @@ def test_master_string_not_recomputed_when_product_is_unchanged():
 
     call_count = [0]
 
-    def _fake_compute(self, filled, workspace_id, catalog_prefix, cache, attrs=None):
+    def _fake_compute(self, filled, workspace_id, catalog_prefix, cache, attrs=None, var_name=None, separator_var_name=None):
         call_count[0] += 1
         return "carrierSelectionMultiSelect_astro"
 

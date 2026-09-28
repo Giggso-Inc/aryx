@@ -1,11 +1,11 @@
 # Attribution — tests/test_cpq_catalog_profile_shadow_check_2026_09_25.py
 
-Last updated: 2026-09-28T04:43:45.882794+00:00
-Total lines: 441
-Lines AI-generated: 170 (38.5%)
+Last updated: 2026-09-28T05:14:32.077890+00:00
+Total lines: 440
+Lines AI-generated: 225 (51.1%)
 Lines human-typed: 42
 Lines joint: 0
-Lines unattributed: 229
+Lines unattributed: 173
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -27,5 +27,5 @@ Owner (most recent author): m.munir@giggso.com
 | 252-253 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-25T16:13:16.092107+00:00 |  |
 | 254-293 | m.munir@giggso.com | — | — | — | — | — | 2026-09-25T16:27:33.394586+00:00 | pre-commit gap — unattributed by the local hook |
 | 294-385 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-25T16:31:34.124697+00:00 |  |
-| 386-388 | m.munir@giggso.com | — | — | — | — | — | 2026-09-25T18:46:23.100260+00:00 | pre-commit gap — unattributed by the local hook |
-| 389-441 | m.munir@giggso.com | — | — | — | — | — | 2026-09-28T04:43:45.835036+00:00 | pre-commit gap — unattributed by the local hook |
+| 386-440 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-28T04:47:05.184321+00:00 |  |
+| 441-441 | m.munir@giggso.com | — | — | — | — | — | 2026-09-28T04:43:45.835036+00:00 | pre-commit gap — unattributed by the local hook |
