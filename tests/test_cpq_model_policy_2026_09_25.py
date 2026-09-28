@@ -11,12 +11,15 @@ from unittest.mock import MagicMock, patch
 from aryx.cpq.auto_fill_stages.multi_optout_and_empty import try_multi_optional_empty
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import CpqEngine
+from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
 from aryx.cpq.model_policy import (
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
     recommended_config_only_vns,
     resolve_optional_empty_fill_membership,
     resolve_recommended_config_only_membership,
+    resolve_select_all_narrowed_legal_multi_membership,
+    select_all_narrowed_legal_multi_vns,
     shadow_check_optional_empty_fill_vns,
 )
 from aryx.cpq.opt_out_and_duplicates import (
@@ -68,6 +71,26 @@ def test_recommended_config_only_vns_empty_for_unknown_model():
     assert recommended_config_only_vns("SVX") == frozenset()
     assert recommended_config_only_vns("") == frozenset()
     assert recommended_config_only_vns(None) == frozenset()
+
+
+def test_select_all_narrowed_legal_multi_vns_matches_the_real_constant_for_apxnext():
+    assert (
+        select_all_narrowed_legal_multi_vns("APXNEXT")
+        == _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    )
+
+
+def test_select_all_narrowed_legal_multi_vns_case_insensitive_model_match():
+    assert (
+        select_all_narrowed_legal_multi_vns("apxnext")
+        == _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    )
+
+
+def test_select_all_narrowed_legal_multi_vns_empty_for_unknown_model():
+    assert select_all_narrowed_legal_multi_vns("SVX") == frozenset()
+    assert select_all_narrowed_legal_multi_vns("") == frozenset()
+    assert select_all_narrowed_legal_multi_vns(None) == frozenset()
 
 
 def test_duplicate_display_name_canonical_item_value_returns_a_copy_not_the_live_dict():
@@ -347,4 +370,82 @@ def test_resolve_recommended_config_only_membership_true_when_any_candidate_conf
     with _enabled_model_policy_settings():
         assert resolve_recommended_config_only_membership(
             "packingPackageType_astro", legacy, ("SVX", "APXNEXT"),
+        ) is True
+
+
+# ── resolve_select_all_narrowed_legal_multi_membership ─────────────────────
+# Same shape as resolve_optional_empty_fill_membership -- resolves its own
+# model candidates via product_name, since its one real caller
+# (blind_pick_narrowed) has no already-resolved candidates tuple in local
+# scope (unlike mandatory_tier_c_vns's case for the recommended-config-only
+# resolver above).
+
+def test_resolve_select_all_narrowed_legal_multi_membership_never_touches_candidates_when_flag_is_at_its_real_default():
+    with patch("aryx.cpq.model_policy._cpq_model_candidates") as mock_candidates:
+        result = resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", 704,
+        )
+    mock_candidates.assert_not_called()
+    assert result is True
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_matches_legacy_constant_at_real_default():
+    assert resolve_select_all_narrowed_legal_multi_membership(
+        "someUnrelatedVn_astro", "APX NEXT XE", 704,
+    ) is False
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_falls_back_when_workspace_id_none():
+    with _enabled_model_policy_settings():
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", None,
+        ) is True
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_falls_back_when_no_product():
+    with _enabled_model_policy_settings():
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "", 704,
+        ) is True
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_falls_back_when_candidates_raise():
+    with (
+        _enabled_model_policy_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates", side_effect=RuntimeError("boom"),
+        ),
+    ):
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_falls_back_when_no_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=()),
+    ):
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_uses_real_policy_when_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX",)),
+    ):
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "Some SVX Product", 704,
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+
+
+def test_resolve_select_all_narrowed_legal_multi_membership_true_when_any_candidate_confirms():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX", "APXNEXT")),
+    ):
+        assert resolve_select_all_narrowed_legal_multi_membership(
+            "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", 704,
         ) is True

@@ -46,6 +46,13 @@ resolves CPQ model candidates via the pre-existing, separately-cached
 `_cpq_model_candidates` (not the attrToVarMapping-backed path that
 motivated the shadow-first discipline for the other two), so there
 was no new RDB-touching call to de-risk first.
+
+A fourth, `_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS` (`fill_signature.py`
+-- a plain module-level constant with exactly one member and one real
+consumer, `auto_fill_stages/multi_fallback_unconstrained.py`), was
+added the same way as the first: resolves its own model candidates
+via `product_name`, mirroring `resolve_optional_empty_fill_membership`
+exactly.
 """
 from __future__ import annotations
 
@@ -54,6 +61,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
+from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
 from aryx.cpq.opt_out_and_duplicates import _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
 
 logger = logging.getLogger(__name__)
@@ -74,6 +82,12 @@ _LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, dict[str, str]] =
     "APXNEXT": {
         "applicationServicesIntroBundle_astro": "5 YEARS",
     },
+}
+
+_LEGACY_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: dict[str, frozenset[str]] = {
+    "APXNEXT": frozenset({
+        "modelSelectionFrequencyBandMsl_astro",
+    }),
 }
 
 _LEGACY_RECOMMENDED_CONFIG_ONLY_VNS: dict[str, frozenset[str]] = {
@@ -110,6 +124,17 @@ def duplicate_display_name_canonical_item_value(cpq_model: str) -> dict[str, str
     return dict(_LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
         (cpq_model or "").strip().upper(), {},
     ))
+
+
+def select_all_narrowed_legal_multi_vns(cpq_model: str) -> frozenset[str]:
+    """The set of variable_names individually verified to select EVERY
+    Whitelist/Data-Table-confirmed-legal option by default (coverage
+    semantics, not pick-one) for `cpq_model` -- legacy policy-table
+    lookup only for now (see module docstring); returns `frozenset()`
+    for any model with no policy entry, never a guess."""
+    return _LEGACY_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS.get(
+        (cpq_model or "").strip().upper(), frozenset(),
+    )
 
 
 def recommended_config_only_vns(cpq_model: str) -> frozenset[str]:
@@ -225,3 +250,35 @@ def resolve_recommended_config_only_membership(
     if not cpq_models:
         return vn in legacy_members
     return any(vn in recommended_config_only_vns(m) for m in cpq_models)
+
+
+def resolve_select_all_narrowed_legal_multi_membership(
+    vn: str, product_name: str, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Whether `vn` should select EVERY Whitelist/Data-Table-confirmed-
+    legal option by default (coverage semantics) rather than blind-
+    picking one, for the session's actual CPQ model(s) -- resolves via
+    the real, per-model `select_all_narrowed_legal_multi_vns` policy
+    table, falling back to the legacy `_SELECT_ALL_NARROWED_LEGAL_
+    MULTI_VNS` membership check when `workspace_id`/`product_name`
+    aren't available yet, when no model candidates resolve, or when
+    candidate resolution itself fails. Never raises. Same contract,
+    same gate, same fallback shape as `resolve_optional_empty_fill_
+    membership` -- see its docstring for the full safety rationale.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    if workspace_id is None or not product_name:
+        return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "ModelPolicy resolution failed for vn=%r (ws=%s) -- falling "
+            "back to the legacy constant", vn, workspace_id,
+        )
+        return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    if not models:
+        return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+    return any(vn in select_all_narrowed_legal_multi_vns(m) for m in models)
