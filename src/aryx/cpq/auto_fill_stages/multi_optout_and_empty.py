@@ -16,16 +16,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aryx.config import get_settings
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _BLIND_FILL_RISK_ACCEPTED_VNS,
-    _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS,
     _no_real_fill_justification,
     _sole_opt_out_option,
     _valid,
 )
-from aryx.cpq.model_policy import shadow_check_optional_empty_fill_vns
+from aryx.cpq.model_policy import resolve_optional_empty_fill_membership
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -69,24 +67,20 @@ def try_multi_optional_empty(
     state: AttrResolution,
 ) -> bool:
     """Fill a confirmed-optional multi with the empty selection."""
-    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 follow-up: shadow-only
-    # comparison against model_policy's legacy table for this same
-    # attribute -- never changes the real membership check below.
-    # Gated off by default (model_policy_shadow_check_enabled).
-    if (
-        get_settings().model_policy_shadow_check_enabled
-        and attr.select_type == "multi" and not attr.required
-        and state.vn not in scope.grid_selector_vns
-    ):
-        shadow_check_optional_empty_fill_vns(
-            state.vn, state.vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS,
-            ctx.filled.get("productSelectionProduct_all", ""),
-            scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
-        )
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3: the membership
+    # check is resolved through model_policy for the session's actual CPQ
+    # model, falling back to the hardcoded _OPTIONAL_EMPTY_FILL_ACCEPTED_
+    # VNS constant when resolution is unavailable. This started as a
+    # shadow-only, log-only comparison (pilot follow-up) and became real
+    # once wired here directly -- see resolve_optional_empty_fill_
+    # membership's own docstring for the gate/fallback contract.
     if (
         attr.select_type == "multi" and not attr.required
         and state.vn not in scope.grid_selector_vns
-        and state.vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+        and resolve_optional_empty_fill_membership(
+            state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+            scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+        )
         and state.allowed_for_attr is None
     ):
         # Confirmed genuinely optional (Attrsequence: 0 Required

@@ -41,7 +41,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
+from aryx.cpq.opt_out_and_duplicates import _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
 
 logger = logging.getLogger(__name__)
 
@@ -113,3 +115,40 @@ def shadow_check_optional_empty_fill_vns(
             "ModelPolicy shadow check failed for vn=%r (ws=%s) -- "
             "ignored, legacy path unaffected", vn, workspace_id,
         )
+
+
+def resolve_optional_empty_fill_membership(
+    vn: str, product_name: str, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Whether `vn` should be treated as genuinely optional-empty for the
+    session's actual CPQ model(s) -- resolves via the real, per-model
+    `optional_empty_fill_accepted_vns` policy table, falling back to the
+    legacy `_OPTIONAL_EMPTY_FILL_ACCEPTED_VNS` membership check when
+    `workspace_id`/`product_name` aren't available yet, when no model
+    candidates resolve, or when candidate resolution itself fails. Never
+    raises. A resolved candidate with no policy entry is real information
+    (that model is confirmed NOT verified for this attr), not a guess --
+    only the "couldn't resolve at all" cases fall back to the literal.
+
+    Gated behind `model_policy_scoped_resolution_enabled` (default off),
+    checked FIRST, before anything else: `_cpq_model_candidates` touches
+    the same RDB-backed data source that already caused one hung test
+    this session (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3) --
+    same safety rationale as `catalog_profile.resolve_base_model_vn`.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+    if workspace_id is None or not product_name:
+        return vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "ModelPolicy resolution failed for vn=%r (ws=%s) -- falling "
+            "back to the legacy constant", vn, workspace_id,
+        )
+        return vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+    if not models:
+        return vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+    return any(vn in optional_empty_fill_accepted_vns(m) for m in models)

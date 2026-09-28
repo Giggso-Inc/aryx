@@ -13,6 +13,7 @@ from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.model_policy import (
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
+    resolve_optional_empty_fill_membership,
     shadow_check_optional_empty_fill_vns,
 )
 from aryx.cpq.opt_out_and_duplicates import (
@@ -125,59 +126,135 @@ def _ctx(product="APX NEXT XE"):
     return ctx
 
 
-def test_optional_empty_wiring_not_called_when_flag_disabled():
-    attr = _attr("promoApplicationServices_astro")
-    state = AttrResolution(vn=attr.variable_name)
-    with (
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.shadow_check_optional_empty_fill_vns",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.model_policy_shadow_check_enabled = False
-        try_multi_optional_empty(MagicMock(), attr, _ctx(), _scope(), state)
-    mock_shadow.assert_not_called()
-
-
-def test_optional_empty_wiring_called_when_flag_enabled():
+def test_optional_empty_wiring_calls_resolve_with_right_args():
     attr = _attr("promoApplicationServices_astro")
     state = AttrResolution(vn=attr.variable_name, allowed_for_attr=None)
-    with (
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.shadow_check_optional_empty_fill_vns",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.model_policy_shadow_check_enabled = True
-        result = try_multi_optional_empty(MagicMock(), attr, _ctx(), _scope(), state)
-    mock_shadow.assert_called_once_with(
-        "promoApplicationServices_astro", True, "APX NEXT XE", 704, "Astro", {},
+    ctx = _ctx()
+    scope = _scope()
+    with patch(
+        "aryx.cpq.auto_fill_stages.multi_optout_and_empty.resolve_optional_empty_fill_membership",
+        return_value=True,
+    ) as mock_resolve:
+        result = try_multi_optional_empty(MagicMock(), attr, ctx, scope, state)
+    mock_resolve.assert_called_once_with(
+        "promoApplicationServices_astro", "APX NEXT XE", 704, "Astro", {},
     )
-    # The real fill decision is completely unaffected by the shadow check.
     assert result is True
+    assert ctx.filled_multi["promoApplicationServices_astro"] == []
+
+
+def test_optional_empty_wiring_does_not_fill_when_resolve_returns_false():
+    """If model_policy resolution says this vn is NOT genuinely optional-
+    empty for the session's actual model (only possible with
+    model_policy_scoped_resolution_enabled on for a model with its own,
+    distinct policy entry), the empty-fill branch must not fire."""
+    attr = _attr("promoApplicationServices_astro")
+    state = AttrResolution(vn=attr.variable_name, allowed_for_attr=None)
+    with patch(
+        "aryx.cpq.auto_fill_stages.multi_optout_and_empty.resolve_optional_empty_fill_membership",
+        return_value=False,
+    ):
+        result = try_multi_optional_empty(MagicMock(), attr, _ctx(), _scope(), state)
+    assert result is False
 
 
 def test_optional_empty_wiring_not_called_for_a_single_select_attr():
-    """Even with the flag on, a non-multi attr must never trigger the
-    shadow check -- it only runs inside the same guard the real branch
-    uses (select_type=='multi' and not required and not a grid selector)."""
+    """A non-multi attr must never reach resolution at all -- it only
+    runs inside the same guard the real branch always used (select_type
+    == 'multi' and not required and not a grid selector)."""
     attr = ConfigAttr(
         entity_id=1, variable_name="someSingleSelect_astro", display_label="x",
         required=False, default_value="", select_type="single", options=[],
     )
     state = AttrResolution(vn=attr.variable_name)
-    with (
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.auto_fill_stages.multi_optout_and_empty.shadow_check_optional_empty_fill_vns",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.model_policy_shadow_check_enabled = True
+    with patch(
+        "aryx.cpq.auto_fill_stages.multi_optout_and_empty.resolve_optional_empty_fill_membership",
+    ) as mock_resolve:
         try_multi_optional_empty(MagicMock(), attr, _ctx(), _scope(), state)
-    mock_shadow.assert_not_called()
+    mock_resolve.assert_not_called()
+
+
+# ── resolve_optional_empty_fill_membership ────────────────────────────────
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 "scoped" rollout
+# safety note: same class of bug already caught once this session for
+# catalog_profile.py's resolve_*_vn() functions -- the regression guard
+# below asserts _cpq_model_candidates is never called at the real
+# (unmocked) default.
+
+def test_resolve_optional_empty_fill_membership_never_touches_candidates_when_flag_is_at_its_real_default():
+    with patch(
+        "aryx.cpq.model_policy._cpq_model_candidates",
+    ) as mock_candidates:
+        result = resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "APX NEXT XE", 704,
+        )
+    mock_candidates.assert_not_called()
+    assert result is True
+
+
+def test_resolve_optional_empty_fill_membership_matches_legacy_constant_at_real_default():
+    assert resolve_optional_empty_fill_membership(
+        "someUnrelatedVn_astro", "APX NEXT XE", 704,
+    ) is False
+
+
+def _enabled_settings():
+    mock_cfg = MagicMock()
+    mock_cfg.return_value.model_policy_scoped_resolution_enabled = True
+    return patch("aryx.cpq.model_policy.get_settings", mock_cfg)
+
+
+def test_resolve_optional_empty_fill_membership_falls_back_when_workspace_id_none():
+    with _enabled_settings():
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "APX NEXT XE", None,
+        ) is True
+
+
+def test_resolve_optional_empty_fill_membership_falls_back_when_no_product():
+    with _enabled_settings():
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "", 704,
+        ) is True
+
+
+def test_resolve_optional_empty_fill_membership_falls_back_when_candidates_raise():
+    with (
+        _enabled_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates", side_effect=RuntimeError("boom"),
+        ),
+    ):
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_optional_empty_fill_membership_falls_back_when_no_candidates_resolve():
+    with (
+        _enabled_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=()),
+    ):
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_optional_empty_fill_membership_uses_real_policy_when_candidates_resolve():
+    with (
+        _enabled_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX",)),
+    ):
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "Some SVX Product", 704,
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+
+
+def test_resolve_optional_empty_fill_membership_true_when_any_candidate_confirms():
+    with (
+        _enabled_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX", "APXNEXT")),
+    ):
+        assert resolve_optional_empty_fill_membership(
+            "promoApplicationServices_astro", "APX NEXT XE", 704,
+        ) is True

@@ -172,6 +172,33 @@ class CpqIntentSettingsMixin(BaseSettings):
             "environment do."
         ),
     )
+    model_policy_scoped_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 'scoped' "
+            "rollout: makes resolve_optional_empty_fill_membership() "
+            "actually GOVERN try_multi_optional_empty's real fill decision "
+            "(across its one real call site), instead of only shadow-"
+            "logging via model_policy_shadow_check_enabled above. Off by "
+            "default -- checked FIRST, before any other work, same safety "
+            "rationale as catalog_profile_scoped_resolution_enabled: model-"
+            "candidate resolution touches the same RDB-backed data source "
+            "that already caused one hung test this session. When off, "
+            "the real call site behaves byte-identically to before this "
+            "rollout (reads the hardcoded _OPTIONAL_EMPTY_FILL_ACCEPTED_"
+            "VNS constant directly, no RDB call at all). Live-checked "
+            "2026-09-25: every real product string tried against workspace "
+            "704 resolves through the T2 APX-NEXT-fallback bug to "
+            "candidates including 'APXNEXT', and model_policy's APXNEXT "
+            "entry is byte-identical to the legacy constant -- so turning "
+            "this on today would currently still be a no-op, for a "
+            "different reason than catalog_profile_scoped_resolution_"
+            "enabled's inertness (T2's fallback behavior, not empty "
+            "attrToVarMapping data). Override with "
+            "ARYX_MODEL_POLICY_SCOPED_RESOLUTION_ENABLED=true once a "
+            "catalog/model has its own real, distinct model_policy entry."
+        ),
+    )
     cpq_intent_mode: str = Field(
         default="llm_first",
         description=(
