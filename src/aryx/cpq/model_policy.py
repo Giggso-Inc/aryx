@@ -35,6 +35,17 @@ item_value`'s only real consumer, `apply_answer()`, has no `cpq_model`
 parameter and 15 call sites across 11 files -- widening its signature
 is real restructuring risk, not a safe next step, so that constant
 stays standalone for now.
+
+T6 Phase 3: `_OPTIONAL_EMPTY_FILL_ACCEPTED_VNS` switched from shadow
+to real via `resolve_optional_empty_fill_membership()`. A third named
+constant, `_RECOMMENDED_CONFIG_ONLY_VNS` (a `CpqEngine` CLASS
+attribute, unlike the first two module-level ones), was then added
+directly at the real/scoped stage -- no separate shadow slice, since
+its one real consumer (`mandatory_tier_c_vns`) already unconditionally
+resolves CPQ model candidates via the pre-existing, separately-cached
+`_cpq_model_candidates` (not the attrToVarMapping-backed path that
+motivated the shadow-first discipline for the other two), so there
+was no new RDB-touching call to de-risk first.
 """
 from __future__ import annotations
 
@@ -65,6 +76,21 @@ _LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, dict[str, str]] =
     },
 }
 
+_LEGACY_RECOMMENDED_CONFIG_ONLY_VNS: dict[str, frozenset[str]] = {
+    "APXNEXT": frozenset({
+        "systemEnhancementFeatureType_astro",
+        "serviceTypeAdditionalDMSCoverage_astro",
+        "dmsDuration_astro", "dMSDurationYears_astro",
+        "antennasType_astro",
+        "beltClipType_astro",
+        "advancedSystemKeyHardwareKey_astro",
+        "deviceManagementTraining_astro",
+        "trainTheTrainerTraining_astro",
+        "packingPackageType_astro",
+        "documentationTestResultsRatedAudioPrintoutLabel_astro",
+    }),
+}
+
 
 def optional_empty_fill_accepted_vns(cpq_model: str) -> frozenset[str]:
     """The set of variable_names individually verified genuinely
@@ -84,6 +110,17 @@ def duplicate_display_name_canonical_item_value(cpq_model: str) -> dict[str, str
     return dict(_LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
         (cpq_model or "").strip().upper(), {},
     ))
+
+
+def recommended_config_only_vns(cpq_model: str) -> frozenset[str]:
+    """The set of variable_names individually verified Recommended-
+    Configuration-only for `cpq_model` (excluded from `mandatory_tier_c_
+    vns`'s Tier C set) -- legacy policy-table lookup only for now (see
+    module docstring); returns `frozenset()` for any model with no
+    policy entry, never a guess."""
+    return _LEGACY_RECOMMENDED_CONFIG_ONLY_VNS.get(
+        (cpq_model or "").strip().upper(), frozenset(),
+    )
 
 
 def shadow_check_optional_empty_fill_vns(
@@ -152,3 +189,39 @@ def resolve_optional_empty_fill_membership(
     if not models:
         return vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
     return any(vn in optional_empty_fill_accepted_vns(m) for m in models)
+
+
+def resolve_recommended_config_only_membership(
+    vn: str, legacy_members: frozenset[str], cpq_models: "tuple[str, ...] | None",
+) -> bool:
+    """Whether `vn` should be excluded as a Recommended-Configuration-
+    only attr for the session's actual CPQ model(s) -- resolves via the
+    real, per-model `recommended_config_only_vns` policy table, falling
+    back to `legacy_members` when no model candidates are available.
+
+    Unlike `resolve_optional_empty_fill_membership`, this does NOT
+    resolve its own model candidates: its one real caller
+    (`mandatory_tier_c_vns`) already computes them unconditionally via
+    the pre-existing, separately-cached `_cpq_model_candidates` call
+    (not gated -- this has always been the case, long before this
+    audit's work, and that function has its own 300s-TTL cache) --
+    recomputing them here would be a redundant RDB-adjacent call within
+    the same turn for no benefit. `legacy_members` is passed by the
+    caller rather than imported as a fixed constant because `engine.
+    _RECOMMENDED_CONFIG_ONLY_VNS` is a `CpqEngine` CLASS attribute read
+    off the instance (`mandatory_tiers.py`'s own docstring: "preserving
+    the original self. lookup -- subclass/instance overrides still
+    win") -- importing a frozen module-level constant here would
+    silently break that override contract.
+
+    Gated behind `model_policy_scoped_resolution_enabled` (same flag as
+    `resolve_optional_empty_fill_membership`, for the same off-by-
+    default rollout discipline) -- when off, or when no candidates were
+    resolved, behaves byte-identically to today's `vn in engine.
+    _RECOMMENDED_CONFIG_ONLY_VNS` check.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return vn in legacy_members
+    if not cpq_models:
+        return vn in legacy_members
+    return any(vn in recommended_config_only_vns(m) for m in cpq_models)

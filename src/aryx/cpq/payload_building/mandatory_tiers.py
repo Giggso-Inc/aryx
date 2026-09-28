@@ -13,7 +13,11 @@ tests/test_cpq_substitute_util_get_constraint_vals_cache_2026_08_28.py),
 and a frozen import-time reference here would silently bypass them.
 `_RECOMMENDED_CONFIG_ONLY_VNS` stays a `CpqEngine` class attribute and
 is read off the passed-in `engine`, preserving the original `self.`
-lookup (subclass/instance overrides still win).
+lookup (subclass/instance overrides still win) -- passed as the
+fallback to `model_policy.resolve_recommended_config_only_membership`
+(CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3) rather than
+checked directly, so a real per-model policy entry can now govern
+instead, without breaking that override contract.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from typing import Any
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.cpq.model_policy import resolve_recommended_config_only_membership
 
 
 def mandatory_tier_c_vns(
@@ -81,7 +86,9 @@ def mandatory_tier_c_vns(
         return frozenset()
     result: set[str] = set()
     for vn in required_names:
-        if vn in engine._RECOMMENDED_CONFIG_ONLY_VNS:
+        if resolve_recommended_config_only_membership(
+            vn, engine._RECOMMENDED_CONFIG_ONLY_VNS, cands,
+        ):
             continue
         if any(
             _engine_module.dt_resolve_whitelist_values(

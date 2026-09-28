@@ -10,10 +10,13 @@ from unittest.mock import MagicMock, patch
 
 from aryx.cpq.auto_fill_stages.multi_optout_and_empty import try_multi_optional_empty
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.engine import CpqEngine
 from aryx.cpq.model_policy import (
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
+    recommended_config_only_vns,
     resolve_optional_empty_fill_membership,
+    resolve_recommended_config_only_membership,
     shadow_check_optional_empty_fill_vns,
 )
 from aryx.cpq.opt_out_and_duplicates import (
@@ -51,6 +54,20 @@ def test_duplicate_display_name_canonical_item_value_matches_the_real_constant_f
 def test_duplicate_display_name_canonical_item_value_empty_for_unknown_model():
     assert duplicate_display_name_canonical_item_value("SVX") == {}
     assert duplicate_display_name_canonical_item_value("") == {}
+
+
+def test_recommended_config_only_vns_matches_the_real_constant_for_apxnext():
+    assert recommended_config_only_vns("APXNEXT") == CpqEngine._RECOMMENDED_CONFIG_ONLY_VNS
+
+
+def test_recommended_config_only_vns_case_insensitive_model_match():
+    assert recommended_config_only_vns("apxnext") == CpqEngine._RECOMMENDED_CONFIG_ONLY_VNS
+
+
+def test_recommended_config_only_vns_empty_for_unknown_model():
+    assert recommended_config_only_vns("SVX") == frozenset()
+    assert recommended_config_only_vns("") == frozenset()
+    assert recommended_config_only_vns(None) == frozenset()
 
 
 def test_duplicate_display_name_canonical_item_value_returns_a_copy_not_the_live_dict():
@@ -257,4 +274,77 @@ def test_resolve_optional_empty_fill_membership_true_when_any_candidate_confirms
     ):
         assert resolve_optional_empty_fill_membership(
             "promoApplicationServices_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+# ── resolve_recommended_config_only_membership ────────────────────────────
+# Unlike the other two resolvers, this one takes an already-resolved
+# candidates tuple instead of resolving its own -- its one real caller
+# (mandatory_tier_c_vns) already computes candidates unconditionally via
+# the pre-existing, separately-cached _cpq_model_candidates, so there's
+# no new RDB-touching call here to gate against a hung-test class of bug.
+# `legacy_members` is passed explicitly (not imported) to preserve the
+# CpqEngine class-attribute override contract -- see the function's own
+# docstring and mandatory_tiers.py's module docstring.
+
+def test_resolve_recommended_config_only_membership_matches_legacy_at_real_default():
+    legacy = CpqEngine._RECOMMENDED_CONFIG_ONLY_VNS
+    assert resolve_recommended_config_only_membership(
+        "packingPackageType_astro", legacy, ("APXNEXT",),
+    ) is True
+    assert resolve_recommended_config_only_membership(
+        "someUnrelatedVn_astro", legacy, ("APXNEXT",),
+    ) is False
+
+
+def _enabled_model_policy_settings():
+    mock_cfg = MagicMock()
+    mock_cfg.return_value.model_policy_scoped_resolution_enabled = True
+    return patch("aryx.cpq.model_policy.get_settings", mock_cfg)
+
+
+def test_resolve_recommended_config_only_membership_falls_back_when_no_candidates():
+    """No candidates resolved (e.g. mandatory_tier_c_vns's own early
+    returns never even reach this call in practice, but the contract
+    must hold regardless) falls back to legacy_members, not a guess --
+    exercised with the gate ON so the "no cpq_models" branch, not just
+    the flag-off early return, is actually what's being tested."""
+    with _enabled_model_policy_settings():
+        assert resolve_recommended_config_only_membership(
+            "packingPackageType_astro", frozenset({"packingPackageType_astro"}), None,
+        ) is True
+        assert resolve_recommended_config_only_membership(
+            "packingPackageType_astro", frozenset({"packingPackageType_astro"}), (),
+        ) is True
+
+
+def test_resolve_recommended_config_only_membership_falls_back_to_a_custom_legacy_set():
+    """A subclass/instance override of engine._RECOMMENDED_CONFIG_ONLY_VNS
+    must still be honored when the gate is off -- this is exactly why
+    legacy_members is a parameter, not an import."""
+    custom = frozenset({"someCustomVn_astro"})
+    assert resolve_recommended_config_only_membership(
+        "someCustomVn_astro", custom, None,
+    ) is True
+    assert resolve_recommended_config_only_membership(
+        "packingPackageType_astro", custom, None,
+    ) is False
+
+
+def test_resolve_recommended_config_only_membership_uses_real_policy_when_gate_on():
+    legacy = CpqEngine._RECOMMENDED_CONFIG_ONLY_VNS
+    with _enabled_model_policy_settings():
+        assert resolve_recommended_config_only_membership(
+            "packingPackageType_astro", legacy, ("SVX",),
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+        assert resolve_recommended_config_only_membership(
+            "packingPackageType_astro", legacy, ("APXNEXT",),
+        ) is True
+
+
+def test_resolve_recommended_config_only_membership_true_when_any_candidate_confirms():
+    legacy = CpqEngine._RECOMMENDED_CONFIG_ONLY_VNS
+    with _enabled_model_policy_settings():
+        assert resolve_recommended_config_only_membership(
+            "packingPackageType_astro", legacy, ("SVX", "APXNEXT"),
         ) is True
