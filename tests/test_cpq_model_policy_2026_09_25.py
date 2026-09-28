@@ -10,12 +10,15 @@ from unittest.mock import MagicMock, patch
 
 from aryx.cpq.auto_fill_stages.multi_optout_and_empty import try_multi_optional_empty
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.data_table_bridge.attr_governance import _CONFIRMED_DEAD_ATTRS
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
 from aryx.cpq.model_policy import (
+    confirmed_dead_attrs,
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
     recommended_config_only_vns,
+    resolve_confirmed_dead_attr_membership,
     resolve_optional_empty_fill_membership,
     resolve_recommended_config_only_membership,
     resolve_select_all_narrowed_legal_multi_membership,
@@ -91,6 +94,20 @@ def test_select_all_narrowed_legal_multi_vns_empty_for_unknown_model():
     assert select_all_narrowed_legal_multi_vns("SVX") == frozenset()
     assert select_all_narrowed_legal_multi_vns("") == frozenset()
     assert select_all_narrowed_legal_multi_vns(None) == frozenset()
+
+
+def test_confirmed_dead_attrs_matches_the_real_constant_for_apxnext():
+    assert confirmed_dead_attrs("APXNEXT") == _CONFIRMED_DEAD_ATTRS
+
+
+def test_confirmed_dead_attrs_case_insensitive_model_match():
+    assert confirmed_dead_attrs("apxnext") == _CONFIRMED_DEAD_ATTRS
+
+
+def test_confirmed_dead_attrs_empty_for_unknown_model():
+    assert confirmed_dead_attrs("SVX") == frozenset()
+    assert confirmed_dead_attrs("") == frozenset()
+    assert confirmed_dead_attrs(None) == frozenset()
 
 
 def test_duplicate_display_name_canonical_item_value_returns_a_copy_not_the_live_dict():
@@ -448,4 +465,61 @@ def test_resolve_select_all_narrowed_legal_multi_membership_true_when_any_candid
     ):
         assert resolve_select_all_narrowed_legal_multi_membership(
             "modelSelectionFrequencyBandMsl_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+# ── resolve_confirmed_dead_attr_membership ──────────────────────────────
+# Same shape as resolve_recommended_config_only_membership -- takes an
+# already-resolved candidates tuple (its one real caller,
+# _suppress_ungoverned_attrs, already computes them unconditionally) and
+# legacy_members as a parameter (not an import -- attr_governance.py
+# already imports resolve_confirmed_dead_attr_membership itself, lazily,
+# to sidestep a genuine circular import; model_policy.py importing the
+# constant back would reintroduce it).
+
+def test_resolve_confirmed_dead_attr_membership_matches_legacy_at_real_default():
+    assert resolve_confirmed_dead_attr_membership(
+        "modelSelectionFrequencyBands_astro", _CONFIRMED_DEAD_ATTRS, ("APXNEXT",),
+    ) is True
+    assert resolve_confirmed_dead_attr_membership(
+        "someUnrelatedVn_astro", _CONFIRMED_DEAD_ATTRS, ("APXNEXT",),
+    ) is False
+
+
+def test_resolve_confirmed_dead_attr_membership_falls_back_when_no_candidates():
+    with _enabled_model_policy_settings():
+        assert resolve_confirmed_dead_attr_membership(
+            "modelSelectionFrequencyBands_astro",
+            frozenset({"modelSelectionFrequencyBands_astro"}), None,
+        ) is True
+        assert resolve_confirmed_dead_attr_membership(
+            "modelSelectionFrequencyBands_astro",
+            frozenset({"modelSelectionFrequencyBands_astro"}), (),
+        ) is True
+
+
+def test_resolve_confirmed_dead_attr_membership_falls_back_to_a_custom_legacy_set():
+    custom = frozenset({"someCustomVn_astro"})
+    assert resolve_confirmed_dead_attr_membership(
+        "someCustomVn_astro", custom, None,
+    ) is True
+    assert resolve_confirmed_dead_attr_membership(
+        "modelSelectionFrequencyBands_astro", custom, None,
+    ) is False
+
+
+def test_resolve_confirmed_dead_attr_membership_uses_real_policy_when_gate_on():
+    with _enabled_model_policy_settings():
+        assert resolve_confirmed_dead_attr_membership(
+            "modelSelectionFrequencyBands_astro", _CONFIRMED_DEAD_ATTRS, ("SVX",),
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+        assert resolve_confirmed_dead_attr_membership(
+            "modelSelectionFrequencyBands_astro", _CONFIRMED_DEAD_ATTRS, ("APXNEXT",),
+        ) is True
+
+
+def test_resolve_confirmed_dead_attr_membership_true_when_any_candidate_confirms():
+    with _enabled_model_policy_settings():
+        assert resolve_confirmed_dead_attr_membership(
+            "modelSelectionFrequencyBands_astro", _CONFIRMED_DEAD_ATTRS, ("SVX", "APXNEXT"),
         ) is True

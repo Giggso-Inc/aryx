@@ -26,6 +26,22 @@ _NEVER_SUPPRESS_FRAGMENTS: frozenset[str] = frozenset({
 # attrSequence rows anywhere, but native CPQ never renders them for any
 # APX NEXT product. Narrow allowlist, not a change to the general silence
 # carve-out below.
+#
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3: passed to
+# model_policy.resolve_confirmed_dead_attr_membership as the fallback
+# rather than imported there -- model_policy.py importing this
+# constant back would create a circular import; passing it as a
+# parameter avoids that. `resolve_confirmed_dead_attr_membership`
+# itself is imported LAZILY inside `_suppress_ungoverned_attrs` (not
+# at module scope) for a second, confirmed-live reason: this module is
+# loaded very early in `engine.py`'s own import chain (via `data_table_
+# bridge/__init__.py`, near the top of engine.py), before `engine.py`
+# has defined `_valid` -- a module-level import here transitively
+# needs `fill_signature.py` -> `engine._valid`, which doesn't exist
+# yet at that point, breaking the whole import chain (same pitfall
+# already documented for the re-export hubs elsewhere in this
+# codebase, e.g. `hiding_rules/apply.py`'s lazy `import aryx.cpq.engine
+# as _engine_module`).
 _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
     "modelSelectionFrequencyBands_astro",
     "modelSelectionFrequencyBandPlus_astro",
@@ -46,7 +62,15 @@ def _suppress_ungoverned_attrs(
     with NO attrSequence coverage anywhere is left visible instead (silence
     is not a confident exclusion). `None`/no `workspace_id` is a complete
     no-op.
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3: the
+    `_CONFIRMED_DEAD_ATTRS` membership check below is resolved through
+    `model_policy.resolve_confirmed_dead_attr_membership`, reusing
+    `cands` (already resolved above) rather than re-deriving CPQ model
+    candidates a second time.
     """
+    from aryx.cpq.model_policy import resolve_confirmed_dead_attr_membership  # noqa: PLC0415
+
     if workspace_id is None:
         return attrs, set()
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
@@ -81,7 +105,7 @@ def _suppress_ungoverned_attrs(
             visible.append(attr)
         elif vn in governed_names:
             visible.append(attr)
-        elif vn in _CONFIRMED_DEAD_ATTRS:
+        elif resolve_confirmed_dead_attr_membership(vn, _CONFIRMED_DEAD_ATTRS, cands):
             suppressed.add(vn)
         elif not any(
             dt_attr_ever_governed_for_cpq_model(cm, vn, workspace_id, catalog_prefix, cache)

@@ -53,6 +53,14 @@ consumer, `auto_fill_stages/multi_fallback_unconstrained.py`), was
 added the same way as the first: resolves its own model candidates
 via `product_name`, mirroring `resolve_optional_empty_fill_membership`
 exactly.
+
+A fifth, `_CONFIRMED_DEAD_ATTRS` (`data_table_bridge/attr_governance.
+py` -- a plain module-level constant, one real consumer,
+`_suppress_ungoverned_attrs`, the SAME function T1's Base Model
+switch-over already touched), was added the same way as the third:
+reuses that function's already-resolved candidates tuple rather than
+re-deriving them, since `_cpq_model_candidates` is unconditional and
+separately-cached there already.
 """
 from __future__ import annotations
 
@@ -82,6 +90,13 @@ _LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, dict[str, str]] =
     "APXNEXT": {
         "applicationServicesIntroBundle_astro": "5 YEARS",
     },
+}
+
+_LEGACY_CONFIRMED_DEAD_ATTRS: dict[str, frozenset[str]] = {
+    "APXNEXT": frozenset({
+        "modelSelectionFrequencyBands_astro",
+        "modelSelectionFrequencyBandPlus_astro",
+    }),
 }
 
 _LEGACY_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: dict[str, frozenset[str]] = {
@@ -124,6 +139,17 @@ def duplicate_display_name_canonical_item_value(cpq_model: str) -> dict[str, str
     return dict(_LEGACY_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
         (cpq_model or "").strip().upper(), {},
     ))
+
+
+def confirmed_dead_attrs(cpq_model: str) -> frozenset[str]:
+    """The set of variable_names individually confirmed orphaned/legacy
+    (zero attrSequence rows anywhere, but native CPQ never renders them)
+    for `cpq_model` -- legacy policy-table lookup only for now (see
+    module docstring); returns `frozenset()` for any model with no
+    policy entry, never a guess."""
+    return _LEGACY_CONFIRMED_DEAD_ATTRS.get(
+        (cpq_model or "").strip().upper(), frozenset(),
+    )
 
 
 def select_all_narrowed_legal_multi_vns(cpq_model: str) -> frozenset[str]:
@@ -282,3 +308,37 @@ def resolve_select_all_narrowed_legal_multi_membership(
     if not models:
         return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
     return any(vn in select_all_narrowed_legal_multi_vns(m) for m in models)
+
+
+def resolve_confirmed_dead_attr_membership(
+    vn: str, legacy_members: frozenset[str], cpq_models: "tuple[str, ...] | None",
+) -> bool:
+    """Whether `vn` is a confirmed orphaned/dead attr (real Data-Table-
+    driven suppression, not "silently unconfirmed") for the session's
+    actual CPQ model(s) -- resolves via the real, per-model
+    `confirmed_dead_attrs` policy table, falling back to
+    `legacy_members` when no model candidates are available.
+
+    Same shape as `resolve_recommended_config_only_membership`: does
+    NOT resolve its own model candidates -- its one real caller
+    (`_suppress_ungoverned_attrs`) already computes them unconditionally
+    via the pre-existing, separately-cached `_cpq_model_candidates`
+    (not gated -- this has always been the case, long before this
+    audit's work). `legacy_members` is passed by the caller (its own
+    `_CONFIRMED_DEAD_ATTRS`) rather than imported here -- that module
+    already imports FROM this one (`resolve_confirmed_dead_attr_
+    membership` itself), so importing the constant back would create a
+    genuine circular import; this is a deliberate design choice to
+    avoid it, not an override-preservation concern like the
+    `CpqEngine` class-attribute case.
+
+    Gated behind `model_policy_scoped_resolution_enabled` (same flag
+    as every other resolver in this module) -- when off, or when no
+    candidates were resolved, behaves byte-identically to today's
+    `vn in _CONFIRMED_DEAD_ATTRS` check.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return vn in legacy_members
+    if not cpq_models:
+        return vn in legacy_members
+    return any(vn in confirmed_dead_attrs(m) for m in cpq_models)
