@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.cpq.catalog_profile import resolve_base_model_vn, resolve_region_vn
 from aryx.cpq.engine import (
     _cpq_model_candidates,
     _hiding_rule_needs_missing_data_table,
@@ -69,7 +69,9 @@ def compute_data_table_setup(
         bm_product = filled.get("productSelectionProduct_all", "")
         if bm_product:
             bm_country = filled.get("ultimateDestinationCountry") or country or ""
-            bm_region = filled.get("modelSelectionRegion_astro") or (
+            bm_region = filled.get(
+                resolve_region_vn(filled, workspace_id, catalog_prefix, dt_cache),
+            ) or (
                 region_for_country(bm_country) if bm_country else ""
             )
             if bm_region:

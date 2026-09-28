@@ -15,9 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.catalog_profile import shadow_check_role_vn
+from aryx.cpq.catalog_profile import resolve_region_vn
 from aryx.cpq.region_and_noise_constants import region_for_country
 from aryx.cpq.state import ConfigAttr
 
@@ -60,27 +59,22 @@ def _data_table_resolved_anchor_vns(
     subtractive, so "no coverage" must mean "no exclusions," never a
     guess.
 
-    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 pilot slice:
-    also runs a shadow-only `catalog_profile.shadow_check_role_vn` for
-    the "Region" role here -- gated off by default, log-only, never
-    affects `region`/the returned exclude set.
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3: `region` is read
+    under whatever key `resolve_region_vn` resolves for this product's
+    CPQ model(s), falling back to the `modelSelectionRegion_astro`
+    literal when resolution is unavailable. This started as a
+    shadow-only, log-only comparison (pilot slice, d12d5eaf) and became
+    real once every other call site for this same literal was switched
+    over together (2026-09-25).
     """
     if not filled or not attrs or workspace_id is None:
         return frozenset()
     product = filled.get("productSelectionProduct_all", "")
     if not product:
         return frozenset()
-    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 pilot follow-up:
-    # shadow-only comparison against what a CatalogProfile-style resolver
-    # would give for the "Region" role under this product's CPQ model(s) --
-    # never changes `region` below. Gated off by default, same as the
-    # Base Model pilot in ask_invalidate_stale_base_model.py.
-    if get_settings().catalog_profile_shadow_check_enabled:
-        shadow_check_role_vn(
-            "Region", "modelSelectionRegion_astro", product, workspace_id, catalog_prefix, cache,
-        )
+    region_vn = resolve_region_vn(filled, workspace_id, catalog_prefix, cache)
     resolved_country = filled.get("ultimateDestinationCountry") or country or ""
-    region = filled.get("modelSelectionRegion_astro") or (
+    region = filled.get(region_vn) or (
         region_for_country(resolved_country, _engine_module._COUNTRY_TO_REGION)
         if resolved_country else ""
     )

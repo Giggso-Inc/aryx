@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.catalog_profile import BASE_MODEL_LITERAL, resolve_base_model_vn
+from aryx.cpq.catalog_profile import BASE_MODEL_LITERAL, resolve_base_model_vn, resolve_region_vn
 
 # docs/CPQ_STALE_BASE_MODEL_CASCADE_CONFLICT_PLAN_2026_08_20.md
 # Re-exported from catalog_profile.py (the single source of truth for
@@ -33,9 +33,20 @@ _BASE_MODEL_VN = BASE_MODEL_LITERAL
 # the ONLY scoping-key attribute of its kind in this catalog -- but its
 # OWN derivation has two triggers (Product, Country/Region), and the
 # original fix only covered one of them.
-_BASE_MODEL_TRIGGER_VNS = frozenset({
+#
+# Region's member is NOT included in this static set (unlike the other
+# three) -- CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3: this is a
+# membership check against `changed_attr.variable_name`, the REAL name the
+# catalog ingested for whatever attribute just changed. A catalog whose
+# real Region variable name differs from the literal would silently never
+# trigger this invalidation on a real Region change -- unlike Product
+# (`_DECISION_ANCHOR_VNS`'s circularity problem, ruled structurally out of
+# scope), Region's real name IS resolvable here (workspace_id/`session.
+# filled` are both already in scope), so it's computed per-call via
+# `resolve_region_vn` and unioned in below instead of hardcoded.
+_BASE_MODEL_STATIC_TRIGGER_VNS = frozenset({
     "hWVersion_astro", "productSelectionProduct_all",
-    "ultimateDestinationCountry", "modelSelectionRegion_astro",
+    "ultimateDestinationCountry",
 })
 
 
@@ -86,12 +97,16 @@ def _invalidate_stale_base_model(
     2c3c842a) and became real once every OTHER call site for this same
     literal was switched over together (2026-09-25) -- clearing under a
     different key than every read site still hardcoding the literal
-    would be a worse bug than not clearing at all.
+    would be a worse bug than not clearing at all. The Region member of
+    the trigger set is resolved the same way, per-call, for the same
+    reason -- see `_BASE_MODEL_STATIC_TRIGGER_VNS`'s own comment.
     """
     changed_names = {changed_attr.variable_name} | {
         by_eid[eid].variable_name for eid in dependent_eids if eid in by_eid
     }
-    if changed_names & _BASE_MODEL_TRIGGER_VNS:
+    region_vn = resolve_region_vn(session.filled, workspace_id, catalog_prefix)
+    trigger_vns = _BASE_MODEL_STATIC_TRIGGER_VNS | {region_vn}
+    if changed_names & trigger_vns:
         base_model_vn = resolve_base_model_vn(session.filled, workspace_id, catalog_prefix)
         session.filled.pop(base_model_vn, None)
         session.display_filled.pop(base_model_vn, None)

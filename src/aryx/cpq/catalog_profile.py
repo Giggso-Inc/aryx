@@ -228,3 +228,39 @@ def resolve_base_model_vn(
         )
         return BASE_MODEL_LITERAL
     return profile.resolved_vn_or("Base Model", BASE_MODEL_LITERAL)
+
+
+REGION_LITERAL = "modelSelectionRegion_astro"
+
+
+def resolve_region_vn(
+    filled: dict[str, str] | None, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> str:
+    """The real key `filled` stores Region's value under, for the
+    session's actual CPQ model -- resolves via `CatalogProfile.
+    resolved_vn_or`, falling back to `REGION_LITERAL` when `filled`/
+    `workspace_id`/Product aren't available yet, or when the workspace's
+    attrToVarMapping data doesn't cover this role. Never raises.
+
+    Same contract, same gate (`catalog_profile_scoped_resolution_
+    enabled`), and same reasoning as `resolve_base_model_vn` -- see its
+    docstring for the full safety rationale (an ungated version of this
+    class of function already caused one hung test this session).
+    """
+    if not get_settings().catalog_profile_scoped_resolution_enabled:
+        return REGION_LITERAL
+    if not filled or workspace_id is None:
+        return REGION_LITERAL
+    product = filled.get("productSelectionProduct_all", "")
+    if not product:
+        return REGION_LITERAL
+    try:
+        profile = CatalogProfile.for_product(product, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "CatalogProfile resolution failed for role='Region' (ws=%s) "
+            "-- falling back to the literal", workspace_id,
+        )
+        return REGION_LITERAL
+    return profile.resolved_vn_or("Region", REGION_LITERAL)

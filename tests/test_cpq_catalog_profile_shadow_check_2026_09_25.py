@@ -149,65 +149,118 @@ def test_resolve_base_model_vn_not_called_when_no_trigger_fires():
     assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
 
 
-# ── gated wiring into _data_table_resolved_anchor_vns (Region role) ─────
+def test_region_change_under_its_resolved_key_still_triggers_invalidation():
+    """The Region member of the trigger set is no longer the hardcoded
+    literal -- it's resolve_region_vn's result, computed per-call. A
+    changed attribute matching THAT resolved key (not the literal) must
+    still trigger the Base Model pop, proving the trigger set is real,
+    not silently still keying off the old literal string."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD"},
+    )
+    region_changed = _attr(5, "someOtherCatalogsRegionVn")
+    with (
+        patch(
+            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_region_vn",
+            return_value="someOtherCatalogsRegionVn",
+        ),
+        patch(
+            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+            return_value=_BASE_MODEL_VN,
+        ),
+    ):
+        _invalidate_stale_base_model(
+            session, region_changed, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert _BASE_MODEL_VN not in session.filled
 
-def test_region_shadow_check_not_called_when_flag_disabled():
+
+def test_region_change_under_the_literal_does_not_trigger_when_resolved_key_differs():
+    """Once Region resolves to a different real key, a change reported
+    under the OLD literal name must not spuriously trigger the pop --
+    the trigger set tracks the resolved key, not both."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD"},
+    )
+    literal_named_change = _attr(5, "modelSelectionRegion_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_region_vn",
+        return_value="someOtherCatalogsRegionVn",
+    ):
+        _invalidate_stale_base_model(
+            session, literal_named_change, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
+
+
+# ── real resolution wired into _data_table_resolved_anchor_vns (Region) ──
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 "scoped" rollout: the
+# pilot slice's gated shadow_check_role_vn call was replaced by an
+# unconditional call to resolve_region_vn(), itself gated internally
+# (catalog_profile_scoped_resolution_enabled) -- see
+# test_cpq_catalog_profile_scoped_resolution_2026_09_25.py for that
+# function's own tests. These tests only cover this call site's wiring.
+
+def test_resolve_region_vn_is_called_and_region_is_read_under_its_result():
     filled = {
         "productSelectionProduct_all": "APX NEXT ENHANCED",
         "ultimateDestinationCountry": "United States",
+        "modelSelectionRegion_astro": "NA",
     }
     attr = _attr(1, "modelSelectionbaseModel_astro")
     with (
         patch(
-            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
-        ) as mock_shadow,
+            "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+            return_value="modelSelectionRegion_astro",
+        ) as mock_resolve,
         patch("aryx.cpq.engine._cpq_model_candidates", return_value=()),
     ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = False
-        _data_table_resolved_anchor_vns(None, filled, [attr], 704)
-    mock_shadow.assert_not_called()
-
-
-def test_region_shadow_check_called_when_flag_enabled():
-    filled = {
-        "productSelectionProduct_all": "APX NEXT ENHANCED",
-        "ultimateDestinationCountry": "United States",
-    }
-    attr = _attr(1, "modelSelectionbaseModel_astro")
-    with (
-        patch(
-            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
-        ) as mock_shadow,
-        patch("aryx.cpq.engine._cpq_model_candidates", return_value=()),
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
         _data_table_resolved_anchor_vns(None, filled, [attr], 704, "Astro")
-    mock_shadow.assert_called_once_with(
-        "Region", "modelSelectionRegion_astro", "APX NEXT ENHANCED", 704, "Astro", None,
+    mock_resolve.assert_called_once_with(filled, 704, "Astro", None)
+
+
+def test_region_read_follows_whatever_key_resolve_region_vn_returns():
+    """If resolve_region_vn ever resolves to a DIFFERENT key than the
+    literal (only possible with catalog_profile_scoped_resolution_enabled
+    turned on for a workspace with real attrToVarMapping coverage), the
+    region read must follow that resolved key, not the hardcoded literal."""
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "someOtherCatalogsRegionVn": "NA",
+        "modelSelectionRegion_astro": "unrelated",
+    }
+    attr = _attr(1, "modelSelectionbaseModel_astro")
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+            return_value="someOtherCatalogsRegionVn",
+        ),
+        patch(
+            "aryx.cpq.engine._cpq_model_candidates", return_value=("CM1",),
+        ),
+        patch(
+            "aryx.cpq.engine.dt_resolve_region_allow_value", return_value=None,
+        ) as mock_dt_resolve,
+    ):
+        _data_table_resolved_anchor_vns(None, filled, [attr], 704, "Astro")
+    # The candidate lookup ran with the REAL (resolved) region value "NA",
+    # not the literal key's unrelated value.
+    mock_dt_resolve.assert_called_once_with(
+        "modelSelectionbaseModel_astro", "CM1", "NA", 704, "Astro", None, country="",
     )
 
 
-def test_region_shadow_check_not_called_when_no_product():
-    """Even with the flag on, an empty product must not invoke the shadow
-    check at all -- it only runs after the function's own early-return
-    guards for filled/attrs/workspace_id/product."""
-    with (
-        patch(
-            "aryx.cpq.payload_building.anchor_exclusions.get_settings",
-        ) as mock_cfg,
-        patch(
-            "aryx.cpq.payload_building.anchor_exclusions.shadow_check_role_vn",
-        ) as mock_shadow,
-    ):
-        mock_cfg.return_value.catalog_profile_shadow_check_enabled = True
+def test_resolve_region_vn_not_called_when_no_product():
+    """An empty product must not invoke resolution at all -- it only runs
+    after the function's own early-return guards for filled/attrs/
+    workspace_id/product."""
+    with patch(
+        "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+    ) as mock_resolve:
         result = _data_table_resolved_anchor_vns(None, {}, [_attr(1, "x")], 704)
-    mock_shadow.assert_not_called()
+    mock_resolve.assert_not_called()
     assert result == frozenset()
 
 
