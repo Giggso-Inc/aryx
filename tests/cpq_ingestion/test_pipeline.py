@@ -44,6 +44,7 @@ def test_writes_raw_graph_when_enabled(monkeypatch):
     mock_write.assert_called_once()
     _, kwargs = mock_write.call_args
     assert kwargs["workspace_id"] == 1
+    assert kwargs["source_key"] == "sample"  # M1 fix: stem threaded through as the per-file scope key
 
 
 def test_skips_raw_graph_when_disabled(monkeypatch):
@@ -73,3 +74,18 @@ def test_raw_graph_failure_does_not_block_csv_ingest(monkeypatch, caplog):
             )
     assert result == expected
     assert any("raw graph projection/write failed" in r.message for r in caplog.records)
+
+
+def test_two_files_in_one_job_use_distinct_source_keys():
+    """Regression guard for Raven review M1: a job uploading two XML files
+    to the same workspace must scope each file's raw-graph write by its own
+    stem, not silently reuse/clear the previous file's scope."""
+    with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
+        mock_write.return_value = RawGraphWriteResult(
+            nodes_written=1, edges_written=0, backend="falkordb", graph_ref="graph=aryx_raw_ws_1_fileA",
+        )
+        project_raw_graph_and_flatten(SAMPLE_XML, "fileA", workspace_id=1, dsn="unused", graph_url="unused")
+        project_raw_graph_and_flatten(SAMPLE_XML, "fileB", workspace_id=1, dsn="unused", graph_url="unused")
+
+    source_keys = [call.kwargs["source_key"] for call in mock_write.call_args_list]
+    assert source_keys == ["fileA", "fileB"]

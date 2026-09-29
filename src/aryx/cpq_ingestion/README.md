@@ -49,11 +49,35 @@ plain `workspace_id` column with no raw/curated discriminator and no FK to
 `aryx_workspace`. Writing the raw graph into the *same* `workspace_id` as the
 curated graph would mean the curated graph's `clear()`-then-rebuild wipes the
 raw graph on every ingest. To keep both inspectable side by side, the raw
-graph is written to a **derived** scope instead:
+graph is written to a **derived** scope instead — and that scope is derived
+per *source file*, not just per workspace: a job can upload several XML
+files to the same workspace, each raw-graph write does its own
+`clear()`-then-rebuild, and without a per-file component the second file's
+write would silently clear and overwrite the first file's raw graph (only
+the last file in a batch would survive — Raven review finding M1). Every
+call site threads a `source_key` (the file's stem) alongside `workspace_id`:
 
-- FalkorDB: a distinct graph name, `aryx_raw_ws_<id>` (`naming.raw_ws_graph`).
-- Oracle Graph: a distinct `workspace_id`, `<id> + ARYX_CPQ_RAW_WORKSPACE_OFFSET`
-  (`naming.raw_workspace_id`).
+- FalkorDB: a distinct graph name per file, `aryx_raw_ws_<id>_<sanitized_stem>`
+  (`naming.raw_ws_graph`).
+- Oracle Graph: a distinct `workspace_id` per file, `ARYX_CPQ_RAW_WORKSPACE_OFFSET
+  + <id> * 1_000_000 + (stable hash of the stem mod 1_000_000)`
+  (`naming.raw_workspace_id`) — the multiplication keeps different
+  *workspaces'* ranges from ever overlapping; within one workspace, two
+  files' hashes colliding into the same slot is possible but negligible at
+  realistic per-job file counts (see the function's docstring for the
+  full tradeoff).
+
+Two files in the same job must not share a stem, the same assumption
+`_xml_to_csvs`'s own CSV filenames already make.
+
+Every batch write also passes `full_rebuild=True` (Raven review finding H1):
+the immediately-preceding `clear()` already guarantees no existing rows can
+conflict, so the plain-INSERT path (`insert_graph_vertex`/`insert_graph_edge`)
+is safe — and required, on the Oracle backend, to avoid a documented,
+live-confirmed 180+ second `MERGE`-`executemany()` hang per batch that the
+default (`full_rebuild=False`, MERGE) path would otherwise silently take on
+every raw-graph write (see `OracleGraphStore.add_entities_batch`'s
+docstring, and `docs/ingestion/SPARK_PARALLEL_MIGRATION_ANALYSIS_2026-09-23.md`).
 
 ## Module layout
 

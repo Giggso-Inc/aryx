@@ -40,8 +40,13 @@ def project_raw_graph_and_flatten(
 
     Args:
         data: Raw XML document bytes.
-        stem: Filename stem, used for both the raw-graph write's logging
-            and as the CSV filename prefix (matches ``_xml_to_csvs``).
+        stem: Filename stem — used as the CSV filename prefix (matches
+            ``_xml_to_csvs``) AND as the raw graph's per-file scope key, so
+            that uploading several XML files to the same workspace in one
+            job gives each file its own raw graph instead of each write
+            clearing the previous file's (Raven review finding M1). Two
+            files in the same job must not share a stem — the same
+            assumption ``_xml_to_csvs``'s own CSV filenames already make.
         workspace_id: Curated workspace this upload belongs to.
         dsn: Relational store DSN, forwarded to the raw-graph writer for the
             Oracle Graph backend.
@@ -57,7 +62,9 @@ def project_raw_graph_and_flatten(
     settings = get_cpq_ingestion_settings()
     if settings.cpq_raw_graph_enabled:
         try:
-            result = project_and_write_raw_graph(data, workspace_id=workspace_id, dsn=dsn, graph_url=graph_url)
+            result = project_and_write_raw_graph(
+                data, workspace_id=workspace_id, source_key=stem, dsn=dsn, graph_url=graph_url,
+            )
         except Exception as exc:  # noqa: BLE001 -- the raw graph is a best-effort provenance
             # layer alongside the primary CSV ingest path, not a precondition for it. A
             # malformed-XML parse error here must not crash the whole upload when
