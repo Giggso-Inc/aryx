@@ -100,8 +100,21 @@ def _is_summary_excluded(
             return True
         if attr is not None and attr.select_type == "boolean":
             return True
-    if engine._YEAR_VALUE_RE.search(value):
-        return True
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T4: `_YEAR_VALUE_RE`
+        # matches the WORD "year"/"years" (subscription-term phrasing
+        # like "2 Years"), not a literal calendar year -- this check used
+        # to run unconditionally, so a genuine Mandatory User Input field
+        # whose real answer happens to contain that word (e.g. a
+        # duration-shaped mandatory attribute) was silently dropped from
+        # the summary even though it's exactly the kind of substantive,
+        # customer-relevant line this function exists to keep -- the same
+        # "drops even mandatory fields" class of bug the boolean checks
+        # above were already gated against. Moved inside the
+        # `not is_mandatory` guard to match that existing precedent;
+        # non-mandatory year-shaped values (real subscription-term lines
+        # this check targets) are unaffected.
+        if engine._YEAR_VALUE_RE.search(value):
+            return True
     # Issue 5 items 1/2 (docs/config_consistency_issues_2026-07-30.md):
     # build_payload() already excludes hide_in_trans==1 attrs (the
     # source system's own "don't submit this at transaction time"

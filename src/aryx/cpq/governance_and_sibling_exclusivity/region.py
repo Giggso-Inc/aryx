@@ -11,6 +11,8 @@ REGION`` is defined well below this package's import point in
 
 from __future__ import annotations
 
+import re
+
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.state import ConfigAttr
 
@@ -58,7 +60,13 @@ def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
     for opt in attr.options:
         if opt.item_value.upper() == region_code:
             return opt.item_value, opt.display_name
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T5: word-boundary match, not
+    # bare substring -- "ME" (Middle East) previously matched inside
+    # "NORTH AMERICA" (`a-ME-rica`), silently resolving a US/Canada
+    # session to the wrong region option. Same fix shape already applied
+    # at turn_intent/apply.py's own "me"-in-"america" call site.
+    region_word_re = re.compile(r"\b" + re.escape(region_code) + r"\b")
     for opt in attr.options:
-        if region_code in opt.display_name.upper():
+        if region_word_re.search(opt.display_name.upper()):
             return opt.item_value, opt.display_name
     return None
