@@ -8,16 +8,24 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
-from aryx.cpq.auto_fill_stages.multi_optout_and_empty import try_multi_optional_empty
+from aryx.cpq.auto_fill_stages.multi_fallback import try_multi_fallback
+from aryx.cpq.auto_fill_stages.multi_optout_and_empty import (
+    try_multi_opt_out,
+    try_multi_optional_empty,
+)
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.auto_fill_stages.tier6_single_b import single_chain_tail
+from aryx.cpq.blind_fill_constants import _BLIND_FILL_RISK_ACCEPTED_VNS
 from aryx.cpq.data_table_bridge.attr_governance import _CONFIRMED_DEAD_ATTRS
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
 from aryx.cpq.model_policy import (
+    blind_fill_risk_accepted_vns,
     confirmed_dead_attrs,
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
     recommended_config_only_vns,
+    resolve_blind_fill_risk_accepted_membership,
     resolve_confirmed_dead_attr_membership,
     resolve_optional_empty_fill_membership,
     resolve_recommended_config_only_membership,
@@ -29,7 +37,7 @@ from aryx.cpq.opt_out_and_duplicates import (
     _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE,
     _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS,
 )
-from aryx.cpq.state import ConfigAttr
+from aryx.cpq.state import ConfigAttr, MenuOption
 
 
 def test_optional_empty_fill_accepted_vns_matches_the_real_constant_for_apxnext():
@@ -523,3 +531,279 @@ def test_resolve_confirmed_dead_attr_membership_true_when_any_candidate_confirms
         assert resolve_confirmed_dead_attr_membership(
             "modelSelectionFrequencyBands_astro", _CONFIRMED_DEAD_ATTRS, ("SVX", "APXNEXT"),
         ) is True
+
+
+def test_blind_fill_risk_accepted_vns_matches_the_real_constant_for_apxnext():
+    assert blind_fill_risk_accepted_vns("APXNEXT") == _BLIND_FILL_RISK_ACCEPTED_VNS
+
+
+def test_blind_fill_risk_accepted_vns_case_insensitive_model_match():
+    assert blind_fill_risk_accepted_vns("apxnext") == _BLIND_FILL_RISK_ACCEPTED_VNS
+
+
+def test_blind_fill_risk_accepted_vns_empty_for_unknown_model():
+    assert blind_fill_risk_accepted_vns("SVX") == frozenset()
+    assert blind_fill_risk_accepted_vns("") == frozenset()
+    assert blind_fill_risk_accepted_vns(None) == frozenset()
+
+
+# ── resolve_blind_fill_risk_accepted_membership ─────────────────────────
+# Same shape as resolve_select_all_narrowed_legal_multi_membership --
+# resolves its own model candidates via product_name, since every real
+# consumer (multi_fallback.py, tier6_single_b.py, multi_optout_and_empty.
+# py) has ctx/scope in local scope but no pre-resolved candidates tuple
+# to reuse.
+
+def test_resolve_blind_fill_risk_accepted_membership_never_touches_candidates_when_flag_is_at_its_real_default():
+    with patch("aryx.cpq.model_policy._cpq_model_candidates") as mock_candidates:
+        result = resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "APX NEXT XE", 704,
+        )
+    mock_candidates.assert_not_called()
+    assert result is True
+
+
+def test_resolve_blind_fill_risk_accepted_membership_matches_legacy_constant_at_real_default():
+    assert resolve_blind_fill_risk_accepted_membership(
+        "someUnrelatedVn_astro", "APX NEXT XE", 704,
+    ) is False
+
+
+def test_resolve_blind_fill_risk_accepted_membership_falls_back_when_workspace_id_none():
+    with _enabled_model_policy_settings():
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "APX NEXT XE", None,
+        ) is True
+
+
+def test_resolve_blind_fill_risk_accepted_membership_falls_back_when_no_product():
+    with _enabled_model_policy_settings():
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "", 704,
+        ) is True
+
+
+def test_resolve_blind_fill_risk_accepted_membership_falls_back_when_candidates_raise():
+    with (
+        _enabled_model_policy_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates", side_effect=RuntimeError("boom"),
+        ),
+    ):
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_blind_fill_risk_accepted_membership_falls_back_when_no_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=()),
+    ):
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_blind_fill_risk_accepted_membership_uses_real_policy_when_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX",)),
+    ):
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "Some SVX Product", 704,
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+
+
+def test_resolve_blind_fill_risk_accepted_membership_true_when_any_candidate_confirms():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX", "APXNEXT")),
+    ):
+        assert resolve_blind_fill_risk_accepted_membership(
+            "packingPackageType_astro", "APX NEXT XE", 704,
+        ) is True
+
+
+# ── wiring into the three real consumers ────────────────────────────────
+# multi_fallback.py's try_multi_fallback, tier6_single_b.py's
+# single_chain_tail, and multi_optout_and_empty.py's try_multi_opt_out.
+
+def test_multi_opt_out_wiring_calls_resolve_with_right_args():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="relatedServicesType_astro", display_label="x",
+        required=False, default_value="", select_type="multi",
+        options=[MenuOption(item_value="OPTOUT", display_name="Not Required")],
+    )
+    state = AttrResolution(vn=attr.variable_name)
+    ctx = _ctx()
+    scope = _scope()
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_optout_and_empty._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_optout_and_empty."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=False,
+        ) as mock_resolve,
+    ):
+        result = try_multi_opt_out(MagicMock(), attr, ctx, scope, state)
+    mock_resolve.assert_called_once_with(
+        "relatedServicesType_astro", "APX NEXT XE", 704, "Astro", {},
+    )
+    assert result is True
+    assert ctx.filled_multi["relatedServicesType_astro"] == ["OPTOUT"]
+
+
+def test_multi_opt_out_wiring_does_not_fill_when_resolve_returns_true():
+    """A vn confirmed blind-fill-risk-accepted for the actual model must
+    not intercept the menu-declared-opt-out branch -- same "not in the
+    allowlist" gate today's hardcoded check applies."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="relatedServicesType_astro", display_label="x",
+        required=False, default_value="", select_type="multi",
+        options=[MenuOption(item_value="OPTOUT", display_name="Not Required")],
+    )
+    state = AttrResolution(vn=attr.variable_name)
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_optout_and_empty._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_optout_and_empty."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=True,
+        ),
+    ):
+        result = try_multi_opt_out(MagicMock(), attr, _ctx(), _scope(), state)
+    assert result is False
+
+
+def test_single_chain_tail_wiring_calls_resolve_with_right_args():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="packingPackageType_astro", display_label="x",
+        required=False, default_value="", select_type="single", options=[],
+    )
+    state = AttrResolution(
+        vn=attr.variable_name,
+        valid_opts=[MenuOption(item_value="A", display_name="Option A")],
+    )
+    ctx = _ctx()
+    scope = _scope()
+    scope.rec_by_target = {}
+    scope.display_order = None
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.tier6_single_b._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.tier6_single_b."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=True,
+        ) as mock_resolve,
+    ):
+        single_chain_tail(MagicMock(), attr, ctx, scope, state)
+    mock_resolve.assert_called_once_with(
+        "packingPackageType_astro", "APX NEXT XE", 704, "Astro", {},
+    )
+    assert state.value == "A"
+
+
+def test_single_chain_tail_blind_fill_not_accepted_leaves_value_unset():
+    """When the vn is confirmed NOT blind-fill-risk-accepted (menu
+    declares no opt-out option, no layout map loaded), the tail must
+    leave the attr unresolved rather than guess -- same contract as
+    today's `vn not in _BLIND_FILL_RISK_ACCEPTED_VNS` check."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="someUnverifiedVn_astro", display_label="x",
+        required=False, default_value="", select_type="single", options=[],
+    )
+    state = AttrResolution(
+        vn=attr.variable_name,
+        valid_opts=[MenuOption(item_value="A", display_name="Option A")],
+    )
+    scope = _scope()
+    scope.rec_by_target = {}
+    scope.display_order = None
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.tier6_single_b._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.tier6_single_b."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=False,
+        ),
+    ):
+        single_chain_tail(MagicMock(), attr, _ctx(), scope, state)
+    assert state.value is None
+
+
+def test_multi_fallback_wiring_calls_resolve_with_right_args():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="accessoriesSolutionSet_astro", display_label="x",
+        required=False, default_value="", select_type="multi", options=[],
+    )
+    state = AttrResolution(vn=attr.variable_name)
+    ctx = _ctx()
+    scope = _scope()
+    scope.rec_by_target = {}
+    scope.constrained_opts = {}
+    scope.display_order = None
+    scope.rule_governed = set()
+    scope.dt_governed_vns = set()
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_fallback._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_fallback."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=False,
+        ) as mock_resolve,
+    ):
+        result = try_multi_fallback(MagicMock(), attr, ctx, scope, state)
+    mock_resolve.assert_called_once_with(
+        "accessoriesSolutionSet_astro", "APX NEXT XE", 704, "Astro", {},
+    )
+    assert result is False, (
+        "no_real_fill_justification=True and NOT risk-accepted matches "
+        "today's `vn not in _BLIND_FILL_RISK_ACCEPTED_VNS` outcome for "
+        "an unlisted vn -- the outer guard's inner AND is True, `not "
+        "(...)` is False, nothing to fill here"
+    )
+
+
+def test_multi_fallback_wiring_risk_accepted_lets_the_branch_run():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="accessoriesSolutionSet_astro", display_label="x",
+        required=False, default_value="", select_type="multi", options=[],
+    )
+    state = AttrResolution(vn=attr.variable_name)
+    ctx = _ctx()
+    scope = _scope()
+    scope.rec_by_target = {}
+    scope.constrained_opts = {}
+    scope.display_order = None
+    scope.rule_governed = set()
+    scope.dt_governed_vns = set()
+    with (
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_fallback._no_real_fill_justification",
+            return_value=True,
+        ),
+        patch(
+            "aryx.cpq.auto_fill_stages.multi_fallback."
+            "resolve_blind_fill_risk_accepted_membership",
+            return_value=True,
+        ),
+    ):
+        result = try_multi_fallback(MagicMock(), attr, ctx, scope, state)
+    assert result is True
+    assert ctx.filled_multi["accessoriesSolutionSet_astro"] == []

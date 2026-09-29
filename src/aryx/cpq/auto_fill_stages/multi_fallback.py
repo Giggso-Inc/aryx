@@ -15,10 +15,10 @@ from aryx.cpq.auto_fill_stages import multi_fallback_layout
 from aryx.cpq.auto_fill_stages import multi_fallback_unconstrained
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
-    _BLIND_FILL_RISK_ACCEPTED_VNS,
     _no_real_fill_justification,
     _valid,
 )
+from aryx.cpq.model_policy import resolve_blind_fill_risk_accepted_membership
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -38,7 +38,10 @@ def try_multi_fallback(
         and state.vn not in scope.grid_selector_vns
         and not (
             _no_real_fill_justification(attr, scope.rec_by_target)
-            and state.vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+            and not resolve_blind_fill_risk_accepted_membership(
+                state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+                scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+            )
         )
     ):
         # A multi-select that reached here (no single-remaining-

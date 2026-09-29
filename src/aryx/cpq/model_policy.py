@@ -61,6 +61,16 @@ switch-over already touched), was added the same way as the third:
 reuses that function's already-resolved candidates tuple rather than
 re-deriving them, since `_cpq_model_candidates` is unconditional and
 separately-cached there already.
+
+A sixth, `_BLIND_FILL_RISK_ACCEPTED_VNS` (`blind_fill_constants.py` --
+a plain module-level constant, three real consumers across `auto_fill_
+stages/multi_fallback.py`, `auto_fill_stages/tier6_single_b.py`
+(3 checks), and `auto_fill_stages/multi_optout_and_empty.py`), was
+added the same way as the first and fourth: resolves its own model
+candidates via `product_name`, since every consumer already has
+`ctx`/`scope` (hence `ctx.filled`, `ctx.dt_cache`, `scope.workspace_id`,
+`scope.catalog_prefix`) in local scope but none has a pre-resolved
+candidates tuple to reuse.
 """
 from __future__ import annotations
 
@@ -68,6 +78,7 @@ import logging
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq.blind_fill_constants import _BLIND_FILL_RISK_ACCEPTED_VNS
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
 from aryx.cpq.opt_out_and_duplicates import _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
@@ -117,6 +128,19 @@ _LEGACY_RECOMMENDED_CONFIG_ONLY_VNS: dict[str, frozenset[str]] = {
         "trainTheTrainerTraining_astro",
         "packingPackageType_astro",
         "documentationTestResultsRatedAudioPrintoutLabel_astro",
+    }),
+}
+
+_LEGACY_BLIND_FILL_RISK_ACCEPTED_VNS: dict[str, frozenset[str]] = {
+    "APXNEXT": frozenset({
+        "accessoriesSolutionSet_astro",
+        "relatedServicesType_astro",
+        "relatedServiceCategory_astro",
+        "selectEndUserType_astro",
+        "baselineReleaseSW_astro",
+        "applicationServicesSelection_astro",
+        "carrierSelectionMultiSelect_astro",
+        "packingPackageType_astro",
     }),
 }
 
@@ -203,6 +227,17 @@ def shadow_check_optional_empty_fill_vns(
             "ModelPolicy shadow check failed for vn=%r (ws=%s) -- "
             "ignored, legacy path unaffected", vn, workspace_id,
         )
+
+
+def blind_fill_risk_accepted_vns(cpq_model: str) -> frozenset[str]:
+    """The set of variable_names individually verified safe to blind-fill
+    despite `_no_real_fill_justification` finding no rule coverage, for
+    `cpq_model` -- legacy policy-table lookup only for now (see module
+    docstring); returns `frozenset()` for any model with no policy
+    entry, never a guess."""
+    return _LEGACY_BLIND_FILL_RISK_ACCEPTED_VNS.get(
+        (cpq_model or "").strip().upper(), frozenset(),
+    )
 
 
 def resolve_optional_empty_fill_membership(
@@ -308,6 +343,41 @@ def resolve_select_all_narrowed_legal_multi_membership(
     if not models:
         return vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
     return any(vn in select_all_narrowed_legal_multi_vns(m) for m in models)
+
+
+def resolve_blind_fill_risk_accepted_membership(
+    vn: str, product_name: str, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Whether `vn` is individually verified safe to blind-fill despite
+    `_no_real_fill_justification` finding no rule coverage, for the
+    session's actual CPQ model(s) -- resolves via the real, per-model
+    `blind_fill_risk_accepted_vns` policy table, falling back to the
+    legacy `_BLIND_FILL_RISK_ACCEPTED_VNS` membership check when
+    `workspace_id`/`product_name` aren't available yet, when no model
+    candidates resolve, or when candidate resolution itself fails. Never
+    raises. Same contract, same gate, same fallback shape as `resolve_
+    optional_empty_fill_membership` -- see its docstring for the full
+    safety rationale. Self-resolving (Shape A): every real consumer
+    (`multi_fallback.py`, `tier6_single_b.py`, `multi_optout_and_empty.
+    py`) has `ctx`/`scope` in local scope but no pre-resolved candidates
+    tuple to reuse, unlike the Shape-B resolvers above.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return vn in _BLIND_FILL_RISK_ACCEPTED_VNS
+    if workspace_id is None or not product_name:
+        return vn in _BLIND_FILL_RISK_ACCEPTED_VNS
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "ModelPolicy resolution failed for vn=%r (ws=%s) -- falling "
+            "back to the legacy constant", vn, workspace_id,
+        )
+        return vn in _BLIND_FILL_RISK_ACCEPTED_VNS
+    if not models:
+        return vn in _BLIND_FILL_RISK_ACCEPTED_VNS
+    return any(vn in blind_fill_risk_accepted_vns(m) for m in models)
 
 
 def resolve_confirmed_dead_attr_membership(
