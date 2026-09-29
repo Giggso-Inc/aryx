@@ -6,6 +6,7 @@ lazy-import cloud backend later without touching any caller.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,18 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 _LAYOUT_FILE_SUFFIX = ".txt"
+
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: an explicit, curated
+# catalog_prefix -> layout-filename map, consulted BEFORE the fuzzy
+# fallback below. Additive only -- a catalog_prefix not listed here (or
+# a missing/malformed manifest file) falls straight through to the
+# existing fuzzy-match behavior, byte-for-byte unchanged. Entries here
+# are individually live-confirmed, not guessed: "ApxnextCnofigdata" is
+# the exact real ingested catalog_prefix `doc_discovery._stem_type`
+# derives from "APXNext_CnofigData.xml" (see `_fuzzy_matches`'s own
+# docstring), and "APXNEXT_BOM" is the real ingested variant-suffixed
+# form -- both confirmed paired with "Config Layout APX Next.txt".
+_LAYOUT_MANIFEST_FILENAME = "manifest.json"
 
 # Generic words the "Config Layout <CatalogName>.txt" naming convention
 # itself contributes to every filename in this directory -- not specific
@@ -95,10 +108,48 @@ class LocalDirLayoutFileSource:
         self.directory = Path(
             os.environ.get("ARYX_CPQ_LAYOUT_DIR") or directory or "."
         )
+        self._manifest: dict[str, str] | None = None
+
+    def _load_manifest(self) -> dict[str, str]:
+        """Lazy, cached-per-instance load of `manifest.json` (see module
+        docstring above). Never raises -- a missing or malformed manifest
+        is treated exactly like an empty one, so this can never make the
+        fuzzy fallback below any less available than it already is."""
+        if self._manifest is not None:
+            return self._manifest
+        manifest_path = self.directory / _LAYOUT_MANIFEST_FILENAME
+        manifest: dict[str, str] = {}
+        try:
+            if manifest_path.is_file():
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    manifest = {
+                        str(k): str(v) for k, v in data.items()
+                        if isinstance(k, str) and isinstance(v, str)
+                        and not k.startswith("_")  # e.g. a "_comment" key
+                    }
+        except (OSError, ValueError):
+            logger.warning(
+                "cpq layout_source: failed to read/parse %s -- falling "
+                "back to fuzzy matching only", manifest_path, exc_info=True,
+            )
+        self._manifest = manifest
+        return manifest
 
     def get(self, catalog_name: str) -> str | None:
         if not catalog_name or not self.directory.is_dir():
             return None
+        manifest_filename = self._load_manifest().get(catalog_name)
+        if manifest_filename:
+            manifest_path = self.directory / manifest_filename
+            try:
+                return manifest_path.read_text(encoding="utf-8")
+            except OSError:
+                logger.warning(
+                    "cpq layout_source: manifest maps %r -> %r, but that "
+                    "file could not be read -- falling back to fuzzy "
+                    "matching", catalog_name, manifest_filename, exc_info=True,
+                )
         needle = _normalize(catalog_name)
         if not needle:
             return None
@@ -109,6 +160,19 @@ class LocalDirLayoutFileSource:
             and _fuzzy_matches(needle, _normalize(p.stem))
         )
         if not matches:
+            # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: a genuinely
+            # unmapped catalog previously reached the caller's cache
+            # (layout_and_join_data/components.py) with zero logging
+            # anywhere -- indistinguishable from a deliberate "no layout
+            # for this catalog" case. Logged here, at the source, once
+            # per real lookup (the caller's own process-lifetime cache
+            # still applies, so this doesn't repeat per turn).
+            logger.warning(
+                "cpq layout_source: no manifest entry and no fuzzy-matched "
+                "layout file found for catalog_name=%r in %s -- this "
+                "catalog will get no display-order/visibility signal from "
+                "a native-UI layout export", catalog_name, self.directory,
+            )
             return None
         if len(matches) > 1:
             logger.info(

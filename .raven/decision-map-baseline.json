@@ -10922,6 +10922,16 @@
       "detect_country_change_request"
     ],
     [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      69,
+      "<if>"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      86,
+      "_cpq_model_candidates"
+    ],
+    [
       "src/aryx/cpq/engine.py",
       590,
       "_cpq_model_candidates"
@@ -12388,12 +12398,12 @@
     ],
     [
       "src/aryx/cpq/governance_and_sibling_exclusivity/region.py",
-      18,
+      20,
       "derive_region"
     ],
     [
       "src/aryx/cpq/governance_and_sibling_exclusivity/region.py",
-      64,
+      72,
       "derive_region"
     ],
     [

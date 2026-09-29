@@ -199,6 +199,34 @@ class CpqIntentSettingsMixin(BaseSettings):
             "catalog/model has its own real, distinct model_policy entry."
         ),
     )
+    data_table_candidates_empty_on_no_match_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2 Phase 4: makes "
+            "_cpq_model_candidates() (data_table_bridge/candidates.py) "
+            "return an empty tuple, plus a logged data gap, instead of the "
+            "hardcoded _DEFAULT_CPQ_MODEL_CANDIDATES = ('APXNEXT', "
+            "'APXNEXT_BOM') fallback, whenever neither the row-level nor "
+            "family-level Data Table resolution finds a real match for the "
+            "product. Off by default -- when off, this function behaves "
+            "byte-identically to before this flag existed (unmapped "
+            "products still silently default to APX NEXT candidates, "
+            "exactly as documented in T2's own 'Problem' finding). All "
+            "~22 real call sites were spot-checked before this flag was "
+            "added: every one either iterates the returned tuple or "
+            "explicitly guards on 'if not candidates/models', never "
+            "indexes it directly -- an empty tuple is safe everywhere it "
+            "was sampled, but this has NOT been verified against a real "
+            "non-APX-NEXT catalog's actual behavior end-to-end (T2's own "
+            "'Impact' section: no real workspace in this dev_oci "
+            "environment has attrToVarMapping/Data Table coverage for any "
+            "product other than APX NEXT, so there is nothing here to "
+            "prove this against yet). Override with "
+            "ARYX_DATA_TABLE_CANDIDATES_EMPTY_ON_NO_MATCH_ENABLED=true "
+            "only once a real non-APX-NEXT catalog's behavior under this "
+            "flag has actually been observed, not merely code-reviewed."
+        ),
+    )
     cpq_intent_mode: str = Field(
         default="llm_first",
         description=(

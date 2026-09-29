@@ -6,11 +6,16 @@ wrapper over already-external ``data_table_resolver`` calls.
 
 from __future__ import annotations
 
+import logging
+
+from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,
 )
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
 
@@ -30,9 +35,14 @@ def _cpq_model_candidates(
        per-product. Both the bare family code and its "_BOM" variant are
        tried, since every real export seen so far ingests both under the
        same family.
-    3. The static APXNEXT/APXNEXT_BOM fallback, unchanged, when none of the
-       above applies (no workspace_id, or the product is in no ingested
-       source at all) -- identical to this function's original behavior.
+    3. The static APXNEXT/APXNEXT_BOM fallback, when none of the above
+       applies (no workspace_id, or the product is in no ingested source
+       at all) -- unchanged, UNLESS `data_table_candidates_empty_on_no_
+       match_enabled` is on (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2
+       Phase 4), in which case this step logs the data gap and returns an
+       empty tuple instead of guessing APX NEXT. Off by default; see that
+       setting's own docstring for the full safety rationale and the "not
+       yet verified against a real non-APX-NEXT catalog" caveat.
 
     `base_model`, when supplied, appends every CPQModel code the real
     ingested Data Tables actually use for that EXACT base model (see
@@ -56,7 +66,17 @@ def _cpq_model_candidates(
         if family:
             primary = (family, f"{family}_BOM")
     if primary is None:
-        primary = _DEFAULT_CPQ_MODEL_CANDIDATES
+        if get_settings().data_table_candidates_empty_on_no_match_enabled:
+            logger.warning(
+                "cpq: no real CPQModel candidates resolved for "
+                "product_name=%r (ws=%s catalog_prefix=%r) -- returning "
+                "empty rather than guessing the APX NEXT fallback "
+                "(data_table_candidates_empty_on_no_match_enabled)",
+                product_name, workspace_id, catalog_prefix,
+            )
+            primary = ()
+        else:
+            primary = _DEFAULT_CPQ_MODEL_CANDIDATES
     if not (base_model and workspace_id is not None):
         return primary
     discovered = dt_discover_cpq_models_for_base_model(

@@ -14,6 +14,7 @@ explicitly throughout.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -175,6 +176,76 @@ def test_local_dir_source_matches_the_real_filename_derived_catalog_prefix(tmp_p
     (tmp_path / "Config Layout APX Next.txt").write_text(_layout_json([_leaf("a", False)]))
     source = LocalDirLayoutFileSource(tmp_path)
     assert source.get("ApxnextCnofigdata") is not None
+
+
+def test_local_dir_source_manifest_entry_wins_over_fuzzy_match(tmp_path):
+    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: an explicit manifest.json
+    entry is consulted first -- confirmed by mapping a catalog_name to a
+    file whose content is provably different from what fuzzy matching
+    would have found."""
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout APX Next.txt").write_text(
+        _layout_json([_leaf("fuzzy_match_content", False)]))
+    (tmp_path / "Manifest Target.txt").write_text(
+        _layout_json([_leaf("manifest_content", False)]))
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"ApxnextCnofigdata": "Manifest Target.txt"}))
+    source = LocalDirLayoutFileSource(tmp_path)
+    text = source.get("ApxnextCnofigdata")
+    assert text is not None
+    assert json.loads(text)["components"]["items"][0]["resourceAttributeVarName"] == (
+        "manifest_content"
+    )
+
+
+def test_local_dir_source_falls_back_to_fuzzy_when_not_in_manifest(tmp_path):
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
+    (tmp_path / "manifest.json").write_text(json.dumps({"SomeOtherPrefix": "Nope.txt"}))
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("AstroApx") is not None
+
+
+def test_local_dir_source_missing_manifest_file_falls_back_to_fuzzy(tmp_path):
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("AstroApx") is not None
+
+
+def test_local_dir_source_malformed_manifest_falls_back_to_fuzzy_not_raises(tmp_path):
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
+    (tmp_path / "manifest.json").write_text("{ not valid json")
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("AstroApx") is not None
+
+
+def test_local_dir_source_manifest_underscore_keys_are_never_real_lookups(tmp_path):
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "manifest.json").write_text(json.dumps({"_comment": "not a catalog"}))
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("_comment") is None
+
+
+def test_local_dir_source_no_match_at_all_logs_a_warning(tmp_path, caplog):
+    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: a genuinely unmapped
+    catalog used to be cached as None with zero logging anywhere -- now
+    logged at the source."""
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    source = LocalDirLayoutFileSource(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="aryx.cpq.layout_source"):
+        assert source.get("SomeTotallyUnmappedCatalog") is None
+    assert any(
+        "no manifest entry and no fuzzy-matched layout file" in r.message
+        for r in caplog.records
+    )
 
 
 def test_local_dir_source_boilerplate_stripping_does_not_create_false_positives(tmp_path):
