@@ -19,6 +19,9 @@ from aryx.cpq.blind_fill_constants import _BLIND_FILL_RISK_ACCEPTED_VNS
 from aryx.cpq.data_table_bridge.attr_governance import _CONFIRMED_DEAD_ATTRS
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+from aryx.cpq.governance_and_sibling_exclusivity.sibling_exclusions import (
+    exclusive_sibling_family_exclusions,
+)
 from aryx.cpq.hiding_rules.type11 import (
     _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES,
     _load_type11_hiding_rules,
@@ -28,11 +31,13 @@ from aryx.cpq.model_policy import (
     confirmed_dead_attrs,
     dt_whitelist_substitute_hiding_rule_names,
     duplicate_display_name_canonical_item_value,
+    known_sibling_pairs,
     optional_empty_fill_accepted_vns,
     recommended_config_only_vns,
     resolve_blind_fill_risk_accepted_membership,
     resolve_confirmed_dead_attr_membership,
     resolve_dt_whitelist_substitute_hiding_rule_name_membership,
+    resolve_known_sibling_pairs,
     resolve_optional_empty_fill_membership,
     resolve_recommended_config_only_membership,
     resolve_select_all_narrowed_legal_multi_membership,
@@ -981,3 +986,166 @@ def test_load_type11_hiding_rules_matches_legacy_behavior_at_real_default():
     eng2 = _fake_engine_for_type11("Some Totally Unrelated Rule")
     rules2 = _load_type11_hiding_rules(eng2, 704, "Astro", 0.0)
     assert rules2 == []
+
+
+def test_known_sibling_pairs_matches_the_real_constant_for_apxnext():
+    assert known_sibling_pairs("APXNEXT") == CpqEngine._KNOWN_SIBLING_PAIRS
+
+
+def test_known_sibling_pairs_case_insensitive_model_match():
+    assert known_sibling_pairs("apxnext") == CpqEngine._KNOWN_SIBLING_PAIRS
+
+
+def test_known_sibling_pairs_empty_for_unknown_model():
+    assert known_sibling_pairs("SVX") == ()
+    assert known_sibling_pairs("") == ()
+    assert known_sibling_pairs(None) == ()
+
+
+# ── resolve_known_sibling_pairs ──────────────────────────────────────────
+# Unlike every other resolver in this module, this one returns a
+# COLLECTION (the union of every candidate model's disclosed pairs), not
+# a boolean -- and, like resolve_recommended_config_only_membership, it
+# takes legacy_members as a parameter (CpqEngine._KNOWN_SIBLING_PAIRS is
+# a class attribute, override-preservation) while ALSO self-resolving
+# its own model candidates via product_name (Shape A -- its one real
+# consumer, exclusive_sibling_family_exclusions, has no pre-resolved
+# candidates tuple in scope).
+
+def test_resolve_known_sibling_pairs_matches_legacy_at_real_default():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", 704) == legacy
+
+
+def test_resolve_known_sibling_pairs_falls_back_when_workspace_id_none():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with _enabled_model_policy_settings():
+        assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", None) == legacy
+
+
+def test_resolve_known_sibling_pairs_falls_back_when_no_product():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with _enabled_model_policy_settings():
+        assert resolve_known_sibling_pairs(legacy, "", 704) == legacy
+
+
+def test_resolve_known_sibling_pairs_falls_back_when_candidates_raise():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with (
+        _enabled_model_policy_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates", side_effect=RuntimeError("boom"),
+        ),
+    ):
+        assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", 704) == legacy
+
+
+def test_resolve_known_sibling_pairs_falls_back_when_no_candidates_resolve():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=()),
+    ):
+        assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", 704) == legacy
+
+
+def test_resolve_known_sibling_pairs_falls_back_to_a_custom_legacy_set():
+    """A subclass/instance override of engine._KNOWN_SIBLING_PAIRS must
+    still be honored when the gate is off -- exactly why legacy_members
+    is a parameter, not an import."""
+    custom = (("someCustomVnA_astro", "someCustomVnB_astro"),)
+    assert resolve_known_sibling_pairs(custom, "APX NEXT XE", 704) == custom
+
+
+def test_resolve_known_sibling_pairs_empty_when_gate_on_and_no_policy_entry():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX",)),
+    ):
+        assert resolve_known_sibling_pairs(legacy, "Some SVX Product", 704) == (), (
+            "SVX has no policy entry -- real 'no pairs', not a fallback"
+        )
+
+
+def test_resolve_known_sibling_pairs_uses_real_policy_when_candidates_resolve():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("APXNEXT",)),
+    ):
+        assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", 704) == legacy
+
+
+def test_resolve_known_sibling_pairs_unions_and_dedupes_across_candidates():
+    legacy = CpqEngine._KNOWN_SIBLING_PAIRS
+    with (
+        _enabled_model_policy_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates",
+            return_value=("APXNEXT", "SVX", "APXNEXT"),
+        ),
+    ):
+        assert resolve_known_sibling_pairs(legacy, "APX NEXT XE", 704) == legacy, (
+            "duplicate/no-entry candidates must not duplicate or clear the "
+            "real APXNEXT pair"
+        )
+
+
+# ── wiring into the real consumer, exclusive_sibling_family_exclusions ──
+
+def test_exclusive_sibling_family_exclusions_wiring_calls_resolve_with_right_args():
+    attr_single = ConfigAttr(
+        entity_id=1, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        select_type="single", options=[],
+    )
+    attr_multi = ConfigAttr(
+        entity_id=2, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier Selection", required=False, default_value="",
+        select_type="multi", options=[],
+    )
+    eng = CpqEngine()
+    filled = {"wirelessCarrier_astro": "ATT/FIRSTNET"}
+    filled_source = {"wirelessCarrier_astro": "default"}
+    with patch(
+        "aryx.cpq.governance_and_sibling_exclusivity.sibling_exclusions."
+        "resolve_known_sibling_pairs",
+        return_value=(("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),),
+    ) as mock_resolve:
+        to_strip, to_ask = exclusive_sibling_family_exclusions(
+            eng, [attr_single, attr_multi], filled, {}, filled_source,
+            product_name="APX NEXT XE", workspace_id=704, catalog_prefix="Astro",
+        )
+    mock_resolve.assert_called_once_with(
+        CpqEngine._KNOWN_SIBLING_PAIRS, "APX NEXT XE", 704, "Astro",
+    )
+    assert to_strip == {"wirelessCarrier_astro"}
+    assert [a.variable_name for a in to_ask] == ["carrierSelectionMultiSelect_astro"]
+
+
+def test_exclusive_sibling_family_exclusions_wiring_empty_pairs_means_no_pairing():
+    attr_single = ConfigAttr(
+        entity_id=1, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        select_type="single", options=[],
+    )
+    attr_multi = ConfigAttr(
+        entity_id=2, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier Selection", required=False, default_value="",
+        select_type="multi", options=[],
+    )
+    eng = CpqEngine()
+    filled = {"wirelessCarrier_astro": "ATT/FIRSTNET"}
+    filled_source = {"wirelessCarrier_astro": "default"}
+    with patch(
+        "aryx.cpq.governance_and_sibling_exclusivity.sibling_exclusions."
+        "resolve_known_sibling_pairs",
+        return_value=(),
+    ):
+        to_strip, to_ask = exclusive_sibling_family_exclusions(
+            eng, [attr_single, attr_multi], filled, {}, filled_source,
+            product_name="APX NEXT XE", workspace_id=704, catalog_prefix="Astro",
+        )
+    assert to_strip == set()
+    assert to_ask == []

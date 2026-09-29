@@ -90,6 +90,28 @@ be a genuine two-module cycle, though -- so, mirroring the
 `_CONFIRMED_DEAD_ATTRS` fix, `type11.py` imports the resolver function
 itself LAZILY, inside `_load_type11_hiding_rules`'s function body, not
 at module scope.
+
+An eighth, `_KNOWN_SIBLING_PAIRS` (`engine.py` -- a `CpqEngine` CLASS
+attribute, a tuple of variable_name PAIRS rather than a per-vn
+membership set), was added with a new resolver shape: `resolve_known_
+sibling_pairs` both self-resolves its own model candidates (Shape A --
+its one real consumer, `exclusive_sibling_family_exclusions`, has no
+pre-resolved candidates tuple in scope) AND takes `legacy_members` as a
+parameter, not an import (Shape-B's override-preservation reasoning,
+since `_KNOWN_SIBLING_PAIRS` is a class attribute read off the
+instance). Returns the UNION of every resolved candidate model's
+disclosed pairs, de-duplicated, order-preserving -- the natural
+generalization of the vn-membership resolvers' `any(...)` check from a
+boolean to a collection. `product_name`/`workspace_id`/`catalog_prefix`
+are threaded down 4 signatures from the one real call site (`_step10_
+enforce_siblings_and_multi_hint`, which already has all three locally)
+through `enforce_exclusive_sibling_families` (both the free function
+and its `CpqEngine` wrapper) to `exclusive_sibling_family_exclusions`
+(both the free function and its `CpqEngine` wrapper) -- no circular
+import risk, since `model_policy.py` imports nothing from `sibling_
+exclusions.py` (the legacy value is passed by the caller, not
+imported), so this is a plain one-directional import, no lazy-import
+workaround needed.
 """
 from __future__ import annotations
 
@@ -168,6 +190,12 @@ _LEGACY_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES: dict[str, frozenset[str]] = {
     "APXNEXT": frozenset({
         "Hide Optional Peripherals 900 MHz Hybrid Combiner For G Series If No Value Available",
     }),
+}
+
+_LEGACY_KNOWN_SIBLING_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
+    "APXNEXT": (
+        ("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),
+    ),
 }
 
 
@@ -274,6 +302,16 @@ def dt_whitelist_substitute_hiding_rule_names(cpq_model: str) -> frozenset[str]:
     policy entry, never a guess."""
     return _LEGACY_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES.get(
         (cpq_model or "").strip().upper(), frozenset(),
+    )
+
+
+def known_sibling_pairs(cpq_model: str) -> tuple[tuple[str, str], ...]:
+    """The disclosed sibling-pair exceptions (see `CpqEngine._KNOWN_
+    SIBLING_PAIRS`'s own docstring) for `cpq_model` -- legacy
+    policy-table lookup only for now (see module docstring); returns
+    `()` for any model with no policy entry, never a guess."""
+    return _LEGACY_KNOWN_SIBLING_PAIRS.get(
+        (cpq_model or "").strip().upper(), (),
     )
 
 
@@ -452,6 +490,57 @@ def resolve_dt_whitelist_substitute_hiding_rule_name_membership(
     return any(
         rule_name in dt_whitelist_substitute_hiding_rule_names(m) for m in models
     )
+
+
+def resolve_known_sibling_pairs(
+    legacy_members: "tuple[tuple[str, str], ...]", product_name: str,
+    workspace_id: int | None, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None,
+) -> "tuple[tuple[str, str], ...]":
+    """The disclosed sibling-pair exceptions for the session's actual CPQ
+    model(s) -- resolves via the real, per-model `known_sibling_pairs`
+    policy table, falling back to `legacy_members` when `workspace_id`/
+    `product_name` aren't available yet, when no model candidates
+    resolve, or when candidate resolution itself fails. Never raises.
+
+    Unlike a plain vn-membership resolver, this returns a COLLECTION:
+    the union of every resolved candidate model's disclosed pairs,
+    de-duplicated and order-preserving -- a pair disclosed for any one
+    candidate is still real, confirmed information, same "any candidate
+    confirms" semantics as the boolean resolvers' `any(...)` check.
+
+    Self-resolving (Shape A): its one real consumer, `exclusive_sibling_
+    family_exclusions`, has no pre-resolved candidates tuple in scope,
+    so this resolves its own via `product_name` (same as `resolve_
+    optional_empty_fill_membership`). `legacy_members` is a parameter,
+    not an import, for the same override-preservation reason as
+    `resolve_recommended_config_only_membership` -- `CpqEngine.
+    _KNOWN_SIBLING_PAIRS` is a class attribute read off the instance,
+    and a subclass/instance override must still be honored when the
+    gate is off.
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return legacy_members
+    if workspace_id is None or not product_name:
+        return legacy_members
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "ModelPolicy resolution failed for known_sibling_pairs "
+            "(ws=%s) -- falling back to the legacy constant", workspace_id,
+        )
+        return legacy_members
+    if not models:
+        return legacy_members
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in models:
+        for pair in known_sibling_pairs(m):
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+    return tuple(pairs)
 
 
 def resolve_confirmed_dead_attr_membership(

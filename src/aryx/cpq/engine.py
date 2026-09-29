@@ -1460,10 +1460,13 @@ class CpqEngine:
         filled_source: dict[str, str],
         all_attrs: list[ConfigAttr] | None = None,
         catalog_confirmed_vns: frozenset[str] | None = None,
+        product_name: str = "",
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> tuple[set[str], list[ConfigAttr]]:
         return gov_sibling.exclusive_sibling_family_exclusions(
             self, attrs, filled, filled_multi, filled_source, all_attrs,
-            catalog_confirmed_vns,
+            catalog_confirmed_vns, product_name, workspace_id, catalog_prefix,
         )
 
     def enforce_exclusive_sibling_families(
@@ -1476,10 +1479,14 @@ class CpqEngine:
         pending: list[ConfigAttr],
         all_attrs: list[ConfigAttr] | None = None,
         catalog_confirmed_vns: frozenset[str] | None = None,
+        product_name: str = "",
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> list[ConfigAttr]:
         return gov_sibling.enforce_exclusive_sibling_families(
             self, attrs, filled, filled_multi, filled_source, display_filled,
-            pending, all_attrs, catalog_confirmed_vns,
+            pending, all_attrs, catalog_confirmed_vns, product_name,
+            workspace_id, catalog_prefix,
         )
 
     @staticmethod
