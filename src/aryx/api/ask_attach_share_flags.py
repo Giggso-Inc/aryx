@@ -89,17 +89,27 @@ def _attach_share_flags(result: dict[str, Any], req: "Any", reader: Any) -> None
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         product_quantity=session.product_quantity,
         scope_required_and_edited=True,
-        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — the
+        # customer's own original wording (CpqSession.product_anchor_
+        # question) so Tier A's Hardware Version branch can consult the
+        # real applicability check instead of forcing HW mandatory
+        # regardless of whether it applies to this device.
+        product_anchor_hint=session.product_anchor_question)
     result["json_response"] = payload
     result["json_button_flag"] = True
     _beautify_required_vns = _cpq_engine.mandatory_tier_c_vns(
         session.filled, req.workspace_id, catalog_prefix)
     result["beautify"] = _cpq_engine.beautify_text(
         session.product_name, session.display_filled, attrs, session.filled_source,
-        required_vns=_beautify_required_vns)
+        required_vns=_beautify_required_vns,
+        product_anchor_hint=session.product_anchor_question,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
     result["beautify_rows"] = _cpq_engine.beautify_rows(
         session.product_name, session.display_filled, attrs, session.filled_source,
-        required_vns=_beautify_required_vns)
+        required_vns=_beautify_required_vns,
+        product_anchor_hint=session.product_anchor_question,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
     result["beautify_button_flag"] = True
     result["api_share"] = payload if session.status != "configuring" else {}
     result["api_share_button_flag"] = session.status != "configuring"

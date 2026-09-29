@@ -8043,17 +8043,17 @@
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
-      88,
+      90,
       "_build_current_quote_attribute_listing_text"
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
-      94,
+      96,
       "_resolve_split_change_text"
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_attr_text_helpers.py",
-      116,
+      118,
       "_resolve_split_change_text"
     ],
     [
@@ -8153,7 +8153,7 @@
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_cascade_multi_response.py",
-      99,
+      100,
       "_build_cascade_multi_response"
     ],
     [
@@ -8203,7 +8203,7 @@
     ],
     [
       "src/aryx/api/ask_attr_recompute/ask_cascade_response.py",
-      116,
+      117,
       "_build_cascade_response"
     ],
     [
@@ -8493,7 +8493,7 @@
     ],
     [
       "src/aryx/api/ask_handle/ask_handle_approval.py",
-      122,
+      124,
       "_handle_approval"
     ],
     [
@@ -8518,7 +8518,7 @@
     ],
     [
       "src/aryx/api/ask_handle/ask_handle_attr_activation.py",
-      121,
+      122,
       "_handle_attr_activation"
     ],
     [
@@ -8543,7 +8543,7 @@
     ],
     [
       "src/aryx/api/ask_handle/ask_handle_attr_clear.py",
-      107,
+      108,
       "_handle_attr_clear"
     ],
     [
@@ -8573,7 +8573,7 @@
     ],
     [
       "src/aryx/api/ask_handle/ask_handle_bulk_quantity_change.py",
-      131,
+      132,
       "_handle_bulk_quantity_change"
     ],
     [
@@ -8653,7 +8653,7 @@
     ],
     [
       "src/aryx/api/ask_handle/ask_handle_multi_select_removal.py",
-      145,
+      146,
       "_handle_multi_select_removal"
     ],
     [
@@ -8693,22 +8693,22 @@
     ],
     [
       "src/aryx/api/ask_json_preview_and_decline.py",
-      70,
+      73,
       "_build_json_preview_response"
     ],
     [
       "src/aryx/api/ask_json_preview_and_decline.py",
-      79,
+      82,
       "_handle_decline"
     ],
     [
       "src/aryx/api/ask_json_preview_and_decline.py",
-      88,
+      91,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_json_preview_and_decline.py",
-      92,
+      95,
       "_handle_decline"
     ],
     [
@@ -9188,12 +9188,12 @@
     ],
     [
       "src/aryx/api/ask_response_building/ask_build_show_summary_response.py",
-      88,
+      92,
       "<if>"
     ],
     [
       "src/aryx/api/ask_response_building/ask_build_show_summary_response.py",
-      107,
+      111,
       "_build_show_summary_response"
     ],
     [
@@ -9203,12 +9203,12 @@
     ],
     [
       "src/aryx/api/ask_response_building/ask_cpq_summary_narrate.py",
-      49,
+      51,
       "<try>"
     ],
     [
       "src/aryx/api/ask_response_building/ask_cpq_summary_narrate.py",
-      112,
+      116,
       "_narrate_cpq_summary"
     ],
     [
@@ -9218,7 +9218,7 @@
     ],
     [
       "src/aryx/api/ask_response_building/ask_cpq_summary_text.py",
-      123,
+      134,
       "_cpq_summary_text"
     ],
     [
@@ -9638,7 +9638,7 @@
     ],
     [
       "src/aryx/api/ask_turn_steps/ask_step11_completion_responses.py",
-      73,
+      74,
       "_step11_completion_response"
     ],
     [
@@ -9648,7 +9648,7 @@
     ],
     [
       "src/aryx/api/ask_turn_steps/ask_step11_on_request_response.py",
-      109,
+      112,
       "_step11_on_request_response"
     ],
     [
@@ -9843,7 +9843,7 @@
     ],
     [
       "src/aryx/api/ask_turn_steps/ask_step678_no_value_and_nudge.py",
-      56,
+      57,
       "_step6_no_value_or_nudge"
     ],
     [
@@ -12193,103 +12193,98 @@
     ],
     [
       "src/aryx/cpq/engine.py",
-      2129,
+      2133,
       "_is_mandatory_input_attr"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2136,
+      2142,
       "build_payload"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2150,
+      2158,
       "build_payload"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2157,
+      2166,
       "_rule_condition_edges"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2161,
-      "_rule_condition_edges"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2164,
-      "_attribute_depth_ranks"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2168,
-      "_attribute_depth_ranks"
     ],
     [
       "src/aryx/cpq/engine.py",
       2170,
-      "rank_rules_by_specificity"
+      "_rule_condition_edges"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2178,
-      "rank_rules_by_specificity"
+      2173,
+      "_attribute_depth_ranks"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2182,
-      "_dependency_ordered_keys"
+      2177,
+      "_attribute_depth_ranks"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2179,
+      "rank_rules_by_specificity"
     ],
     [
       "src/aryx/cpq/engine.py",
       2187,
+      "rank_rules_by_specificity"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2191,
       "_dependency_ordered_keys"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2193,
-      "_is_noise_var"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2194,
-      "_is_noise_var"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2197,
-      "_attr_hidden_from_submission"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2198,
-      "_attr_hidden_from_submission"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2201,
-      "_attr_is_transient_set_type"
+      2196,
+      "_dependency_ordered_keys"
     ],
     [
       "src/aryx/cpq/engine.py",
       2202,
+      "_is_noise_var"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2203,
+      "_is_noise_var"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2206,
+      "_attr_hidden_from_submission"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2207,
+      "_attr_hidden_from_submission"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2210,
       "_attr_is_transient_set_type"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2234,
-      "_is_summary_excluded"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2239,
-      "_is_summary_excluded"
+      2211,
+      "_attr_is_transient_set_type"
     ],
     [
       "src/aryx/cpq/engine.py",
       2243,
-      "_filled_summary_triples"
+      "_is_summary_excluded"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2248,
+      "_is_summary_excluded"
     ],
     [
       "src/aryx/cpq/engine.py",
@@ -12298,72 +12293,77 @@
     ],
     [
       "src/aryx/cpq/engine.py",
-      2256,
-      "filled_summary_pairs"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
       2265,
-      "filled_summary_pairs"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2270,
-      "_summary_category"
+      "_filled_summary_triples"
     ],
     [
       "src/aryx/cpq/engine.py",
       2271,
-      "_summary_category"
-    ],
-    [
-      "src/aryx/cpq/engine.py",
-      2276,
-      "_beautify_sectioned_rows"
+      "filled_summary_pairs"
     ],
     [
       "src/aryx/cpq/engine.py",
       2284,
+      "filled_summary_pairs"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2291,
+      "_summary_category"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2292,
+      "_summary_category"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2297,
       "_beautify_sectioned_rows"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2288,
+      2309,
+      "_beautify_sectioned_rows"
+    ],
+    [
+      "src/aryx/cpq/engine.py",
+      2315,
       "beautify_text"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2296,
+      2327,
       "beautify_text"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2300,
+      2333,
       "beautify_rows"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2308,
+      2345,
       "beautify_rows"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2312,
+      2351,
       "render_filled_summary"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2321,
+      2364,
       "render_filled_summary"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2325,
+      2370,
       "categorized_summary_groups"
     ],
     [
       "src/aryx/cpq/engine.py",
-      2335,
+      2384,
       "categorized_summary_groups"
     ],
     [
@@ -12753,7 +12753,7 @@
     ],
     [
       "src/aryx/cpq/mandatory_input.py",
-      147,
+      170,
       "is_mandatory_input_attr"
     ],
     [
@@ -12978,7 +12978,7 @@
     ],
     [
       "src/aryx/cpq/payload/payload_setup.py",
-      110,
+      120,
       "build_context"
     ],
     [
@@ -13198,12 +13198,12 @@
     ],
     [
       "src/aryx/cpq/summary_display_formatting/beautify_sections.py",
-      64,
+      76,
       "<if>"
     ],
     [
       "src/aryx/cpq/summary_display_formatting/beautify_sections.py",
-      76,
+      90,
       "_beautify_sectioned_rows"
     ],
     [
@@ -13213,7 +13213,7 @@
     ],
     [
       "src/aryx/cpq/summary_display_formatting/render_summary.py",
-      96,
+      108,
       "render_filled_summary"
     ],
     [
@@ -13233,7 +13233,7 @@
     ],
     [
       "src/aryx/cpq/summary_display_formatting/summary_categories.py",
-      119,
+      131,
       "categorized_summary_groups"
     ],
     [

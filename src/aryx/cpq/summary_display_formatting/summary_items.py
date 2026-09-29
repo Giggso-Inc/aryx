@@ -29,6 +29,10 @@ def _filled_summary_triples(
     sources: dict[str, str] | None = None,
     display_order: dict[str, int] | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Filtered (variable_name, display_label, value) triples worth
     summarising — same filtering as filled_summary_pairs, but keeps
@@ -56,6 +60,13 @@ def _filled_summary_triples(
     silently drift apart on what counts as Mandatory. `rule_governed_
     ids is None` (beautify's own call shape) is completely unaffected
     by this — that branch never runs.
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller). Forwarded into both
+    `_is_mandatory_input_attr` calls below so the summary's Mandatory
+    classification agrees with `build_payload`'s on Hardware Version
+    applicability, instead of the two silently drifting apart.
     """
     if not display_filled:
         return []
@@ -81,6 +92,8 @@ def _filled_summary_triples(
             is_mandatory=engine._is_mandatory_input_attr(
                 var, by_vn.get(var), (sources or {}).get(var),
                 required_vns=required_vns,
+                hint_text=product_anchor_hint, workspace_id=workspace_id,
+                catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
             ),
         )
         # "(none)" is the engine's own literal placeholder for an
@@ -96,6 +109,8 @@ def _filled_summary_triples(
             if engine._is_mandatory_input_attr(
                 var, by_vn.get(var), (sources or {}).get(var),
                 required_vns=required_vns,
+                hint_text=product_anchor_hint, workspace_id=workspace_id,
+                catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
             )
         ]
     if display_order is not None:
@@ -114,6 +129,10 @@ def filled_summary_pairs(
     sources: dict[str, str] | None = None,
     display_order: dict[str, int] | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[tuple[str, str]]:
     """Filtered (display_label, value) pairs worth summarising.
 
@@ -137,5 +156,7 @@ def filled_summary_pairs(
         for _var, label, value in engine._filled_summary_triples(
             display_filled, attrs, rule_governed_ids, sources, display_order,
             required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache,
         )
     ]

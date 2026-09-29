@@ -71,6 +71,8 @@ def _build_current_quote_attribute_listing_text(
         display_order=layout_order, product_quantity=session.product_quantity,
         scope_required_and_edited=True,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3
+        product_anchor_hint=session.product_anchor_question,
     )
     config_data = payload.get("configData", {})
     attr_by_vn = {a.variable_name: a for a in attrs}

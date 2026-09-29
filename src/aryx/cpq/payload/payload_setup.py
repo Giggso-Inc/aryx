@@ -24,11 +24,21 @@ def build_context(
     scope_required_and_edited: bool,
     workspace_id: int | None,
     catalog_prefix: str,
+    product_anchor_hint: str | None = None,
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> PayloadContext:
     sources = filled_source or {}
     attr_by_vn = {a.variable_name: a for a in (attrs or [])}
     hidden = hidden_vns or set()
     ctx = PayloadContext(sources=sources, attr_by_vn=attr_by_vn, hidden=hidden)
+    # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — carried on ctx so
+    # both serialization stages' `_is_mandatory_input_attr` calls can reach
+    # the Hardware Version applicability check without a third parallel
+    # param list.
+    ctx.workspace_id = workspace_id
+    ctx.catalog_prefix = catalog_prefix
+    ctx.product_anchor_hint = product_anchor_hint
+    ctx.dt_cache = dt_cache
 
     # is_array_control_attr=1 attrs (e.g. mountingArrayControl_viSoln)
     # ARE expected in the real payload — confirmed live against a

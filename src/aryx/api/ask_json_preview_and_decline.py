@@ -51,13 +51,16 @@ def _build_json_preview_response(
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         product_quantity=session.product_quantity,
         scope_required_and_edited=True,
-        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3
+        product_anchor_hint=session.product_anchor_question)
     rule_ids_preview = _cpq_engine.rule_governed_ids(
         attrs, hiding_rules, rec_rules, con_rules)
     summary = _cpq_summary_text(
         session.display_filled, attrs, rule_ids_preview,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
+        product_anchor_hint=session.product_anchor_question,
     )
     answer = (
         (f"{summary}\n\n" if summary else "")

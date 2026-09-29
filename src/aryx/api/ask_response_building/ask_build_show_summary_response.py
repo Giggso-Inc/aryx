@@ -82,6 +82,10 @@ def _build_show_summary_response(
         session.display_filled, attrs, rule_ids,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — same
+        # applicability signal build_payload's JSON preview uses (see
+        # ask_attach_share_flags._attach_share_flags).
+        product_anchor_hint=session.product_anchor_question,
     )
     if not summary:
         return None

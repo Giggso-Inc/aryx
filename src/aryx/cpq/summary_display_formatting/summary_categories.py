@@ -46,6 +46,10 @@ def categorized_summary_groups(
     display_order: dict[str, int] | None = None,
     product_quantity: int | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
     """(category, [(label, value), ...]) groups, non-empty categories
     only, in the fixed display order (Product Name, Service Plan,
@@ -85,10 +89,18 @@ def categorized_summary_groups(
 
     required_vns — optional (default `None`); forwarded to
     `_filled_summary_triples` for Tier C (see `mandatory_tier_c_vns`).
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller); forwarded to
+    `_filled_summary_triples` for the Hardware Version applicability
+    check.
     """
     triples = engine._filled_summary_triples(
         display_filled, attrs, rule_governed_ids, sources, display_order,
         required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
     )
     if not triples:
         return []

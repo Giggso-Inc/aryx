@@ -35,6 +35,8 @@ def _narrate_cpq_summary(
     product_quantity: int | None,
     required_vns: set,
     finish: Callable[[str], str],
+    product_anchor_hint: str | None = None,
+    catalog_prefix: str = "",
 ) -> str:
     """LLM-narrate the summary, verify every curated fact survived, and
     fall back through deterministic bullets to a raw state table on any
@@ -85,6 +87,8 @@ def _narrate_cpq_summary(
                 display_filled, attrs, rule_governed_ids=rule_governed_ids,
                 sources=sources, product_quantity=product_quantity,
                 required_vns=required_vns,
+                product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+                catalog_prefix=catalog_prefix,
             )
             missing2 = fields_missing_from_summary(second, curated_fields)
             if not missing2:
@@ -111,4 +115,6 @@ def _narrate_cpq_summary(
         )
     return _ask_api_module._cpq_engine.render_filled_summary(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
-        product_quantity=product_quantity, required_vns=required_vns)
+        product_quantity=product_quantity, required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix)

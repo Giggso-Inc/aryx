@@ -27,6 +27,10 @@ def _beautify_sectioned_rows(
     attrs: list["ConfigAttr"] | None,
     filled_source: dict[str, str] | None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Shared (section, label, value) rows for beautify_text/beautify_rows.
 
@@ -52,9 +56,17 @@ def _beautify_sectioned_rows(
     split above. Also passed to `_filled_summary_triples` so the
     underlying row set's `_is_summary_excluded` boolean-value gate
     (via `is_mandatory`) sees the same Mandatory classification.
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller). Forwarded into both the
+    shared triples call and this function's own Mandatory/System
+    section split below.
     """
     triples = engine._filled_summary_triples(
         display_filled, attrs, sources=filled_source, required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
     )
     attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
     rows: list[tuple[str, str, str]] = [
@@ -69,6 +81,8 @@ def _beautify_sectioned_rows(
                 engine._BEAUTIFY_MANDATORY_SECTION
                 if engine._is_mandatory_input_attr(
                     var, attr, filled_source.get(var), required_vns=required_vns,
+                    hint_text=product_anchor_hint, workspace_id=workspace_id,
+                    catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
                 )
                 else engine._BEAUTIFY_SYSTEM_SECTION
             )

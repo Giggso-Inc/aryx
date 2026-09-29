@@ -2125,11 +2125,17 @@ class CpqEngine:
         gate_attrseq_confirmed_to_active_source: bool = False,
         rule_forced_active_vns: frozenset[str] | None = None,
         data_table_forced_vns: frozenset[str] | None = None,
+        hint_text: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> bool:
         return mandatory_input.is_mandatory_input_attr(
             self, vn, attr, source, active_sources, required_vns,
             exclude_anchor_vns, gate_attrseq_confirmed_to_active_source,
             rule_forced_active_vns, data_table_forced_vns,
+            hint_text=hint_text, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, _dt_cache=_dt_cache,
         )
 
 
@@ -2146,11 +2152,14 @@ class CpqEngine:
         scope_required_and_edited: bool = False,
         workspace_id: int | None = None,
         catalog_prefix: str = "",
+        product_anchor_hint: str | None = None,
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> dict[str, Any]:
         return payload_build.build_payload(
             self, filled, filled_source, filled_multi, attrs, hidden_vns, rules,
             display_order, product_quantity, scope_required_and_edited,
             workspace_id, catalog_prefix,
+            product_anchor_hint=product_anchor_hint, _dt_cache=_dt_cache,
         )
 
     @staticmethod
@@ -2248,10 +2257,16 @@ class CpqEngine:
         sources: dict[str, str] | None = None,
         display_order: dict[str, int] | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[tuple[str, str, str]]:
         return summary_display_formatting._filled_summary_triples(
             self, display_filled, attrs, rule_governed_ids, sources, display_order,
-            required_vns=required_vns)
+            required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     def filled_summary_pairs(
         self,
@@ -2261,10 +2276,16 @@ class CpqEngine:
         sources: dict[str, str] | None = None,
         display_order: dict[str, int] | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[tuple[str, str]]:
         return summary_display_formatting.filled_summary_pairs(
             self, display_filled, attrs, rule_governed_ids, sources, display_order,
-            required_vns=required_vns)
+            required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     @staticmethod
     def _summary_category(variable_name: str) -> str:
@@ -2280,10 +2301,16 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None,
         filled_source: dict[str, str] | None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[tuple[str, str, str]]:
         return summary_display_formatting._beautify_sectioned_rows(
             self, product_name, display_filled, attrs, filled_source,
-            required_vns=required_vns)
+            required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     def beautify_text(
         self,
@@ -2292,10 +2319,16 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         filled_source: dict[str, str] | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> str:
         return summary_display_formatting.beautify_text(
             self, product_name, display_filled, attrs, filled_source,
-            required_vns=required_vns)
+            required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     def beautify_rows(
         self,
@@ -2304,10 +2337,16 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         filled_source: dict[str, str] | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[dict[str, str]]:
         return summary_display_formatting.beautify_rows(
             self, product_name, display_filled, attrs, filled_source,
-            required_vns=required_vns)
+            required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     def render_filled_summary(
         self,
@@ -2317,10 +2356,16 @@ class CpqEngine:
         sources: dict[str, str] | None = None,
         product_quantity: int | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> str:
         return summary_display_formatting.render_filled_summary(
             self, display_filled, attrs, rule_governed_ids, sources,
-            product_quantity=product_quantity, required_vns=required_vns)
+            product_quantity=product_quantity, required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
 
     def categorized_summary_groups(
         self,
@@ -2331,7 +2376,13 @@ class CpqEngine:
         display_order: dict[str, int] | None = None,
         product_quantity: int | None = None,
         required_vns: frozenset[str] | None = None,
+        product_anchor_hint: str | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         return summary_display_formatting.categorized_summary_groups(
             self, display_filled, attrs, rule_governed_ids, sources, display_order,
-            product_quantity=product_quantity, required_vns=required_vns)
+            product_quantity=product_quantity, required_vns=required_vns,
+            product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
