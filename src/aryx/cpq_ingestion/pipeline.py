@@ -1,0 +1,88 @@
+"""Entry point wired into the existing XML upload path.
+
+Scope (see README.md for the full write-up): this module adds the raw-graph
+projection (Pass 1) as a real, working capability, and leaves the existing,
+already-Oracle-Graph-aware Resolve -> Relate -> curated-graph pipeline
+(``aryx.pipeline.orchestrate.run_pipeline``) completely untouched downstream
+of it. It does NOT implement Resolve/Relate reading directly from the raw
+graph in place of CSV rows — that deeper rewire was never prototyped even in
+the reference testing this module is based on, and is called out explicitly
+as a follow-up extension point in the README rather than attempted here.
+"""
+from __future__ import annotations
+
+import logging
+
+from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
+from aryx.cpq_ingestion.raw_graph.store import project_and_write_raw_graph
+from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
+
+logger = logging.getLogger(__name__)
+
+
+def project_raw_graph_and_flatten(
+    data: bytes,
+    stem: str,
+    *,
+    workspace_id: int,
+    dsn: str,
+    graph_url: str,
+    log_id: str | None = None,
+) -> list[tuple[bytes, str]]:
+    """Project the raw graph (if enabled), then flatten XML to CSV as usual.
+
+    This is a drop-in replacement for a direct ``_xml_to_csvs(data, stem)``
+    call at the XML-upload call site: it returns the exact same
+    ``[(csv_bytes, csv_filename), ...]`` shape, so every downstream step
+    (auto-FK detection, per-type ``run_pipeline`` calls, catalog recording)
+    is unchanged. The only added effect is the raw-graph write, gated by
+    ``ARYX_CPQ_RAW_GRAPH_ENABLED`` (default on).
+
+    Args:
+        data: Raw XML document bytes.
+        stem: Filename stem — used as the CSV filename prefix (matches
+            ``_xml_to_csvs``) AND as the raw graph's per-file scope key, so
+            that uploading several XML files to the same workspace in one
+            job gives each file its own raw graph instead of each write
+            clearing the previous file's (Raven review finding M1). Two
+            files in the same job must not share a stem — the same
+            assumption ``_xml_to_csvs``'s own CSV filenames already make.
+        workspace_id: Curated workspace this upload belongs to.
+        dsn: Relational store DSN, forwarded to the raw-graph writer for the
+            Oracle Graph backend.
+        graph_url: FalkorDB connection URL, forwarded to the raw-graph
+            writer for the FalkorDB backend.
+        log_id: Optional correlation id, forwarded to ``_xml_to_csvs`` for
+            its own diagnostic logging.
+
+    Returns:
+        Per-entity-type CSV bytes and filenames, exactly as ``_xml_to_csvs``
+        produces them.
+    """
+    settings = get_cpq_ingestion_settings()
+    if settings.cpq_raw_graph_enabled:
+        try:
+            result = project_and_write_raw_graph(
+                data, workspace_id=workspace_id, source_key=stem, dsn=dsn, graph_url=graph_url,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the raw graph is a best-effort provenance
+            # layer alongside the primary CSV ingest path, not a precondition for it. A
+            # malformed-XML parse error here must not crash the whole upload when
+            # _xml_to_csvs (below) already degrades gracefully for that exact case
+            # (falls back to a raw upload row and logs a warning) -- letting this
+            # exception propagate would regress that existing behavior.
+            logger.warning(
+                "cpq_ingestion: raw graph projection/write failed stem=%s workspace_id=%s "
+                "log_id=%s: %s -- continuing with CSV ingest",
+                stem, workspace_id, log_id, exc,
+            )
+        else:
+            logger.info(
+                "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
+                "nodes=%d edges=%d",
+                stem, workspace_id, result.backend, result.graph_ref,
+                result.nodes_written, result.edges_written,
+            )
+    else:
+        logger.debug("cpq_ingestion: raw graph disabled (ARYX_CPQ_RAW_GRAPH_ENABLED=false), skipping")
+    return _xml_to_csvs(data, stem, log_id=log_id)

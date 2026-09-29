@@ -21,6 +21,8 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
+from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten
+from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active
 from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
@@ -229,7 +231,13 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 # Each CSV gets its own ontology_type derived from the element
                 # tag so that cross-type pairs are generated for relate/fk_link.
                 orig_stem = Path(name).stem
-                xml_csvs = _xml_to_csvs(data, orig_stem)
+                if cpq_ingestion_pipeline_active(name):
+                    xml_csvs = project_raw_graph_and_flatten(
+                        data, orig_stem, workspace_id=workspace_id,
+                        dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+                    )
+                else:
+                    xml_csvs = _xml_to_csvs(data, orig_stem)
                 xml_plans = []
                 for csv_data, csv_name in xml_csvs:
                     csv_stem = Path(csv_name).stem
