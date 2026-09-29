@@ -56,13 +56,26 @@ def project_raw_graph_and_flatten(
     """
     settings = get_cpq_ingestion_settings()
     if settings.cpq_raw_graph_enabled:
-        result = project_and_write_raw_graph(data, workspace_id=workspace_id, dsn=dsn, graph_url=graph_url)
-        logger.info(
-            "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
-            "nodes=%d edges=%d",
-            stem, workspace_id, result.backend, result.graph_ref,
-            result.nodes_written, result.edges_written,
-        )
+        try:
+            result = project_and_write_raw_graph(data, workspace_id=workspace_id, dsn=dsn, graph_url=graph_url)
+        except Exception as exc:  # noqa: BLE001 -- the raw graph is a best-effort provenance
+            # layer alongside the primary CSV ingest path, not a precondition for it. A
+            # malformed-XML parse error here must not crash the whole upload when
+            # _xml_to_csvs (below) already degrades gracefully for that exact case
+            # (falls back to a raw upload row and logs a warning) -- letting this
+            # exception propagate would regress that existing behavior.
+            logger.warning(
+                "cpq_ingestion: raw graph projection/write failed stem=%s workspace_id=%s "
+                "log_id=%s: %s -- continuing with CSV ingest",
+                stem, workspace_id, log_id, exc,
+            )
+        else:
+            logger.info(
+                "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
+                "nodes=%d edges=%d",
+                stem, workspace_id, result.backend, result.graph_ref,
+                result.nodes_written, result.edges_written,
+            )
     else:
-        logger.info("cpq_ingestion: raw graph disabled (ARYX_CPQ_RAW_GRAPH_ENABLED=false), skipping")
+        logger.debug("cpq_ingestion: raw graph disabled (ARYX_CPQ_RAW_GRAPH_ENABLED=false), skipping")
     return _xml_to_csvs(data, stem, log_id=log_id)

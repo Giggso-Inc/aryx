@@ -8,6 +8,7 @@ itself; it only asks the existing setting.
 """
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from aryx.config import get_settings
@@ -15,6 +16,8 @@ from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.naming import raw_workspace_id, raw_ws_graph
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection, RawGraphWriteResult
 from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
+
+logger = logging.getLogger(__name__)
 
 
 class RawGraphStore(Protocol):
@@ -85,6 +88,12 @@ def write_raw_graph(
     contract) — the raw graph is a rebuildable projection of the source XML,
     not a store of record.
     """
+    backend = get_settings().effective_graph_backend()
+    graph_ref = _graph_ref(workspace_id)
+    logger.debug(
+        "cpq_ingestion: writing raw graph workspace_id=%s backend=%s %s nodes=%d edges=%d",
+        workspace_id, backend, graph_ref, len(projection.nodes), len(projection.edges),
+    )
     store = get_raw_graph_store(workspace_id, dsn=dsn, graph_url=graph_url)
     store.clear()
     entities = [(n.id, n.tag, n.properties, None, None) for n in projection.nodes]
@@ -96,8 +105,8 @@ def write_raw_graph(
     return RawGraphWriteResult(
         nodes_written=len(projection.nodes),
         edges_written=len(projection.edges),
-        backend=get_settings().effective_graph_backend(),
-        graph_ref=_graph_ref(workspace_id),
+        backend=backend,
+        graph_ref=graph_ref,
     )
 
 

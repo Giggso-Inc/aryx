@@ -52,3 +52,24 @@ def test_skips_raw_graph_when_disabled(monkeypatch):
     with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
         project_raw_graph_and_flatten(SAMPLE_XML, "sample", workspace_id=1, dsn="unused", graph_url="unused")
     mock_write.assert_not_called()
+
+
+def test_raw_graph_failure_does_not_block_csv_ingest(monkeypatch, caplog):
+    """A malformed-XML parse error (or any raw-graph-write failure) must not
+    crash the upload -- _xml_to_csvs has its own, separate, graceful fallback
+    for bad XML, and this best-effort layer must never regress that."""
+    monkeypatch.setenv("ARYX_CPQ_RAW_GRAPH_ENABLED", "true")
+    get_cpq_ingestion_settings.cache_clear()
+    from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
+
+    expected = _xml_to_csvs(SAMPLE_XML, "sample")
+    with patch(
+        "aryx.cpq_ingestion.pipeline.project_and_write_raw_graph",
+        side_effect=RuntimeError("graph store unreachable"),
+    ):
+        with caplog.at_level("WARNING"):
+            result = project_raw_graph_and_flatten(
+                SAMPLE_XML, "sample", workspace_id=1, dsn="unused", graph_url="unused",
+            )
+    assert result == expected
+    assert any("raw graph projection/write failed" in r.message for r in caplog.records)
