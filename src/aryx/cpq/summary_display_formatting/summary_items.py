@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER as _NONE_DISPLAY_PLACEHOLDER
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from aryx.cpq.state import ConfigAttr
 
@@ -101,7 +103,7 @@ def _filled_summary_triples(
         # Set) — confirmed live: it survives every other filter since
         # it's a real, deliberately-set display value, not noise by any
         # existing rule. Worth summarising nothing, so drop it here.
-        and label.strip() != "(none)"
+        and label.strip() != _NONE_DISPLAY_PLACEHOLDER
     ]
     if rule_governed_ids is not None:
         items = [

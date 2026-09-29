@@ -1,18 +1,20 @@
 # Attribution — src/aryx/cpq/engine.py
 
-Last updated: 2026-09-29T09:55:00.414380+00:00
-Total lines: 2388
-Lines AI-generated: 272 (11.4%)
+Last updated: 2026-09-29T11:26:48.884969+00:00
+Total lines: 2401
+Lines AI-generated: 292 (12.2%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 2116
+Lines unattributed: 2109
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
 | ---------- | ------------ | -------- | ---- | ----- | --------- | ------ | ---------- | ------ |
 | 1-36 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.329402+00:00 | pre-commit gap — unattributed by the local hook |
 | 37-38 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-21T10:08:53.718549+00:00 |  |
-| 39-700 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.329450+00:00 | pre-commit gap — unattributed by the local hook |
+| 39-316 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.329450+00:00 | pre-commit gap — unattributed by the local hook |
+| 317-336 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-29T10:46:08.573307+00:00 |  |
+| 337-700 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.329450+00:00 | pre-commit gap — unattributed by the local hook |
 | 701-713 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-21T10:14:04.545745+00:00 |  |
 | 714-1117 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.329498+00:00 | pre-commit gap — unattributed by the local hook |
 | 1118-1121 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-29T04:16:32.200309+00:00 |  |
@@ -38,3 +40,4 @@ Owner (most recent author): m.munir@giggso.com
 | 2338-2368 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-29T08:31:45.227943+00:00 |  |
 | 2369-2375 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T09:55:00.330062+00:00 | pre-commit gap — unattributed by the local hook |
 | 2376-2388 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-29T08:31:52.810810+00:00 |  |
+| 2389-2401 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T11:26:48.815160+00:00 | pre-commit gap — unattributed by the local hook |

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 # `_fill_signature` is looked up through the module (not imported by name
 # like everything else) because tests/test_cpq_rule_loop_perf_gating_
@@ -62,7 +63,7 @@ def stage_already_filled(
             and ctx.filled[state.vn] == ""
             and ctx.sources.get(state.vn) == "user"
         ):
-            ctx.display_filled[state.vn] = "(none)"
+            ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
             state.done = True
             return
         if (

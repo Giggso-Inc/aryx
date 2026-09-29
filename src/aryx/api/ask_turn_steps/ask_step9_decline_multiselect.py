@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 
 def _step9_decline_optional_multiselect(
@@ -46,12 +47,12 @@ def _step9_decline_optional_multiselect(
                 next((o.display_name for o in pending_attr.options
                       if o.item_value == v), v)
                 for v in session.filled_multi[pending_var]
-            ) or "(none)"
+            ) or NONE_DISPLAY_PLACEHOLDER
         if pending_var not in session.pending_grid_declined_vns:
             session.pending_grid_declined_vns.append(pending_var)
     else:
         session.filled_multi[pending_var] = []
-        session.display_filled[pending_var] = "(none)"
+        session.display_filled[pending_var] = NONE_DISPLAY_PLACEHOLDER
     session.filled_source[pending_var] = "user"
     logger.info(
         "cpq: optional multi-select %r explicitly declined turn=%s",

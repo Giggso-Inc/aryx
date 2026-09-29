@@ -201,13 +201,6 @@ def resolve_product_cpq_models_from_rows(
     return tuple(sorted(product_to_models.get(norm, ())))
 
 
-# Guard against a spurious substring match on a very short real product
-# token (e.g. a 2-character code) matching purely by coincidence inside an
-# unrelated raw sentence -- same minimum-length discipline already used by
-# CpqEngine.resolve_product_hint's own Pass 2 (_HINT_MIN_PHRASE_LEN).
-_HINT_MATCH_MIN_LEN = 4
-
-
 def resolve_product_cpq_models_from_hint(
     hint_text: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
@@ -232,9 +225,18 @@ def resolve_product_cpq_models_from_hint(
       - 2+ DISTINCT real product names both match (genuinely ambiguous --
         e.g. a raw sentence long enough to coincidentally contain two real
         catalog product strings), or
-      - the only match is shorter than _HINT_MATCH_MIN_LEN characters (too
-        short to trust as a real, deliberate mention rather than
-        coincidental overlap).
+      - the only match is shorter than CpqEngine._HINT_MIN_PHRASE_LEN
+        characters (too short to trust as a real, deliberate mention
+        rather than coincidental overlap). CPQ_Hardcode_Audit_dev_oci_
+        2026-09-25.md T10: this used to hardcode its own separate
+        `_HINT_MATCH_MIN_LEN = 4` -- its own comment already claimed it
+        was reusing "the same minimum-length discipline" as `resolve_
+        product_hint`'s `_HINT_MIN_PHRASE_LEN` (5) without actually
+        importing it, a drift the comment itself never intended. Now
+        reads the one real constant directly, same lazy-import pattern
+        every other `_HINT_MIN_PHRASE_LEN` consumer in this codebase
+        already uses to avoid engine.py's own circular import (engine ->
+        data_table_resolver -> this module).
 
     Callers must treat an empty result exactly like an unresolvable hint --
     fall through to whatever behavior applies when the device is genuinely
@@ -273,10 +275,12 @@ def resolve_product_cpq_models_from_hint(
     if not hint_norm:
         return ()
 
+    from aryx.cpq import engine as _engine_module
+
     matched_products: set[str] = set()
     for product_name in product_to_models:
         candidate = " ".join(product_name.split())
-        if len(candidate) < _HINT_MATCH_MIN_LEN:
+        if len(candidate) < _engine_module._HINT_MIN_PHRASE_LEN:
             continue
         if candidate in hint_norm:
             matched_products.add(product_name)

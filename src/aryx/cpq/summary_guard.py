@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.state import ConfigAttr, CpqSession
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ def fields_missing_from_summary(
     by_vn = {a.variable_name: a for a in (attrs or [])}
     missing: list[str] = []
     for vn, value in display_filled.items():
-        if not value or value.lower() in ("(none)", "n/a", "na"):
+        if not value or value.lower() in (NONE_DISPLAY_PLACEHOLDER, "n/a", "na"):
             continue
         val_n = _normalize(value)
         label = by_vn[vn].display_label if vn in by_vn else vn

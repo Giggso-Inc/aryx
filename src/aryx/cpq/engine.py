@@ -315,11 +315,24 @@ _COUNTRY_PREP = re.compile(
 )
 
 # Region hints (abbreviations the generic extractor won't catch as country names)
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T10: this list independently
+# hand-maintains region abbreviations rather than deriving from
+# region_and_noise_constants.py's own real, ingested-alias-table-backed
+# `_COUNTRY_TO_REGION` (same divergence class T5 already fixed for
+# region_for_country's own lookup) -- it had drifted to 4 of that other
+# module's 5 real regions, missing "ME" (Middle East) entirely, even
+# though ME is a real, catalog-facing region value elsewhere in this
+# engine (derive_region, region_for_country, and real test fixtures all
+# confirm it). Not merged into one shared list here -- this is a regex-
+# over-free-text scan, a genuinely different shape from a country-name
+# dict lookup -- just given the one concrete pattern it was missing,
+# mirroring the existing "latin america" -> "LA" entry's own style.
 _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\b(north\s+america|namer)\b", "NA"),
     (r"\bemea\b", "EMEA"),
     (r"\bapac\b", "APAC"),
     (r"\blatin\s+america\b", "LA"),
+    (r"\bmiddle\s+east\b", "ME"),
 ]
 
 # Moved to quantity_patterns.py/quantity_word_numbers.py/

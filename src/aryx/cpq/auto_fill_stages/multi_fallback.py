@@ -14,6 +14,7 @@ from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.auto_fill_stages import multi_fallback_layout
 from aryx.cpq.auto_fill_stages import multi_fallback_unconstrained
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.engine import (
     _no_real_fill_justification,
     _valid,
@@ -143,7 +144,7 @@ def try_multi_fallback(
                 engine, attr, ctx, scope, state, candidate_opts)
         else:
             ctx.filled_multi[state.vn] = []
-            ctx.display_filled[state.vn] = "(none)"
+            ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
             ctx.sources.setdefault(state.vn, "default")
         return True
     return False

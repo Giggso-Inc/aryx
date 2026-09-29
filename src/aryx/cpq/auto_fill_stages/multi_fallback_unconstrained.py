@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.model_policy import resolve_select_all_narrowed_legal_multi_membership
 
 if TYPE_CHECKING:
@@ -110,5 +111,5 @@ def blind_pick_narrowed(
         # `is_unconstrained and candidate_opts` already
         # matched on the raw (pre-whitelist) option list.
         ctx.filled_multi[state.vn] = []
-        ctx.display_filled[state.vn] = "(none)"
+        ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "default")

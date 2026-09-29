@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.engine import (
     _no_real_fill_justification,
     _sole_opt_out_option,
@@ -103,7 +104,7 @@ def try_multi_optional_empty(
         # this branch wrongly intercepted promoApplicationServices_
         # astro's own constrained-and-ambiguous regression test).
         ctx.filled_multi[state.vn] = []
-        ctx.display_filled[state.vn] = "(none)"
+        ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "optional_empty")
         state.filled_multi_now = True
         return True
