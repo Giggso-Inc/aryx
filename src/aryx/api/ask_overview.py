@@ -28,21 +28,35 @@ def build(reader: GraphReader, workspace_id: int) -> str:
 
 
 def _kinds(reader: GraphReader) -> list[str]:
-    """Group entities by ontology type; show count + 3 sample names per kind."""
-    by_type: dict[str, list[str]] = {}
+    """List every entity type with its TRUE count + 3 sample names.
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: previously grouped a single
+    find_entities(limit=500) scan by type, so both the type list and the
+    per-type counts silently went wrong on any workspace with more than 500
+    entities (missing types entirely, under-counting the ones that did show
+    up).
+
+    T11 follow-up (real-data testing against workspace 704, 2026-09-25): the
+    first fix for this called count_entities(t) + find_entities(ontology_
+    type=t, limit=3) once per distinct type via distinct_types() -- correct,
+    but measured at ~276s against a 109-type/204k-entity real workspace,
+    because build() (which calls this) runs on every non-quote /ask turn.
+    type_overview() replaces that up-to-218-round-trip loop with one grouped
+    query (two on the Oracle backend), same output shape.
+    """
     try:
-        for e in reader.find_entities(limit=500):
-            by_type.setdefault(e.get("type", "?"), []).append(e.get("name", ""))
+        overview = reader.type_overview(sample_limit=3)
     except Exception as exc:  # noqa: BLE001
         logger.debug("overview kinds skipped: %s", exc)
         return []
-    if not by_type:
+    if not overview:
         return []
     lines = ["Kinds tracked:"]
-    for t in sorted(by_type):
-        samples = [n for n in by_type[t] if n][:3]
+    for t in sorted(overview):
+        info = overview[t]
+        samples = [n for n in info.get("samples", []) if n]
         eg = f"  (e.g. {', '.join(samples)})" if samples else ""
-        lines.append(f"  - {t}: {len(by_type[t])} records{eg}")
+        lines.append(f"  - {t}: {info.get('count', 0)} records{eg}")
     return lines
 
 

@@ -178,7 +178,14 @@ class OracleWorkspaceStore:
                 cur.execute(load("delete_non_default_workspaces"))
                 cur.execute(load("reset_workspace_context"), {"wid": 1})
         logger.info("system nuked — factory reset complete")
-        return {"status": "nuked", "workspaces_removed": len(non_default)}
+        # workspace_ids: see workspaces/__init__.py's WorkspaceStore.nuke()
+        # sibling method for why this additive field exists (CPQ_Hardcode_
+        # Audit_dev_oci_2026-09-25.md T11) -- kept consistent across both
+        # backends.
+        return {
+            "status": "nuked", "workspaces_removed": len(non_default),
+            "workspace_ids": [int(wid) for (wid,) in non_default],
+        }
 
     def delete(self, wid: int) -> None:
         """Delete workspace wid and all its data."""

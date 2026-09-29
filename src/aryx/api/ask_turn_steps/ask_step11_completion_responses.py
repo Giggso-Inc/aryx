@@ -69,6 +69,7 @@ def _step11_completion_response(
         display_filled, attrs, rule_ids,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
+        product_anchor_hint=session.product_anchor_question,
     )
     return (
         (f"{dropped_note.strip()}\n\n" if dropped_note else "")

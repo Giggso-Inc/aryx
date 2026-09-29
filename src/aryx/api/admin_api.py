@@ -30,6 +30,7 @@ from aryx.store.entity_store import EntityStore
 from aryx.store.job_store import JobStore
 from aryx.workspaces import ws_graph
 from aryx.api.security import require_api_key, write_api_key
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 
 __all__ = [
     "EntityCreateRequest",
@@ -126,9 +127,10 @@ def admin_router() -> APIRouter:
         return {"status": "ok", "entity_id": entity_id, "ontology_type": ontology_type}
 
     @router.delete("/entities/{entity_id}")
-    def delete_entity(entity_id: int, workspace_id: int = 1,
+    def delete_entity(entity_id: int, workspace_id: int | None = None,
                       _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Delete an entity from Postgres and remove the node from FalkorDB."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /admin/entities/{id}")
         settings = get_settings()
         estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
@@ -155,19 +157,40 @@ def admin_router() -> APIRouter:
 
     @router.post("/graph/rebuild")
     def rebuild_graph(workspace_id: int = 1, _: str = Depends(require_api_key)) -> dict[str, Any]:
-        """Rebuild the FalkorDB projection from Postgres (source of truth).
+        """Rebuild the graph projection from Postgres (source of truth).
 
         Safe to call at any time — it overwrites the graph with the current
         Postgres state. Use after a container restart kills an in-flight
         project stage, or to resync after manual DB edits.
+
+        CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11 follow-up: this always
+        rebuilt a FalkorStore graph, regardless of the deployment's actual
+        configured backend -- a real-data-confirmed no-op on any OCI/Oracle
+        Graph deployment (ARYX_GRAPH_BACKEND=oci_graph), silently leaving
+        the real graph (Oracle) untouched while claiming success. Mirrors
+        orchestrate.py's own effective_graph_backend() dispatch so this
+        endpoint rebuilds whichever graph the deployment actually reads
+        from at request time.
         """
         settings = get_settings()
         estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             type_ancestors = _build_type_ancestors(settings.effective_dsn(), workspace_id)
+            if settings.effective_graph_backend() == "oci_graph":
+                try:
+                    from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
+                    graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
+                except ImportError as exc:
+                    raise HTTPException(
+                        503,
+                        "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle_graph_store is not "
+                        "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND.",
+                    ) from exc
+            else:
+                graph_inst = FalkorStore(settings.graph_url, ws_graph(workspace_id))
             counts = project_graph(
                 estore,
-                FalkorStore(settings.graph_url, ws_graph(workspace_id)),
+                graph_inst,
                 type_ancestors=type_ancestors,
                 workspace_id=workspace_id,
             )

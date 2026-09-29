@@ -141,6 +141,43 @@ def test_n7_still_rejects_invented_menu_value():
     assert check_provenance([attr], s)
 
 
+def test_t7_optional_menu_attr_deliberate_clear_by_user_is_ok():
+    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T7: an optional attr the
+    customer deliberately cleared to "" is already accepted as legitimate
+    by auto_fill_stages/tier0_already_filled.py's own "not attr.required"
+    branch -- check_provenance previously never got the matching
+    carve-out, so the exact value tier0 had just accepted was still
+    hard-blocked here at confirm."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="opt", display_label="Optional",
+        required=False, default_value="",
+        options=[MenuOption("H45", "APX NEXT")],
+    )
+    s = CpqSession()
+    s.filled = {"opt": ""}
+    s.filled_source = {"opt": "user"}
+    s.display_filled = {"opt": ""}
+    assert check_provenance([attr], s) == []
+
+
+def test_t7_required_menu_attr_deliberate_clear_by_user_still_rejected():
+    """The required-attr side of the same shape is deliberately NOT
+    covered -- tier0_already_filled.py's own sibling branch pops a
+    required attr's clear back to pending instead of accepting it, so an
+    empty required value reaching here is a genuine gap, not a
+    deliberate clear."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="req", display_label="Required",
+        required=True, default_value="",
+        options=[MenuOption("H45", "APX NEXT")],
+    )
+    s = CpqSession()
+    s.filled = {"req": ""}
+    s.filled_source = {"req": "user"}
+    s.display_filled = {"req": ""}
+    assert check_provenance([attr], s)
+
+
 def test_hidden_master_string_never_blocks_confirm():
     """Live incident (2026-08-11): confirm was hard-blocked with 'failed
     provenance' on hiddenMasterStringForAstroPortable_astro -- a real,

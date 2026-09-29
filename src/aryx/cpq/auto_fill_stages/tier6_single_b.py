@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
-    _BLIND_FILL_RISK_ACCEPTED_VNS,
     _no_real_fill_justification,
     _sole_opt_out_option,
 )
+from aryx.cpq.model_policy import resolve_blind_fill_risk_accepted_membership
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -31,9 +31,13 @@ def single_chain_tail(
     state: AttrResolution,
 ) -> None:
     """Run the tail of the chain (head matched nothing)."""
+    blind_fill_risk_accepted = resolve_blind_fill_risk_accepted_membership(
+        state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+        scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+    )
     if (
         _no_real_fill_justification(attr, scope.rec_by_target)
-        and state.vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+        and not blind_fill_risk_accepted
         and (opt_out_match := _sole_opt_out_option(state.valid_opts))
     ):
         # Nothing justifies picking among the REAL choices
@@ -50,7 +54,7 @@ def single_chain_tail(
         scope.display_order is not None and state.vn in scope.display_order
         and not (
             _no_real_fill_justification(attr, scope.rec_by_target)
-            and state.vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+            and not blind_fill_risk_accepted
         )
     ):
         # §2f, superseded by explicit instruction
@@ -98,7 +102,7 @@ def single_chain_tail(
         pass
     elif not (
         _no_real_fill_justification(attr, scope.rec_by_target)
-        and state.vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+        and not blind_fill_risk_accepted
     ):
         # single/boolean, 2+ options, no default: first by
         # menu order — well-defined for boolean (only two

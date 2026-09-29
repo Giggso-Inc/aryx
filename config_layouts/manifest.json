@@ -1,0 +1,5 @@
+{
+  "_comment": "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: explicit catalog_prefix -> layout-filename map, consulted before LocalDirLayoutFileSource's fuzzy fallback. Entries below are individually live-confirmed (see layout_source.py's own docstrings), not guessed. Add a real ingested catalog_prefix here only after confirming its correct layout file live -- an unlisted prefix still falls through to fuzzy matching unchanged.",
+  "ApxnextCnofigdata": "Config Layout APX Next.txt",
+  "APXNEXT_BOM": "Config Layout APX Next.txt"
+}

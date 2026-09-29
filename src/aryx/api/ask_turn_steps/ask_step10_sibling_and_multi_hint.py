@@ -49,6 +49,8 @@ def _step10_enforce_siblings_and_multi_hint(
         visible_attrs, filled, session.filled_multi, session.filled_source,
         display_filled, pending, all_attrs=attrs,
         catalog_confirmed_vns=_sibling_catalog_confirmed_vns,
+        product_name=session.product_name, workspace_id=req.workspace_id,
+        catalog_prefix=catalog_prefix,
     )
 
     if len(pending) >= 2:

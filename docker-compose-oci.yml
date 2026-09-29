@@ -161,6 +161,16 @@ services:
       # the old default of 10 wasn't enough headroom for that combination
       # on an otherwise-healthy container.
       - ARYX_DB_POOL_MAX_SIZE=${ARYX_DB_POOL_MAX_SIZE:-25}
+      # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 "scoped"
+      # rollout watch: flipped on to confirm the resolver wiring fires
+      # correctly in this real environment. Known caveat (T2, same doc):
+      # every one of this environment's 24 real workspaces still has no
+      # genuine attrToVarMapping coverage, so _cpq_model_candidates keeps
+      # returning the ("APXNEXT", "APXNEXT_BOM") fallback for every
+      # product here regardless of catalog -- this proves the mechanism
+      # runs its real branch, not that per-catalog resolution is
+      # correct for a non-APX-NEXT product yet.
+      - ARYX_MODEL_POLICY_SCOPED_RESOLUTION_ENABLED=${ARYX_MODEL_POLICY_SCOPED_RESOLUTION_ENABLED:-true}
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
       # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api

@@ -25,6 +25,7 @@ from aryx.api.ask_attr_recompute.ask_multi_select_removal_recompute import (
     _recompute_after_multi_select_removal,
 )
 from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 
 def _handle_multi_select_removal(
@@ -63,7 +64,7 @@ def _handle_multi_select_removal(
         # An empty selection after an explicit removal is a settled,
         # user-confirmed answer (same "(none)" convention auto_fill's own
         # decline-handling uses) — never silently re-guessed or re-asked.
-        session.display_filled[changed_attr.variable_name] = "(none)"
+        session.display_filled[changed_attr.variable_name] = NONE_DISPLAY_PLACEHOLDER
     session.filled_source[changed_attr.variable_name] = "user"
 
     dropped_qty_labels = _drop_related_quantity_attrs(
@@ -132,6 +133,7 @@ def _handle_multi_select_removal(
                 display_filled, attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
                 product_quantity=session.product_quantity, filled=session.filled,
+                product_anchor_hint=session.product_anchor_question,
             )
             answer = (
                 cascade_note + "\n\n"

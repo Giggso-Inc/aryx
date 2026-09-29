@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 # `_fill_signature` is looked up through the module (not imported by name
 # like everything else) because tests/test_cpq_rule_loop_perf_gating_
@@ -98,7 +99,7 @@ def stage_already_filled_multi(
                 # so the question is never re-asked and the payload
                 # simply carries no rows. Only constraint-drops
                 # (non-user sources) fall through to re-resolution.
-                ctx.display_filled[state.vn] = "(none)"
+                ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
                 state.done = True
                 return
             ctx.filled_multi.pop(state.vn, None)

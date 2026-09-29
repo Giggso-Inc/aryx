@@ -10,11 +10,12 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from aryx import connections
 from aryx.api.admin_api import _local_broker
+from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.connectors.schema_inspect import introspect, test_connection
 from aryx.connectors.sql_source import SqlConnector
@@ -97,7 +98,7 @@ def connect_router() -> APIRouter:
     router = APIRouter(prefix="/admin")
 
     @router.post("/connect")
-    def connect(req: ConnectRequest) -> dict[str, Any]:
+    def connect(req: ConnectRequest, _: str = Depends(require_api_key)) -> dict[str, Any]:
         url = _build_url(req)
         try:
             test_connection(url)
@@ -108,14 +109,15 @@ def connect_router() -> APIRouter:
                 "tables": [t["table"] for t in schema], "schema": schema}
 
     @router.post("/discover")
-    def discover(req: DiscoverRequest) -> dict[str, Any]:
+    def discover(req: DiscoverRequest, _: str = Depends(require_api_key)) -> dict[str, Any]:
         url = connections.get(req.connection_id)
         if not url:
             raise HTTPException(404, "unknown connection")
         return discover_mappings(introspect(url), req.context)
 
     @router.post("/ingest/multi")
-    def ingest_multi(req: IngestMultiRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    def ingest_multi(req: IngestMultiRequest, background_tasks: BackgroundTasks,
+                      _: str = Depends(require_api_key)) -> dict[str, Any]:
         url = connections.get(req.connection_id)
         if not url:
             raise HTTPException(404, "unknown connection")

@@ -6,12 +6,43 @@ Phase 2a, 2026-09-03).
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
+from aryx.cpq.data_table.data_table_cache import (
+    _cache_write_if_marker_unchanged,
+    _invalidate_on_marker_change,
+)
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
 from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped
 from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 from aryx.cpq.rdb.rdb import get_cpq_rdb
+
+logger = logging.getLogger(__name__)
+
+# Module-level, short-TTL cache for _load_attr_var_mapping_rows, mirroring
+# data_table_loader._TABLES_CACHE exactly (same problem, same fix): without
+# it, every call -- with no per-call `cache` passed -- pays a full fresh
+# rdb.fetch_all_entities_grouped_by_type(workspace_id) scan from scratch.
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 pilot follow-up: the
+# new shadow_check_role_vn() caller (catalog_profile.py) calls this on
+# every Base-Model-trigger cascade turn (Hardware Version/Product/Country/
+# Region changes) with no per-call cache of its own -- confirmed live
+# against workspace 704 that an uncached scan here costs ~265s (the same
+# 299,388-row materialization cost already measured for _load_all_tables'
+# sibling scan under T2), which would have reintroduced that exact latency
+# class into the cascade hot path. Added before shipping the shadow check,
+# not after a live regression -- same TTL/staleness tradeoff as
+# _TABLES_CACHE.
+_ATTR_VAR_MAPPING_CACHE: dict[tuple[int, str], tuple[float, list[dict[str, Any]]]] = {}
+_ATTR_VAR_MAPPING_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_ATTR_VAR_MAPPING_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_attr_var_mapping_cache() -> None:
+    """Test-isolation hook -- mirrors data_table_loader._clear_tables_cache."""
+    _ATTR_VAR_MAPPING_CACHE.clear()
 
 
 def resolve_region_allow_value(
@@ -43,6 +74,16 @@ def resolve_region_allow_value(
     under. Returns None when zero ALLOW rows match this exact scope, or
     when 2+ DISTINCT allowed values exist (a genuine tie -- never guesses
     across one), so callers can safely fall through to asking instead.
+
+    `ruleType=DISALLOW` rows at the same scope veto the matching ALLOW
+    value -- previously read-but-ignored (this function filtered to ALLOW
+    rows only), which let a country/region-banned value get auto-filled
+    anyway (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2). Narrow and
+    additive: a DISALLOW row only suppresses the specific value it names,
+    at the same country/region scope it names -- it does not block the
+    whole attribute, and has zero effect when no DISALLOW rows exist for
+    this attribute (every existing caller/test, which only ever supplies
+    ALLOW rows, is unaffected).
     """
     _, _, _, _, region_rule_rows = _load_all_tables(workspace_id, catalog_prefix, cache)
     norm_model = (cpq_model or "").strip().upper()
@@ -51,12 +92,15 @@ def resolve_region_allow_value(
 
     country_values: set[str] = set()
     region_values: set[str] = set()
+    disallow_country_values: set[str] = set()
+    disallow_region_values: set[str] = set()
     for row in region_rule_rows:
         if row.get("attribute") != attr_var_name:
             continue
         if str(row.get("model") or "").strip().upper() != norm_model:
             continue
-        if str(row.get("ruleType") or "").strip().upper() != "ALLOW":
+        rule_type = str(row.get("ruleType") or "").strip().upper()
+        if rule_type not in ("ALLOW", "DISALLOW"):
             continue
         value = row.get("value")
         if not value:
@@ -66,14 +110,16 @@ def resolve_region_allow_value(
             continue
         row_country = str(row.get("UDCC") or "").strip().upper()
         if norm_country and row_country == norm_country:
-            country_values.add(value)
+            (country_values if rule_type == "ALLOW" else disallow_country_values).add(value)
         elif not row_country:
-            region_values.add(value)
+            (region_values if rule_type == "ALLOW" else disallow_region_values).add(value)
 
     if norm_country and len(country_values) == 1:
-        return next(iter(country_values))
+        candidate = next(iter(country_values))
+        return None if candidate in disallow_country_values else candidate
     if len(region_values) == 1:
-        return next(iter(region_values))
+        candidate = next(iter(region_values))
+        return None if candidate in disallow_region_values else candidate
     return None
 
 
@@ -155,13 +201,6 @@ def resolve_product_cpq_models_from_rows(
     return tuple(sorted(product_to_models.get(norm, ())))
 
 
-# Guard against a spurious substring match on a very short real product
-# token (e.g. a 2-character code) matching purely by coincidence inside an
-# unrelated raw sentence -- same minimum-length discipline already used by
-# CpqEngine.resolve_product_hint's own Pass 2 (_HINT_MIN_PHRASE_LEN).
-_HINT_MATCH_MIN_LEN = 4
-
-
 def resolve_product_cpq_models_from_hint(
     hint_text: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
@@ -186,9 +225,18 @@ def resolve_product_cpq_models_from_hint(
       - 2+ DISTINCT real product names both match (genuinely ambiguous --
         e.g. a raw sentence long enough to coincidentally contain two real
         catalog product strings), or
-      - the only match is shorter than _HINT_MATCH_MIN_LEN characters (too
-        short to trust as a real, deliberate mention rather than
-        coincidental overlap).
+      - the only match is shorter than CpqEngine._HINT_MIN_PHRASE_LEN
+        characters (too short to trust as a real, deliberate mention
+        rather than coincidental overlap). CPQ_Hardcode_Audit_dev_oci_
+        2026-09-25.md T10: this used to hardcode its own separate
+        `_HINT_MATCH_MIN_LEN = 4` -- its own comment already claimed it
+        was reusing "the same minimum-length discipline" as `resolve_
+        product_hint`'s `_HINT_MIN_PHRASE_LEN` (5) without actually
+        importing it, a drift the comment itself never intended. Now
+        reads the one real constant directly, same lazy-import pattern
+        every other `_HINT_MIN_PHRASE_LEN` consumer in this codebase
+        already uses to avoid engine.py's own circular import (engine ->
+        data_table_resolver -> this module).
 
     Callers must treat an empty result exactly like an unresolvable hint --
     fall through to whatever behavior applies when the device is genuinely
@@ -227,10 +275,12 @@ def resolve_product_cpq_models_from_hint(
     if not hint_norm:
         return ()
 
+    from aryx.cpq import engine as _engine_module
+
     matched_products: set[str] = set()
     for product_name in product_to_models:
         candidate = " ".join(product_name.split())
-        if len(candidate) < _HINT_MATCH_MIN_LEN:
+        if len(candidate) < _engine_module._HINT_MIN_PHRASE_LEN:
             continue
         if candidate in hint_norm:
             matched_products.add(product_name)
@@ -266,19 +316,55 @@ def _load_attr_var_mapping_rows(
     Uses a cache key suffixed with "attr_var_mapping" so a `cache` dict
     shared with _load_all_tables() callers cannot collide on the same
     (workspace_id, catalog_prefix) key against a differently-shaped value.
+
+    Beneath the per-call `cache`, a MODULE-LEVEL short-TTL cache
+    (`_ATTR_VAR_MAPPING_CACHE`) also keys on (workspace_id, catalog_prefix)
+    and survives across separate top-level calls -- same pattern and same
+    reason as `_load_all_tables`'s own `_TABLES_CACHE`: a caller with no
+    per-call `cache` of its own (e.g. catalog_profile.shadow_check_role_vn,
+    called on every Base-Model-trigger cascade turn) must not pay a fresh
+    ~265s scan (workspace 704's live-measured cost) every single time.
     """
     key = (workspace_id, catalog_prefix, "attr_var_mapping")
     if cache is not None and key in cache:
         return cache[key]
+
+    _marker_at_read = _invalidate_on_marker_change(
+        _ATTR_VAR_MAPPING_CACHE, _ATTR_VAR_MAPPING_CACHE_LAST_SEEN_MARKER,
+    )
+    _mod_hit = _ATTR_VAR_MAPPING_CACHE.get(key)
+    if _mod_hit is not None:
+        _mod_ts, _mod_rows = _mod_hit
+        if time.monotonic() - _mod_ts < _ATTR_VAR_MAPPING_CACHE_TTL_SECONDS:
+            logger.info(
+                "cpq_perf: _load_attr_var_mapping_rows CACHE HIT (module) ws=%s prefix=%r",
+                workspace_id, catalog_prefix,
+            )
+            if cache is not None:
+                cache[key] = _mod_rows
+            return _mod_rows
+
+    _t0 = time.monotonic()
     rdb = get_cpq_rdb()
     rows: list[dict[str, Any]] = []
-    for ontology_type in rdb.list_ontology_types(workspace_id):
-        entities = rdb.fetch_entities_by_exact_type(workspace_id, ontology_type)
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2/data-table-resolution
+    # follow-up (real-data testing against workspace 704, 2026-09-25): same
+    # per-type-round-trip bug this function's own docstring already flags
+    # as a duplicate of _load_all_tables()'s scan loop -- fixed the same
+    # way, one grouped query instead of one round trip per ontology_type.
+    for entities in rdb.fetch_all_entities_grouped_by_type(workspace_id).values():
         for _eid, attrs in entities:
             if _is_attr_var_mapping_shaped(set(attrs.keys())):
                 rows.append(attrs)
+    logger.info(
+        "cpq_perf: _load_attr_var_mapping_rows MISS (fresh scan) took %.3fs ws=%s "
+        "prefix=%r rows=%d", time.monotonic() - _t0, workspace_id, catalog_prefix, len(rows),
+    )
     if cache is not None:
         cache[key] = rows
+    _cache_write_if_marker_unchanged(
+        _ATTR_VAR_MAPPING_CACHE, key, (time.monotonic(), rows), _marker_at_read,
+    )
     return rows
 
 

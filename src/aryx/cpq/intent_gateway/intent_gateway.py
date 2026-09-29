@@ -120,6 +120,33 @@ _OFF_TOPIC_HARD = re.compile(
     r"weather(?:\s*forecast)?|world\s*cup|tell\s+me\s+a\s+joke|knock[\s-]knock)\b",
     re.IGNORECASE,
 )
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: a PROVISIONAL strong/weak
+# split of _OFF_TOPIC_HARD's own terms, used ONLY by the shadow-logging
+# below (cpq_off_topic_veto_shadow_enabled) -- never consulted by
+# hard_off_topic() itself, so it can never change real routing. Seeded
+# from the audit's own explicit example ("real quotes mentioning weather
+# can still be silently rejected as off-topic") -- "weather" and "world
+# cup" are the two terms with a plausible real-product-question false-
+# positive (a customer asking how a radio holds up "in bad weather", or
+# a shipment tied to a "world cup" event); the rest (astrology/horoscope/
+# zodiac/tarot/jokes) have no such collision in a CPQ context.
+_OFF_TOPIC_WEAK_TERMS = frozenset({"weather", "world cup"})
+
+
+def _off_topic_shadow_term_strength(question: str) -> str | None:
+    """Which _OFF_TOPIC_HARD term matched, and whether it's in the
+    PROVISIONAL weak set above -- "weak", "strong", or None (no match).
+    Shadow-measurement only; see cpq_off_topic_veto_shadow_enabled."""
+    m = _OFF_TOPIC_HARD.search(question or "")
+    if not m:
+        return None
+    matched = re.sub(r"\s+", " ", m.group(1).lower()).strip()
+    for weak in _OFF_TOPIC_WEAK_TERMS:
+        if weak in matched or matched in weak:
+            return "weak"
+    return "strong"
+
+
 # N6: soft quote bias for escape hatch when regex/alias miss paraphrases.
 _SOFT_QUOTE = re.compile(
     r"\b(order|configure|config|quote|qty|quantity|radios?|"
@@ -909,6 +936,13 @@ def classify_ask_route(
         logger.info(
             "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%r", run_id, question[:80],
         )
+        if settings.cpq_off_topic_veto_shadow_enabled:
+            logger.info(
+                "cpq_off_topic_veto_shadow: run_id=%s q=%r term_strength=%s "
+                "site=pre_llm (no LLM verdict available -- veto skipped the "
+                "call)", run_id, question[:80],
+                _off_topic_shadow_term_strength(question),
+            )
         return AskRouteDecision(
             route="off_topic",
             confidence="high",
@@ -1046,6 +1080,19 @@ def classify_ask_route(
         )
 
     # N10 post-LLM: if hard off-topic lexicon matches, never keep quote/qa.
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8 shadow-logging work
+    # (2026-09-29) discovered this branch is UNREACHABLE dead code: the
+    # pre-LLM veto above already returns whenever `hard_off_topic(question)`
+    # is true, using the exact same unmodified `question` value -- so by
+    # the time this line runs, hard_off_topic(question) can only ever be
+    # False. Confirmed empirically (a shadow-log placed here in this same
+    # investigation never fired across multiple real off-topic-term test
+    # messages) before this comment was written, not assumed. Left
+    # unfixed/unremoved here deliberately -- removing or "fixing" it is
+    # itself a live-routing-relevant decision (is a second post-LLM check
+    # intentional defense-in-depth that's just currently broken, or truly
+    # redundant with the pre-LLM veto?) that needs its own investigation,
+    # out of scope for a shadow-logging-only pass.
     if hard_off_topic(question) and parsed.route in ("quote", "qa", "ambiguous"):
         parsed = AskRouteDecision(
             route="off_topic",

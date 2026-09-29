@@ -19,6 +19,10 @@ def is_mandatory_input_attr(
     gate_attrseq_confirmed_to_active_source: bool = False,
     rule_forced_active_vns: frozenset[str] | None = None,
     data_table_forced_vns: frozenset[str] | None = None,
+    hint_text: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    _dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> bool:
     """Tier A/B/C scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
     BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
@@ -120,6 +124,21 @@ def is_mandatory_input_attr(
     H55TGT9PW8AN + Country=US). A catalog-proven answer isn't a blind-
     picked default — `build_payload` passes `_data_table_forced_vns`'s
     result so it counts as actively sourced too.
+
+    `hint_text`/`workspace_id`/`catalog_prefix`/`_dt_cache` — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3: Tier A's Hardware
+    Version branch used to mark ANY Hardware Version attr structurally
+    mandatory with no applicability check. These four (all `None`/``""``
+    by default) feed `CpqEngine._hardware_version_confirmed_not_
+    applicable` — the same real, already-wired-in applicability check
+    `auto_fill_hw_order`/`governance_flags` already consult — so Tier A
+    stops forcing Hardware Version when the customer's own wording
+    already confidently resolves to a device whose real attrSequence
+    data proves Hardware Version is never governed for it. One-sided
+    (see that method's own docstring): with no hint/workspace_id (every
+    existing caller that doesn't opt in), it always returns `False`, so
+    `not False` is `True` and this branch is byte-for-byte identical to
+    before.
     """
     vn_flat = vn.lower().replace("_", "")
     _excluded_anchors = exclude_anchor_vns or frozenset()
@@ -134,7 +153,11 @@ def is_mandatory_input_attr(
         attrseq_confirmed = attrseq_confirmed and is_active_source
     tier_a = attr is not None and (
         vn == "productSelectionProduct_all"
-        or engine._is_hardware_version_attr(attr)
+        or (
+            engine._is_hardware_version_attr(attr)
+            and not engine._hardware_version_confirmed_not_applicable(
+                hint_text, workspace_id, catalog_prefix, _dt_cache)
+        )
         or ("basemodel" in vn_flat and vn not in _excluded_anchors)
         or ("selectmodel" in vn_flat and vn not in _excluded_anchors)
         or attrseq_confirmed

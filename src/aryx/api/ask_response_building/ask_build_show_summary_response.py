@@ -68,7 +68,8 @@ def _build_show_summary_response(
             for _opt in _pending_attr.options:
                 if _q_norm in (_opt.display_name.strip().lower(), _opt.item_value.strip().lower()):
                     return None
-    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    hiding_rules = _cpq_engine.load_hiding_rules(
+        req.workspace_id, catalog_prefix, session.product_name)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
@@ -81,6 +82,10 @@ def _build_show_summary_response(
         session.display_filled, attrs, rule_ids,
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — same
+        # applicability signal build_payload's JSON preview uses (see
+        # ask_attach_share_flags._attach_share_flags).
+        product_anchor_hint=session.product_anchor_question,
     )
     if not summary:
         return None

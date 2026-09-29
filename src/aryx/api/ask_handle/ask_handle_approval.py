@@ -116,7 +116,9 @@ def _handle_approval(
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         product_quantity=session.product_quantity,
         scope_required_and_edited=True,
-        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3
+        product_anchor_hint=session.product_anchor_question)
     answer = f"```json\n{json.dumps(payload, indent=2)}\n```"
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {

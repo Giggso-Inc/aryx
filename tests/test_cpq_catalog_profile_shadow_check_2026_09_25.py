@@ -1,0 +1,440 @@
+"""Tests for catalog_profile.shadow_check_role_vn and its gated wiring into
+_invalidate_stale_base_model -- CPQ_Hardcode_Audit_dev_oci_2026-09-25.md's
+T1 Phase 3 pilot slice (first slice of the proposed CatalogProfile design:
+log-only comparison against today's hardcoded literal, never changing
+behavior).
+"""
+from __future__ import annotations
+
+import logging
+from unittest.mock import MagicMock, patch
+
+from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import (
+    _BASE_MODEL_VN,
+    _invalidate_stale_base_model,
+)
+from aryx.cpq.catalog_profile import CatalogProfile, shadow_check_role_vn
+from aryx.cpq.payload_building.anchor_exclusions import _data_table_resolved_anchor_vns
+from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
+from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.state import ConfigAttr, CpqSession
+
+
+def _attr(entity_id: int, variable_name: str) -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=entity_id, source_id=entity_id, variable_name=variable_name,
+        display_label=variable_name, required=False, default_value="", options=[],
+    )
+
+
+# ── shadow_check_role_vn itself ──────────────────────────────────────────
+
+def test_shadow_check_logs_warning_on_mismatch(caplog):
+    with (
+        patch("aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT",)),
+        patch(
+            "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+            return_value="someOtherVarName_astro",
+        ),
+        caplog.at_level(logging.WARNING, logger="aryx.cpq.catalog_profile"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    assert any("CatalogProfile shadow mismatch" in r.message for r in caplog.records)
+
+
+def test_shadow_check_silent_when_resolved_matches_literal(caplog):
+    with (
+        patch("aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT",)),
+        patch(
+            "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+            return_value="modelSelectionbaseModel_astro",
+        ),
+        caplog.at_level(logging.WARNING, logger="aryx.cpq.catalog_profile"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    assert not any("mismatch" in r.message for r in caplog.records)
+
+
+def test_shadow_check_silent_when_resolver_returns_none(caplog):
+    with (
+        patch("aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT",)),
+        patch("aryx.cpq.catalog_profile.resolve_variable_name_for_role", return_value=None),
+        caplog.at_level(logging.WARNING, logger="aryx.cpq.catalog_profile"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    assert not any("mismatch" in r.message for r in caplog.records)
+
+
+def test_shadow_check_never_raises_even_if_resolver_blows_up():
+    with patch(
+        "aryx.cpq.catalog_profile._cpq_model_candidates",
+        side_effect=RuntimeError("boom"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    # No exception propagated -- that's the whole assertion.
+
+
+# ── real resolution wired into _invalidate_stale_base_model ─────────────
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 "scoped" rollout:
+# the pilot slice's gated shadow_check_role_vn call was replaced by an
+# unconditional call to resolve_base_model_vn(), which is itself gated
+# internally (catalog_profile_scoped_resolution_enabled, see catalog_
+# profile.py) -- see test_cpq_catalog_profile_scoped_resolution_2026_09_
+# 25.py for that function's own tests. These tests only cover this call
+# site's wiring: it must call resolve_base_model_vn with the right
+# arguments and pop under whatever key it returns.
+
+def test_resolve_base_model_vn_is_called_and_its_result_is_popped():
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD"},
+        display_filled={_BASE_MODEL_VN: "BM_OLD"},
+        filled_source={_BASE_MODEL_VN: "cascade"},
+    )
+    hw_version = _attr(1, "hWVersion_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+        return_value=_BASE_MODEL_VN,
+    ) as mock_resolve:
+        _invalidate_stale_base_model(
+            session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=704,
+            catalog_prefix="Astro",
+        )
+    mock_resolve.assert_called_once_with(session.filled, 704, "Astro")
+    assert _BASE_MODEL_VN not in session.filled
+
+
+def test_pops_under_whatever_key_resolve_base_model_vn_returns():
+    """If resolve_base_model_vn ever resolves to a DIFFERENT key than the
+    literal (only possible with catalog_profile_scoped_resolution_enabled
+    turned on for a workspace with real attrToVarMapping coverage), the
+    pop must follow that resolved key, not the hardcoded literal --
+    otherwise the stale value would never actually get cleared."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={"someOtherCatalogsBaseModelVn": "BM_OLD", _BASE_MODEL_VN: "unrelated"},
+        display_filled={"someOtherCatalogsBaseModelVn": "BM_OLD"},
+        filled_source={"someOtherCatalogsBaseModelVn": "cascade"},
+    )
+    hw_version = _attr(1, "hWVersion_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+        return_value="someOtherCatalogsBaseModelVn",
+    ):
+        _invalidate_stale_base_model(
+            session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert "someOtherCatalogsBaseModelVn" not in session.filled
+    assert "someOtherCatalogsBaseModelVn" not in session.display_filled
+    assert "someOtherCatalogsBaseModelVn" not in session.filled_source
+    # The literal key is untouched -- it was never the real key here.
+    assert session.filled[_BASE_MODEL_VN] == "unrelated"
+
+
+def test_resolve_base_model_vn_not_called_when_no_trigger_fires():
+    """An unrelated attribute change must not invoke resolution at all --
+    it only runs inside the branch that actually pops Base Model."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD", "billingOption_astro": "NET30"},
+    )
+    billing = _attr(3, "billingOption_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+    ) as mock_resolve:
+        _invalidate_stale_base_model(
+            session, billing, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    mock_resolve.assert_not_called()
+    assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
+
+
+def test_region_change_under_its_resolved_key_still_triggers_invalidation():
+    """The Region member of the trigger set is no longer the hardcoded
+    literal -- it's resolve_region_vn's result, computed per-call. A
+    changed attribute matching THAT resolved key (not the literal) must
+    still trigger the Base Model pop, proving the trigger set is real,
+    not silently still keying off the old literal string."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD"},
+    )
+    region_changed = _attr(5, "someOtherCatalogsRegionVn")
+    with (
+        patch(
+            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_region_vn",
+            return_value="someOtherCatalogsRegionVn",
+        ),
+        patch(
+            "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_base_model_vn",
+            return_value=_BASE_MODEL_VN,
+        ),
+    ):
+        _invalidate_stale_base_model(
+            session, region_changed, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert _BASE_MODEL_VN not in session.filled
+
+
+def test_region_change_under_the_literal_does_not_trigger_when_resolved_key_differs():
+    """Once Region resolves to a different real key, a change reported
+    under the OLD literal name must not spuriously trigger the pop --
+    the trigger set tracks the resolved key, not both."""
+    session = CpqSession(
+        product_name="APX NEXT XE",
+        filled={_BASE_MODEL_VN: "BM_OLD"},
+    )
+    literal_named_change = _attr(5, "modelSelectionRegion_astro")
+    with patch(
+        "aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model.resolve_region_vn",
+        return_value="someOtherCatalogsRegionVn",
+    ):
+        _invalidate_stale_base_model(
+            session, literal_named_change, dependent_eids=set(), by_eid={}, workspace_id=704,
+        )
+    assert session.filled[_BASE_MODEL_VN] == "BM_OLD"
+
+
+# ── real resolution wired into _data_table_resolved_anchor_vns (Region) ──
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 "scoped" rollout: the
+# pilot slice's gated shadow_check_role_vn call was replaced by an
+# unconditional call to resolve_region_vn(), itself gated internally
+# (catalog_profile_scoped_resolution_enabled) -- see
+# test_cpq_catalog_profile_scoped_resolution_2026_09_25.py for that
+# function's own tests. These tests only cover this call site's wiring.
+
+def test_resolve_region_vn_is_called_and_region_is_read_under_its_result():
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "ultimateDestinationCountry": "United States",
+        "modelSelectionRegion_astro": "NA",
+    }
+    attr = _attr(1, "modelSelectionbaseModel_astro")
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+            return_value="modelSelectionRegion_astro",
+        ) as mock_resolve,
+        patch("aryx.cpq.engine._cpq_model_candidates", return_value=()),
+    ):
+        _data_table_resolved_anchor_vns(None, filled, [attr], 704, "Astro")
+    mock_resolve.assert_called_once_with(filled, 704, "Astro", None)
+
+
+def test_region_read_follows_whatever_key_resolve_region_vn_returns():
+    """If resolve_region_vn ever resolves to a DIFFERENT key than the
+    literal (only possible with catalog_profile_scoped_resolution_enabled
+    turned on for a workspace with real attrToVarMapping coverage), the
+    region read must follow that resolved key, not the hardcoded literal."""
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "someOtherCatalogsRegionVn": "NA",
+        "modelSelectionRegion_astro": "unrelated",
+    }
+    attr = _attr(1, "modelSelectionbaseModel_astro")
+    with (
+        patch(
+            "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+            return_value="someOtherCatalogsRegionVn",
+        ),
+        patch(
+            "aryx.cpq.engine._cpq_model_candidates", return_value=("CM1",),
+        ),
+        patch(
+            "aryx.cpq.engine.dt_resolve_region_allow_value", return_value=None,
+        ) as mock_dt_resolve,
+    ):
+        _data_table_resolved_anchor_vns(None, filled, [attr], 704, "Astro")
+    # The candidate lookup ran with the REAL (resolved) region value "NA",
+    # not the literal key's unrelated value.
+    mock_dt_resolve.assert_called_once_with(
+        "modelSelectionbaseModel_astro", "CM1", "NA", 704, "Astro", None, country="",
+    )
+
+
+def test_resolve_region_vn_not_called_when_no_product():
+    """An empty product must not invoke resolution at all -- it only runs
+    after the function's own early-return guards for filled/attrs/
+    workspace_id/product."""
+    with patch(
+        "aryx.cpq.payload_building.anchor_exclusions.resolve_region_vn",
+    ) as mock_resolve:
+        result = _data_table_resolved_anchor_vns(None, {}, [_attr(1, "x")], 704)
+    mock_resolve.assert_not_called()
+    assert result == frozenset()
+
+
+# ── CatalogProfile class itself ──────────────────────────────────────────
+
+def test_for_product_resolves_cpq_models_once():
+    with patch(
+        "aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT", "APXNEXT_BOM"),
+    ) as mock_candidates:
+        profile = CatalogProfile.for_product("Product X", 704, "Astro")
+    mock_candidates.assert_called_once_with("Product X", 704, "Astro", None)
+    assert profile.workspace_id == 704
+    assert profile.catalog_prefix == "Astro"
+    assert profile.cpq_models == ("APXNEXT", "APXNEXT_BOM")
+
+
+def test_resolved_vn_returns_first_matching_candidates_result():
+    profile = CatalogProfile(
+        workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT", "APXNEXT_BOM"),
+    )
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=lambda model, role, *a, **k: (
+            "modelSelectionbaseModel_astro" if model == "APXNEXT" else None
+        ),
+    ) as mock_resolve:
+        assert profile.resolved_vn("Base Model") == "modelSelectionbaseModel_astro"
+    # Only the first (matching) candidate needs to be tried.
+    mock_resolve.assert_called_once()
+
+
+def test_resolved_vn_tries_every_candidate_before_giving_up():
+    profile = CatalogProfile(
+        workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT", "APXNEXT_BOM"),
+    )
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=lambda model, role, *a, **k: (
+            "modelSelectionbaseModel_astro" if model == "APXNEXT_BOM" else None
+        ),
+    ):
+        assert profile.resolved_vn("Base Model") == "modelSelectionbaseModel_astro"
+
+
+def test_resolved_vn_none_when_no_candidate_resolves():
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with patch("aryx.cpq.catalog_profile.resolve_variable_name_for_role", return_value=None):
+        assert profile.resolved_vn("Some Unmapped Role") is None
+
+
+def test_shadow_check_on_the_class_logs_mismatch(caplog):
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with (
+        patch(
+            "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+            return_value="someOtherVarName_astro",
+        ),
+        caplog.at_level(logging.WARNING, logger="aryx.cpq.catalog_profile"),
+    ):
+        profile.shadow_check("Base Model", "modelSelectionbaseModel_astro")
+    assert any("CatalogProfile shadow mismatch" in r.message for r in caplog.records)
+
+
+def test_shadow_check_on_the_class_never_raises():
+    profile = CatalogProfile(workspace_id=704, catalog_prefix="", cpq_models=("APXNEXT",))
+    with patch(
+        "aryx.cpq.catalog_profile.resolve_variable_name_for_role",
+        side_effect=RuntimeError("boom"),
+    ):
+        profile.shadow_check("Base Model", "modelSelectionbaseModel_astro")
+    # No exception propagated -- that's the whole assertion.
+
+
+def test_shadow_check_role_vn_wrapper_delegates_to_a_fresh_profile():
+    """The backward-compatible free function must build exactly one
+    CatalogProfile per call and delegate to its shadow_check -- not
+    duplicate the comparison logic."""
+    with (
+        patch("aryx.cpq.catalog_profile._cpq_model_candidates", return_value=("APXNEXT",)),
+        patch.object(CatalogProfile, "shadow_check") as mock_method,
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704, "Astro")
+    mock_method.assert_called_once_with("Base Model", "modelSelectionbaseModel_astro")
+
+
+def test_shadow_check_role_vn_wrapper_never_raises_if_candidates_lookup_fails():
+    with patch(
+        "aryx.cpq.catalog_profile._cpq_model_candidates", side_effect=RuntimeError("boom"),
+    ):
+        shadow_check_role_vn("Base Model", "modelSelectionbaseModel_astro", "Product X", 704)
+    # No exception propagated -- that's the whole assertion.
+
+
+# ── gated wiring into run_early_pass (Hidden Master String role) ────────
+
+def _loop_state(**overrides) -> LoopState:
+    defaults = dict(
+        attrs=[], filled={"productSelectionProduct_all": "APX NEXT XE"},
+        display_filled={}, sources={}, multi={}, dropped={},
+    )
+    defaults.update(overrides)
+    return LoopState(**defaults)
+
+
+def _loop_scope(**overrides) -> LoopScope:
+    defaults = dict(
+        hints={}, hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        country=None, negated_vns=None, skip_always_ask=None, display_order=None,
+        workspace_id=704, catalog_prefix="Astro",
+    )
+    defaults.update(overrides)
+    return LoopScope(**defaults)
+
+
+def _mock_engine() -> MagicMock:
+    engine = MagicMock()
+    engine._compute_hidden_master_string.return_value = None
+    engine.apply_hiding_rules.return_value = ([], [], set())
+    engine._suppress_ungoverned_attrs.return_value = ([], set())
+    return engine
+
+
+def test_resolve_hidden_master_string_vn_is_called_with_right_args():
+    with (
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.resolve_hidden_master_string_vn",
+            return_value="hiddenMasterStringForAstroPortable_astro",
+        ) as mock_resolve,
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.resolve_base_model_vn", return_value="modelSelectionbaseModel_astro"),
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
+    ):
+        state = _loop_state()
+        run_early_pass(_mock_engine(), 1, state, _loop_scope())
+    mock_resolve.assert_called_once_with(state.filled, 704, "Astro", state.dt_cache)
+
+
+def test_hidden_master_string_written_under_whatever_key_resolve_returns():
+    """If resolve_hidden_master_string_vn ever resolves to a DIFFERENT key
+    than the literal (only possible with catalog_profile_scoped_
+    resolution_enabled turned on for a workspace with real attrToVarMapping
+    coverage), the computed value must be written/tracked under that
+    resolved key, not the hardcoded literal -- and passed through to
+    _compute_hidden_master_string's own var_name parameter too."""
+    engine = _mock_engine()
+    engine._compute_hidden_master_string.return_value = "x@@@"
+    with (
+        patch(
+            "aryx.cpq.rules_loop.rules_loop_pass_early.resolve_hidden_master_string_vn",
+            return_value="someOtherCatalogsHiddenMsVn",
+        ),
+        patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"),
+    ):
+        state = _loop_state()
+        run_early_pass(engine, 1, state, _loop_scope())
+    assert state.filled["someOtherCatalogsHiddenMsVn"] == "x@@@"
+    assert "_someOtherCatalogsHiddenMsVn_computed_for" in state.filled
+    assert "hiddenMasterStringForAstroPortable_astro" not in state.filled
+    engine._compute_hidden_master_string.assert_called_once()
+    assert engine._compute_hidden_master_string.call_args.kwargs["var_name"] == "someOtherCatalogsHiddenMsVn"
+
+
+def test_hidden_master_string_recompute_skipped_when_already_computed_for_current_key():
+    """A pass where the hidden-master-string cache is already fresh
+    (matches _hidden_ms_key) must not recompute at all -- resolution
+    still runs (it's cheap/gated internally), but _compute_hidden_master_
+    string itself must not be called again."""
+    state = _loop_state(filled={
+        "productSelectionProduct_all": "APX NEXT XE",
+        "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
+        "hiddenMasterStringForAstroPortable_astro": "x@@@",
+        "_hiddenMasterStringForAstroPortable_astro_computed_for": "APX NEXT XE\x1fH55TGT9PW8AN",
+    })
+    engine = _mock_engine()
+    with patch("aryx.cpq.rules_loop.rules_loop_pass_early.run_autofill_step"):
+        run_early_pass(engine, 1, state, _loop_scope())
+    engine._compute_hidden_master_string.assert_not_called()
+    assert state.filled["hiddenMasterStringForAstroPortable_astro"] == "x@@@"

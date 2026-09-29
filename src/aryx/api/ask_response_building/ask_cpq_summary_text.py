@@ -24,6 +24,7 @@ def _cpq_summary_text(
     sources: dict[str, str] | None = None,
     product_quantity: int | None = None,
     filled: dict[str, str] | None = None,
+    product_anchor_hint: str | None = None,
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
@@ -34,6 +35,14 @@ def _cpq_summary_text(
     Mandatory_Section_Miscategorization_2026_08_19.md) instead of the
     prior, separately-maintained "rule-governed and actively-sourced"
     narrowing. Omitted entirely, this falls back to Tier A/B only.
+
+    product_anchor_hint — optional (default `None`, preserving today's
+    behavior byte-for-byte). The customer's own original wording
+    (`CpqSession.product_anchor_question`), forwarded to `categorized_
+    summary_groups`/`render_filled_summary` so Tier A's Hardware
+    Version applicability check (docs/CPQ_Hardcode_Audit_dev_oci_
+    2026-09-25.md T3) sees the same signal `build_payload`'s JSON
+    preview does.
 
     Post-generation, summary_guard diffs field-by-field against session
     display state; mismatch regenerates once, then falls back to the raw
@@ -89,7 +98,9 @@ def _cpq_summary_text(
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
         display_order=display_order, product_quantity=product_quantity,
-        required_vns=_required_vns)
+        required_vns=_required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=_catalog_prefix)
     if not groups:
         return _finish("")
     # The narrator and its bullet fallback are only ever asked to cover
@@ -124,4 +135,5 @@ def _cpq_summary_text(
         sys, user, expected_segments, groups, workspace_id,
         display_filled, attrs, rule_governed_ids, sources, product_quantity,
         _required_vns, _finish,
+        product_anchor_hint=product_anchor_hint, catalog_prefix=_catalog_prefix,
     )

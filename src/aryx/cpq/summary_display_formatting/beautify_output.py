@@ -27,6 +27,10 @@ def beautify_text(
     attrs: list["ConfigAttr"] | None = None,
     filled_source: dict[str, str] | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> str:
     """Human-readable ``Label : Value`` block for the Beautify button.
 
@@ -47,9 +51,17 @@ def beautify_text(
     required_vns — optional (default `None`); forwarded to
     `_beautify_sectioned_rows` for Tier C (see its own docstring and
     `mandatory_tier_c_vns`).
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller); forwarded to
+    `_beautify_sectioned_rows` for the Hardware Version applicability
+    check.
     """
     rows = engine._beautify_sectioned_rows(
         product_name, display_filled, attrs, filled_source, required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
     )
     if filled_source is None:
         pairs = [(label, value) for _section, label, value in rows]
@@ -74,6 +86,10 @@ def beautify_rows(
     attrs: list["ConfigAttr"] | None = None,
     filled_source: dict[str, str] | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[dict[str, str]]:
     """Structured [{label, value, section}, ...] pairs for clients that
     render a real tabular UI (e.g. the Next.js Beautify panel) instead
@@ -96,9 +112,17 @@ def beautify_rows(
     required_vns — optional (default `None`); forwarded to
     `_beautify_sectioned_rows` for Tier C (see its own docstring and
     `mandatory_tier_c_vns`).
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller); forwarded to
+    `_beautify_sectioned_rows` for the Hardware Version applicability
+    check.
     """
     rows = engine._beautify_sectioned_rows(
         product_name, display_filled, attrs, filled_source, required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
     )
     if filled_source is None:
         return [{"label": label, "value": value} for _section, label, value in rows]

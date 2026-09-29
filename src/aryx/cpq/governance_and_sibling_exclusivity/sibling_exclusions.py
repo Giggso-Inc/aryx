@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.model_policy import resolve_known_sibling_pairs
 from aryx.cpq.state import ConfigAttr
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -27,6 +28,9 @@ def exclusive_sibling_family_exclusions(
     filled_source: dict[str, str],
     all_attrs: list[ConfigAttr] | None = None,
     catalog_confirmed_vns: frozenset[str] | None = None,
+    product_name: str = "",
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
 ) -> tuple[set[str], list[ConfigAttr]]:
     """Generic (no catalog/attribute names hardcoded) detector for a gap
     this engine can hit on ANY catalog: two attrs sharing the same
@@ -86,6 +90,14 @@ def exclusive_sibling_family_exclusions(
     (no attribute name hardcoded), and leaves the 5G flow (where the
     multi-select IS the real governing attr) untouched.
 
+    `product_name`/`workspace_id`/`catalog_prefix` (2026-09-25,
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3) -- resolve
+    `engine._KNOWN_SIBLING_PAIRS` through model_policy for the
+    session's actual CPQ model(s), falling back to the hardcoded class
+    attribute when unavailable. All default to ""/None (legacy
+    behavior byte-identical) so every existing caller keeps working
+    unchanged.
+
     Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) -- the
     multi-select sibling is asked instead of silently guessing which
     half applies. Empty on any catalog without this exact shape.
@@ -110,7 +122,10 @@ def exclusive_sibling_family_exclusions(
     # Named explicitly here (per direct approval) rather than silently
     # extending the generic label heuristic to something it can't
     # actually detect.
-    for vn_a, vn_b in engine._KNOWN_SIBLING_PAIRS:
+    _resolved_sibling_pairs = resolve_known_sibling_pairs(
+        engine._KNOWN_SIBLING_PAIRS, product_name, workspace_id, catalog_prefix,
+    )
+    for vn_a, vn_b in _resolved_sibling_pairs:
         attr_a, attr_b = by_vn.get(vn_a), by_vn.get(vn_b)
         if attr_a is not None and attr_b is not None:
             groups.append([attr_a, attr_b])

@@ -35,8 +35,13 @@ def _handle_confirm_switch_anchor(
     # ("videoSolutions_BOM" to "switch to videoSolutions_BOM?") — a
     # natural way to accept that previously counted as a decline.
     _pending_norm = re.sub(r"[^a-z0-9]", "", session.pending_switch_product.lower())
+    # Word-boundary match, not startswith(("y", ...)) -- the bare "y" entry
+    # matched any reply beginning with the letter y, including "you know
+    # what, keep this one" (verified live: CPQ_Hardcode_Audit_dev_oci_2026-
+    # 09-25.md T8). Mirrors _clear_decline's regex below, which already
+    # gets this right.
     affirmative = (
-        reply.startswith(("y", "yes", "switch", "confirm"))
+        bool(re.match(r"^\s*(y|yes|switch|confirm)\b", reply, re.IGNORECASE))
         or (_pending_norm and re.sub(r"[^a-z0-9]", "", reply) == _pending_norm)
     )
     # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 21: a

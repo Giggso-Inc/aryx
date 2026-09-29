@@ -126,7 +126,13 @@ def workspace_router() -> APIRouter:
             result = store.nuke()
         finally:
             store.close()
-        for wid in (1, 2, 3):
+        # Always clear workspace 1 (Default -- its RDB rows are truncated
+        # by nuke() too, just never dropped as a workspace) plus every
+        # workspace nuke() actually removed -- previously hardcoded to
+        # (1, 2, 3), which silently left any removed workspace with
+        # id > 3's graph data orphaned in FalkorDB after its RDB rows were
+        # gone (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11).
+        for wid in {1, *result.get("workspace_ids", ())}:
             try:
                 g = FalkorStore(get_settings().graph_url, ws_graph(wid))
                 g.clear()

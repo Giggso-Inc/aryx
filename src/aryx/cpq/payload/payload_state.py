@@ -28,3 +28,12 @@ class PayloadContext:
     exclude_anchor_vns: frozenset[str] = frozenset()
     rule_forced_active_vns: frozenset[str] = frozenset()
     data_table_forced_vns: frozenset[str] = frozenset()
+    # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — threaded through to
+    # engine._is_mandatory_input_attr's Hardware Version applicability check
+    # (`_hardware_version_confirmed_not_applicable`); `None`/`""` (the
+    # defaults, for every caller that doesn't opt in) keep that check a
+    # no-op, preserving Tier A's HW branch exactly as before.
+    workspace_id: int | None = None
+    catalog_prefix: str = ""
+    product_anchor_hint: str | None = None
+    dt_cache: dict[tuple[int, str], tuple] | None = None

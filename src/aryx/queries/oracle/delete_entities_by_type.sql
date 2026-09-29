@@ -1,0 +1,21 @@
+-- Oracle ADB 23ai: plain DELETE, no clause reporting the removed row ids.
+--
+-- CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9/T11 follow-up (real-data
+-- testing, confirmed live): the Postgres version of this query reports
+-- back the ids of the rows it removed, and EntityStore.delete_entities_
+-- by_type() calls cur.fetchall() to read them -- works on psycopg, but
+-- python-oracledb's driver rejects fetchall() after this kind of DML with
+-- DPY-1003 ("the executed statement does not return rows"). No
+-- Oracle-specific override existed at all, so every call to
+-- DELETE /ontology/types/{name} 500'd on this backend. Fixed at the
+-- Python level: on Oracle, select_entity_ids_by_type.sql runs first to
+-- get the ids, then this plain DELETE removes them -- no id-reporting
+-- clause is used here at all (this file must never contain that SQL
+-- keyword, even in a comment -- oracle_sql_translate.py's regex matches
+-- it anywhere in the text, comments included, and rewrites the rest of
+-- the statement into an INTO-bind-variable form, corrupting an
+-- otherwise-plain DELETE. Confirmed live: an earlier draft of this exact
+-- file's own explanatory comment used that keyword and broke this way).
+-- Params: :1=workspace_id  :2=ontology_type
+DELETE FROM aryx_entity
+WHERE workspace_id = :1 AND ontology_type = :2

@@ -201,6 +201,26 @@ def test_confirmed_switch_resets_config_state_and_reanchors_country(monkeypatch)
     }
 
 
+# ── Scenario 3b: a confirmed switch must clear the STALE pre-switch anchor
+# text -- left uncleared, _seed_product_select_from_anchor tries it as a
+# fallback seed candidate on every later turn, ranked ABOVE the already-
+# confirmed new session.product_name, risking a fuzzy match against the
+# OLD product's description (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3).
+
+def test_confirmed_switch_clears_the_stale_pre_switch_anchor_text(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e", country="")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+    session_data["product_anchor_question"] = "quote me an SL3500e with GPS"
+
+    req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    assert resp["session_data"]["product_anchor_question"] == ""
+
+
 # ── Scenario 4: user declines the switch — zero data loss ──────────────────
 
 def test_declined_switch_preserves_original_product_and_answers(monkeypatch):
@@ -220,6 +240,36 @@ def test_declined_switch_preserves_original_product_and_answers(monkeypatch):
     assert sd["pending_switch_product"] == ""
     assert sd["pending_anchor"] == ""
     assert "SL3500e" in resp["answer"]
+
+
+# ── Scenario 4c: a decline that happens to START with the letter "y" must
+# not be misparsed as affirmative -- reply.startswith(("y", "yes", ...))
+# matched any reply beginning with "y", not just an actual yes (CPQ_Hardcode
+# _Audit_dev_oci_2026-09-25.md T8). "you know what, keep this one" is a
+# clear decline of the switch, worded starting with "you".
+
+def test_decline_reply_starting_with_the_letter_y_is_not_misparsed_as_yes(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e",
+                                        filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    # Not a startswith("y",...) false-affirmative (the bug), and not a clear
+    # decline regex match either -- falls to the same LLM tiebreak ambiguous
+    # replies use, mirroring test_ambiguous_switch_reply_falls_back_to_
+    # declined_when_llm_says_unclear's mock shape.
+    req = AskRequest(question="you know what, keep this one", workspace_id=1,
+                      session_data=session_data)
+    fake_reply = '{"decision": "decline"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e", "must stay on the original product, not switch"
+    assert sd["filled"] == {"battery": "STANDARD"}, "declining must not discard existing answers"
+    assert sd["pending_switch_product"] == ""
 
 
 # ── Scenario 4b: a "decline" reply that actually names a THIRD real product

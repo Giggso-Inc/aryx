@@ -42,6 +42,12 @@ def check_outbound_url(v: str) -> str:
         raise ValueError(f"url targets a blocked host: {host}")
     try:
         addr = ipaddress.ip_address(host)
+        # An IPv4-mapped IPv6 literal (::ffff:169.254.169.254) is a distinct
+        # IPv6Address object that PRIVATE_NETS' IPv4-only entries never match
+        # directly -- unwrap it to the underlying IPv4Address first so the
+        # same membership check catches it too.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
         if any(addr in net for net in PRIVATE_NETS):
             raise ValueError(f"url targets a private or reserved address: {host}")
     except ValueError as exc:

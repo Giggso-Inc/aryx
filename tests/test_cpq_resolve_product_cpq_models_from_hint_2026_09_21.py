@@ -31,6 +31,9 @@ class _FakeRdb:
     def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
         return [(i, r) for i, r in enumerate(self._rows, start=1)]
 
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {"Astro25ConfigdataConstraint": [(i, r) for i, r in enumerate(self._rows, start=1)]}
+
 
 def _constraint_row(cpq_model: str, product_val: str) -> dict:
     return {

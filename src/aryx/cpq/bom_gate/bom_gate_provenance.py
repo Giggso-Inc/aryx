@@ -48,6 +48,20 @@ def check_provenance(
         # (DB-backed from load_product_config) — no utterance required.
         if _value_in_options(attr, iv):
             return True
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T7: a customer's own
+        # deliberate clear (empty string, source="user") on an OPTIONAL
+        # attr is a legitimate, already-established outcome elsewhere in
+        # the engine — auto_fill_stages/tier0_already_filled.py's own
+        # "not attr.required" branch already accepts it (displayed as
+        # "(none)", marked done) — this check never got the matching
+        # carve-out, so the exact same value it just accepted upstream
+        # was still hard-blocked here at confirm. A required attr's
+        # empty clear is intentionally NOT covered — tier0's own sibling
+        # branch pops it back to pending instead of accepting it, so an
+        # empty required value reaching here is a genuine gap, not a
+        # deliberate clear.
+        if iv == "" and source == "user" and attr is not None and not attr.required:
+            return True
         # Engine-derived free-text (cascade/rule/default/auto) is trusted
         # when the attr has no menu — never an LLM free invention path.
         if source in ("cascade", "rule", "default", "auto"):

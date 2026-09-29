@@ -6,7 +6,11 @@ unchanged from the original inline definition.
 
 from __future__ import annotations
 
+import logging
+
 from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
+
+logger = logging.getLogger(__name__)
 
 
 def _llm_extract_multi_attr_hints(
@@ -57,6 +61,16 @@ def _llm_extract_multi_attr_hints(
     by_vn = {a.variable_name: a for a in candidates}
     attr_lines = []
     for a in candidates:
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: same silent-
+        # truncation observability fix as the other LLM-facing option-
+        # list caps in this codebase -- not changing the cap, just
+        # making it visible when real options never reach the LLM.
+        if a.options and len(a.options) > 40:
+            logger.warning(
+                "cpq_llm_options_truncated: variable_name=%s option_count=%d "
+                "cap=40 -- %d option(s) never shown to the LLM",
+                a.variable_name, len(a.options), len(a.options) - 40,
+            )
         opts = ", ".join(
             f"{o.display_name} (code: {o.item_value})"
             if o.item_value.lower() != o.display_name.lower() else o.display_name

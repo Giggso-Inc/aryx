@@ -21,6 +21,7 @@ import pytest
 
 from aryx.cpq.data_table import data_table_loader, data_table_product
 from aryx.cpq.data_table.data_table_resolver import (
+    _clear_attr_var_mapping_cache,
     _clear_tables_cache,
     resolve_variable_name_for_role,
     search_products_by_feature,
@@ -31,8 +32,10 @@ from aryx.cpq.data_table.data_table_resolver import (
 @pytest.fixture(autouse=True)
 def _clear_cache():
     _clear_tables_cache()
+    _clear_attr_var_mapping_cache()
     yield
     _clear_tables_cache()
+    _clear_attr_var_mapping_cache()
 
 
 class _FakeRdb:
@@ -45,6 +48,12 @@ class _FakeRdb:
     def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
         rows = self._tables.get(ontology_type, [])
         return [(i, r) for i, r in enumerate(rows, start=1)]
+
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {
+            otype: [(i, r) for i, r in enumerate(rows, start=1)]
+            for otype, rows in self._tables.items()
+        }
 
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:

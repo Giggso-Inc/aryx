@@ -39,6 +39,45 @@ def _distinct_types(query: _Query) -> list[str]:
     return [r[0] for r in rows if r[0]]
 
 
+def _count_entities(query: _Query, ontology_type: str | None = None) -> int:
+    """True entity count — never sampled/capped, unlike find_entities(limit=N).
+
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: callers that only need a
+    count (workspace overview, observability dashboard) were doing
+    len(find_entities(limit=500)), silently under-reporting any workspace
+    with more than 500 entities.
+    """
+    if ontology_type:
+        rows = query("MATCH (e:Entity {type: $t}) RETURN count(e)", {"t": ontology_type})
+    else:
+        rows = query("MATCH (e:Entity) RETURN count(e)")
+    return int(rows[0][0]) if rows else 0
+
+
+def _type_overview(query: _Query, sample_limit: int = 3) -> dict[str, dict[str, Any]]:
+    """Per-type {count, samples} for every type in a single query.
+
+    docs/CPQ_HARDCODE_AUDIT_dev_oci_2026-09-25.md T11 follow-up: calling
+    count_entities(t)/find_entities(ontology_type=t, limit=N) once per
+    distinct type (ask_overview._kinds()'s original shape) is a real-data-
+    confirmed latency bug -- measured against a 109-type/204k-entity
+    workspace, that loop took ~276s, because ask_overview.build() runs on
+    every non-quote /ask turn. One grouped query replaces up to 218 round
+    trips with 1.
+    """
+    limit = max(1, int(sample_limit))
+    rows = query(
+        "MATCH (e:Entity) "
+        "WITH e.type AS type, count(e) AS cnt, collect(e.name) AS names "
+        f"RETURN type, cnt, names[0..{limit}] "
+        "ORDER BY type",
+    )
+    return {
+        r[0]: {"count": int(r[1]), "samples": [n for n in (r[2] or []) if n]}
+        for r in rows if r[0]
+    }
+
+
 def _describe_schema(query: _Query, types: list[str], sample_per_type: int) -> dict[str, Any]:
     """Describe the graph schema as it actually exists, for query generation.
 

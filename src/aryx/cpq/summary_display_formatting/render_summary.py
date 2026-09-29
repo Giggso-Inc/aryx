@@ -30,6 +30,10 @@ def render_filled_summary(
     sources: dict[str, str] | None = None,
     product_quantity: int | None = None,
     required_vns: frozenset[str] | None = None,
+    product_anchor_hint: str | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> str:
     """Deterministic, categorized summary of what has been auto-filled.
 
@@ -60,10 +64,18 @@ def render_filled_summary(
     required_vns — optional (default `None`); forwarded to
     `categorized_summary_groups`/`_filled_summary_triples` for Tier C
     (see `mandatory_tier_c_vns`).
+
+    product_anchor_hint/workspace_id/catalog_prefix/dt_cache — docs/
+    CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 (all default `None`/
+    ``""``, no-op for every existing caller); forwarded to
+    `categorized_summary_groups` for the Hardware Version applicability
+    check.
     """
     groups = engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids, sources,
-        product_quantity=product_quantity, required_vns=required_vns)
+        product_quantity=product_quantity, required_vns=required_vns,
+        product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache)
     if not groups:
         return ""
     heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"

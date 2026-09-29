@@ -505,8 +505,20 @@ class EntityStore:
         """Delete all entities of a type; return the list of deleted ids."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
-                ids = [int(r[0]) for r in cur.fetchall()]
+                if get_settings().effective_db_backend() == "oci":
+                    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9/T11
+                    # follow-up (confirmed live): DELETE ... RETURNING id +
+                    # fetchall() works on psycopg but python-oracledb
+                    # rejects fetchall() after DML with DPY-1003 ("the
+                    # executed statement does not return rows"). Select the
+                    # ids first, then delete by the same predicate --
+                    # avoids RETURNING entirely on this backend.
+                    cur.execute(load("select_entity_ids_by_type"), (self._ws, ontology_type))
+                    ids = [int(r[0]) for r in cur.fetchall()]
+                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
+                else:
+                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
+                    ids = [int(r[0]) for r in cur.fetchall()]
         logger.info("entities deleted ws=%s type=%s count=%d", self._ws, ontology_type, len(ids))
         return ids
 

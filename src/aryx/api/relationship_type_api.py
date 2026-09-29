@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
 from aryx.store.relationship_type_store import RelationshipTypeStore
 
@@ -50,8 +51,9 @@ def relationship_type_router() -> APIRouter:
             raise HTTPException(400, f"upsert failed: {exc}") from exc
 
     @router.delete("/{rel_id}")
-    def delete_relationship_type(rel_id: int, workspace_id: int = 1) -> dict[str, Any]:
+    def delete_relationship_type(rel_id: int, workspace_id: int | None = None) -> dict[str, Any]:
         """Hard-delete a declared relationship type."""
+        workspace_id = resolve_workspace_id_warn(workspace_id, "DELETE /relationship-types/{id}")
         RelationshipTypeStore(get_settings().effective_dsn()).delete(rel_id, workspace_id)
         return {"status": "deleted", "id": rel_id}
 

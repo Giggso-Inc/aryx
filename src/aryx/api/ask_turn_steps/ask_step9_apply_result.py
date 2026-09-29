@@ -100,6 +100,7 @@ def _step9_apply_pending_result(
             session.display_filled.pop(_pv_dep.variable_name, None)
             session.filled_source.pop(_pv_dep.variable_name, None)
     _invalidate_stale_base_model(
-        session, pending_attr, _pv_dependent_eids, _pv_by_eid,
+        session, pending_attr, _pv_dependent_eids, _pv_by_eid, req.workspace_id,
+        attrs[0].catalog_prefix if attrs else "",
     )
     return None

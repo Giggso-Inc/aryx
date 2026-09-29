@@ -11,6 +11,35 @@ from pydantic_settings import BaseSettings
 
 
 class CpqIntentSettingsMixin(BaseSettings):
+    cpq_off_topic_veto_shadow_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: shadow-log-only "
+            "measurement phase for the hard off-topic veto (_OFF_TOPIC_HARD "
+            "in intent_gateway.py) -- the audit's own fix proposal is to "
+            "split the veto into strong/weak terms and never let a weak "
+            "term override a confident LLM 'quote'/'qa' verdict, but that "
+            "is a live customer-facing routing change and was deliberately "
+            "NOT shipped without first measuring how often it would even "
+            "matter on real traffic. When on, classify_ask_route's pre-LLM "
+            "hard_off_topic veto additionally logs (never changes routing) "
+            "whether the matched term is in the provisional "
+            "_OFF_TOPIC_WEAK_TERMS set -- this is the ONLY reachable veto "
+            "site (see intent_gateway.py's own comment on the separate "
+            "'N10 post-LLM' block: that second check is dead code, "
+            "confirmed unreachable, since the pre-LLM veto already returns "
+            "whenever its identical condition is true); no LLM verdict is "
+            "available to compare against at this site, since the veto's "
+            "whole purpose is to skip the LLM call. The weak/strong split "
+            "itself is provisional -- seeded from the audit's own explicit "
+            "example ('real quotes mentioning weather can still be "
+            "silently rejected') -- and exists to be validated or revised "
+            "by this shadow data, not treated as already-correct. Off by "
+            "default, zero behavioral change when on (log-only). Override "
+            "with ARYX_CPQ_OFF_TOPIC_VETO_SHADOW_ENABLED=true to collect "
+            "real shadow-mode data against live traffic."
+        ),
+    )
     cpq_shadow_intent_enabled: bool = Field(
         default=False,
         description=(
@@ -95,6 +124,136 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Pinned model id for the CPQ intent gateway (cpq/intent_gateway.py). "
             "One structured call per turn; logged with session run_id. "
             "Override with ARYX_CPQ_INTENT_GEMINI_MODEL."
+        ),
+    )
+    catalog_profile_shadow_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3: run "
+            "CatalogProfile.shadow_check (via catalog_profile.shadow_check_"
+            "role_vn) alongside three real hardcoded-literal sites -- "
+            "_invalidate_stale_base_model's Base-Model-clear (\"Base Model\" "
+            "role, every Hardware Version/Product/Country/Region change), "
+            "_data_table_resolved_anchor_vns's Region read (\"Region\" role), "
+            "and run_early_pass's hidden-master-string refresh (\"Hidden "
+            "Master String\" role, unverified label -- unlike the other two, "
+            "no live confirmation this label exists in any real catalog's "
+            "attrToVarMapping table; shadow mode is how that gets found "
+            "out) -- comparing each hardcoded literal against what the real "
+            "attrToVarMapping-Data-Table-driven resolver (resolve_variable_"
+            "name_for_role) gives for the session's actual CPQ model, "
+            "logging any disagreement. Off by default for the same reason "
+            "as cpq_shadow_intent_enabled above -- this adds a real RDB "
+            "round trip (module-level 300s-TTL cached, but still an "
+            "unconditional extra call on the first hit and every TTL "
+            "expiry) to every one of these files' own unit tests and to "
+            "real hot paths (the hidden-master-string site runs on EVERY "
+            "rules-loop pass, potentially several per turn), and has not "
+            "yet been validated against live traffic. Override with "
+            "ARYX_CATALOG_PROFILE_SHADOW_CHECK_ENABLED=true to collect real "
+            "shadow-mode disagreement data before ever switching a literal "
+            "over to the resolved value."
+        ),
+    )
+    model_policy_shadow_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 follow-up: "
+            "run model_policy.shadow_check_optional_empty_fill_vns alongside "
+            "try_multi_optional_empty's real _OPTIONAL_EMPTY_FILL_ACCEPTED_"
+            "VNS membership check (every multi-select, non-required, "
+            "non-grid-selector auto_fill attr), comparing today's hardcoded "
+            "constant's answer against what the new model_policy legacy "
+            "table gives for the session's actual CPQ model(s), logging any "
+            "disagreement. Off by default, same reason and same shape as "
+            "catalog_profile_shadow_check_enabled above -- this is the "
+            "'shadow' phase of T6's own proposed legacy-→shadow-→scoped-"
+            "→remove rollout: proves real-traffic agreement before "
+            "try_multi_optional_empty is ever switched to read from "
+            "model_policy instead of the hardcoded constant. Override with "
+            "ARYX_MODEL_POLICY_SHADOW_CHECK_ENABLED=true to collect real "
+            "shadow-mode disagreement data."
+        ),
+    )
+    catalog_profile_scoped_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T1 Phase 3 'scoped' "
+            "rollout: makes resolve_base_model_vn() (and, if added later, "
+            "any sibling resolve_<role>_vn() function) actually GOVERN the "
+            "real key modelSelectionbaseModel_astro's value is read/popped "
+            "under, across all ~16 of that literal's real call sites, "
+            "instead of only shadow-logging. Off by default -- checked "
+            "FIRST, before any other work, in every one of those functions: "
+            "live-confirmed (a hung unit test caught this before it "
+            "shipped) that an ungated version pays a real, uncached "
+            "~265s-class RDB round trip on its first call in any 300s "
+            "window, and this is now called from ~16 sites, several in hot "
+            "loops (one per rules-loop pass) -- unconditionally live would "
+            "have been a severe latency regression on the very first turn "
+            "to reach any of them. When off, every one of those ~16 sites "
+            "behaves byte-identically to before this rollout (returns the "
+            "hardcoded literal immediately, no RDB call at all). Override "
+            "with ARYX_CATALOG_PROFILE_SCOPED_RESOLUTION_ENABLED=true only "
+            "for a deployment/workspace confirmed to have real "
+            "attrToVarMapping coverage -- as of 2026-09-25, live-checked: "
+            "none of the 24 real workspaces in this session's dev_oci "
+            "environment do."
+        ),
+    )
+    model_policy_scoped_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3 'scoped' "
+            "rollout: makes resolve_optional_empty_fill_membership() "
+            "actually GOVERN try_multi_optional_empty's real fill decision "
+            "(across its one real call site), instead of only shadow-"
+            "logging via model_policy_shadow_check_enabled above. Off by "
+            "default -- checked FIRST, before any other work, same safety "
+            "rationale as catalog_profile_scoped_resolution_enabled: model-"
+            "candidate resolution touches the same RDB-backed data source "
+            "that already caused one hung test this session. When off, "
+            "the real call site behaves byte-identically to before this "
+            "rollout (reads the hardcoded _OPTIONAL_EMPTY_FILL_ACCEPTED_"
+            "VNS constant directly, no RDB call at all). Live-checked "
+            "2026-09-25: every real product string tried against workspace "
+            "704 resolves through the T2 APX-NEXT-fallback bug to "
+            "candidates including 'APXNEXT', and model_policy's APXNEXT "
+            "entry is byte-identical to the legacy constant -- so turning "
+            "this on today would currently still be a no-op, for a "
+            "different reason than catalog_profile_scoped_resolution_"
+            "enabled's inertness (T2's fallback behavior, not empty "
+            "attrToVarMapping data). Override with "
+            "ARYX_MODEL_POLICY_SCOPED_RESOLUTION_ENABLED=true once a "
+            "catalog/model has its own real, distinct model_policy entry."
+        ),
+    )
+    data_table_candidates_empty_on_no_match_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2 Phase 4: makes "
+            "_cpq_model_candidates() (data_table_bridge/candidates.py) "
+            "return an empty tuple, plus a logged data gap, instead of the "
+            "hardcoded _DEFAULT_CPQ_MODEL_CANDIDATES = ('APXNEXT', "
+            "'APXNEXT_BOM') fallback, whenever neither the row-level nor "
+            "family-level Data Table resolution finds a real match for the "
+            "product. Off by default -- when off, this function behaves "
+            "byte-identically to before this flag existed (unmapped "
+            "products still silently default to APX NEXT candidates, "
+            "exactly as documented in T2's own 'Problem' finding). All "
+            "~22 real call sites were spot-checked before this flag was "
+            "added: every one either iterates the returned tuple or "
+            "explicitly guards on 'if not candidates/models', never "
+            "indexes it directly -- an empty tuple is safe everywhere it "
+            "was sampled, but this has NOT been verified against a real "
+            "non-APX-NEXT catalog's actual behavior end-to-end (T2's own "
+            "'Impact' section: no real workspace in this dev_oci "
+            "environment has attrToVarMapping/Data Table coverage for any "
+            "product other than APX NEXT, so there is nothing here to "
+            "prove this against yet). Override with "
+            "ARYX_DATA_TABLE_CANDIDATES_EMPTY_ON_NO_MATCH_ENABLED=true "
+            "only once a real non-APX-NEXT catalog's behavior under this "
+            "flag has actually been observed, not merely code-reviewed."
         ),
     )
     cpq_intent_mode: str = Field(

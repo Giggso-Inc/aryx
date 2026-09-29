@@ -48,6 +48,12 @@ class _FakeRdb:
         rows = self._tables.get(ontology_type, [])
         return [(i, r) for i, r in enumerate(rows, start=1)]
 
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {
+            otype: [(i, r) for i, r in enumerate(rows, start=1)]
+            for otype, rows in self._tables.items()
+        }
+
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
     monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
@@ -228,8 +234,11 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
             return self._inner.list_ontology_types(workspace_id)
 
         def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
-            calls["n"] += 1
             return self._inner.fetch_entities_by_exact_type(workspace_id, ontology_type)
+
+        def fetch_all_entities_grouped_by_type(self, workspace_id):
+            calls["n"] += 1
+            return self._inner.fetch_all_entities_grouped_by_type(workspace_id)
 
     _patch_rdb(monkeypatch, _TABLES)
     inner = data_table_loader.get_cpq_rdb()
@@ -240,8 +249,12 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
         data_table_resolver.attr_ever_governed_for_cpq_model(
             "APXNEXT_BOM", attr, workspace_id=1, cache=cache,
         )
-    # One scan per ingested type across the whole cache lifetime, not one per attr.
-    assert calls["n"] == len(_TABLES)
+    # T2/data-table-resolution follow-up (real-data testing against
+    # workspace 704, 2026-09-25): _load_all_tables() now does ONE grouped
+    # query (fetch_all_entities_grouped_by_type) instead of one round trip
+    # per ingested type -- so a shared `cache` dict now means exactly one
+    # underlying call across the whole cache lifetime, not one per type.
+    assert calls["n"] == 1
 
 
 # --- Generalization: a differently-NAMED ingested table (any ontology_type
@@ -653,9 +666,9 @@ def test_module_cache_survives_a_60s_gap_between_calls(monkeypatch):
     calls = {"n": 0}
 
     class _CountingRdb(_FakeRdb):
-        def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
+        def fetch_all_entities_grouped_by_type(self, workspace_id):
             calls["n"] += 1
-            return super().fetch_entities_by_exact_type(workspace_id, ontology_type)
+            return super().fetch_all_entities_grouped_by_type(workspace_id)
 
     monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _CountingRdb(_TABLES))
 
@@ -765,6 +778,60 @@ def test_resolve_region_allow_value_none_on_no_match(monkeypatch):
         region="NA", workspace_id=1,
     )
     assert value is None
+
+
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T2: a DISALLOW row at the same
+# model/region/attribute scope must veto that value, not be silently
+# ignored (the function used to filter to ruleType=ALLOW only).
+
+def test_resolve_region_allow_value_disallow_row_vetoes_the_matching_value(monkeypatch):
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8AN", "region": "NA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="NA", workspace_id=1,
+    )
+    assert value is None, "a DISALLOW row for this exact scope must veto the ALLOW value"
+
+
+def test_resolve_region_allow_value_disallow_row_at_a_different_scope_has_no_effect(monkeypatch):
+    """A DISALLOW row for a DIFFERENT model must not veto an unrelated
+    ALLOW match -- the veto is scoped, not global."""
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "SOME_OTHER_MODEL", "value": "H45TGT9PW8XN", "region": "EMEA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="EMEA", workspace_id=1,
+    )
+    assert value == "H45TGT9PW8XN"
+
+
+def test_resolve_region_allow_value_country_disallow_vetoes_only_the_country_override(monkeypatch):
+    """The country-scoped veto and the region-scoped veto are independent
+    -- a DISALLOW row for the region default must not block a valid,
+    separately-scoped country override."""
+    from aryx.cpq.data_table.data_table_resolver import resolve_region_allow_value
+
+    rows = _REGION_RULE_ROWS + [
+        {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8AN", "region": "NA",
+         "ruleType": "DISALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    ]
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": rows})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="NA", workspace_id=1, country="CA",
+    )
+    assert value == "H45TGT9CA01", "the country override is a different scope, not vetoed"
 
 
 _PRODUCT_CONSTRAINT_ROWS = [

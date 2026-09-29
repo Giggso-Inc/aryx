@@ -47,6 +47,7 @@ from aryx.cpq.data_table.data_table_loader import (
     _TABLES_CACHE_TTL_SECONDS,
 )
 from aryx.cpq.data_table.data_table_product import (
+    _clear_attr_var_mapping_cache,
     resolve_product_cpq_model_family,
     resolve_product_cpq_models_from_hint,
     resolve_product_cpq_models_from_rows,

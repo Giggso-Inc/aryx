@@ -104,6 +104,36 @@ def test_data_table_resolved_anchor_vns_excludes_when_region_rule_resolves():
     assert result == frozenset({"modelSelectionbaseModel_astro"})
 
 
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T5: an ISO country CODE (not
+# just "us"/"uk"/"uae") must resolve a region too -- the map is keyed by
+# name, so a bare code like "CA" used to silently fail to resolve at all.
+
+def test_data_table_resolved_anchor_vns_resolves_a_country_code_not_just_a_name():
+    engine = CpqEngine()
+    base_model_attr = _attr(1, "modelSelectionbaseModel_astro", "Base Model")
+    filled = {
+        "productSelectionProduct_all": "APX NEXT ENHANCED",
+        "ultimateDestinationCountry": "CA",
+    }
+    with patch(
+        "aryx.cpq.engine._cpq_model_candidates", return_value=("APXNEXT",),
+    ), patch(
+        "aryx.cpq.engine._COUNTRY_TO_REGION", {"canada": "NA"},
+    ), patch(
+        "aryx.cpq.engine.dt_resolve_region_allow_value",
+        side_effect=lambda vn, cm, region, *a, **k: (
+            "H55TGT9PW8BN" if vn == "modelSelectionbaseModel_astro" and region == "NA" else None
+        ),
+    ):
+        result = engine._data_table_resolved_anchor_vns(
+            filled, [base_model_attr], 93, "",
+        )
+    assert result == frozenset({"modelSelectionbaseModel_astro"}), (
+        "country code 'CA' must resolve to region NA via 'canada', "
+        "not silently fail because the map is keyed by name"
+    )
+
+
 def test_build_payload_config_data_excludes_data_table_resolved_base_model():
     """End-to-end: build_payload(scope_required_and_edited=True) drops
     Base Model from config_data when it's confirmed region-rule-resolved,

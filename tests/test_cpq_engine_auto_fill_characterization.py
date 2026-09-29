@@ -347,6 +347,9 @@ class _FakeSequenceRdb:
     def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
         return [(i, r) for i, r in enumerate(self._rows, start=1)]
 
+    def fetch_all_entities_grouped_by_type(self, workspace_id):
+        return {"AttrSequenceTest": [(i, r) for i, r in enumerate(self._rows, start=1)]}
+
 
 @pytest.fixture(autouse=True)
 def _clear_dt_tables_cache():

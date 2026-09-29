@@ -60,7 +60,10 @@ def _apply_cascade_multi_changes(
                 session.filled_multi.pop(a.variable_name, None)
                 session.display_filled.pop(a.variable_name, None)
                 session.filled_source.pop(a.variable_name, None)
-        _invalidate_stale_base_model(session, changed_attr, dependent_eids, by_eid)
+        _invalidate_stale_base_model(
+            session, changed_attr, dependent_eids, by_eid, req.workspace_id,
+            attrs[0].catalog_prefix if attrs else "",
+        )
 
         if changed_attr.select_type == "multi":
             mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)

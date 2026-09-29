@@ -83,4 +83,9 @@ def test_nuke_reuses_the_borrowed_connection_for_partition_drops() -> None:
         result = store.nuke()
 
     assert pool.connection.call_count == 1
-    assert result == {"status": "nuked", "workspaces_removed": 2}
+    # workspace_ids: CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11 -- the API
+    # layer's graph-clearing loop now uses this real list instead of a
+    # hardcoded (1, 2, 3) range.
+    assert result == {
+        "status": "nuked", "workspaces_removed": 2, "workspace_ids": [2, 3],
+    }

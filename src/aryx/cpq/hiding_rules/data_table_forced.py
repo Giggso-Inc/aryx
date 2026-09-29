@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
@@ -70,7 +71,7 @@ def _data_table_forced_vns(
     """
     if workspace_id is None:
         return frozenset()
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return frozenset()
     product = filled.get("productSelectionProduct_all", "")

@@ -29,6 +29,19 @@ def test_blocks_non_http_schemes(url):
         check_outbound_url(url)
 
 
+@pytest.mark.parametrize("url", [
+    "http://[::ffff:169.254.169.254]/latest/meta-data/",  # IPv4-mapped IPv6 IMDS
+    "http://[::ffff:127.0.0.1]/steal",
+    "http://[::ffff:10.0.0.5]/internal",
+])
+def test_blocks_ipv4_mapped_ipv6_private_addresses(url):
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11: PRIVATE_NETS' IPv4-only
+    # entries never matched an IPv6Address object directly, so wrapping a
+    # blocked IPv4 address in IPv4-mapped IPv6 notation bypassed the guard.
+    with pytest.raises(ValueError):
+        check_outbound_url(url)
+
+
 def test_allows_ordinary_https_url():
     assert check_outbound_url("https://api.example.com/v1/customers") == "https://api.example.com/v1/customers"
 

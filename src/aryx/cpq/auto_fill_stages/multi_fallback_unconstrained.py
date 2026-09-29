@@ -11,7 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
-from aryx.cpq.engine import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
+from aryx.cpq.model_policy import resolve_select_all_narrowed_legal_multi_membership
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -70,7 +71,10 @@ def blind_pick_narrowed(
         if _dt_legal is not None else candidate_opts
     )
     if _narrowed_opts:
-        if state.vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS:
+        if resolve_select_all_narrowed_legal_multi_membership(
+            state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+            scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+        ):
             # Live-confirmed (2026-08-16): native CPQ UI
             # checks EVERY Whitelist-confirmed-legal option
             # by default for these specific attrs (real-
@@ -107,5 +111,5 @@ def blind_pick_narrowed(
         # `is_unconstrained and candidate_opts` already
         # matched on the raw (pre-whitelist) option list.
         ctx.filled_multi[state.vn] = []
-        ctx.display_filled[state.vn] = "(none)"
+        ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "default")

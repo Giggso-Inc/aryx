@@ -15,7 +15,7 @@ from aryx.cpq.state import HidingRule
 
 
 def load_hiding_rules(
-    engine, workspace_id: int, catalog_prefix: str = "",
+    engine, workspace_id: int, catalog_prefix: str = "", product_name: str = "",
 ) -> list[HidingRule]:
     """Load hiding rules (rule_type=11) from the RDB.
 
@@ -34,13 +34,21 @@ def load_hiding_rules(
     catalog_prefix — scopes to one ingested catalog (see
     _load_rule_join_data) when the workspace holds more than one
     product's XML export. "" preserves the original workspace-wide load.
+
+    product_name (2026-09-25, CPQ_Hardcode_Audit_dev_oci_2026-09-25.md
+    T6 Phase 3) — passed through to `_load_type11_hiding_rules` for its
+    `_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES` model_policy
+    resolution. "" (the default) preserves the original hardcoded-only
+    behavior for every caller not yet updated to pass it.
     """
     _t0 = time.monotonic()
     logger.info(
         "cpq_step: load_hiding_rules start workspace_id=%s catalog_prefix=%r",
         workspace_id, catalog_prefix,
     )
-    rules = _load_type11_hiding_rules(engine, workspace_id, catalog_prefix, _t0)
+    rules = _load_type11_hiding_rules(
+        engine, workspace_id, catalog_prefix, _t0, product_name,
+    )
 
     # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
     # real, separate class of "hide" rule authored OUTSIDE rule_type=11

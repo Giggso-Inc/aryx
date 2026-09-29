@@ -38,6 +38,7 @@ _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES: frozenset[str] = frozenset({
 
 def _load_type11_hiding_rules(
     engine, workspace_id: int, catalog_prefix: str, _t0: float,
+    product_name: str = "",
 ) -> list[HidingRule]:
     """Load and classify the native rule_type=11 hiding rules only.
 
@@ -52,7 +53,18 @@ def _load_type11_hiding_rules(
     are resolved the same way as declarative rules (via
     _resolve_targets); only the CONDITION differs, and is evaluated at
     apply time by BmlEvaluator.should_hide (see apply_hiding_rules).
+
+    `product_name` (2026-09-25, CPQ_Hardcode_Audit_dev_oci_2026-09-25.md
+    T6 Phase 3): resolves the `_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_
+    NAMES` membership check below through model_policy for the
+    session's actual CPQ model, falling back to the hardcoded constant
+    when unavailable. Defaults to "" (legacy behavior byte-identical)
+    so every existing caller keeps working unchanged.
     """
+    from aryx.cpq.model_policy import (  # noqa: PLC0415
+        resolve_dt_whitelist_substitute_hiding_rule_name_membership,
+    )
+
     rules: list[HidingRule] = []
     script_missing = 0
     unresolved = 0
@@ -89,7 +101,9 @@ def _load_type11_hiding_rules(
                 script = scripts.get(fn_id)
                 if not script:
                     script_missing += 1
-                    if rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES:
+                    if resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+                        rule_name, product_name, workspace_id, catalog_prefix,
+                    ):
                         # Confirmed narrow carve-out (see that set's own
                         # docstring) -- substitute a real Data Table
                         # whitelist check for the missing script instead

@@ -76,4 +76,14 @@ class WorkspaceStore(_WorkspaceCrudMixin, _WorkspacePartitionsMixin):
             conn.execute(load("delete_non_default_workspaces"))
             conn.execute(load("reset_workspace_context"), {"wid": 1})
         logger.info("system nuked — factory reset complete")
-        return {"status": "nuked", "workspaces_removed": len(non_default)}
+        # workspace_ids: the real, just-removed non-default IDs -- the API
+        # layer's graph-clearing loop used to hardcode `for wid in (1, 2, 3)`
+        # instead of using this real list, so any nuked workspace with
+        # id > 3 kept its graph data orphaned in FalkorDB after its RDB rows
+        # were gone (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T11). Additive
+        # field, existing "workspaces_removed" count unchanged for callers
+        # that only need the count.
+        return {
+            "status": "nuked", "workspaces_removed": len(non_default),
+            "workspace_ids": [int(wid) for (wid,) in non_default],
+        }

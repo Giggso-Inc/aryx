@@ -22,6 +22,7 @@ from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_attr_recompute.ask_attr_clear_recompute import _recompute_after_attr_clear
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 
 def _handle_attr_clear(
@@ -49,7 +50,7 @@ def _handle_attr_clear(
     vn = cleared_attr.variable_name
     prev_display = session.display_filled.get(vn, session.filled.get(vn, ""))
     session.filled[vn] = ""
-    session.display_filled[vn] = "(none)"
+    session.display_filled[vn] = NONE_DISPLAY_PLACEHOLDER
     session.filled_source[vn] = "user"
     cascade_note = (
         f"Cleared **{_cpq_engine.disambiguated_label(cleared_attr, attrs)}** "
@@ -94,6 +95,7 @@ def _handle_attr_clear(
                 display_filled, attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
                 product_quantity=session.product_quantity, filled=session.filled,
+                product_anchor_hint=session.product_anchor_question,
             )
             answer = (
                 cascade_note + "\n\n"

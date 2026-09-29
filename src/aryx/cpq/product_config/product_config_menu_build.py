@@ -6,9 +6,18 @@ item's PostgreSQL row, then dedups/sorts them per attribute into
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from aryx.cpq.engine import MenuOption, _NOISE_ITEM_FRAGMENTS
+
+# CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T4: word-boundary match, not
+# bare substring -- "test" previously matched inside "LATEST RELEASE"
+# ("la-TEST-release"), silently dropping a real, legal catalog option.
+# Same fix shape as T5's region-code substring bug.
+_NOISE_ITEM_FRAGMENT_RES = [
+    re.compile(r"\b" + re.escape(f) + r"\b") for f in _NOISE_ITEM_FRAGMENTS
+]
 
 
 def build_menu_by_attr(
@@ -55,9 +64,9 @@ def build_menu_by_attr(
             if iv:
                 iv_lo = iv.lower()
                 dt_lo = dt.lower()
-                if any(f in iv_lo for f in _NOISE_ITEM_FRAGMENTS):
+                if any(r.search(iv_lo) for r in _NOISE_ITEM_FRAGMENT_RES):
                     continue
-                if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
+                if any(r.search(dt_lo) for r in _NOISE_ITEM_FRAGMENT_RES):
                     continue
                 if iv_lo in seen_item_values:
                     continue

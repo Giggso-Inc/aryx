@@ -26,6 +26,8 @@ def build_payload(
     scope_required_and_edited: bool = False,
     workspace_id: int | None = None,
     catalog_prefix: str = "",
+    product_anchor_hint: str | None = None,
+    _dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> dict[str, Any]:
     """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
 
@@ -48,6 +50,15 @@ def build_payload(
     Deliberately NOT wired into the real-submission call path — only
     JSON-preview should ever pass True; a real BOM submission stays
     unscoped/full.
+    product_anchor_hint / _dt_cache — docs/CPQ_Hardcode_Audit_dev_oci_
+    2026-09-25.md T3 (both default `None`, no-op for every existing
+    caller). Threaded onto `PayloadContext` and, from there, into every
+    `_is_mandatory_input_attr` call this pipeline makes, so Tier A's
+    Hardware Version branch can consult `_hardware_version_confirmed_
+    not_applicable` (same check `auto_fill_hw_order`/`governance_flags`
+    already use) instead of unconditionally forcing Hardware Version
+    mandatory regardless of whether it even applies to the product the
+    customer is asking about.
     product_quantity — the session-level order quantity, added as a
     top-level ``"quantity"`` key SIBLING to ``configData`` (never inside
     it — that dict is a mirror of real catalog variable_names only,
@@ -137,6 +148,7 @@ def build_payload(
     ctx = build_context(
         engine, filled, filled_source, filled_multi, attrs, hidden_vns, rules,
         scope_required_and_edited, workspace_id, catalog_prefix,
+        product_anchor_hint=product_anchor_hint, dt_cache=_dt_cache,
     )
     serialize_scalar_attrs(engine, ctx, filled, scope_required_and_edited)
     serialize_multi_attrs(engine, ctx, filled_multi, scope_required_and_edited)

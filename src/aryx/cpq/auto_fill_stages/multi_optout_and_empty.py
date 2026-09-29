@@ -17,12 +17,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.engine import (
-    _BLIND_FILL_RISK_ACCEPTED_VNS,
-    _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS,
     _no_real_fill_justification,
     _sole_opt_out_option,
     _valid,
+)
+from aryx.cpq.model_policy import (
+    resolve_blind_fill_risk_accepted_membership,
+    resolve_optional_empty_fill_membership,
 )
 
 if TYPE_CHECKING:
@@ -42,7 +45,10 @@ def try_multi_opt_out(
         attr.select_type == "multi" and not attr.required
         and state.vn not in scope.grid_selector_vns
         and _no_real_fill_justification(attr, scope.rec_by_target)
-        and state.vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+        and not resolve_blind_fill_risk_accepted_membership(
+            state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+            scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+        )
         and (opt_out_match := _sole_opt_out_option(
             [o for o in attr.options if _valid(o.item_value)]
         ))
@@ -67,10 +73,20 @@ def try_multi_optional_empty(
     state: AttrResolution,
 ) -> bool:
     """Fill a confirmed-optional multi with the empty selection."""
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T6 Phase 3: the membership
+    # check is resolved through model_policy for the session's actual CPQ
+    # model, falling back to the hardcoded _OPTIONAL_EMPTY_FILL_ACCEPTED_
+    # VNS constant when resolution is unavailable. This started as a
+    # shadow-only, log-only comparison (pilot follow-up) and became real
+    # once wired here directly -- see resolve_optional_empty_fill_
+    # membership's own docstring for the gate/fallback contract.
     if (
         attr.select_type == "multi" and not attr.required
         and state.vn not in scope.grid_selector_vns
-        and state.vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+        and resolve_optional_empty_fill_membership(
+            state.vn, ctx.filled.get("productSelectionProduct_all", ""),
+            scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+        )
         and state.allowed_for_attr is None
     ):
         # Confirmed genuinely optional (Attrsequence: 0 Required
@@ -88,7 +104,7 @@ def try_multi_optional_empty(
         # this branch wrongly intercepted promoApplicationServices_
         # astro's own constrained-and-ambiguous regression test).
         ctx.filled_multi[state.vn] = []
-        ctx.display_filled[state.vn] = "(none)"
+        ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "optional_empty")
         state.filled_multi_now = True
         return True

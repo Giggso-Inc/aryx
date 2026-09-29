@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
 # `_fill_signature` is looked up through the module (not imported by name
 # like everything else) because tests/test_cpq_rule_loop_perf_gating_
@@ -46,9 +47,49 @@ def stage_already_filled(
         # rule re-assertion (apply_recommendation_rules' truthy
         # check, not `in filled`) overrides it, exactly like it
         # would override any other stale value.
-        if ctx.filled[state.vn] == "" and ctx.sources.get(state.vn) == "user":
-            ctx.display_filled[state.vn] = "(none)"
+        #
+        # Gated on `not attr.required`: honoring this on a genuinely
+        # required attribute let this stage mark it "done" while
+        # bom_gate_required.py's find_missing_required_fields() -- which
+        # correctly still treats an empty value as missing for required
+        # attrs -- would then block confirm anyway. That's not a
+        # deliberate two-tier design, it's the same "leave blank" shortcut
+        # applied somewhere it can't actually deliver on its promise
+        # (CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T7). A required attr's
+        # clear now falls through to normal re-resolution/re-ask instead,
+        # so "tier0 says done" and "the gate says complete" agree again.
+        if (
+            not attr.required
+            and ctx.filled[state.vn] == ""
+            and ctx.sources.get(state.vn) == "user"
+        ):
+            ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
             state.done = True
+            return
+        if (
+            attr.required
+            and ctx.filled[state.vn] == ""
+            and ctx.sources.get(state.vn) == "user"
+        ):
+            # T7 follow-up (real-data testing against workspace 704,
+            # 2026-09-25): the `not attr.required` gate above only blocks
+            # the "(none)" shortcut -- a required attr's cleared empty
+            # value still fell through to the generic `else` at the
+            # bottom of this function, which unconditionally re-locks ANY
+            # already-filled value as done (matched_display falls back to
+            # the empty string itself when no menu option matches "").
+            # Confirmed live with a real required attribute
+            # (_BM_USER_CURRENCY): state.done stayed True and the attr
+            # never re-entered `pending` -- the customer was never
+            # re-asked, the exact "tier0 says done, the gate silently
+            # blocks confirm" problem this fix's own docstring claims to
+            # close. Pop and fall through to normal re-resolution instead,
+            # the same pattern the stale/dropped and
+            # default_first_available branches below already use for a
+            # value that can't be honored as-is.
+            ctx.filled.pop(state.vn, None)
+            ctx.display_filled.pop(state.vn, None)
+            ctx.sources.pop(state.vn, None)
             return
         # Already answered in a prior turn — but a cascade may have
         # narrowed this attr's allowed set since then (single-select

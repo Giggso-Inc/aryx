@@ -32,6 +32,8 @@ def serialize_multi_attrs(
             gate_attrseq_confirmed_to_active_source=True,
             rule_forced_active_vns=ctx.rule_forced_active_vns,
             data_table_forced_vns=ctx.data_table_forced_vns,
+            hint_text=ctx.product_anchor_hint, workspace_id=ctx.workspace_id,
+            catalog_prefix=ctx.catalog_prefix, _dt_cache=ctx.dt_cache,
         ):
             continue
         if attr is not None and attr.hide_in_trans:

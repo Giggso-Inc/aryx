@@ -51,7 +51,7 @@ def _session_with_base_model(value: str = "SOME_BASE_MODEL_CODE") -> CpqSession:
 def test_clears_base_model_when_changed_attr_is_hardware_version():
     session = _session_with_base_model()
     hw_version = _attr(1, "hWVersion_astro")
-    _invalidate_stale_base_model(session, hw_version, dependent_eids=set(), by_eid={})
+    _invalidate_stale_base_model(session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=1)
     assert _BASE_MODEL_VN not in session.filled
     assert _BASE_MODEL_VN not in session.display_filled
     assert _BASE_MODEL_VN not in session.filled_source
@@ -60,7 +60,7 @@ def test_clears_base_model_when_changed_attr_is_hardware_version():
 def test_clears_base_model_when_changed_attr_is_product():
     session = _session_with_base_model()
     product = _attr(2, "productSelectionProduct_all")
-    _invalidate_stale_base_model(session, product, dependent_eids=set(), by_eid={})
+    _invalidate_stale_base_model(session, product, dependent_eids=set(), by_eid={}, workspace_id=1)
     assert _BASE_MODEL_VN not in session.filled
 
 
@@ -71,6 +71,7 @@ def test_clears_base_model_when_product_is_a_cascade_dependent():
     by_eid = {product.entity_id: product}
     _invalidate_stale_base_model(
         session, hw_version, dependent_eids={product.entity_id}, by_eid=by_eid,
+        workspace_id=1,
     )
     assert _BASE_MODEL_VN not in session.filled
 
@@ -78,14 +79,14 @@ def test_clears_base_model_when_product_is_a_cascade_dependent():
 def test_clears_base_model_when_changed_attr_is_destination_country():
     session = _session_with_base_model()
     country = _attr(5, "ultimateDestinationCountry")
-    _invalidate_stale_base_model(session, country, dependent_eids=set(), by_eid={})
+    _invalidate_stale_base_model(session, country, dependent_eids=set(), by_eid={}, workspace_id=1)
     assert _BASE_MODEL_VN not in session.filled
 
 
 def test_clears_base_model_when_changed_attr_is_region():
     session = _session_with_base_model()
     region = _attr(6, "modelSelectionRegion_astro")
-    _invalidate_stale_base_model(session, region, dependent_eids=set(), by_eid={})
+    _invalidate_stale_base_model(session, region, dependent_eids=set(), by_eid={}, workspace_id=1)
     assert _BASE_MODEL_VN not in session.filled
 
 
@@ -96,6 +97,7 @@ def test_clears_base_model_when_country_is_a_cascade_dependent():
     by_eid = {country.entity_id: country}
     _invalidate_stale_base_model(
         session, some_other_attr, dependent_eids={country.entity_id}, by_eid=by_eid,
+        workspace_id=1,
     )
     assert _BASE_MODEL_VN not in session.filled
 
@@ -107,6 +109,7 @@ def test_leaves_base_model_untouched_for_an_unrelated_change():
     by_eid = {unrelated_dependent.entity_id: unrelated_dependent}
     _invalidate_stale_base_model(
         session, billing, dependent_eids={unrelated_dependent.entity_id}, by_eid=by_eid,
+        workspace_id=1,
     )
     assert session.filled[_BASE_MODEL_VN] == "SOME_BASE_MODEL_CODE"
     assert session.display_filled[_BASE_MODEL_VN] == "SOME_BASE_MODEL_CODE"
@@ -119,7 +122,7 @@ def test_noop_when_base_model_was_never_filled():
         display_filled={"carrier": "Verizon"}, filled_source={"carrier": "user"},
     )
     hw_version = _attr(1, "hWVersion_astro")
-    _invalidate_stale_base_model(session, hw_version, dependent_eids=set(), by_eid={})
+    _invalidate_stale_base_model(session, hw_version, dependent_eids=set(), by_eid={}, workspace_id=1)
     assert _BASE_MODEL_VN not in session.filled
 
 
@@ -213,7 +216,7 @@ def test_base_model_is_never_stale_across_a_real_two_turn_cascade():
             a = by_eid.get(eid)
             if a:
                 session.filled.pop(a.variable_name, None)
-        _invalidate_stale_base_model(session, hw_attr, dependent_eids, by_eid)
+        _invalidate_stale_base_model(session, hw_attr, dependent_eids, by_eid, _WORKSPACE_ID, _CATALOG_PREFIX)
         assert "productSelectionProduct_all" not in session.filled
         assert _BASE_MODEL_VN not in session.filled, (
             "Base Model must not still be BM_OLD after Hardware Version changes"

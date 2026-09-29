@@ -146,7 +146,7 @@ def test_build_show_summary_response_derives_catalog_prefix_from_attrs_not_load_
                          lambda *a, **k: (attrs, "APX NEXT Single Band"))
     seen_prefixes = []
 
-    def _capture_hiding_rules(workspace_id, catalog_prefix):
+    def _capture_hiding_rules(workspace_id, catalog_prefix, product_name=""):
         seen_prefixes.append(catalog_prefix)
         return []
 

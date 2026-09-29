@@ -32,6 +32,9 @@ def enforce_exclusive_sibling_families(
     pending: list[ConfigAttr],
     all_attrs: list[ConfigAttr] | None = None,
     catalog_confirmed_vns: frozenset[str] | None = None,
+    product_name: str = "",
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
 ) -> list[ConfigAttr]:
     """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
     sourced single-select sibling from `filled` (mutated in place) and
@@ -42,10 +45,16 @@ def enforce_exclusive_sibling_families(
     pass the full, pre-hiding catalog attr list so the label-stem
     pairing check isn't fooled by a multi-way label collision that
     happens to look like a 2-attr pair only because hiding rules left
-    just 2 of the real N visible this turn."""
+    just 2 of the real N visible this turn.
+
+    `product_name`/`workspace_id`/`catalog_prefix` -- passed straight
+    through to `exclusive_sibling_family_exclusions` for its
+    `_KNOWN_SIBLING_PAIRS` model_policy resolution; see that function's
+    own docstring."""
     to_strip, to_ask = engine.exclusive_sibling_family_exclusions(
         attrs, filled, filled_multi, filled_source, all_attrs=all_attrs,
-        catalog_confirmed_vns=catalog_confirmed_vns,
+        catalog_confirmed_vns=catalog_confirmed_vns, product_name=product_name,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix,
     )
     if not to_strip:
         return pending
