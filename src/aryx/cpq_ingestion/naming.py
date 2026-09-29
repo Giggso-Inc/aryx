@@ -32,7 +32,19 @@ _ORACLE_FILE_SLOT_SPACE = 1_000_000
 
 
 def _sanitize_source_key(source_key: str) -> str:
-    """Make a filename stem safe to use as part of a FalkorDB graph name."""
+    """Make a filename stem safe to use as part of a FalkorDB graph name.
+
+    Collapses every character outside ``[A-Za-z0-9_]`` to ``_``, so two
+    distinct filenames differing only in punctuation in the same position
+    (e.g. ``"config-v1"`` and ``"config_v1"``) sanitize to the same string
+    and would collide on this backend — the same "one file's raw graph
+    silently overwritten by another's" residual risk already accepted for
+    the Oracle backend's hash-based slot (see ``raw_workspace_id``), just
+    via character-collapsing instead of a hash collision. Not treated as
+    blocking for the same reason: real filenames colliding after this
+    normalization are uncommon, and a collision loses a raw-graph
+    provenance write, not curated data.
+    """
     safe = _UNSAFE_KEY_CHARS.sub("_", source_key)
     return safe or "file"
 
