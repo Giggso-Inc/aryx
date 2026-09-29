@@ -58,6 +58,15 @@ def _llm_classify_change_intent(
     for a in candidates:
         current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
         opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: same silent-
+        # truncation observability fix as ask_llm_classify_intent_
+        # universal.py -- not changing the cap, just making it visible.
+        if a.options and len(a.options) > 15:
+            _ask_api_module.logger.warning(
+                "cpq_llm_options_truncated: variable_name=%s option_count=%d "
+                "cap=15 -- %d option(s) never shown to the LLM",
+                a.variable_name, len(a.options), len(a.options) - 15,
+            )
         catalog_lines.append(
             f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
             f"current={current!r}; options=[{opts}]"

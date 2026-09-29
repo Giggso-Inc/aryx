@@ -11,6 +11,35 @@ from pydantic_settings import BaseSettings
 
 
 class CpqIntentSettingsMixin(BaseSettings):
+    cpq_off_topic_veto_shadow_enabled: bool = Field(
+        default=False,
+        description=(
+            "CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: shadow-log-only "
+            "measurement phase for the hard off-topic veto (_OFF_TOPIC_HARD "
+            "in intent_gateway.py) -- the audit's own fix proposal is to "
+            "split the veto into strong/weak terms and never let a weak "
+            "term override a confident LLM 'quote'/'qa' verdict, but that "
+            "is a live customer-facing routing change and was deliberately "
+            "NOT shipped without first measuring how often it would even "
+            "matter on real traffic. When on, classify_ask_route's pre-LLM "
+            "hard_off_topic veto additionally logs (never changes routing) "
+            "whether the matched term is in the provisional "
+            "_OFF_TOPIC_WEAK_TERMS set -- this is the ONLY reachable veto "
+            "site (see intent_gateway.py's own comment on the separate "
+            "'N10 post-LLM' block: that second check is dead code, "
+            "confirmed unreachable, since the pre-LLM veto already returns "
+            "whenever its identical condition is true); no LLM verdict is "
+            "available to compare against at this site, since the veto's "
+            "whole purpose is to skip the LLM call. The weak/strong split "
+            "itself is provisional -- seeded from the audit's own explicit "
+            "example ('real quotes mentioning weather can still be "
+            "silently rejected') -- and exists to be validated or revised "
+            "by this shadow data, not treated as already-correct. Off by "
+            "default, zero behavioral change when on (log-only). Override "
+            "with ARYX_CPQ_OFF_TOPIC_VETO_SHADOW_ENABLED=true to collect "
+            "real shadow-mode data against live traffic."
+        ),
+    )
     cpq_shadow_intent_enabled: bool = Field(
         default=False,
         description=(

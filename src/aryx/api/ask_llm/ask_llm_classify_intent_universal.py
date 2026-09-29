@@ -74,6 +74,18 @@ def _llm_classify_intent_universal(
     for a in candidates:
         current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
         opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
+        # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: this cap silently
+        # drops real options above 15 from what the LLM can even see —
+        # for a wide-option attr the model literally cannot select/
+        # confirm the missing ones. Not changing the cap here (a real
+        # latency/token tradeoff needing product input); only making the
+        # silent truncation observable when it actually happens.
+        if a.options and len(a.options) > 15:
+            _ask_api_module.logger.warning(
+                "cpq_llm_options_truncated: variable_name=%s option_count=%d "
+                "cap=15 -- %d option(s) never shown to the LLM",
+                a.variable_name, len(a.options), len(a.options) - 15,
+            )
         catalog_lines.append(
             f"- \"{a.display_label}\" [{a.select_type}] (variable_name={a.variable_name}): "
             f"current={current!r}; options=[{opts}]"

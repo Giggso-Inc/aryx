@@ -6,9 +6,12 @@ definition.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from aryx.api.ask_llm.ask_llm_intent_core import _llm_classify_intent_core
+
+logger = logging.getLogger(__name__)
 
 
 def _llm_resolve_pending_answer(
@@ -53,6 +56,16 @@ def _llm_resolve_pending_answer(
     """
     if not pending_attr.options:
         return None
+    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T8: same silent-truncation
+    # observability fix as the other LLM-facing option-list caps in this
+    # codebase -- not changing the cap, just making it visible.
+    if len(pending_attr.options) > 200:
+        logger.warning(
+            "cpq_llm_options_truncated: variable_name=%s option_count=%d "
+            "cap=200 -- %d option(s) never shown to the LLM",
+            pending_attr.variable_name, len(pending_attr.options),
+            len(pending_attr.options) - 200,
+        )
     opt_lines = "\n".join(
         f"- {o.display_name} (internal code: {o.item_value})"
         if o.item_value.lower() != o.display_name.lower() else f"- {o.display_name}"
