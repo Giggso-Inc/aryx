@@ -10333,7 +10333,7 @@
     ],
     [
       "src/aryx/api/jobs_api.py",
-      71,
+      92,
       "cancel_job"
     ],
     [
