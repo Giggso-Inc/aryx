@@ -71,6 +71,25 @@ candidates via `product_name`, since every consumer already has
 `ctx`/`scope` (hence `ctx.filled`, `ctx.dt_cache`, `scope.workspace_id`,
 `scope.catalog_prefix`) in local scope but none has a pre-resolved
 candidates tuple to reuse.
+
+A seventh, `_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES` (`hiding_rules/
+type11.py` -- membership over hiding-rule NAME strings, not variable
+names, otherwise the same shape as the sixth), was added after
+threading a new `product_name` parameter down 3 signatures (`engine.
+load_hiding_rules` -> `hiding_rules.load_hiding_rules` -> `_load_type11_
+hiding_rules`) -- every one of its 7 real call sites already has a
+resolved product name locally in scope, so no call-site logic changed,
+only a new argument passed one level deeper. Confirmed live (direct
+`python3 -c` import reproduction, both directions) that `model_policy.
+py` importing `_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES` from `type11.
+py` at module scope is safe -- `type11.py` is imported by `engine.py`
+at line 496, long after `engine.py`'s own `logger`/`_valid` are defined,
+unlike `attr_governance.py`'s early-chain case. The REVERSE import
+(`type11.py` importing the resolver back from `model_policy.py`) would
+be a genuine two-module cycle, though -- so, mirroring the
+`_CONFIRMED_DEAD_ATTRS` fix, `type11.py` imports the resolver function
+itself LAZILY, inside `_load_type11_hiding_rules`'s function body, not
+at module scope.
 """
 from __future__ import annotations
 
@@ -81,6 +100,7 @@ from aryx.config import get_settings
 from aryx.cpq.blind_fill_constants import _BLIND_FILL_RISK_ACCEPTED_VNS
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+from aryx.cpq.hiding_rules.type11 import _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
 from aryx.cpq.opt_out_and_duplicates import _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
 
 logger = logging.getLogger(__name__)
@@ -141,6 +161,12 @@ _LEGACY_BLIND_FILL_RISK_ACCEPTED_VNS: dict[str, frozenset[str]] = {
         "applicationServicesSelection_astro",
         "carrierSelectionMultiSelect_astro",
         "packingPackageType_astro",
+    }),
+}
+
+_LEGACY_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES: dict[str, frozenset[str]] = {
+    "APXNEXT": frozenset({
+        "Hide Optional Peripherals 900 MHz Hybrid Combiner For G Series If No Value Available",
     }),
 }
 
@@ -236,6 +262,17 @@ def blind_fill_risk_accepted_vns(cpq_model: str) -> frozenset[str]:
     docstring); returns `frozenset()` for any model with no policy
     entry, never a guess."""
     return _LEGACY_BLIND_FILL_RISK_ACCEPTED_VNS.get(
+        (cpq_model or "").strip().upper(), frozenset(),
+    )
+
+
+def dt_whitelist_substitute_hiding_rule_names(cpq_model: str) -> frozenset[str]:
+    """The set of hiding-rule NAME strings individually confirmed safe to
+    substitute a real Data-Table whitelist check for a missing BmFunction
+    script, for `cpq_model` -- legacy policy-table lookup only for now
+    (see module docstring); returns `frozenset()` for any model with no
+    policy entry, never a guess."""
+    return _LEGACY_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES.get(
         (cpq_model or "").strip().upper(), frozenset(),
     )
 
@@ -378,6 +415,43 @@ def resolve_blind_fill_risk_accepted_membership(
     if not models:
         return vn in _BLIND_FILL_RISK_ACCEPTED_VNS
     return any(vn in blind_fill_risk_accepted_vns(m) for m in models)
+
+
+def resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+    rule_name: str, product_name: str, workspace_id: int | None,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Whether `rule_name` is individually confirmed safe to substitute a
+    real Data-Table whitelist check for a missing BmFunction script, for
+    the session's actual CPQ model(s) -- resolves via the real, per-model
+    `dt_whitelist_substitute_hiding_rule_names` policy table, falling
+    back to the legacy `_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES`
+    membership check when `workspace_id`/`product_name` aren't available
+    yet, when no model candidates resolve, or when candidate resolution
+    itself fails. Never raises. Same contract, same gate, same fallback
+    shape as `resolve_optional_empty_fill_membership` -- see its
+    docstring for the full safety rationale. Self-resolving (Shape A):
+    its one real consumer, `_load_type11_hiding_rules`, has no
+    pre-resolved candidates tuple in scope (unlike the Shape-B resolvers
+    above).
+    """
+    if not get_settings().model_policy_scoped_resolution_enabled:
+        return rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    if workspace_id is None or not product_name:
+        return rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    try:
+        models = _cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache)
+    except Exception:
+        logger.exception(
+            "ModelPolicy resolution failed for rule_name=%r (ws=%s) -- "
+            "falling back to the legacy constant", rule_name, workspace_id,
+        )
+        return rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    if not models:
+        return rule_name in _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    return any(
+        rule_name in dt_whitelist_substitute_hiding_rule_names(m) for m in models
+    )
 
 
 def resolve_confirmed_dead_attr_membership(

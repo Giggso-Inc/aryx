@@ -68,7 +68,8 @@ def _build_show_summary_response(
             for _opt in _pending_attr.options:
                 if _q_norm in (_opt.display_name.strip().lower(), _opt.item_value.strip().lower()):
                     return None
-    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    hiding_rules = _cpq_engine.load_hiding_rules(
+        req.workspace_id, catalog_prefix, session.product_name)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)

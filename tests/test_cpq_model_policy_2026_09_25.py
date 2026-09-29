@@ -19,14 +19,20 @@ from aryx.cpq.blind_fill_constants import _BLIND_FILL_RISK_ACCEPTED_VNS
 from aryx.cpq.data_table_bridge.attr_governance import _CONFIRMED_DEAD_ATTRS
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.fill_signature import _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS
+from aryx.cpq.hiding_rules.type11 import (
+    _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES,
+    _load_type11_hiding_rules,
+)
 from aryx.cpq.model_policy import (
     blind_fill_risk_accepted_vns,
     confirmed_dead_attrs,
+    dt_whitelist_substitute_hiding_rule_names,
     duplicate_display_name_canonical_item_value,
     optional_empty_fill_accepted_vns,
     recommended_config_only_vns,
     resolve_blind_fill_risk_accepted_membership,
     resolve_confirmed_dead_attr_membership,
+    resolve_dt_whitelist_substitute_hiding_rule_name_membership,
     resolve_optional_empty_fill_membership,
     resolve_recommended_config_only_membership,
     resolve_select_all_narrowed_legal_multi_membership,
@@ -807,3 +813,171 @@ def test_multi_fallback_wiring_risk_accepted_lets_the_branch_run():
         result = try_multi_fallback(MagicMock(), attr, ctx, scope, state)
     assert result is True
     assert ctx.filled_multi["accessoriesSolutionSet_astro"] == []
+
+
+def test_dt_whitelist_substitute_hiding_rule_names_matches_the_real_constant_for_apxnext():
+    assert (
+        dt_whitelist_substitute_hiding_rule_names("APXNEXT")
+        == _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    )
+
+
+def test_dt_whitelist_substitute_hiding_rule_names_case_insensitive_model_match():
+    assert (
+        dt_whitelist_substitute_hiding_rule_names("apxnext")
+        == _DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES
+    )
+
+
+def test_dt_whitelist_substitute_hiding_rule_names_empty_for_unknown_model():
+    assert dt_whitelist_substitute_hiding_rule_names("SVX") == frozenset()
+    assert dt_whitelist_substitute_hiding_rule_names("") == frozenset()
+    assert dt_whitelist_substitute_hiding_rule_names(None) == frozenset()
+
+
+# ── resolve_dt_whitelist_substitute_hiding_rule_name_membership ──────────
+# Same shape as resolve_select_all_narrowed_legal_multi_membership --
+# resolves its own model candidates via product_name. Membership is over
+# hiding-rule NAME strings instead of variable names, but the gate/
+# fallback contract is identical.
+
+_HYBRID_COMBINER_RULE_NAME = next(iter(_DT_WHITELIST_SUBSTITUTE_HIDING_RULE_NAMES))
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_never_touches_candidates_when_flag_is_at_its_real_default():
+    with patch("aryx.cpq.model_policy._cpq_model_candidates") as mock_candidates:
+        result = resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "APX NEXT XE", 704,
+        )
+    mock_candidates.assert_not_called()
+    assert result is True
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_matches_legacy_constant_at_real_default():
+    assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+        "Some Unrelated Rule Name", "APX NEXT XE", 704,
+    ) is False
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_falls_back_when_workspace_id_none():
+    with _enabled_model_policy_settings():
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "APX NEXT XE", None,
+        ) is True
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_falls_back_when_no_product():
+    with _enabled_model_policy_settings():
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "", 704,
+        ) is True
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_falls_back_when_candidates_raise():
+    with (
+        _enabled_model_policy_settings(),
+        patch(
+            "aryx.cpq.model_policy._cpq_model_candidates", side_effect=RuntimeError("boom"),
+        ),
+    ):
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_falls_back_when_no_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=()),
+    ):
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "APX NEXT XE", 704,
+        ) is True
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_uses_real_policy_when_candidates_resolve():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX",)),
+    ):
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "Some SVX Product", 704,
+        ) is False, "SVX has no policy entry -- real 'no membership', not a fallback"
+
+
+def test_resolve_dt_whitelist_substitute_hiding_rule_name_membership_true_when_any_candidate_confirms():
+    with (
+        _enabled_model_policy_settings(),
+        patch("aryx.cpq.model_policy._cpq_model_candidates", return_value=("SVX", "APXNEXT")),
+    ):
+        assert resolve_dt_whitelist_substitute_hiding_rule_name_membership(
+            _HYBRID_COMBINER_RULE_NAME, "APX NEXT XE", 704,
+        ) is True
+
+
+# ── wiring into the real consumer, _load_type11_hiding_rules ────────────
+# Its script_missing branch is the only call site; product_name is a new
+# parameter (default "") threaded down from engine.load_hiding_rules.
+
+def _fake_rdb_missing_script(rule_name: str, fn_id: int = 777):
+    def _fetch_rules(workspace_id, rule_type, catalog_prefix="", active_only=False):
+        return [(9001, 8001, rule_name, fn_id)]
+
+    return type("R", (), {
+        "fetch_rules": staticmethod(_fetch_rules),
+        "fetch_function_scripts": staticmethod(lambda *a, **k: {}),
+    })()
+
+
+def _fake_engine_for_type11(rule_name: str, target_attr_id: int = 501):
+    """A real CpqEngine (not a MagicMock) -- `_rule_key`/`_resolve_targets`
+    need their real implementations to produce an iterable targets list;
+    only the RDB-touching `_load_rule_join_data` is faked, same pattern
+    as test_cpq_apx900_hybrid_combiner_missing_script_2026_09_21.py."""
+    fake_rdb = _fake_rdb_missing_script(rule_name)
+
+    def _fake_load_rule_join_data(workspace_id, catalog_prefix):
+        actions = {8001: [(target_attr_id, 2, "", -1, -1, "")]}
+        return fake_rdb, {}, actions, {}, {}
+
+    eng = CpqEngine()
+    eng._load_rule_join_data = _fake_load_rule_join_data
+    return eng
+
+
+def test_load_type11_hiding_rules_wiring_calls_resolve_with_right_args():
+    eng = _fake_engine_for_type11("Some Missing Script Rule")
+    with patch(
+        "aryx.cpq.model_policy.resolve_dt_whitelist_substitute_hiding_rule_name_membership",
+        return_value=True,
+    ) as mock_resolve:
+        rules = _load_type11_hiding_rules(eng, 704, "Astro", 0.0, "APX NEXT XE")
+    mock_resolve.assert_called_once_with(
+        "Some Missing Script Rule", "APX NEXT XE", 704, "Astro",
+    )
+    assert len(rules) == 1
+    assert rules[0].dt_whitelist_substitute is True
+
+
+def test_load_type11_hiding_rules_wiring_drops_rule_when_resolve_returns_false():
+    eng = _fake_engine_for_type11("Some Missing Script Rule")
+    with patch(
+        "aryx.cpq.model_policy.resolve_dt_whitelist_substitute_hiding_rule_name_membership",
+        return_value=False,
+    ):
+        rules = _load_type11_hiding_rules(eng, 704, "Astro", 0.0, "APX NEXT XE")
+    assert rules == []
+
+
+def test_load_type11_hiding_rules_matches_legacy_behavior_at_real_default():
+    """No product_name passed (existing/legacy call shape) -- the gate is
+    off by its real default, so this resolves via the hardcoded constant
+    exactly as it always did, before this parameter existed."""
+    eng = _fake_engine_for_type11(_HYBRID_COMBINER_RULE_NAME)
+    rules = _load_type11_hiding_rules(eng, 704, "Astro", 0.0)
+    assert len(rules) == 1
+    assert rules[0].dt_whitelist_substitute is True
+
+    eng2 = _fake_engine_for_type11("Some Totally Unrelated Rule")
+    rules2 = _load_type11_hiding_rules(eng2, 704, "Astro", 0.0)
+    assert rules2 == []

@@ -61,7 +61,7 @@ def build_standalone_payload(
     attrs, resolved_product_name = engine.load_product_config(
         reader, workspace_id, product_hint)
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
-    hiding_rules = engine.load_hiding_rules(workspace_id, catalog_prefix)
+    hiding_rules = engine.load_hiding_rules(workspace_id, catalog_prefix, resolved_product_name)
     rec_rules, con_rules = engine.load_recommendation_and_constraint_rules(
         workspace_id, catalog_prefix)
     bml_eval = engine.build_bml_evaluator(workspace_id, catalog_prefix)

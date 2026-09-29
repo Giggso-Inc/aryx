@@ -63,7 +63,8 @@ def _step2_resolve_and_load(
 
     _rule_load_t0 = time.monotonic()
     logger.info("cpq_step: load_all_rule_sets start run_id=%s", session.run_id)
-    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    hiding_rules = _cpq_engine.load_hiding_rules(
+        req.workspace_id, catalog_prefix, session.product_name)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)

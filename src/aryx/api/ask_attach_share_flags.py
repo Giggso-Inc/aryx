@@ -69,7 +69,8 @@ def _attach_share_flags(result: dict[str, Any], req: "Any", reader: Any) -> None
     # function already deliberately skips, so it doesn't reintroduce the
     # round-trip this comment originally avoided.
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
-    hiding_rules_preview = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    hiding_rules_preview = _cpq_engine.load_hiding_rules(
+        req.workspace_id, catalog_prefix, session.product_name)
     rec_rules_preview, con_rules_preview = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     # Flow exclusions MUST apply here too (Issue 11 §5) — this is the web

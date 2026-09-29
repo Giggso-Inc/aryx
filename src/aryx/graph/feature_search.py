@@ -82,7 +82,7 @@ def search_by_feature(
             continue
 
         catalog_prefix = product_attrs[0].catalog_prefix or ""
-        hiding_rules = engine.load_hiding_rules(workspace_id, catalog_prefix)
+        hiding_rules = engine.load_hiding_rules(workspace_id, catalog_prefix, resolved_name)
         if not hiding_rules:
             # Confirmed configurable product, just zero hiding rules apply
             # to it -- definitively "not hidden" (False), distinct from

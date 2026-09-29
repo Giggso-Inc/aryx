@@ -51,7 +51,7 @@ def _country_available_for(
     )
     if country_attr is None:
         return True
-    new_hiding = _cpq_engine.load_hiding_rules(workspace_id, new_prefix)
+    new_hiding = _cpq_engine.load_hiding_rules(workspace_id, new_prefix, product_name)
     new_rec_rules, new_con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         workspace_id, new_prefix)
     new_bml_eval = _cpq_engine.build_bml_evaluator(workspace_id, new_prefix)

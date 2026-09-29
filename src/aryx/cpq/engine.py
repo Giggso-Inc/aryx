@@ -1115,8 +1115,10 @@ class CpqEngine:
         return grid_quantity.unresolved_grid_quantity_options(attrs, filled_multi)
 
 
-    def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
-        return hiding_rules.load_hiding_rules(self, workspace_id, catalog_prefix)
+    def load_hiding_rules(
+        self, workspace_id: int, catalog_prefix: str = "", product_name: str = "",
+    ) -> list[HidingRule]:
+        return hiding_rules.load_hiding_rules(self, workspace_id, catalog_prefix, product_name)
 
     @staticmethod
     def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
