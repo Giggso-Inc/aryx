@@ -47,6 +47,34 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
     return active
 
 
+def partition_cpq_ingestion_plans(
+    plans: list[dict],
+) -> tuple[dict[str, dict], list[dict]]:
+    """Split tabular plans into (cpq_ingestion-active XML source files, the rest).
+
+    One XML file produces one plan PER ENTITY TAG (e.g. two plans,
+    ``*_PurchaseOrder.csv`` and ``*_Customer.csv``, sharing one
+    ``source_filename``) -- the returned dict is keyed by ``source_filename``
+    with one representative plan each (carrying ``source_bytes``, needed to
+    re-derive the raw graph), not one entry per tag-plan, because
+    ``resolve_and_relate_raw_graph()`` resolves every tag from one projection
+    in a single call and must run once per source file, not once per plan.
+
+    A plan with no ``source_filename`` (never derived from XML/XLSX) or a
+    non-``.xml`` source never even reaches ``cpq_ingestion_pipeline_active()``.
+    """
+    cpq_ingestion_source_files: dict[str, dict] = {}
+    remaining_plans: list[dict] = []
+    for plan in plans:
+        source_filename = plan.get("source_filename")
+        is_xml = source_filename is not None and Path(source_filename).suffix.lower() == ".xml"
+        if is_xml and cpq_ingestion_pipeline_active(source_filename):
+            cpq_ingestion_source_files.setdefault(source_filename, plan)
+            continue
+        remaining_plans.append(plan)
+    return cpq_ingestion_source_files, remaining_plans
+
+
 def cpq_layout_upload_active(filename: str) -> bool:
     """True when ``filename`` should be stored as a CPQ layout file
     (aryx_cpq_layout_file) instead of run through the normal ingest
