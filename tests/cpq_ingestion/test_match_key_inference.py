@@ -120,7 +120,11 @@ def test_infer_skips_nodes_with_empty_properties_when_picking_a_sample():
     assert result["match_keys"] == ["Id"]
 
 
-def test_infer_all_nodes_empty_properties_defaults_to_id():
+def test_infer_all_nodes_empty_properties_returns_no_match_keys():
+    """Raven L2: a tag with zero observed properties on every sampled node
+    has no genuine match key -- match_keys=[] makes that explicit instead of
+    naming a property (e.g. a hardcoded "id") that was never actually
+    present on this tag's nodes."""
     nodes = [RawNode(id=0, tag="Marker", properties={})]
     with patch("aryx.pipeline.doc_discovery.doc_discovery_types.get_settings",
                return_value=_settings()), \
@@ -128,4 +132,4 @@ def test_infer_all_nodes_empty_properties_defaults_to_id():
         result = infer_match_keys_for_tag("Marker", nodes)
 
     mock_llm.assert_not_called()
-    assert result == {"ontology_type": "Marker", "match_keys": ["id"]}
+    assert result == {"ontology_type": "Marker", "match_keys": []}

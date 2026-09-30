@@ -6,10 +6,14 @@ the read-time raw-graph write) because the two run at different times against
 different call sites -- Pass 1 runs during discovery/read for every upload
 with the raw graph enabled; this runs only once ``ingest_confirmed()``
 decides a source file's plans are cpq_ingestion-active (see
-``routing.partition_cpq_ingestion_plans``). Reads the SAME raw graph
-projection Pass 1 wrote and pushes it through resolve/relate directly, tag by
-tag, landing the result in the curated graph the "Graph" tab already reads
-(``ws_graph(workspace_id)``).
+``routing.partition_cpq_ingestion_plans``). Its caller recomputes the same
+projection fresh from the original XML bytes (``project_xml_to_raw_graph``
+is pure and deterministic, so this reproduces exactly what Pass 1 wrote,
+without a round-trip read from FalkorDB/Oracle Graph) and hands it in here
+to push through resolve/relate directly, tag by tag, landing the result in
+the curated graph the "Graph" tab already reads (``ws_graph(workspace_id)``).
+Pass 1's stored raw graph itself is not read by this or anything else --
+it remains a write-only provenance artifact.
 """
 from __future__ import annotations
 

@@ -103,10 +103,20 @@ def infer_match_keys_for_tag(tag: str, sample_nodes: list[RawNode], context: str
     if key is None:
         key = _llm_guess_key_prop(tag, sample_properties, context, log_id=log_id)
         source = "llm"
-    if key is None:
-        key = next(iter(sample_properties), "id")
+    if key is None and sample_properties:
+        # A real, observed property -- just not one the heuristic or the LLM
+        # confidently named -- so it's still a genuine match key, not a guess.
+        key = next(iter(sample_properties))
         source = "default"
-    result = {"ontology_type": tag, "match_keys": [key]}
+    # key is still None here only when sample_properties itself is empty --
+    # no property was ever observed on any sampled node, so there is no
+    # candidate at all. match_keys=[] makes that explicit ("nothing to match
+    # on") instead of naming a property (e.g. a hardcoded "id") that was
+    # never actually present on this tag's nodes.
+    match_keys = [key] if key is not None else []
+    if not match_keys:
+        source = "none"
+    result = {"ontology_type": tag, "match_keys": match_keys}
     logger.info(
         "raw_graph infer_match_key did=%s tag=%s otype=%s match_keys=%s source=%s",
         log_id, tag, result["ontology_type"], result["match_keys"], source,
