@@ -35,6 +35,20 @@ class CpqIngestionSettings(BaseSettings):
             "value (including empty) leaves the existing XML->CSV path unchanged."
         ),
     )
+    cpq_layout_source: str = Field(
+        default="",
+        description=(
+            "CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: gates "
+            "whether an uploaded .txt/.json layout-export file is stored "
+            "in aryx_cpq_layout_file instead of run through normal "
+            "ingestion. Must be set together with ingest_pipeline == "
+            "'cpq_ingestion' for cpq_layout_upload_active() to activate -- "
+            "ingest_pipeline alone is NOT enough, unlike the XML raw-graph "
+            "path. Set to 'oracle' to activate (the only real value once "
+            "the read side no longer has a local-directory alternative to "
+            "distinguish this from). Env var: ARYX_CPQ_LAYOUT_SOURCE."
+        ),
+    )
     cpq_raw_graph_enabled: bool = Field(
         default=True,
         description=(

@@ -50,23 +50,27 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
 def cpq_layout_upload_active(filename: str) -> bool:
     """True when ``filename`` should be stored as a CPQ layout file
     (aryx_cpq_layout_file) instead of run through the normal ingest
-    pipeline. Gated on the same ``ARYX_INGEST_PIPELINE=cpq_ingestion``
-    master switch as the XML raw-graph path, but keyed on its own
-    suffix set -- independent of ``ARYX_INGEST_FILE_TYPE``, which stays
-    XML-specific.
+    pipeline.
 
-    Known, deliberate trade-off: while this master switch is active,
-    ``.json`` uploads are ALWAYS treated as layout files, never as
-    catalog data -- a workspace/deployment that has turned this switch
-    on for CPQ layout+XML ingestion cannot also upload plain JSON
-    catalog data through this same endpoint at the same time. This
-    mirrors the switch's existing all-or-nothing shape (it already
-    replaces this deployment's normal ingestion behavior for its
-    configured file type); it is not a per-file, content-sniffing
-    distinction.
+    Requires BOTH ``ARYX_INGEST_PIPELINE=cpq_ingestion`` AND
+    ``ARYX_CPQ_LAYOUT_SOURCE`` set -- unlike the XML raw-graph path,
+    ``ingest_pipeline`` alone is deliberately NOT enough here. A
+    deployment can have the master switch on for XML raw-graph writes
+    without also wanting every .txt/.json upload silently diverted away
+    from normal ingestion; ``cpq_layout_source`` is the explicit, second
+    opt-in for that specific behavior. Keyed on its own suffix set --
+    independent of ``ARYX_INGEST_FILE_TYPE``, which stays XML-specific.
+
+    Known, deliberate trade-off: while both flags are active, ``.json``
+    uploads are ALWAYS treated as layout files, never as catalog data --
+    a workspace/deployment that has turned this on cannot also upload
+    plain JSON catalog data through this same endpoint at the same
+    time. Not a per-file, content-sniffing distinction.
     """
     settings = get_cpq_ingestion_settings()
     if settings.ingest_pipeline.strip().lower() != PIPELINE_CPQ_INGESTION:
+        return False
+    if not settings.cpq_layout_source.strip():
         return False
     suffix = Path(filename).suffix.lower().lstrip(".")
     active = suffix in _LAYOUT_UPLOAD_SUFFIXES

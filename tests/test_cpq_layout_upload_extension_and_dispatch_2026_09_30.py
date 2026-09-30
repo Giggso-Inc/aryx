@@ -32,10 +32,12 @@ def _clear_settings_cache():
 
 
 def test_run_files_routes_txt_upload_to_layout_store_not_entity_ingestion(monkeypatch, tmp_path):
-    """A .txt upload under ARYX_INGEST_PIPELINE=cpq_ingestion must reach
-    store_layout_file() and must never reach run_pipeline()/JsonConnector
-    or the datasource-registration loop."""
+    """A .txt upload under ARYX_INGEST_PIPELINE=cpq_ingestion +
+    ARYX_CPQ_LAYOUT_SOURCE (both required) must reach store_layout_file()
+    and must never reach run_pipeline()/JsonConnector or the
+    datasource-registration loop."""
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    monkeypatch.setenv("ARYX_CPQ_LAYOUT_SOURCE", "oracle")
 
     from aryx.api.file_ingest import file_ingest_run as run_mod
 
@@ -80,3 +82,15 @@ def test_run_files_routes_txt_upload_to_layout_store_not_entity_ingestion(monkey
         )
 
     assert stored_calls == [("Config Layout APX Next.txt", 7)]
+
+
+def test_run_files_does_not_divert_txt_when_layout_source_flag_missing(monkeypatch):
+    """ARYX_INGEST_PIPELINE=cpq_ingestion alone must NOT divert .txt
+    uploads to the layout store -- ARYX_CPQ_LAYOUT_SOURCE is a required
+    second opt-in, unlike the XML raw-graph path's single-flag gate."""
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    monkeypatch.delenv("ARYX_CPQ_LAYOUT_SOURCE", raising=False)
+
+    from aryx.cpq_ingestion.routing import cpq_layout_upload_active
+
+    assert cpq_layout_upload_active("Config Layout APX Next.txt") is False
