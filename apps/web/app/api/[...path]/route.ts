@@ -22,37 +22,50 @@ async function proxy(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
-  const auth = await requireShayBearerAuth(req);
-  if (auth instanceof NextResponse) {
-    return auth;
-  }
-  const internalApiKey = requireInternalApiKey();
-  if (internalApiKey instanceof NextResponse) {
-    return internalApiKey;
-  }
-
-  const { path: pathSegments } = await params;
-  const path = pathSegments.join("/");
-  if (path === "ask/threads" || path.startsWith("ask/threads/")) {
-    const workspaceAuth = await requireShayWorkspaceAccess(
-      req,
-      req.nextUrl.searchParams.get("shay_workspace_id"),
-    );
-    if (workspaceAuth instanceof NextResponse) {
-      return workspaceAuth;
-    }
-  }
-  const url = `${aryxTarget()}/${path}${req.nextUrl.search}`;
-
-  const init: RequestInit = {
-    method: req.method,
-    headers: buildAryxForwardHeaders(req, internalApiKey),
-  };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.arrayBuffer();
-  }
-
+  // The whole handler body is wrapped in one try/catch (not just the
+  // outbound fetch, as before) -- reading the inbound request body
+  // (req.arrayBuffer() below, for a file upload) can throw too (a
+  // client sending a broken/stale multipart body, a dropped connection,
+  // etc.), and that used to be uncaught: it propagated past this route's
+  // own error handling entirely and hit Next.js's generic top-level error
+  // boundary, which renders a bare, contentless "Internal Server Error"
+  // page (text/plain, no JSON, no route context) instead of a proper
+  // error response -- indistinguishable from the proxy being broken
+  // outright, and with no clue in the response about what actually
+  // failed. Any failure now gets a real JSON body and a route-scoped log
+  // line, the same as the pre-existing upstream-fetch failure path below.
+  let path = "(path not yet resolved)";
   try {
+    const auth = await requireShayBearerAuth(req);
+    if (auth instanceof NextResponse) {
+      return auth;
+    }
+    const internalApiKey = requireInternalApiKey();
+    if (internalApiKey instanceof NextResponse) {
+      return internalApiKey;
+    }
+
+    const { path: pathSegments } = await params;
+    path = pathSegments.join("/");
+    if (path === "ask/threads" || path.startsWith("ask/threads/")) {
+      const workspaceAuth = await requireShayWorkspaceAccess(
+        req,
+        req.nextUrl.searchParams.get("shay_workspace_id"),
+      );
+      if (workspaceAuth instanceof NextResponse) {
+        return workspaceAuth;
+      }
+    }
+    const url = `${aryxTarget()}/${path}${req.nextUrl.search}`;
+
+    const init: RequestInit = {
+      method: req.method,
+      headers: buildAryxForwardHeaders(req, internalApiKey),
+    };
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      init.body = await req.arrayBuffer();
+    }
+
     const upstream = await fetch(url, init);
     const responseHeaders = new Headers();
     const ct = upstream.headers.get("Content-Type");
