@@ -375,19 +375,61 @@ two independently-settable flags that could disagree.
    variants, 39 for both `Svx` variants) reading from Oracle ADB, no
    errors, no unexpected no-match warnings for any of the 5. Container
    logs clean of layout-related errors after recreation.
-5. **Phase 5 — remove the old path.** Once cutover is stable for a
-   full deploy cycle: delete `config_layouts/` from the repo,
-   `LocalDirLayoutFileSource`, `ARYX_CPQ_LAYOUT_DIR` from
-   `.env.example*` (both currently carry an explicit warning comment
-   about this exact directory — those comments get deleted too, not
-   just the env var line), and the "must point at the config_layouts/
-5. **Phase 5 — remove the old path.** Once cutover is stable for a
-   full deploy cycle: delete `config_layouts/` from the repo,
-   `LocalDirLayoutFileSource`, `ARYX_CPQ_LAYOUT_DIR` from
-   `.env.example*` (both currently carry an explicit warning comment
-   about this exact directory — those comments get deleted too, not
-   just the env var line), and the "must point at the config_layouts/
-   dir baked into the image" Dockerfile `COPY` step.
+5. **Phase 5 — remove the old path. DONE (2026-09-30), proceeded
+   immediately after Phase 4 at your explicit request rather than
+   waiting for a soak period.** Removed: the 5 `config_layouts/*` files
+   (4 layout `.txt` exports + `manifest.json`) from the repo;
+   `LocalDirLayoutFileSource` and its manifest/fuzzy-match helpers
+   (`_fuzzy_matches`, `_strip_boilerplate`, `_normalize`) from
+   `layout_source.py`; the `cpq_layout_source` settings field (no longer
+   meaningful — Oracle is the only backend now); the now-obsolete
+   combined-flag test file and the one-time backfill script (its job is
+   done); the Dockerfile's `COPY config_layouts/` step; `ARYX_CPQ_
+   LAYOUT_DIR`/the bind-mounted `./config_layouts` volume from
+   `docker-compose.yml`, `docker-compose.local.yml`, and
+   `docker-compose-oci-local.yml`; and `ARYX_CPQ_LAYOUT_SOURCE` from
+   `docker-compose-oci.yml` (no separate layout-source toggle needed
+   once there's only one backend).
+
+   **Real correctness fix found and applied during this phase, not
+   pre-planned:** `OracleLayoutFileSource.__init__` originally opened
+   its DB connection pool eagerly. That was safe only because
+   `LocalDirLayoutFileSource` was the *default* fallback whenever the
+   combined cutover flag wasn't set — once Phase 5 removed that
+   fallback and made `OracleLayoutFileSource` the unconditional default
+   in `engine_caches.py` (constructed at `aryx.cpq.engine` **module
+   import time**, which nearly every part of this codebase imports),
+   an eager pool would have made importing `aryx.cpq.engine` fail
+   immediately in any environment without a live, reachable database —
+   including most local unit-test runs. Fixed by deferring the pool
+   fetch to the first real `.get()` call instead of `__init__`.
+   Verified directly: after the fix, `_DEFAULT_LAYOUT_FILE_SOURCE._pool
+   is None` immediately after import, and the full targeted test suite
+   (in an environment with `ARYX_DB_BACKEND=oci` set but no reachable
+   Oracle client config — exactly the failure mode this would have hit)
+   showed zero new failures, only the same 6 pre-existing
+   environment-specific ones already established earlier in this
+   session.
+
+   **Known limitation, not resolved here:** `ARYX_CPQ_LAYOUT_DIR`'s
+   comment block in `.env.example.oci` and `.env.example.oci-local`
+   (and the stale var itself in the real, live `.env` this session
+   cannot read/write) could not be cleaned up — this repo's damage-
+   control hook blocks all Edit-tool and Bash-tool operations on any
+   `.env.*` path outright (confirmed live: both a Bash grep and an Edit
+   call were rejected). This exact constraint was already documented
+   during T11's audit for a different `.env.example` variable. The
+   leftover var is harmless (nothing reads it anymore) but needs a
+   manual one-line removal in both files, and in the real `.env`, by
+   someone with direct file access.
+
+   Rebuilt/recreated `aryx-api-1` with all Phase 5 changes: reached
+   `running (healthy)`; confirmed `config_layouts/` is genuinely absent
+   from the running container's filesystem; re-verified
+   `CpqEngine.load_layout_display_order()` for 3 of the 11 real
+   backfilled pairs still returns the correct real entry counts (103,
+   39, 103) reading from Oracle ADB with zero code path left that could
+   fall back to local files.
 
 ## 6. Testing plan
 

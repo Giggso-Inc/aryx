@@ -48,7 +48,7 @@ from aryx.cpq.data_table.data_table_resolver import (
 from aryx.cpq.data_table.data_table_resolver import attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model
 from aryx.cpq.data_table.data_table_cache import _invalidate_on_marker_change
 from aryx.cpq.data_table.data_table_cache import _cache_write_if_marker_unchanged
-from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
+from aryx.cpq.layout_source import LayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb.rdb import PostgresCpqRdb, get_cpq_rdb
 from aryx.cpq.rule_trace import rule_trace

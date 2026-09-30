@@ -45,18 +45,6 @@ class CpqIngestionSettings(BaseSettings):
             "Env var: ARYX_CPQ_RAW_GRAPH_ENABLED."
         ),
     )
-    cpq_layout_source: str = Field(
-        default="local",
-        description=(
-            "Which LayoutFileSource backend aryx.cpq.engine_caches wires "
-            "in: 'local' (LocalDirLayoutFileSource, config_layouts/ on "
-            "disk) or 'oracle' (OracleLayoutFileSource, the "
-            "aryx_cpq_layout_file table). Only takes effect when "
-            "ingest_pipeline == 'cpq_ingestion' is also set -- same "
-            "master switch as every other cpq_ingestion feature. "
-            "Env var: ARYX_CPQ_LAYOUT_SOURCE."
-        ),
-    )
     cpq_raw_workspace_offset: int = Field(
         default=1_000_000_000,
         description=(

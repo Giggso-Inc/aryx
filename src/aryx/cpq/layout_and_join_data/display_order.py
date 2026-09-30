@@ -30,9 +30,8 @@ def load_layout_display_order(
     never as "empty visible set" (every §2/§2b/§2c mechanism built on
     this falls back to today's unchanged behavior in that case).
 
-    layout_source — injected for tests / a future non-local backend
-    (see LayoutFileSource); defaults to the process-wide local
-    directory source (`ARYX_CPQ_LAYOUT_DIR`, else cwd).
+    layout_source — injected for tests; defaults to the process-wide
+    Oracle ADB / Postgres source (see LayoutFileSource).
     """
     cache = _engine_module._LAYOUT_DISPLAY_ORDER_CACHE
     key = (workspace_id, catalog_prefix)

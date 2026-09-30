@@ -12698,17 +12698,17 @@
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      56,
+      55,
       "load_layout_display_order"
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      59,
+      58,
       "_load_layout_full_order"
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      87,
+      86,
       "_load_layout_full_order"
     ],
     [

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource, OracleLayoutFileSource
+from aryx.cpq.layout_source import LayoutFileSource, OracleLayoutFileSource
 
 # Process-wide, keyed by (workspace_id, catalog_prefix) — see
 # CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
@@ -41,27 +41,14 @@ _LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 
 
 def _resolve_layout_file_source() -> LayoutFileSource:
-    """CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: the backend
-    switch is a combination of two env vars, not a standalone new one --
-    `ARYX_CPQ_LAYOUT_SOURCE=oracle` only takes effect when
-    `ARYX_INGEST_PIPELINE=cpq_ingestion` is ALSO set, the same master
-    switch that already gates every other cpq_ingestion feature (the XML
-    raw-graph write, the layout-file upload routing). This mirrors
-    ARYX_CPQ_RAW_GRAPH_ENABLED's existing nesting exactly -- a
-    fine-grained flag that only matters once the outer switch has
-    already said yes. Neither flag set (today's default) -> unchanged
-    LocalDirLayoutFileSource behavior."""
-    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings  # noqa: PLC0415
-    from aryx.cpq_ingestion.constants import PIPELINE_CPQ_INGESTION  # noqa: PLC0415
-    settings = get_cpq_ingestion_settings()
-    use_oracle = (
-        settings.ingest_pipeline.strip().lower() == PIPELINE_CPQ_INGESTION
-        and settings.cpq_layout_source.strip().lower() == "oracle"
-    )
-    if use_oracle:
-        from aryx.config import get_settings  # noqa: PLC0415
-        return OracleLayoutFileSource(dsn=get_settings().effective_dsn())
-    return LocalDirLayoutFileSource()
+    """CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md Phase 5:
+    Oracle ADB / Postgres is now the only backend -- the local-directory
+    fallback and its env-var toggle are gone. `OracleLayoutFileSource`
+    itself defers opening a connection pool to its first real `.get()`
+    call (see its own docstring), so constructing it here at module-
+    import time is safe even in environments with no live database."""
+    from aryx.config import get_settings  # noqa: PLC0415
+    return OracleLayoutFileSource(dsn=get_settings().effective_dsn())
 
 
 _DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = _resolve_layout_file_source()

@@ -1,7 +1,7 @@
 """store_layout_file / catalog_prefix_from_filename -- the write side of
 CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md. The read side
 (OracleLayoutFileSource) is tested in tests/test_cpq_layout_visibility_
-order.py, alongside LocalDirLayoutFileSource.
+order.py.
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Persist an uploaded CPQ layout-export file (.txt/.json) to
 ``aryx_cpq_layout_file`` -- the per-workspace, uploaded replacement for
-the hardcoded ``config_layouts/`` directory `LocalDirLayoutFileSource`
-reads from today (see CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md).
+the old hardcoded ``config_layouts/`` directory (see
+CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md).
 
 Write side only. The read side (``OracleLayoutFileSource``) lives in
 ``aryx.cpq.layout_source`` -- kept there, not here, since it's consumed
