@@ -2,11 +2,19 @@ import type { IngestQuestion, ObservabilityData } from "../types";
 import { fetchJSON } from "./core";
 
 export const jobsApi = {
-  getJob: (jobId: string) =>
+  // workspaceId: the backend's GET /admin/jobs/{job_id} (and the two
+  // siblings below) look the job up scoped to a workspace and 404 if it
+  // doesn't match -- omitting it defaults to workspace 1 server-side
+  // (see aryx.api.workspace_scope.resolve_workspace_id_warn), which 404s
+  // for any job in another workspace even while it's still running
+  // successfully. Optional only so an old caller that genuinely doesn't
+  // know its workspace yet doesn't break; every caller that has one in
+  // scope should pass it.
+  getJob: (jobId: string, workspaceId?: number) =>
     fetchJSON<{
       job_id: string; status: string; stage: string | null;
       pct: number | null; detail: string | null; error: string | null;
-    }>(`/admin/jobs/${jobId}`),
+    }>(`/admin/jobs/${jobId}${workspaceId != null ? `?workspace_id=${workspaceId}` : ""}`),
 
   listJobs: (workspaceId: number) =>
     fetchJSON<Array<{
@@ -16,14 +24,15 @@ export const jobsApi = {
       started_at?: string; finished_at?: string | null;
     }>>(`/admin/jobs?workspace_id=${workspaceId}`),
 
-  getJobEvents: (jobId: string) =>
+  getJobEvents: (jobId: string, workspaceId?: number) =>
     fetchJSON<Array<{
       stage: string; pct: number; detail: string; ts: string;
-    }>>(`/admin/jobs/${jobId}/events`),
+    }>>(`/admin/jobs/${jobId}/events${workspaceId != null ? `?workspace_id=${workspaceId}` : ""}`),
 
-  cancelJob: (jobId: string) =>
+  cancelJob: (jobId: string, workspaceId?: number) =>
     fetchJSON<{ status: string; job_id: string }>(
-      `/admin/jobs/${jobId}/cancel`, { method: "POST", body: "{}" },
+      `/admin/jobs/${jobId}/cancel${workspaceId != null ? `?workspace_id=${workspaceId}` : ""}`,
+      { method: "POST", body: "{}" },
     ),
 
   getIngestQuestions: (workspaceId: number, status = "pending") =>

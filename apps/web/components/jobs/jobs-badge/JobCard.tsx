@@ -7,7 +7,9 @@ import { cn } from "@/lib/cn";
 import { EventLog } from "./EventLog";
 import { RUNNING, type JobRow } from "./types";
 
-export function JobCard({ job, onChanged }: { job: JobRow; onChanged: () => void }) {
+export function JobCard(
+  { job, workspaceId, onChanged }: { job: JobRow; workspaceId: number; onChanged: () => void },
+) {
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const isRunning = RUNNING.has(job.status);
@@ -18,7 +20,7 @@ export function JobCard({ job, onChanged }: { job: JobRow; onChanged: () => void
   const cancel = async () => {
     setCancelling(true);
     try {
-      await api.cancelJob(job.job_id);
+      await api.cancelJob(job.job_id, workspaceId);
       onChanged();
     } finally {
       setCancelling(false);
@@ -118,7 +120,7 @@ export function JobCard({ job, onChanged }: { job: JobRow; onChanged: () => void
         </div>
       )}
 
-      {open && <EventLog jobId={job.job_id} live={isRunning} />}
+      {open && <EventLog jobId={job.job_id} workspaceId={workspaceId} live={isRunning} />}
     </li>
   );
 }

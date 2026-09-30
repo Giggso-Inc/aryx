@@ -75,6 +75,7 @@ export function JobsBadge() {
       <JobsPanel
         open={open}
         jobs={jobs}
+        workspaceId={workspaceId}
         onClose={() => { setOpen(false); setDismissed(true); }}
         onRefresh={refresh}
       />
