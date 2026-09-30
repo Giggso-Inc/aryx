@@ -21,8 +21,9 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
+from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge, store_layout_file
 from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten
-from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active
+from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active, cpq_layout_upload_active
 from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
@@ -103,14 +104,57 @@ def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) 
 
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
-               workspace_id: int = 1) -> None:
-    """Run the ingest pipeline for a batch of files in a background thread."""
+               workspace_id: int = 1, layout_catalog_prefix: str | None = None) -> None:
+    """Run the ingest pipeline for a batch of files in a background thread.
+
+    layout_catalog_prefix: explicit catalog_prefix override for any
+    layout-export file(s) in this batch (see cpq_layout_upload_active()
+    below). None (the default) falls back to the filename-derived stem,
+    same as before this parameter existed. Applied to EVERY layout file
+    in the batch if more than one is present -- there is no per-file
+    override in a single multi-file upload request; a client that needs
+    distinct catalog_prefix values for multiple layout files must upload
+    them in separate requests.
+    """
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
     datasource_store = DatasourceStore(settings.effective_dsn())
     try:
         jobs = JobStore(settings.effective_dsn())
+
+        # CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: a layout-
+        # export upload (.txt/.json under ARYX_INGEST_PIPELINE=
+        # cpq_ingestion) is stored verbatim for later CpqEngine lookup, not
+        # run through entity/CSV ingestion or datasource-count tracking --
+        # pulled out of `items` up front, before the datasource-registration
+        # loop and the _DATA_EXTS/_DOC_EXTS split below, so it never reaches
+        # either. Best-effort: one bad/oversized layout file is logged and
+        # skipped, not allowed to fail the whole batch upload.
+        layout_items = [(d, n) for d, n in items if cpq_layout_upload_active(n)]
+        items = [(d, n) for d, n in items if not cpq_layout_upload_active(n)]
+        for layout_data, layout_name in layout_items:
+            try:
+                prefix = store_layout_file(
+                    layout_data, layout_name,
+                    workspace_id=workspace_id, dsn=settings.effective_dsn(),
+                    catalog_prefix=layout_catalog_prefix,
+                )
+                jobs.update_stage(
+                    job_id, "Ingest", 20,
+                    f"Stored layout file {layout_name} (catalog_prefix={prefix})",
+                )
+            except CpqLayoutFileTooLarge:
+                logger.warning(
+                    "cpq_ingestion: layout file %s too large, skipped",
+                    layout_name, exc_info=True,
+                )
+            except Exception:
+                logger.warning(
+                    "cpq_ingestion: failed to store layout file %s",
+                    layout_name, exc_info=True,
+                )
+
         # Register each uploaded file as a datasource so the workspace card shows
         # an accurate file count regardless of whether files were ingested via the
         # file upload page or through the Shay datasource flow.

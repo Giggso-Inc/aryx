@@ -10308,17 +10308,22 @@
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_api.py",
-      153,
+      168,
       "ingest_file"
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_api.py",
-      161,
+      176,
       "file_ingest_router"
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_run.py",
-      163,
+      209,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/file_ingest/file_ingest_run.py",
+      278,
       "<if>"
     ],
     [
@@ -12693,17 +12698,17 @@
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      56,
+      55,
       "load_layout_display_order"
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      59,
+      58,
       "_load_layout_full_order"
     ],
     [
       "src/aryx/cpq/layout_and_join_data/display_order.py",
-      87,
+      86,
       "_load_layout_full_order"
     ],
     [
@@ -13470,6 +13475,21 @@
       "src/aryx/cpq/value_rules/value_rules_script_actions.py",
       14,
       "process_script_backed_actions"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      26,
+      "project_xml_to_raw_graph"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      51,
+      "walk"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      68,
+      "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/demo/support_data_generator.py",

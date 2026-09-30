@@ -44,7 +44,7 @@ class _FakeLayoutFileSource:
     def __init__(self, mapping: dict[str, str]) -> None:
         self._mapping = mapping
 
-    def get(self, catalog_name: str) -> str | None:
+    def get(self, catalog_name: str, workspace_id: int) -> str | None:
         return self._mapping.get(catalog_name)
 
 
@@ -121,7 +121,7 @@ def test_result_is_cached_process_lifetime():
     calls = []
 
     class _CountingSource:
-        def get(self, catalog_name):
+        def get(self, catalog_name, workspace_id):
             calls.append(catalog_name)
             return _layout_json([_leaf("a", False)])
 
@@ -132,133 +132,101 @@ def test_result_is_cached_process_lifetime():
     assert len(calls) == 1
 
 
-# ── LocalDirLayoutFileSource ────────────────────────────────────────────────
-
-def test_local_dir_source_matches_by_normalized_catalog_name_substring(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
-
-    (tmp_path / "Config Layout APX Next.txt").write_text(_layout_json([_leaf("a", False)]))
-    (tmp_path / "APX Next.xml").write_text("<not-a-layout-file/>")
-    source = LocalDirLayoutFileSource(tmp_path)
-    text = source.get("Apx Next")
-    assert text is not None
-    assert json.loads(text)["variableName"] == "testFlow"
+# ── OracleLayoutFileSource ──────────────────────────────────────────────────
 
 
-def test_local_dir_source_ignores_non_txt_files(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+class _FakeLayoutRow:
+    """One-row-or-None cursor stand-in for OracleLayoutFileSource.get()."""
 
-    (tmp_path / "SVX.xml").write_text(_layout_json([_leaf("a", False)]))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("SVX") is None
+    def __init__(self, rows: dict[tuple[int, str], str]) -> None:
+        self._rows = rows
+        self._last: tuple | None = None
 
+    def execute(self, sql, params):
+        self._last = params
 
-def test_local_dir_source_no_match_returns_none(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+    def fetchone(self):
+        ws, cat = self._last
+        text = self._rows.get((ws, cat))
+        return (text,) if text is not None else None
 
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("Anything") is None
+    def __enter__(self):
+        return self
 
-
-def test_local_dir_source_matches_the_real_filename_derived_catalog_prefix(tmp_path):
-    """Live bug (2026-08-08): the real ingested catalog_prefix is whatever
-    aryx.pipeline.doc_discovery.doc_discovery._stem_type derived from the source XML's
-    OWN filename ("ApxnextCnofigdata", from "APXNext_CnofigData.xml",
-    typo included) -- a completely different naming scheme than the
-    human-authored layout export's filename ("Config Layout APX Next.
-    txt"). Neither is a raw substring of the other; only stripping the
-    filename's own "config"/"layout" boilerplate surfaces the shared
-    "apxnext" core both sides agree on. The file, the env var, and
-    load_layout_display_order's own wiring were all already correct --
-    only this match ever silently failed."""
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
-
-    (tmp_path / "Config Layout APX Next.txt").write_text(_layout_json([_leaf("a", False)]))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("ApxnextCnofigdata") is not None
+    def __exit__(self, *a):
+        return False
 
 
-def test_local_dir_source_manifest_entry_wins_over_fuzzy_match(tmp_path):
-    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: an explicit manifest.json
-    entry is consulted first -- confirmed by mapping a catalog_name to a
-    file whose content is provably different from what fuzzy matching
-    would have found."""
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+class _FakeLayoutConn:
+    def __init__(self, cur):
+        self._cur = cur
 
-    (tmp_path / "Config Layout APX Next.txt").write_text(
-        _layout_json([_leaf("fuzzy_match_content", False)]))
-    (tmp_path / "Manifest Target.txt").write_text(
-        _layout_json([_leaf("manifest_content", False)]))
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"ApxnextCnofigdata": "Manifest Target.txt"}))
-    source = LocalDirLayoutFileSource(tmp_path)
-    text = source.get("ApxnextCnofigdata")
-    assert text is not None
-    assert json.loads(text)["components"]["items"][0]["resourceAttributeVarName"] == (
-        "manifest_content"
-    )
+    def cursor(self):
+        return self._cur
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
-def test_local_dir_source_falls_back_to_fuzzy_when_not_in_manifest(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+class _FakeLayoutPool:
+    def __init__(self, rows: dict[tuple[int, str], str]) -> None:
+        self._cur = _FakeLayoutRow(rows)
 
-    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
-    (tmp_path / "manifest.json").write_text(json.dumps({"SomeOtherPrefix": "Nope.txt"}))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("AstroApx") is not None
-
-
-def test_local_dir_source_missing_manifest_file_falls_back_to_fuzzy(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
-
-    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("AstroApx") is not None
+    def connection(self):
+        return _FakeLayoutConn(self._cur)
 
 
-def test_local_dir_source_malformed_manifest_falls_back_to_fuzzy_not_raises(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+def test_oracle_layout_source_returns_content_for_matching_row(monkeypatch):
+    from aryx.cpq import layout_source
 
-    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
-    (tmp_path / "manifest.json").write_text("{ not valid json")
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("AstroApx") is not None
-
-
-def test_local_dir_source_manifest_underscore_keys_are_never_real_lookups(tmp_path):
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
-
-    (tmp_path / "manifest.json").write_text(json.dumps({"_comment": "not a catalog"}))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("_comment") is None
+    pool = _FakeLayoutPool({(7, "AstroApx"): "content-for-ws7"})
+    monkeypatch.setattr(layout_source, "logger", layout_source.logger)
+    monkeypatch.setattr("aryx.store.pool.get_pool", lambda dsn: pool)
+    source = layout_source.OracleLayoutFileSource(dsn="fake-dsn")
+    assert source.get("AstroApx", 7) == "content-for-ws7"
 
 
-def test_local_dir_source_no_match_at_all_logs_a_warning(tmp_path, caplog):
-    """CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9: a genuinely unmapped
-    catalog used to be cached as None with zero logging anywhere -- now
-    logged at the source."""
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+def test_oracle_layout_source_returns_none_and_warns_on_miss(monkeypatch, caplog):
+    from aryx.cpq import layout_source
 
-    source = LocalDirLayoutFileSource(tmp_path)
+    pool = _FakeLayoutPool({})
+    monkeypatch.setattr("aryx.store.pool.get_pool", lambda dsn: pool)
+    source = layout_source.OracleLayoutFileSource(dsn="fake-dsn")
     with caplog.at_level(logging.WARNING, logger="aryx.cpq.layout_source"):
-        assert source.get("SomeTotallyUnmappedCatalog") is None
-    assert any(
-        "no manifest entry and no fuzzy-matched layout file" in r.message
-        for r in caplog.records
-    )
+        assert source.get("Nope", 7) is None
+    assert any("no active layout file" in r.message for r in caplog.records)
 
 
-def test_local_dir_source_boilerplate_stripping_does_not_create_false_positives(tmp_path):
-    """A catalog_prefix that doesn't genuinely share a core with a given
-    layout filename must still correctly NOT match it, even after
-    boilerplate stripping -- e.g. "ApxnextCnofigdata" must not spuriously
-    match an unrelated "AstroApx" layout file."""
-    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+def test_oracle_layout_source_is_workspace_isolated(monkeypatch):
+    """A row stored for workspace 7 must never be returned for workspace 9,
+    even with the identical catalog_prefix -- CPQ_LAYOUT_FILE_STORAGE_
+    MIGRATION_PLAN_2026-09-30.md's core isolation requirement."""
+    from aryx.cpq import layout_source
 
-    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
-    source = LocalDirLayoutFileSource(tmp_path)
-    assert source.get("ApxnextCnofigdata") is None
-    assert source.get("AstroApx") is not None
+    pool = _FakeLayoutPool({(7, "Shared"): "workspace-7-content"})
+    monkeypatch.setattr("aryx.store.pool.get_pool", lambda dsn: pool)
+    source = layout_source.OracleLayoutFileSource(dsn="fake-dsn")
+    assert source.get("Shared", 7) == "workspace-7-content"
+    assert source.get("Shared", 9) is None
+
+
+def test_oracle_layout_source_empty_catalog_name_returns_none_without_query(monkeypatch):
+    from aryx.cpq import layout_source
+
+    calls = []
+
+    class _NoisyPool:
+        def connection(self):
+            calls.append(1)
+            raise AssertionError("should never be called for empty catalog_name")
+
+    monkeypatch.setattr("aryx.store.pool.get_pool", lambda dsn: _NoisyPool())
+    source = layout_source.OracleLayoutFileSource(dsn="fake-dsn")
+    assert source.get("", 7) is None
+    assert calls == []
 
 
 # ── §2: summary/payload filtering + ordering ────────────────────────────────

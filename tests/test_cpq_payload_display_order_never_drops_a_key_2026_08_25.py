@@ -1,7 +1,7 @@
 """build_payload's display_order step must never DROP a key — only rank it.
 
 Live-verified gap, 2026-08-25 (SVX Mounting Type array-set payload): once a
-catalog's native-UI layout export exists (config_layouts/*.txt, feeding
+catalog's native-UI layout export exists (aryx_cpq_layout_file, feeding
 `display_order` via `load_layout_display_order`), `build_payload`'s
 `display_order` step was a hard filter:
 

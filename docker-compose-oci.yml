@@ -147,12 +147,20 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       # Scalability
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
-      # CPQ native-UI layout export directory (visibility/order signal for
-      # beautify/summary attribute ranking) -- present in docker-compose.yml
-      # but missing here, so LocalDirLayoutFileSource fell back to cwd (/app)
-      # instead of /app/config_layouts, silently finding no layout files on
-      # every Oracle deployment (confirmed live: get("SVX") returned None).
-      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
+      # CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md Phase 4/5:
+      # ARYX_INGEST_PIPELINE activates the cpq_ingestion master switch
+      # (XML raw-graph write for .xml uploads). Layout-file READS always
+      # come from aryx_cpq_layout_file now (Phase 5 removed config_layouts/
+      # and LocalDirLayoutFileSource entirely -- no read-side toggle left).
+      # ARYX_CPQ_LAYOUT_SOURCE is a separate, second opt-in gating the
+      # WRITE side: an uploaded .txt/.json is only diverted into
+      # aryx_cpq_layout_file (skipping normal ingestion) when BOTH this
+      # and ARYX_INGEST_PIPELINE are set -- the master switch alone is
+      # deliberately not enough, so a deployment can run XML raw-graph
+      # writes without every .txt/.json upload silently changing behavior.
+      - ARYX_INGEST_FILE_TYPE=${ARYX_INGEST_FILE_TYPE:-xml}
+      - ARYX_INGEST_PIPELINE=${ARYX_INGEST_PIPELINE:-cpq_ingestion}
+      - ARYX_CPQ_LAYOUT_SOURCE=${ARYX_CPQ_LAYOUT_SOURCE:-oracle}
       # DB connection pool sizing -- default max_size (25) covers one
       # /graph request's subgraph() fan-out (up to 8 connections,
       # _MAX_RTYPE_WORKERS in oracle_graph_reader_traverse.py) plus

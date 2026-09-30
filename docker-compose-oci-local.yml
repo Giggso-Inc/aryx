@@ -171,8 +171,6 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       # Scalability
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
-      # CPQ native-UI layout export directory
-      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
       # DB connection pool sizing
       - ARYX_DB_POOL_MAX_SIZE=${ARYX_DB_POOL_MAX_SIZE:-25}
       # Observability

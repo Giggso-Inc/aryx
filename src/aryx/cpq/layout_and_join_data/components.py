@@ -60,7 +60,7 @@ def _load_layout_components(
     if key in cache:
         return cache[key]
     source = layout_source or _engine_module._DEFAULT_LAYOUT_FILE_SOURCE
-    text = source.get(catalog_prefix)
+    text = source.get(catalog_prefix, workspace_id)
     if not text:
         cache[key] = None
         return None
