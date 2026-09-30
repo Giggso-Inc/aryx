@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
+from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource, OracleLayoutFileSource
 
 # Process-wide, keyed by (workspace_id, catalog_prefix) — see
 # CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
@@ -38,7 +38,33 @@ _LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
 _LAYOUT_COMPONENTS_CACHE: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
 _LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 _LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
-_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = LocalDirLayoutFileSource()
+
+
+def _resolve_layout_file_source() -> LayoutFileSource:
+    """CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: the backend
+    switch is a combination of two env vars, not a standalone new one --
+    `ARYX_CPQ_LAYOUT_SOURCE=oracle` only takes effect when
+    `ARYX_INGEST_PIPELINE=cpq_ingestion` is ALSO set, the same master
+    switch that already gates every other cpq_ingestion feature (the XML
+    raw-graph write, the layout-file upload routing). This mirrors
+    ARYX_CPQ_RAW_GRAPH_ENABLED's existing nesting exactly -- a
+    fine-grained flag that only matters once the outer switch has
+    already said yes. Neither flag set (today's default) -> unchanged
+    LocalDirLayoutFileSource behavior."""
+    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings  # noqa: PLC0415
+    from aryx.cpq_ingestion.constants import PIPELINE_CPQ_INGESTION  # noqa: PLC0415
+    settings = get_cpq_ingestion_settings()
+    use_oracle = (
+        settings.ingest_pipeline.strip().lower() == PIPELINE_CPQ_INGESTION
+        and settings.cpq_layout_source.strip().lower() == "oracle"
+    )
+    if use_oracle:
+        from aryx.config import get_settings  # noqa: PLC0415
+        return OracleLayoutFileSource(dsn=get_settings().effective_dsn())
+    return LocalDirLayoutFileSource()
+
+
+_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = _resolve_layout_file_source()
 
 # docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
 # level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by

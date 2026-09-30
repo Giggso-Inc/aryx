@@ -282,12 +282,49 @@ two independently-settable flags that could disagree.
 
 ## 5. Migration / cutover steps
 
-1. **Phase 1 — build, no behavior change.** Migration file, `load()`
-   query file, `OracleLayoutFileSource`, `store_layout_file()`, new
-   upload-routing check. `ARYX_CPQ_LAYOUT_SOURCE` defaults to `local` —
-   nothing changes for existing traffic. Unit tests (mirroring
-   `test_xml_projector.py`'s pure-function style + `discovery_store`'s
-   workspace-isolation tests).
+1. **Phase 1 — build, no behavior change. DONE (2026-09-30).** Migration
+   files (`0046_cpq_layout_files.sql`, both backends), `select_cpq_
+   layout_file.sql`/`upsert_cpq_layout_file.sql` (+ Oracle MERGE
+   override, following `upsert_ontology_type.sql`'s proven pattern for
+   a bound VARCHAR2 alongside a force-CLOB-coerced column),
+   `OracleLayoutFileSource` (`layout_source.py`), `workspace_id` threaded
+   through the Protocol + the one real call site it was missing
+   (`components.py:63`), `_resolve_layout_file_source()`'s combined-flag
+   switch (`engine_caches.py`), `cpq_layout_upload_active()`
+   (`routing.py`), `store_layout_file()`/`catalog_prefix_from_filename()`
+   (new `cpq_ingestion/layout_store.py`), `.txt` added to accepted
+   upload extensions, and the `_run_files()` wiring that pulls layout
+   uploads out of the batch before both the datasource-registration
+   loop and the `_DATA_EXTS`/`_DOC_EXTS` split. `ARYX_CPQ_LAYOUT_SOURCE`
+   defaults to `local` — nothing changes for existing traffic.
+
+   27 new unit tests across 5 files (`test_cpq_layout_visibility_
+   order.py`'s `OracleLayoutFileSource` section, `test_cpq_engine_
+   caches_layout_source_resolution_2026_09_30.py`'s combined-flag
+   matrix, `cpq_ingestion/test_layout_store.py`, `cpq_ingestion/
+   test_routing.py`'s new `cpq_layout_upload_active` section,
+   `test_cpq_layout_upload_extension_and_dispatch_2026_09_30.py`'s
+   `_run_files` dispatch test), all passing. Targeted regression
+   (`test_cpq_layout_visibility_order.py` + `cpq_ingestion/` +
+   `file_ingest_size_limits` suites — the actual blast radius): only
+   the same 6 pre-existing, environment-specific failures (an Oracle
+   client `tnsnames.ora` config gap in this dev sandbox, confirmed via
+   `git stash` to predate this branch) — zero regressions caused by
+   this change. Full-suite run also completed clean of new failures.
+
+   **Live-validated against the real dev_oci Oracle ADB** (not just
+   mocked): applied `0046_cpq_layout_files.sql` via `oracle_migrate.py`
+   inside the running `aryx-api-1` container (`blocks=2`, clean);
+   rebuilt/recreated the container with all Phase 1 code; then, against
+   the live database: stored a layout file, read it back byte-for-byte,
+   confirmed a different `workspace_id` correctly gets `None` (with the
+   exact isolation warning log firing) rather than the other workspace's
+   content, and confirmed a re-upload for the same `(workspace_id,
+   catalog_prefix)` overwrites in place (upsert semantics). Test row
+   cleaned up afterward. `ARYX_INGEST_PIPELINE` is not set in the shared
+   dev_oci deployment today, so the live HTTP upload path itself (which
+   would also activate the raw-graph feature for all uploads) was
+   deliberately left for Phase 4's cutover rather than flipped now.
 2. **Phase 2 — one-time backfill.** A small script (or an
    `/admin/cpq/layouts/backfill` one-shot endpoint, whichever matches
    how `discovery_store` migrations were seeded) reads the 5 existing

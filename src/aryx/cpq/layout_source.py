@@ -70,10 +70,22 @@ def _fuzzy_matches(needle: str, haystack: str) -> bool:
 
 
 class LayoutFileSource(Protocol):
-    """Resolves a catalog's native-UI layout export to its raw file text."""
+    """Resolves a catalog's native-UI layout export to its raw file text.
 
-    def get(self, catalog_name: str) -> str | None:
-        """Return the layout file's raw text for catalog_name, or None."""
+    CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: `workspace_id` is
+    an explicit second parameter (not a per-workspace factory) -- tracing
+    the real call chain showed `load_layout_display_order`/
+    `_load_layout_full_order` (layout_and_join_data/display_order.py)
+    already receive `workspace_id` and already pass it to
+    `_load_layout_components`; the only place it wasn't forwarded was the
+    `source.get(catalog_prefix)` call inside that function. Every one of
+    the ~20 real API call sites already supplies `workspace_id` upstream
+    of that point -- none of them need to change.
+    """
+
+    def get(self, catalog_name: str, workspace_id: int) -> str | None:
+        """Return the layout file's raw text for catalog_name in
+        workspace_id, or None."""
         ...
 
 
@@ -136,7 +148,12 @@ class LocalDirLayoutFileSource:
         self._manifest = manifest
         return manifest
 
-    def get(self, catalog_name: str) -> str | None:
+    def get(self, catalog_name: str, workspace_id: int) -> str | None:
+        """`workspace_id` is accepted-but-ignored -- local files on disk
+        were never workspace-scoped. Kept only for Protocol conformance
+        during the migration window (see CPQ_LAYOUT_FILE_STORAGE_
+        MIGRATION_PLAN_2026-09-30.md Phase 5); deleted along with this
+        whole class once cutover to OracleLayoutFileSource is stable."""
         if not catalog_name or not self.directory.is_dir():
             return None
         manifest_filename = self._load_manifest().get(catalog_name)
@@ -186,3 +203,41 @@ class LocalDirLayoutFileSource:
                 "cpq layout_source: failed to read %s", matches[0], exc_info=True,
             )
             return None
+
+
+class OracleLayoutFileSource:
+    """Reads layout files from `aryx_cpq_layout_file` (Oracle ADB CLOB /
+    Postgres TEXT, via the shared pool), keyed by (workspace_id,
+    catalog_prefix) -- the uploaded, per-workspace replacement for
+    `LocalDirLayoutFileSource`'s baked-in `config_layouts/` directory.
+
+    CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: strict
+    per-workspace isolation is enforced in the SQL itself (`WHERE
+    workspace_id = %s`), not by holding a per-workspace instance -- a
+    single process-wide instance is enough; there is no per-call state
+    that could leak between workspaces.
+    """
+
+    def __init__(self, dsn: str) -> None:
+        from aryx.store.pool import get_pool  # noqa: PLC0415 -- lazy, avoids
+        # importing the store layer at cpq/ module-import time for callers
+        # that only ever use LocalDirLayoutFileSource.
+        self._pool = get_pool(dsn)
+
+    def get(self, catalog_name: str, workspace_id: int) -> str | None:
+        if not catalog_name:
+            return None
+        from aryx.queries import load  # noqa: PLC0415 -- see __init__'s note
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_cpq_layout_file"), (workspace_id, catalog_name))
+                row = cur.fetchone()
+        if row is None:
+            logger.warning(
+                "cpq layout_source: no active layout file for "
+                "workspace_id=%r catalog_prefix=%r in aryx_cpq_layout_file "
+                "-- this catalog will get no display-order/visibility "
+                "signal from an uploaded layout export", workspace_id, catalog_name,
+            )
+            return None
+        return row[0]
