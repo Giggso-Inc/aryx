@@ -321,18 +321,26 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     from aryx.cpq_ingestion.routing import partition_cpq_ingestion_csv_plans  # noqa: PLC0415
     cpq_ingestion_csv_plans, valid_plans = partition_cpq_ingestion_csv_plans(valid_plans)
 
-    for plan in cpq_ingestion_csv_plans:
+    if cpq_ingestion_csv_plans:
         from aryx.cpq_ingestion.csv_land import land_csv_directly  # noqa: PLC0415
 
+    for plan in cpq_ingestion_csv_plans:
         filename = plan["filename"]
         stem = Path(filename).stem
         jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
                           f"Landing {filename} directly in Postgres…")
         logger.info("confirm job=%s cpq_ingestion csv_direct start filename=%s", job_id, filename)
-        result = land_csv_directly(
-            plan["data"], stem, workspace_id=workspace_id,
-            dsn=settings.effective_dsn(), log_id=job_id,
-        )
+        try:
+            result = land_csv_directly(
+                plan["data"], stem, workspace_id=workspace_id,
+                dsn=settings.effective_dsn(), log_id=job_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "confirm job=%s cpq_ingestion csv_direct failed filename=%s",
+                job_id, filename, exc_info=True,
+            )
+            continue
         logger.info("confirm job=%s cpq_ingestion csv_direct done filename=%s result=%s",
                     job_id, filename, result)
 

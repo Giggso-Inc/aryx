@@ -58,6 +58,10 @@ def land_csv_directly(
     """
     connector = CsvConnector(data, system=SOURCE_SYSTEM, dataset=stem)
     store = PostgresStore(dsn, workspace_id)
+    logger.info(
+        "cpq_ingestion csv_direct did=%s source_key=%s workspace_id=%s starting discover()",
+        log_id, stem, workspace_id,
+    )
     try:
         run_id = discover(connector, store, SOURCE_SYSTEM, stem)
         rows_landed = store.count_landed(run_id)
