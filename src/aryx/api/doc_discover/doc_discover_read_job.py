@@ -1,8 +1,9 @@
 """Background job: read uploaded documents into a discovery snapshot.
 
 Split out of `api/doc_discover_api.py` (Raven Style Compliance Plan,
-Phase 2b, 2026-09-03). Zero test patches against this module — confirmed
-via grep.
+Phase 2b, 2026-09-03). See tests/test_doc_discover_read_job.py (added
+2026-09-30 for the CPQ layout-file diversion) for this module's test
+patches.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from tempfile import NamedTemporaryFile
 from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
+from aryx.cpq_ingestion.routing import cpq_layout_upload_active
 from aryx.pipeline.doc_discovery.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
 from aryx.store.job_store import JobStore
 
@@ -75,12 +77,22 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
     try:
         jobs.update_stage(did, "Reading", 30, f"Reading {len(items)} file(s)…")
         logger.info("doc read start did=%s files=%d context=%r", did, len(items), context)
-        doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in items
+        # CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: a layout-
+        # export upload (.txt/.json under ARYX_INGEST_PIPELINE=cpq_ingestion
+        # + ARYX_CPQ_LAYOUT_SOURCE) is neither a DOC_EXTS document nor a
+        # DATA_EXTS tabular source -- pulled out up front so it doesn't fall
+        # through both classifications and get silently dropped (files=0),
+        # the same bug file_ingest_run.py's _run_files already guards
+        # against on the other upload path.
+        layout_items = [(d, n) for d, n in items if cpq_layout_upload_active(n)]
+        remaining = [(d, n) for d, n in items if not cpq_layout_upload_active(n)]
+        doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in remaining
                      if Path(n).suffix.lower() in DOC_EXTS]
-        tabular = [(d, n) for d, n in items if Path(n).suffix.lower() in DATA_EXTS]
+        tabular = [(d, n) for d, n in remaining if Path(n).suffix.lower() in DATA_EXTS]
         on_progress = _build_read_progress(jobs, did, workspace_id)
         result = read_files(doc_paths, tabular, _local_broker(), context, did=did,
-                            on_progress=on_progress, workspace_id=workspace_id)
+                            on_progress=on_progress, workspace_id=workspace_id,
+                            layout_items=layout_items)
         result["workspace_id"] = workspace_id
         discoveries.put(did, result, workspace_id)
         logger.info("doc read complete did=%s mentions=%d tabular_files=%d types=%d",

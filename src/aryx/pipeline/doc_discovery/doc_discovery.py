@@ -85,7 +85,8 @@ DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                broker: Broker, context: str, did: str | None = None,
                on_progress: Callable[[int, int, list], None] | None = None,
-               workspace_id: int = 1) -> dict[str, Any]:
+               workspace_id: int = 1,
+               layout_items: list[tuple[bytes, str]] | None = None) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing.
 
     on_progress: optional callback forwarded to extract_mentions() for each
@@ -97,6 +98,13 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     files when that pipeline is active (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_
     PIPELINE) — see the XML branch below. Unused otherwise; defaults to 1
     to match every other call site's pre-existing default.
+
+    layout_items: CPQ layout-export files (see cpq_layout_upload_active())
+    already pulled out of the caller's doc/tabular split. Surfaced here as
+    plain-passthrough plans (kind="cpq_layout") in the SAME "tabular"/
+    "files" summary the normal tabular flow uses, so they go through this
+    screen's existing read-then-confirm UX -- nothing is written to
+    aryx_cpq_layout_file until ingest_confirmed() actually approves one.
     """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
@@ -152,6 +160,12 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             if "_text" in headers:
                 plan["match_keys"] = ["_text"]
         tab_plans.append(plan)
+
+    for layout_data, layout_name in (layout_items or []):
+        tab_plans.append({
+            "filename": layout_name, "data": layout_data,
+            "ontology_type": "CPQ Layout File", "kind": "cpq_layout",
+        })
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
@@ -248,6 +262,43 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
+
+    # CPQ layout plans (kind="cpq_layout", see read_files()) are stored
+    # verbatim via store_layout_file() here, on confirm -- never through
+    # _persist_tabular_sources/FK-detection/_run_one_plan below, all of
+    # which assume CSV/JSON tabular data. Removed from valid_plans up front
+    # so nothing downstream ever sees one. Best-effort per file, matching
+    # file_ingest_run.py's _run_files: one bad/oversized layout file is
+    # logged and skipped, not allowed to fail the rest of the confirm.
+    layout_plans = [p for p in valid_plans if p.get("kind") == "cpq_layout"]
+    valid_plans = [p for p in valid_plans if p.get("kind") != "cpq_layout"]
+    if layout_plans:
+        # Lazy import: aryx.cpq_ingestion.__init__ imports pipeline.py,
+        # which imports _xml_to_csvs from THIS module -- a top-level import
+        # here would be circular (same reasoning as the XML branch above).
+        from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge, store_layout_file  # noqa: PLC0415
+    for lp in layout_plans:
+        try:
+            prefix = store_layout_file(
+                lp["data"], lp["filename"],
+                workspace_id=workspace_id, dsn=settings.effective_dsn(),
+            )
+            logger.info(
+                "cpq_ingestion: stored layout file via doc-discovery confirm "
+                "workspace_id=%d catalog_prefix=%r filename=%r",
+                workspace_id, prefix, lp["filename"],
+            )
+        except CpqLayoutFileTooLarge:
+            logger.warning(
+                "cpq_ingestion: layout file %s too large, skipped",
+                lp["filename"], exc_info=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "cpq_ingestion: failed to store layout file %s",
+                lp["filename"], exc_info=True,
+            )
+
     _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
 
     def _report_fk_stage(pct: int, detail: str) -> None:
