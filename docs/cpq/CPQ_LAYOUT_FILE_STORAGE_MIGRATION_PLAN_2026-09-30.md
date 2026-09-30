@@ -359,20 +359,28 @@ two independently-settable flags that could disagree.
    workspace_id)` compared byte-for-byte against the live database —
    **all 11 identical** (content lengths 2,139,000 and 1,186,419 bytes
    matching exactly, per catalog).
-4. **Phase 4 — cutover.** `ARYX_INGEST_PIPELINE` is confirmed **not
-   set** in the current dev_oci deployment (checked live via
-   `printenv`) — Phase 1's note above was wrong to imply otherwise.
-   Cutover therefore needs **both** `ARYX_INGEST_PIPELINE=cpq_ingestion`
-   and `ARYX_CPQ_LAYOUT_SOURCE=oracle` set together (see §4.3's
-   combined-flag design) — setting the layout flag alone will not
-   activate anything. Setting the master switch also activates the XML
-   raw-graph write (`ARYX_CPQ_RAW_GRAPH_ENABLED`, default `true`) for any
-   `.xml` upload made while it's on — a real, deliberate side effect of
-   reusing that switch (see §7 note below), not a bug. After flipping
-   both: watch the exact warning log lines `layout_source.py` already
-   emits on any no-match ("no manifest entry and no fuzzy-matched layout
-   file found...") for regressions across a few real `/ask` turns per
-   known catalog.
+4. **Phase 4 — cutover. DONE (2026-09-30).** Per §7.5's resolution
+   (accept both side effects): `docker-compose-oci.yml`'s `api` service
+   now sets `ARYX_INGEST_FILE_TYPE=${ARYX_INGEST_FILE_TYPE:-xml}`,
+   `ARYX_INGEST_PIPELINE=${ARYX_INGEST_PIPELINE:-cpq_ingestion}`, and
+   `ARYX_CPQ_LAYOUT_SOURCE=${ARYX_CPQ_LAYOUT_SOURCE:-oracle}` (defaults,
+   overridable via `.env` same as every other var here) — `aryx-api-1`
+   rebuilt/recreated with these set, reached `running (healthy)`.
+
+   Live-verified post-cutover: `engine_caches._DEFAULT_LAYOUT_FILE_SOURCE`
+   is now `OracleLayoutFileSource` (was `LocalDirLayoutFileSource`
+   before). `CpqEngine.load_layout_display_order()` called end-to-end
+   for 5 of the 11 real backfilled pairs — all returned the correct,
+   real display-order map sizes (103 entries for the two `ApxNext`
+   variants, 39 for both `Svx` variants) reading from Oracle ADB, no
+   errors, no unexpected no-match warnings for any of the 5. Container
+   logs clean of layout-related errors after recreation.
+5. **Phase 5 — remove the old path.** Once cutover is stable for a
+   full deploy cycle: delete `config_layouts/` from the repo,
+   `LocalDirLayoutFileSource`, `ARYX_CPQ_LAYOUT_DIR` from
+   `.env.example*` (both currently carry an explicit warning comment
+   about this exact directory — those comments get deleted too, not
+   just the env var line), and the "must point at the config_layouts/
 5. **Phase 5 — remove the old path.** Once cutover is stable for a
    full deploy cycle: delete `config_layouts/` from the repo,
    `LocalDirLayoutFileSource`, `ARYX_CPQ_LAYOUT_DIR` from
@@ -460,19 +468,16 @@ two independently-settable flags that could disagree.
 
 All four original open questions are resolved.
 
-5. **NEW (surfaced during Phase 4 planning, 2026-09-30): cutover's
-   master-switch coupling.** Setting `ARYX_INGEST_PIPELINE=cpq_ingestion`
+5. ~~Cutover's master-switch coupling?~~ **RESOLVED (2026-09-30):
+   accept both side effects.** Setting `ARYX_INGEST_PIPELINE=cpq_ingestion`
    to activate the Oracle layout-source backend (§4.3) *also* activates
    the XML raw-graph write for any `.xml` upload made while it's on
    (`ARYX_CPQ_RAW_GRAPH_ENABLED` defaults `true`) — the two features
    share one master switch by design (§4.3's rationale: one on/off story
-   for the whole `cpq_ingestion` feature area). **Needs your decision
-   before Phase 4**: is that an acceptable side effect in dev_oci today,
-   or does the raw-graph feature need to be explicitly disabled
-   (`ARYX_CPQ_RAW_GRAPH_ENABLED=false`) alongside the cutover so only the
-   layout-source behavior changes? Recommend the latter if the raw-graph
-   feature hasn't been separately validated/approved for this
-   environment yet — it's a one-line env addition, not a design change.
+   for the whole `cpq_ingestion` feature area). Confirmed acceptable for
+   dev_oci; `ARYX_CPQ_RAW_GRAPH_ENABLED` left at its default rather than
+   explicitly disabled — if that turns out to be unwanted later, it's a
+   one-line env addition to turn off, not a design change.
 
 ## 8. Non-goals for this pass
 
