@@ -16,6 +16,9 @@ BEGIN
     uploaded_at    TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT pk_aryx_cpq_layout_file PRIMARY KEY (layout_id)
   )';
+-- ORA-00955: name is already used by an existing object -- re-running this
+-- migration against a DB that already has the table. Anything else (bad
+-- permissions, tablespace full, syntax) must re-raise, not be swallowed.
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
 /
@@ -23,6 +26,9 @@ END;
 BEGIN
   EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX idx_aryx_cpq_layout_ws_catalog
     ON aryx_cpq_layout_file (workspace_id, catalog_prefix)';
+-- ORA-00955: index name already used (re-running this migration).
+-- ORA-01408: this exact column list is already indexed under a different
+-- name. Same reasoning as the block above -- anything else must re-raise.
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 AND SQLCODE != -1408 THEN RAISE; END IF;
 END;
 /
