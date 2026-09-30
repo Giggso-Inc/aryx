@@ -10318,7 +10318,12 @@
     ],
     [
       "src/aryx/api/file_ingest/file_ingest_run.py",
-      163,
+      165,
+      "<if>"
+    ],
+    [
+      "src/aryx/api/file_ingest/file_ingest_run.py",
+      234,
       "<if>"
     ],
     [
@@ -13470,6 +13475,21 @@
       "src/aryx/cpq/value_rules/value_rules_script_actions.py",
       14,
       "process_script_backed_actions"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      26,
+      "project_xml_to_raw_graph"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      51,
+      "walk"
+    ],
+    [
+      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
+      68,
+      "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/demo/support_data_generator.py",
