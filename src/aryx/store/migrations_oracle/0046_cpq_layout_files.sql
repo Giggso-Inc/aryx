@@ -23,6 +23,6 @@ END;
 BEGIN
   EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX idx_aryx_cpq_layout_ws_catalog
     ON aryx_cpq_layout_file (workspace_id, catalog_prefix)';
-EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 AND SQLCODE != -1408 THEN RAISE; END IF;
 END;
 /
