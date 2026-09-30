@@ -325,29 +325,54 @@ two independently-settable flags that could disagree.
    dev_oci deployment today, so the live HTTP upload path itself (which
    would also activate the raw-graph feature for all uploads) was
    deliberately left for Phase 4's cutover rather than flipped now.
-2. **Phase 2 — one-time backfill.** A small script (or an
-   `/admin/cpq/layouts/backfill` one-shot endpoint, whichever matches
-   how `discovery_store` migrations were seeded) reads the 5 existing
-   `config_layouts/*.txt` files + `manifest.json`, and inserts one row
-   per catalog into `aryx_cpq_layout_file` for every real workspace
-   that uses CPQ (or a single "default" workspace_id if layouts are
-   genuinely global today — confirm against real usage before writing
-   this, per this session's own established practice of ground-truthing
-   before assuming).
-3. **Phase 3 — parity verification.** For every backfilled
-   `(workspace_id, catalog_prefix)`, assert
-   `OracleLayoutFileSource.get(catalog_prefix) ==
-   LocalDirLayoutFileSource.get(catalog_prefix)` byte-for-byte, run
-   against the live dev_oci container (same ground-truthing discipline
-   as the CPQ_Hardcode_Audit fixes this session did) before trusting
-   the migration.
-4. **Phase 4 — cutover.** Set `ARYX_CPQ_LAYOUT_SOURCE=oracle` in
-   dev_oci (already has `ARYX_INGEST_PIPELINE=cpq_ingestion` set from
-   the existing XML raw-graph rollout, so this one var flips the
-   read-path over — see §4.3's combined-flag design); watch the exact
-   warning log lines `layout_source.py` already emits on any no-match
-   ("no manifest entry and no fuzzy-matched layout file found...") for
-   regressions across a few real `/ask` turns per known catalog.
+2. **Phase 2 — one-time backfill. DONE (2026-09-30).** New
+   `scripts/backfill_cpq_layout_files.py` (dry-run by default, `--apply`
+   to write) ground-truths real `(workspace_id, catalog_prefix)` pairs
+   rather than guessing them: lists every real non-default workspace
+   (`select_non_default_workspace_ids.sql`, the same query T11's `/nuke`
+   audit used), lists each workspace's own real ingested ontology types
+   (`CpqRdb.list_ontology_types`), derives each type's catalog_prefix via
+   the exact same `aryx.cpq.catalog_naming._catalog_prefix()` regex the
+   live engine already uses for catalog scoping, and resolves each real
+   prefix against `config_layouts/` using the existing, already-proven
+   `LocalDirLayoutFileSource` manifest+fuzzy-match logic (no second
+   matching algorithm invented for the backfill).
+
+   Run live against the real dev_oci database: **25 real non-default
+   workspaces found** (`32, 78, 97, 102, 169, 175, 176, 178, 181, 221,
+   222, 274, 342, 386, 388, 391, 395, 397, 399, 402, 404, 703, 704, 783,
+   866` — one more than T11's earlier 24-workspace count, i.e. a real
+   workspace was added since). Of those, **11 real `(workspace_id,
+   catalog_prefix)` pairs matched a local layout file**: `78/176/178/274`
+   → `ApxNextConfig`; `221` → `Svx`; `342/402/704` →
+   `Svx Video Remote Speaker Microphone`; `703` → `ApxnextCnofigdata`
+   (the real, typo-preserving filename-derived prefix — see
+   `layout_source.py`'s own docstring); `704/783` →
+   `ApxnextConfigdata`. Two real catalogs genuinely ingested in this
+   environment (`Sl3500EConfig`, `Sl3500ELightweightDummy`) had **no**
+   matching local file and were correctly skipped, not guessed at —
+   consistent with the live warning `layout_source.py` already emits for
+   those exact catalogs today. All 11 rows applied.
+3. **Phase 3 — parity verification. DONE (2026-09-30).** For all 11
+   backfilled pairs, `OracleLayoutFileSource.get(catalog_prefix,
+   workspace_id)` vs `LocalDirLayoutFileSource.get(catalog_prefix,
+   workspace_id)` compared byte-for-byte against the live database —
+   **all 11 identical** (content lengths 2,139,000 and 1,186,419 bytes
+   matching exactly, per catalog).
+4. **Phase 4 — cutover.** `ARYX_INGEST_PIPELINE` is confirmed **not
+   set** in the current dev_oci deployment (checked live via
+   `printenv`) — Phase 1's note above was wrong to imply otherwise.
+   Cutover therefore needs **both** `ARYX_INGEST_PIPELINE=cpq_ingestion`
+   and `ARYX_CPQ_LAYOUT_SOURCE=oracle` set together (see §4.3's
+   combined-flag design) — setting the layout flag alone will not
+   activate anything. Setting the master switch also activates the XML
+   raw-graph write (`ARYX_CPQ_RAW_GRAPH_ENABLED`, default `true`) for any
+   `.xml` upload made while it's on — a real, deliberate side effect of
+   reusing that switch (see §7 note below), not a bug. After flipping
+   both: watch the exact warning log lines `layout_source.py` already
+   emits on any no-match ("no manifest entry and no fuzzy-matched layout
+   file found...") for regressions across a few real `/ask` turns per
+   known catalog.
 5. **Phase 5 — remove the old path.** Once cutover is stable for a
    full deploy cycle: delete `config_layouts/` from the repo,
    `LocalDirLayoutFileSource`, `ARYX_CPQ_LAYOUT_DIR` from
@@ -433,8 +458,21 @@ two independently-settable flags that could disagree.
    table. Revisit only if rollback capability becomes a real, requested
    operational need — not built preemptively.
 
-All four open questions are now resolved. Nothing left blocking
-implementation start.
+All four original open questions are resolved.
+
+5. **NEW (surfaced during Phase 4 planning, 2026-09-30): cutover's
+   master-switch coupling.** Setting `ARYX_INGEST_PIPELINE=cpq_ingestion`
+   to activate the Oracle layout-source backend (§4.3) *also* activates
+   the XML raw-graph write for any `.xml` upload made while it's on
+   (`ARYX_CPQ_RAW_GRAPH_ENABLED` defaults `true`) — the two features
+   share one master switch by design (§4.3's rationale: one on/off story
+   for the whole `cpq_ingestion` feature area). **Needs your decision
+   before Phase 4**: is that an acceptable side effect in dev_oci today,
+   or does the raw-graph feature need to be explicitly disabled
+   (`ARYX_CPQ_RAW_GRAPH_ENABLED=false`) alongside the cutover so only the
+   layout-source behavior changes? Recommend the latter if the raw-graph
+   feature hasn't been separately validated/approved for this
+   environment yet — it's a one-line env addition, not a design change.
 
 ## 8. Non-goals for this pass
 
