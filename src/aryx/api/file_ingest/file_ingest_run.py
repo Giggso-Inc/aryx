@@ -104,8 +104,18 @@ def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) 
 
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
-               workspace_id: int = 1) -> None:
-    """Run the ingest pipeline for a batch of files in a background thread."""
+               workspace_id: int = 1, layout_catalog_prefix: str | None = None) -> None:
+    """Run the ingest pipeline for a batch of files in a background thread.
+
+    layout_catalog_prefix: explicit catalog_prefix override for any
+    layout-export file(s) in this batch (see cpq_layout_upload_active()
+    below). None (the default) falls back to the filename-derived stem,
+    same as before this parameter existed. Applied to EVERY layout file
+    in the batch if more than one is present -- there is no per-file
+    override in a single multi-file upload request; a client that needs
+    distinct catalog_prefix values for multiple layout files must upload
+    them in separate requests.
+    """
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
@@ -128,6 +138,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 prefix = store_layout_file(
                     layout_data, layout_name,
                     workspace_id=workspace_id, dsn=settings.effective_dsn(),
+                    catalog_prefix=layout_catalog_prefix,
                 )
                 jobs.update_stage(
                     job_id, "Ingest", 20,

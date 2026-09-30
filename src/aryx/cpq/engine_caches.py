@@ -53,6 +53,20 @@ def _resolve_layout_file_source() -> LayoutFileSource:
 
 _DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = _resolve_layout_file_source()
 
+
+def invalidate_layout_cache(workspace_id: int, catalog_prefix: str) -> None:
+    """Drop the process-lifetime layout caches for one (workspace_id,
+    catalog_prefix) pair. Called by `cpq_ingestion.layout_store.
+    store_layout_file()` right after a successful upsert -- without this,
+    an uploaded layout replacing an already-queried pair would keep
+    serving the OLD (or None) cached value for the rest of this process's
+    lifetime, since these caches have no TTL and no other invalidation
+    path (see CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md)."""
+    key = (workspace_id, catalog_prefix)
+    _LAYOUT_COMPONENTS_CACHE.pop(key, None)
+    _LAYOUT_DISPLAY_ORDER_CACHE.pop(key, None)
+    _LAYOUT_FULL_ORDER_CACHE.pop(key, None)
+
 # docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
 # level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by
 # (workspace_id, catalog_prefix). Mirrors data_table_resolver._TABLES_CACHE

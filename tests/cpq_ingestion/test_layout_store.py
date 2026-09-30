@@ -94,3 +94,49 @@ def test_store_layout_file_rejects_oversized_content(monkeypatch):
     with pytest.raises(CpqLayoutFileTooLarge):
         store_layout_file(oversized, "big.txt", workspace_id=1, dsn="fake-dsn")
     assert pool.upserts == []
+
+
+def test_store_layout_file_invalidates_process_lifetime_layout_caches(monkeypatch):
+    """A re-upload replacing an already-queried (workspace_id, catalog_prefix)
+    pair must drop that key from engine_caches.py's layout caches --
+    otherwise the OLD (or None) cached value would keep being served for
+    the rest of this process's lifetime, since those caches have no TTL."""
+    from aryx.cpq import engine_caches
+
+    pool = _FakePool()
+    monkeypatch.setattr("aryx.cpq_ingestion.layout_store.get_pool", lambda dsn: pool)
+
+    key = (7, "ExplicitPrefix")
+    engine_caches._LAYOUT_COMPONENTS_CACHE[key] = [{"stale": True}]
+    engine_caches._LAYOUT_DISPLAY_ORDER_CACHE[key] = {"stale": 1}
+    engine_caches._LAYOUT_FULL_ORDER_CACHE[key] = {"stale": 1}
+    try:
+        store_layout_file(
+            b"{}", "whatever.json",
+            workspace_id=7, dsn="fake-dsn", catalog_prefix="ExplicitPrefix",
+        )
+        assert key not in engine_caches._LAYOUT_COMPONENTS_CACHE
+        assert key not in engine_caches._LAYOUT_DISPLAY_ORDER_CACHE
+        assert key not in engine_caches._LAYOUT_FULL_ORDER_CACHE
+    finally:
+        engine_caches._LAYOUT_COMPONENTS_CACHE.pop(key, None)
+        engine_caches._LAYOUT_DISPLAY_ORDER_CACHE.pop(key, None)
+        engine_caches._LAYOUT_FULL_ORDER_CACHE.pop(key, None)
+
+
+def test_store_layout_file_invalidation_does_not_disturb_other_keys(monkeypatch):
+    from aryx.cpq import engine_caches
+
+    pool = _FakePool()
+    monkeypatch.setattr("aryx.cpq_ingestion.layout_store.get_pool", lambda dsn: pool)
+
+    other_key = (99, "Unrelated")
+    engine_caches._LAYOUT_COMPONENTS_CACHE[other_key] = [{"keep": True}]
+    try:
+        store_layout_file(
+            b"{}", "whatever.json",
+            workspace_id=7, dsn="fake-dsn", catalog_prefix="ExplicitPrefix",
+        )
+        assert engine_caches._LAYOUT_COMPONENTS_CACHE[other_key] == [{"keep": True}]
+    finally:
+        engine_caches._LAYOUT_COMPONENTS_CACHE.pop(other_key, None)

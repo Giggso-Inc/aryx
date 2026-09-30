@@ -85,4 +85,12 @@ def store_layout_file(
         "cpq_ingestion: stored layout file workspace_id=%d catalog_prefix=%r "
         "filename=%r bytes=%d", workspace_id, prefix, filename, len(data),
     )
+    # Without this, a re-upload replacing an already-queried (workspace_id,
+    # catalog_prefix) pair would keep serving the OLD cached value for the
+    # rest of this process's lifetime -- engine_caches.py's layout caches
+    # have no TTL. Lazy import: avoids pulling the whole heavy cpq/ engine
+    # module chain into this otherwise-small write-side module at import
+    # time for callers that never touch it.
+    from aryx.cpq.engine_caches import invalidate_layout_cache  # noqa: PLC0415
+    invalidate_layout_cache(workspace_id, prefix)
     return prefix
