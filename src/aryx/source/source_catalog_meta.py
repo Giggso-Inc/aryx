@@ -151,4 +151,6 @@ def _display_kind(system: str, dataset: str) -> str:
         return "REST API"
     if system == "document" or dataset.endswith((".pdf", ".docx", ".xml")):
         return "Document"
+    if system == "cpq_layout":
+        return "CPQ Layout File"
     return system.replace("_", " ").title()
