@@ -84,13 +84,19 @@ DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                broker: Broker, context: str, did: str | None = None,
-               on_progress: Callable[[int, int, list], None] | None = None) -> dict[str, Any]:
+               on_progress: Callable[[int, int, list], None] | None = None,
+               workspace_id: int = 1) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing.
 
     on_progress: optional callback forwarded to extract_mentions() for each
     document — see doc_router.DocumentRouterConnector / ontology.extract for
     the (completed, total, new_records) signature. Lets the caller persist
     partial progress on long-running (1000+ page) documents.
+
+    workspace_id: forwarded to the cpq_ingestion raw-graph writer for XML
+    files when that pipeline is active (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_
+    PIPELINE) — see the XML branch below. Unused otherwise; defaults to 1
+    to match every other call site's pre-existing default.
     """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
@@ -111,7 +117,20 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for d, n in tabular:
         suffix = Path(n).suffix.lower()
         if suffix == ".xml":
-            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
+            # Lazy import: aryx.cpq_ingestion.pipeline itself imports
+            # _xml_to_csvs from this module, so a top-level import here
+            # would be circular.
+            from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten  # noqa: PLC0415
+            from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
+
+            if cpq_ingestion_pipeline_active(n):
+                xml_csvs = project_raw_graph_and_flatten(
+                    d, Path(n).stem, workspace_id=workspace_id,
+                    dsn=settings.effective_dsn(), graph_url=settings.graph_url, log_id=did,
+                )
+            else:
+                xml_csvs = _xml_to_csvs(d, Path(n).stem, log_id=did)
+            for csv_bytes, csv_name in xml_csvs:
                 converted_tabular.append((csv_bytes, csv_name, n, d))
         elif suffix == ".xlsx":
             for csv_bytes, csv_name in _xlsx_to_csvs(d, Path(n).stem, log_id=did):

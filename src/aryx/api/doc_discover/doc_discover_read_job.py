@@ -80,7 +80,7 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         tabular = [(d, n) for d, n in items if Path(n).suffix.lower() in DATA_EXTS]
         on_progress = _build_read_progress(jobs, did, workspace_id)
         result = read_files(doc_paths, tabular, _local_broker(), context, did=did,
-                            on_progress=on_progress)
+                            on_progress=on_progress, workspace_id=workspace_id)
         result["workspace_id"] = workspace_id
         discoveries.put(did, result, workspace_id)
         logger.info("doc read complete did=%s mentions=%d tabular_files=%d types=%d",
