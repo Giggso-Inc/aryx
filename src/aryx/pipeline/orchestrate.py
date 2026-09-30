@@ -65,6 +65,43 @@ def _check_cancelled(should_stop: ShouldStop | None, stage: str) -> None:
         raise PipelineCancelled(f"job cancelled before stage={stage}")
 
 
+def project_workspace_graph(
+    dsn: str, graph_url: str, workspace_id: int, estore: EntityStore,
+    *, on_progress: Progress | None = None,
+) -> dict[str, int]:
+    """Project every resolved entity/relationship in a workspace to its graph store.
+
+    Factored out of ``run_pipeline``'s own project stage (below) so a caller
+    that resolves entities outside run_pipeline's own connector/discover
+    flow -- e.g. cpq_ingestion's raw-graph resolve/relate bridge, which runs
+    one resolve per XML tag rather than one per file, then needs a single
+    final projection once all tags are done -- can trigger the same, one
+    tested graph projection instead of re-deriving the FalkorStore/
+    OracleGraphStore selection and ``project_auto`` call itself.
+    """
+    logger.info("project stage — building type ancestors ws=%s", workspace_id)
+    type_ancestors = _build_type_ancestors(dsn)
+    cfg = get_settings()
+    if cfg.effective_graph_backend() == "oci_graph":
+        try:
+            from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
+            graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
+        except ImportError as exc:
+            raise RuntimeError(
+                "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle_graph_store is not "
+                "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
+            ) from exc
+    else:
+        graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+    logger.info("project stage — calling project_auto ws=%s", workspace_id)
+    pstore = ProjectionStore(dsn, workspace_id=workspace_id)
+    return project_auto(
+        estore, pstore, graph_inst,
+        type_ancestors=type_ancestors, workspace_id=workspace_id,
+        on_progress=on_progress, pct_range=(90, 95),
+    )
+
+
 def run_pipeline(
     connector: Connector,
     dsn: str,
@@ -259,27 +296,8 @@ def run_pipeline(
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):
-                logger.info("project stage — building type ancestors ws=%s", workspace_id)
-                type_ancestors = _build_type_ancestors(dsn)
-                cfg = get_settings()
-                if cfg.effective_graph_backend() == "oci_graph":
-                    try:
-                        from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
-                        graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
-                    except ImportError as exc:
-                        raise RuntimeError(
-                            "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle_graph_store is not "
-                            "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
-                        ) from exc
-                else:
-                    graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
-                logger.info("project stage — calling project_auto ws=%s", workspace_id)
-                pstore = ProjectionStore(dsn, workspace_id=workspace_id)
-                counts = project_auto(
-                    estore, pstore, graph_inst,
-                    type_ancestors=type_ancestors, workspace_id=workspace_id,
-                    on_progress=on_progress, pct_range=(90, 95),
-                )
+                counts = project_workspace_graph(dsn, graph_url, workspace_id, estore,
+                                                 on_progress=on_progress)
         else:
             logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
             _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('entities', 0)} nodes, {counts.get('relationships', 0)} edges")

@@ -250,6 +250,38 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
     _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
 
+    # cpq_ingestion: an XML file whose plans are still active for this
+    # pipeline (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_PIPELINE) gets resolved and
+    # related directly from its raw graph instead of through the generic CSV
+    # pipeline below -- see partition_cpq_ingestion_plans()'s docstring for
+    # why this groups by source_filename rather than iterating plans
+    # directly. Excluded from `valid_plans` before FK detection and
+    # `_run_one_plan` below for the same reason: these records already went
+    # through containment-based relate, not FK-guessing, so re-running them
+    # through the CSV path would both double-resolve them and pollute FK
+    # detection with columns (`_text`, entity tag names) that were never
+    # meant to be joined on.
+    from aryx.cpq_ingestion.routing import partition_cpq_ingestion_plans  # noqa: PLC0415
+    cpq_ingestion_source_files, valid_plans = partition_cpq_ingestion_plans(valid_plans)
+
+    for source_filename, plan in cpq_ingestion_source_files.items():
+        from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
+        from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
+
+        stem = Path(source_filename).stem
+        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+                          f"Resolving {source_filename} directly from its raw graph…")
+        logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
+                    job_id, source_filename)
+        projection = project_xml_to_raw_graph(plan["source_bytes"])
+        result = resolve_and_relate_raw_graph(
+            projection, workspace_id=workspace_id, source_key=stem,
+            dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+            broker=broker, log_id=job_id,
+        )
+        logger.info("confirm job=%s cpq_ingestion resolve/relate done source_filename=%s result=%s",
+                    job_id, source_filename, result)
+
     def _report_fk_stage(pct: int, detail: str) -> None:
         # A transient job-store failure while reporting progress must never
         # abort real FK-detection work — same discipline as dynamic_fk.py's

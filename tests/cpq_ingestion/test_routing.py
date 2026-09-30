@@ -1,11 +1,16 @@
 """cpq_ingestion_pipeline_active / cpq_layout_upload_active — env-var
-activation matrices."""
+activation matrices. partition_cpq_ingestion_plans — grouping tabular
+plans by source XML file for the resolve/relate bridge."""
 from __future__ import annotations
 
 import pytest
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
-from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active, cpq_layout_upload_active
+from aryx.cpq_ingestion.routing import (
+    cpq_ingestion_pipeline_active,
+    cpq_layout_upload_active,
+    partition_cpq_ingestion_plans,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -134,3 +139,98 @@ def test_layout_active_for_any_non_empty_layout_source_value(monkeypatch):
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
     monkeypatch.setenv("ARYX_CPQ_LAYOUT_SOURCE", "anything-non-empty")
     assert cpq_layout_upload_active("layout.txt") is True
+
+
+# ── partition_cpq_ingestion_plans ────────────────────────────────────────────
+
+def _xml_plan(filename: str, source_filename: str) -> dict:
+    return {"filename": filename, "source_filename": source_filename, "source_bytes": b"<x/>"}
+
+
+def _csv_plan(filename: str) -> dict:
+    return {"filename": filename}
+
+
+def test_partition_groups_multiple_tag_plans_under_one_source_file(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    plans = [
+        _xml_plan("po_PurchaseOrder.csv", "po.xml"),
+        _xml_plan("po_Customer.csv", "po.xml"),
+    ]
+
+    grouped, remaining = partition_cpq_ingestion_plans(plans)
+
+    assert list(grouped.keys()) == ["po.xml"]
+    assert remaining == []
+
+
+def test_partition_keeps_the_first_plan_seen_per_source_file(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    first = _xml_plan("po_PurchaseOrder.csv", "po.xml")
+    second = _xml_plan("po_Customer.csv", "po.xml")
+
+    grouped, _ = partition_cpq_ingestion_plans([first, second])
+
+    assert grouped["po.xml"] is first
+
+
+def test_partition_separates_two_distinct_source_files(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    plans = [_xml_plan("a_Type1.csv", "a.xml"), _xml_plan("b_Type1.csv", "b.xml")]
+
+    grouped, remaining = partition_cpq_ingestion_plans(plans)
+
+    assert set(grouped.keys()) == {"a.xml", "b.xml"}
+    assert remaining == []
+
+
+def test_partition_leaves_inactive_xml_plans_in_remaining(monkeypatch):
+    monkeypatch.delenv("ARYX_INGEST_FILE_TYPE", raising=False)
+    monkeypatch.delenv("ARYX_INGEST_PIPELINE", raising=False)
+    plans = [_xml_plan("po_PurchaseOrder.csv", "po.xml")]
+
+    grouped, remaining = partition_cpq_ingestion_plans(plans)
+
+    assert grouped == {}
+    assert remaining == plans
+
+
+def test_partition_leaves_plans_without_source_filename_in_remaining(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    plans = [_csv_plan("regular.csv")]
+
+    grouped, remaining = partition_cpq_ingestion_plans(plans)
+
+    assert grouped == {}
+    assert remaining == plans
+
+
+def test_partition_leaves_non_xml_source_files_in_remaining(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    plans = [{"filename": "sheet.csv", "source_filename": "workbook.xlsx", "source_bytes": b"x"}]
+
+    grouped, remaining = partition_cpq_ingestion_plans(plans)
+
+    assert grouped == {}
+    assert remaining == plans
+
+
+def test_partition_empty_input_returns_empty_outputs():
+    assert partition_cpq_ingestion_plans([]) == ({}, [])
+
+
+def test_partition_mixed_batch_separates_xml_and_regular_plans(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    xml_plan = _xml_plan("po_PurchaseOrder.csv", "po.xml")
+    csv_plan = _csv_plan("regular.csv")
+
+    grouped, remaining = partition_cpq_ingestion_plans([xml_plan, csv_plan])
+
+    assert list(grouped.values()) == [xml_plan]
+    assert remaining == [csv_plan]
