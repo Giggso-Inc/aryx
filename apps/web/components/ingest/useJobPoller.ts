@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { isHttpStatusError } from "@/lib/shay-session";
 
-export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void) {
+export function useJobPoller(
+  jobId: string | null, onDone: (ok: boolean) => void, workspaceId?: number,
+) {
   const [stage, setStage] = useState<string | null>(null);
   const [pct, setPct] = useState<number | null>(null);
   const onDoneRef = useRef(onDone);
@@ -17,7 +19,14 @@ export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void
     const tick = async () => {
       timer = null;
       try {
-        const j = await api.getJob(jobId);
+        // workspaceId: without it, GET /admin/jobs/{job_id} defaults to
+        // workspace 1 server-side and 404s for a job in any other
+        // workspace even while it's still running successfully -- the
+        // caught 404 below then reports a false "failed" for a job that
+        // actually completes moments later. Confirmed live on the
+        // Documents-tab read flow (workspace 402): a real read job that
+        // succeeded (tabular_plans=1) still surfaced "Read job failed".
+        const j = await api.getJob(jobId, workspaceId);
         if (dead) return;
         setStage(j.stage);
         setPct(j.pct);
@@ -57,7 +66,7 @@ export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [jobId]); // onDone intentionally excluded — kept current via ref to avoid poll restart
+  }, [jobId, workspaceId]); // onDone intentionally excluded — kept current via ref to avoid poll restart
 
   return { stage, pct };
 }
