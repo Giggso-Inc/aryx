@@ -159,6 +159,16 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                 headers = []
             if "_text" in headers:
                 plan["match_keys"] = ["_text"]
+        elif Path(filename).suffix.lower() == ".csv":
+            # A plain (not XML/XLSX-derived) CSV upload has no "parent
+            # workbook" to fan back in to -- one file is already one plan --
+            # so it's flagged directly here rather than routed through
+            # source_filename/source_bytes, which _persist_tabular_sources()
+            # (below) treats as "an XML/XLSX parent to catalog", not
+            # something a plain CSV upload has.
+            from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
+            if cpq_ingestion_pipeline_active(filename):
+                plan["cpq_csv_direct"] = True
         tab_plans.append(plan)
 
     for layout_data, layout_name in (layout_items or []):
@@ -298,6 +308,33 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 "cpq_ingestion: failed to store layout file %s",
                 lp["filename"], exc_info=True,
             )
+
+    # cpq_ingestion: a plain CSV upload whose plan is active for this
+    # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
+    # cpq_ingestion) lands directly in Postgres (aryx_landed_record) and
+    # stops there -- no resolve, no relate, no graph entity/relationship,
+    # no graph projection. Excluded from `valid_plans` before
+    # _persist_tabular_sources (a plain CSV upload has no "parent workbook"
+    # for that function to catalog anyway -- see the cpq_csv_direct comment
+    # in read_files()) and before FK detection/_run_one_plan below, for the
+    # same double-resolve reasoning as the XML branch just below this one.
+    from aryx.cpq_ingestion.routing import partition_cpq_ingestion_csv_plans  # noqa: PLC0415
+    cpq_ingestion_csv_plans, valid_plans = partition_cpq_ingestion_csv_plans(valid_plans)
+
+    for plan in cpq_ingestion_csv_plans:
+        from aryx.cpq_ingestion.csv_land import land_csv_directly  # noqa: PLC0415
+
+        filename = plan["filename"]
+        stem = Path(filename).stem
+        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+                          f"Landing {filename} directly in Postgres…")
+        logger.info("confirm job=%s cpq_ingestion csv_direct start filename=%s", job_id, filename)
+        result = land_csv_directly(
+            plan["data"], stem, workspace_id=workspace_id,
+            dsn=settings.effective_dsn(), log_id=job_id,
+        )
+        logger.info("confirm job=%s cpq_ingestion csv_direct done filename=%s result=%s",
+                    job_id, filename, result)
 
     _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
 
