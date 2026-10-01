@@ -95,3 +95,47 @@ def test_read_files_defaults_workspace_id_to_one_for_backward_compatibility():
 
     sig = inspect.signature(read_files)
     assert sig.parameters["workspace_id"].default == 1
+
+
+def test_summary_files_surfaces_the_real_uploaded_xml_filename():
+    """UI regression guard: the "Review discovered types" screen renders
+    summary["files"][i]["filename"] verbatim (see DocsSummaryStep.tsx). For
+    an XML upload that's internally split into one synthetic
+    "<stem>_<Tag>.csv" plan per discovered element type -- showing that
+    synthetic name made every XML upload look like it had silently turned
+    into a CSV file, even though the actual ingested bytes are still the
+    original XML (source_bytes). The frontend now prefers
+    source_filename when present; this confirms the backend puts it there."""
+    with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
+        mock_write.return_value = RawGraphWriteResult(
+            nodes_written=2, edges_written=0, backend="falkordb", graph_ref="graph=x",
+        )
+        result = read_files(
+            doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
+            broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=50,
+        )
+
+    files = result["summary"]["files"]
+    assert len(files) >= 1
+    for f in files:
+        assert f["source_filename"] == "sample.xml"
+        assert f["filename"] != "sample.xml"  # the synthetic per-tag name, still distinct
+        assert f["filename"].endswith(".csv")  # confirms this guard targets the real leak
+
+
+def test_summary_files_omits_source_filename_for_a_plain_csv_upload():
+    """A plain CSV upload has no "parent" file -- filename IS the real
+    upload, so source_filename must not be fabricated for it (would make
+    the UI display something misleading instead of just omitting the key,
+    which DiscoverySummary's TS type already treats as optional)."""
+    from aryx.pipeline.doc_discovery.doc_discovery import read_files as _read_files
+
+    result = _read_files(
+        doc_paths=[], tabular=[(b"id,name\n1,Widget\n", "plain.csv")],
+        broker=Broker.__new__(Broker), context="", did="test-did",
+    )
+
+    files = result["summary"]["files"]
+    assert len(files) == 1
+    assert files[0]["filename"] == "plain.csv"
+    assert "source_filename" not in files[0]

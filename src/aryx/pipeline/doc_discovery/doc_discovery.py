@@ -182,7 +182,15 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
         by_type.setdefault(m.payload["type"], []).append(m.payload["name"])
     types = [{"type": t, "count": len(v), "examples": list(dict.fromkeys(v))[:5]}
              for t, v in sorted(by_type.items(), key=lambda kv: -len(kv[1]))]
-    files = [{"filename": p["filename"], "ontology_type": p["ontology_type"]} for p in tab_plans]
+    files = [
+        {
+            "filename": p["filename"],
+            "ontology_type": p["ontology_type"],
+            "source_filename": p["source_filename"],
+        } if p.get("source_filename") else
+        {"filename": p["filename"], "ontology_type": p["ontology_type"]}
+        for p in tab_plans
+    ]
     logger.info("read_files done did=%s mentions=%d tabular_plans=%d types=%d files=%d",
                 did, len(mentions), len(tab_plans), len(types), len(files))
     return {"mentions": mentions, "tabular": tab_plans,
