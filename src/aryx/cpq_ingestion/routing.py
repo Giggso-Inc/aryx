@@ -15,8 +15,9 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
 
     Both ``ARYX_INGEST_FILE_TYPE`` and ``ARYX_INGEST_PIPELINE`` must be set,
     and the pipeline must be ``cpq_ingestion`` (case-insensitive) and the
-    file's extension must match the configured file type (case-insensitive,
-    leading dot ignored on both sides). Any other combination — including
+    file's extension must match one of the configured file types (a
+    comma-separated list such as ``xml,csv``; case-insensitive, leading dot
+    and surrounding whitespace ignored). Any other combination — including
     both settings left at their empty defaults — returns False, so the
     existing XML->CSV path is unaffected unless explicitly opted into.
     """
@@ -30,10 +31,14 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
         )
         return False
     suffix = Path(filename).suffix.lower().lstrip(".")
-    configured_type = settings.ingest_file_type.strip().lower().lstrip(".")
-    active = suffix == configured_type
+    configured_types = {
+        t.strip().lower().lstrip(".")
+        for t in settings.ingest_file_type.split(",")
+        if t.strip()
+    }
+    active = suffix in configured_types
     logger.debug(
-        "cpq_ingestion: routing decision for %s: suffix=%r configured_type=%r active=%s",
-        filename, suffix, configured_type, active,
+        "cpq_ingestion: routing decision for %s: suffix=%r configured_types=%s active=%s",
+        filename, suffix, sorted(configured_types), active,
     )
     return active

@@ -60,3 +60,18 @@ def test_leading_dot_in_configured_file_type_is_tolerated(monkeypatch):
     monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", ".xml")
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
     assert cpq_ingestion_pipeline_active("catalog.xml") is True
+
+
+def test_comma_list_activates_for_each_listed_type(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml,csv")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.xml") is True
+    assert cpq_ingestion_pipeline_active("rates.CSV") is True
+    assert cpq_ingestion_pipeline_active("notes.json") is False
+
+
+def test_comma_list_tolerates_whitespace_dots_and_empty_entries(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", " .xml , ,csv ")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.xml") is True
+    assert cpq_ingestion_pipeline_active("rates.csv") is True
