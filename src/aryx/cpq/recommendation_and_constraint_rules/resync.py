@@ -9,6 +9,7 @@ Stateless and purely functional -- no ``CpqEngine`` instance needed; same
 
 from __future__ import annotations
 
+from aryx.cpq.base_model_placeholder import is_base_model_placeholder
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import _valid, logger
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
@@ -86,6 +87,8 @@ def resync_stale_recommendations(
         if recommended_value is None:
             continue
         if not _valid(recommended_value) or current.lower() == recommended_value.lower():
+            continue
+        if is_base_model_placeholder(vn, recommended_value):
             continue
         # Same guard as apply_recommendation_rules: a "correction" back
         # to a value a DIFFERENT, currently-active constraint has

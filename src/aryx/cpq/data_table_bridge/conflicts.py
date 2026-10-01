@@ -7,8 +7,12 @@ calls.
 
 from __future__ import annotations
 
+from aryx.config import get_settings
 from aryx.cpq.catalog_profile import resolve_base_model_vn
-from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
+from aryx.cpq.data_table_bridge.candidates import (
+    _DEFAULT_CPQ_MODEL_CANDIDATES,
+    _cpq_model_candidates,
+)
 from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs,
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
@@ -21,6 +25,19 @@ from aryx.cpq.state import MenuOption
 # a circular import, since `engine.py` imports THIS package, not the
 # reverse. Keep in sync with `CpqEngine._CONFIRMED_SOURCES` in engine.py.
 _CONFIRMED_SOURCES: frozenset[str] = frozenset({"user", "hint", "cascade"})
+
+
+def _without_generic_non_primary(cands: tuple[str, ...]) -> tuple[str, ...]:
+    """Port of aryxent PR 13/14: drop the generic APXNEXT fallback pair from
+    every position except the first (the primary), so it can neither
+    contribute a spurious single value nor veto a real contradiction.
+    No-op unless `cpq_generic_candidate_exclusion_enabled` is on."""
+    if not get_settings().cpq_generic_candidate_exclusion_enabled:
+        return cands
+    return tuple(
+        c for i, c in enumerate(cands)
+        if i == 0 or c not in _DEFAULT_CPQ_MODEL_CANDIDATES
+    )
 
 
 def _invalidate_inconsistent_paired_values(
@@ -40,9 +57,9 @@ def _invalidate_inconsistent_paired_values(
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
-    cands = _cpq_model_candidates(
+    cands = _without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    )
+    ))
     # Intersection, not union: `base_model` can legitimately map to multiple
     # real CPQModel candidates. A combo is only a real contradiction if NO
     # candidate model accepts it.
@@ -105,9 +122,9 @@ def _resolve_via_data_tables(
     if not base_model:
         return None
     product = filled.get("productSelectionProduct_all", "")
-    for cpq_model in _cpq_model_candidates(
+    for cpq_model in _without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    ):
+    )):
         values = dt_resolve_whitelist_values(
             cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
         )

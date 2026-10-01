@@ -83,4 +83,13 @@ def _cpq_model_candidates(
         base_model, workspace_id, catalog_prefix, cache,
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
+    if (
+        extra and primary == _DEFAULT_CPQ_MODEL_CANDIDATES
+        and get_settings().cpq_candidates_real_models_first_enabled
+    ):
+        # Partial port of aryxent PR 3/10: real models discovered for the
+        # known base model go BEFORE the generic APXNEXT fallback, so a
+        # caller that stops at the first single value no longer answers
+        # for APX NEXT. Off by default.
+        return extra + primary
     return primary + extra if extra else primary

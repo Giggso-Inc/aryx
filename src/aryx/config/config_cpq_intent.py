@@ -324,3 +324,54 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
         ),
     )
+
+    cpq_bml_tilde_split_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 12 fix (aryxent_bug_cpq-blind-pick-"
+            "unscoped-menu.md): also split a BML script's quoted return "
+            "value on '~' (e.g. \"A~B~C\"), the catalog's second real "
+            "multi-value packing convention besides '|^|'. Off by default "
+            "-- when off, only '|^|' is split, exactly as before. Override "
+            "with ARYX_CPQ_BML_TILDE_SPLIT_ENABLED=true."
+        ),
+    )
+    cpq_base_model_placeholder_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 4 fix: reject the placeholder value '*' "
+            "(see cpq/base_model_placeholder.py) when a recommendation rule "
+            "tries to write it into a base-model attribute, at the three "
+            "write sites (apply_recommendation_rules, "
+            "resync_stale_recommendations, tier2_satisfied_rec). Off by "
+            "default -- when off, behaviour is byte-identical to before. "
+            "Override with ARYX_CPQ_BASE_MODEL_PLACEHOLDER_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_generic_candidate_exclusion_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 13/14 fixes: in "
+            "data_table_bridge/conflicts.py, (a) _resolve_via_data_tables "
+            "skips the generic ('APXNEXT','APXNEXT_BOM') fallback pair when "
+            "it is not the primary candidate, and (b) "
+            "_invalidate_inconsistent_paired_values leaves it out of the "
+            "per-model intersection. Off by default -- when off, both "
+            "behave exactly as before. Override with "
+            "ARYX_CPQ_GENERIC_CANDIDATE_EXCLUSION_ENABLED=true."
+        ),
+    )
+    cpq_candidates_real_models_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Partial port of the aryxent PR 3/10 candidate-order fix: in "
+            "data_table_bridge/candidates.py, when the primary candidates "
+            "are the generic ('APXNEXT','APXNEXT_BOM') fallback and real "
+            "CPQModels were discovered for the known base model, put the "
+            "real models FIRST so callers (which stop at the first single "
+            "value) no longer answer for APX NEXT. Does not add a "
+            "resolved-model object (dev_oci has no model_resolution). Off "
+            "by default -- when off, order is unchanged. Override with "
+            "ARYX_CPQ_CANDIDATES_REAL_MODELS_FIRST_ENABLED=true."
+        ),
+    )
