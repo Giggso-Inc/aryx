@@ -17,10 +17,22 @@ from aryx.cpq.engine import (
     _sole_opt_out_option,
 )
 from aryx.cpq.model_policy import resolve_blind_fill_risk_accepted_membership
+from aryx.cpq.model_scope_pick import scoped_first_available
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
     from aryx.cpq.state import ConfigAttr
+
+
+def _model_scoped_first(ctx: "FillContext", scope: "FillScope", state: AttrResolution):
+    """``valid_opts[0]``, or (cpq_model_scope_lookups_enabled + resolved
+    model) the first option that model's Whitelist allows. Flag off ->
+    always ``valid_opts[0]``, unchanged."""
+    scoped = scoped_first_available(
+        state.vn, state.valid_opts, ctx.filled,
+        scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+    )
+    return scoped if scoped is not None else state.valid_opts[0]
 
 
 def single_chain_tail(
@@ -88,8 +100,9 @@ def single_chain_tail(
         # attr with no other resolution signal was still
         # blind-picked unconditionally. See the `elif`
         # immediately below for the new layout-hidden case.
-        state.value = state.valid_opts[0].item_value
-        state.display = state.valid_opts[0].display_name
+        _first = _model_scoped_first(ctx, scope, state)
+        state.value = _first.item_value
+        state.display = _first.display_name
         state.source = "default_first_available"
     elif scope.display_order is not None:
         # Layout map loaded, but this attr isn't in its
@@ -108,8 +121,9 @@ def single_chain_tail(
         # menu order — well-defined for boolean (only two
         # states) and safe here because a rule REQUIRES this
         # attr to be resolved for the cascade to proceed.
-        state.value = state.valid_opts[0].item_value
-        state.display = state.valid_opts[0].display_name
+        _first = _model_scoped_first(ctx, scope, state)
+        state.value = _first.item_value
+        state.display = _first.display_name
         state.source = state.governed_source
     # else: nothing above (rec/data-table/confirmed-
     # default) justified a value for this specific,

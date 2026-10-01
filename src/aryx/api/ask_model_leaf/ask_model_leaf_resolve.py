@@ -19,6 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.api.ask_model_leaf.ask_model_leaf_bind import (
+    bind_turn_model_context,
+    pick_top_text_match,
+    seed_model_vn_from_resolution,
+)
 from aryx.api.ask_model_leaf.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
 from aryx.api.ask_model_leaf.ask_model_leaf_norm import _norm_leaf
 from aryx.api.ask_model_leaf.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
@@ -37,8 +42,13 @@ def _resolve_model_leaf(
     """
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
+    bind_turn_model_context(req, session, catalog_prefix, switch_trigger_question)
     model_vn = _cpq_engine.single_model_variable_name(
         reader, req.workspace_id, catalog_prefix)
+    if not model_vn:
+        # aryxent PR 2 (cpq_model_context_seed_enabled, default off): multi-
+        # leaf catalogs seed the punch-in context from the resolved model.
+        model_vn = seed_model_vn_from_resolution()
     if model_vn:
         hints.setdefault("_bm_model_variable_name", model_vn)
         session.pending_model_leaf_candidates = []
@@ -98,6 +108,10 @@ def _resolve_model_leaf(
         ]
         if len(_text_matches) == 1:
             _resolved_leaf = _text_matches[0]
+        else:
+            # cpq_model_leaf_pick_top_enabled (default off): 2+ matches ->
+            # take the top one instead of asking.
+            _resolved_leaf = pick_top_text_match(_text_matches)
 
     if _resolved_leaf:
         # Force-set, not setdefault: extract_flag_hints may have already

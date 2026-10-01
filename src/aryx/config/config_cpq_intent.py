@@ -375,3 +375,54 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_CANDIDATES_REAL_MODELS_FIRST_ENABLED=true."
         ),
     )
+    cpq_model_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 1 (model_resolution). When on, the ask flow "
+            "resolves, once per turn, which catalog model the customer's "
+            "wording refers to (Basemodeltoconfig + BmCatalog tree + "
+            "Flagsforflashport) and binds it to the turn via a contextvar "
+            "(cpq/model_resolution.py). Binding alone changes nothing; it is "
+            "what the cpq_model_context_seed_enabled, "
+            "cpq_model_scope_lookups_enabled and cpq_model_leaf_pick_top_"
+            "enabled flags read. Off by default -- when off no resolution "
+            "runs and behaviour is unchanged. Override with "
+            "ARYX_CPQ_MODEL_RESOLUTION_ENABLED=true."
+        ),
+    )
+    cpq_model_leaf_pick_top_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_model_resolution_enabled. In the ask flow's model-leaf "
+            "disambiguation (ask_model_leaf_resolve.py), when the customer's "
+            "wording matches 2+ catalog model leaves, pick the resolver's "
+            "top match (deterministic ranking) and log that it did so, "
+            "instead of asking which model was meant (aryxent behaviour). "
+            "Off by default -- when off, the existing question is asked. "
+            "Override with ARYX_CPQ_MODEL_LEAF_PICK_TOP_ENABLED=true."
+        ),
+    )
+    cpq_model_context_seed_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 2. Needs cpq_model_resolution_enabled. When "
+            "single_model_variable_name finds nothing (multi-leaf catalog), "
+            "seed _bm_model_variable_name from the turn's resolved model "
+            "node so model-guarded rule scripts can evaluate. Never "
+            "overrides the single-leaf mechanism. Off by default. Override "
+            "with ARYX_CPQ_MODEL_CONTEXT_SEED_ENABLED=true."
+        ),
+    )
+    cpq_model_scope_lookups_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 3. Needs cpq_model_resolution_enabled. When "
+            "on: (a) _cpq_model_candidates prepends the resolved model's "
+            "cpqModel when missing; (b) the blind first-available picks "
+            "(tier6_single_b, ask_data_gap, ask_rule_governed_blind) take "
+            "the first option the resolved model's own Whitelist allows "
+            "(cpq/model_scope_pick.py). Off by default -- when off, "
+            "behaviour is byte-identical. Override with "
+            "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
+        ),
+    )

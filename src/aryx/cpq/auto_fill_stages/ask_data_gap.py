@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.model_scope_pick import scoped_first_available
 from aryx.cpq.engine import (
     _KNOWN_MISSING_DATA_TABLES,
     _valid,
@@ -105,7 +106,10 @@ def try_dt_governed_blind(
             and (_blind_allowed is None or o.item_value in _blind_allowed)
         ]
         if _blind_opts:
-            _blind_first = _blind_opts[0]
+            _blind_first = scoped_first_available(
+                state.vn, _blind_opts, ctx.filled, scope.workspace_id,
+                scope.catalog_prefix, ctx.dt_cache,
+            ) or _blind_opts[0]
             ctx.filled[state.vn] = _blind_first.item_value
             ctx.display_filled[state.vn] = _blind_first.display_name
             ctx.sources.setdefault(state.vn, "blind_pick_governed")
