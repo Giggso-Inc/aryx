@@ -18,15 +18,34 @@ logger = logging.getLogger(__name__)
 _LAYOUT_UPLOAD_SUFFIXES = frozenset({"txt", "json"})
 
 
+def _active_file_types() -> frozenset[str]:
+    """Parse ``ARYX_INGEST_FILE_TYPE`` into a set of enabled extensions.
+
+    Comma-separated, case-insensitive, leading dot ignored on either side
+    (``"xml"``, ``"XML"``, and ``".xml"`` all normalize the same way) --
+    same convention as this codebase's other comma-separated config
+    (``ARYX_ID_LIKE_COLUMN_NAMES``, ``ARYX_FK_KEY_SUFFIXES``). ``"xml,csv"``
+    activates both file types at once, each routed by
+    ``cpq_ingestion_pipeline_active()``'s callers to its own, independent
+    code path (XML: raw-graph resolve/relate; CSV: direct-to-Postgres
+    landing, see csv_land.py) -- one value never disables the other.
+    """
+    return frozenset(
+        t.strip().lower().lstrip(".")
+        for t in get_cpq_ingestion_settings().ingest_file_type.split(",")
+        if t.strip()
+    )
+
+
 def cpq_ingestion_pipeline_active(filename: str) -> bool:
     """True when ``filename`` should be routed through the cpq_ingestion pipeline.
 
-    Both ``ARYX_INGEST_FILE_TYPE`` and ``ARYX_INGEST_PIPELINE`` must be set,
-    and the pipeline must be ``cpq_ingestion`` (case-insensitive) and the
-    file's extension must match the configured file type (case-insensitive,
-    leading dot ignored on both sides). Any other combination — including
-    both settings left at their empty defaults — returns False, so the
-    existing XML->CSV path is unaffected unless explicitly opted into.
+    ``ARYX_INGEST_PIPELINE`` must be ``cpq_ingestion`` (case-insensitive) and
+    the file's extension must be one of ``ARYX_INGEST_FILE_TYPE``'s
+    comma-separated values (case-insensitive, leading dot ignored on both
+    sides). Any other combination — including both settings left at their
+    empty defaults — returns False, so the existing CSV/XML paths are
+    unaffected unless explicitly opted into.
     """
     settings = get_cpq_ingestion_settings()
     if not settings.ingest_file_type or not settings.ingest_pipeline:
@@ -38,11 +57,11 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
         )
         return False
     suffix = Path(filename).suffix.lower().lstrip(".")
-    configured_type = settings.ingest_file_type.strip().lower().lstrip(".")
-    active = suffix == configured_type
+    active_types = _active_file_types()
+    active = suffix in active_types
     logger.debug(
-        "cpq_ingestion: routing decision for %s: suffix=%r configured_type=%r active=%s",
-        filename, suffix, configured_type, active,
+        "cpq_ingestion: routing decision for %s: suffix=%r active_types=%r active=%s",
+        filename, suffix, active_types, active,
     )
     return active
 
@@ -73,6 +92,24 @@ def partition_cpq_ingestion_plans(
             continue
         remaining_plans.append(plan)
     return cpq_ingestion_source_files, remaining_plans
+
+
+def partition_cpq_ingestion_csv_plans(
+    plans: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Split tabular plans into (cpq_ingestion-active CSV plans, the rest).
+
+    Unlike ``partition_cpq_ingestion_plans()`` (XML), a plain CSV upload
+    needs no grouping: one uploaded file is already exactly one plan, with
+    no per-entity-tag fan-out to collapse back together. The plan is marked
+    ``cpq_csv_direct`` by ``read_files()`` at read time (mirroring how the
+    XML branch checks ``cpq_ingestion_pipeline_active()`` inline) rather
+    than re-checked here, so this function stays a pure partition, not a
+    second source of the activation decision.
+    """
+    csv_plans = [p for p in plans if p.get("cpq_csv_direct")]
+    remaining_plans = [p for p in plans if not p.get("cpq_csv_direct")]
+    return csv_plans, remaining_plans
 
 
 def cpq_layout_upload_active(filename: str) -> bool:

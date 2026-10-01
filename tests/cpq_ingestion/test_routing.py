@@ -9,6 +9,7 @@ from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.routing import (
     cpq_ingestion_pipeline_active,
     cpq_layout_upload_active,
+    partition_cpq_ingestion_csv_plans,
     partition_cpq_ingestion_plans,
 )
 
@@ -42,6 +43,40 @@ def test_active_for_matching_xml_upload(monkeypatch):
     monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
     assert cpq_ingestion_pipeline_active("aSTRO25_ConfigData.xml") is True
+
+
+# ── ARYX_INGEST_FILE_TYPE as a comma-separated list (xml + csv together) ────
+
+def test_active_for_csv_when_file_type_is_csv(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "csv")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.csv") is True
+
+
+def test_csv_only_file_type_does_not_activate_for_xml(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "csv")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.xml") is False
+
+
+def test_combined_xml_csv_file_type_activates_both(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml,csv")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.xml") is True
+    assert cpq_ingestion_pipeline_active("catalog.csv") is True
+
+
+def test_combined_file_type_does_not_activate_unrelated_extensions(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml,csv")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.json") is False
+
+
+def test_combined_file_type_tolerates_whitespace_and_case(monkeypatch):
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", " XML , .CSV ")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    assert cpq_ingestion_pipeline_active("catalog.xml") is True
+    assert cpq_ingestion_pipeline_active("catalog.csv") is True
 
 
 def test_pipeline_name_is_case_insensitive(monkeypatch):
@@ -234,3 +269,53 @@ def test_partition_mixed_batch_separates_xml_and_regular_plans(monkeypatch):
 
     assert list(grouped.values()) == [xml_plan]
     assert remaining == [csv_plan]
+
+
+# ── partition_cpq_ingestion_csv_plans ────────────────────────────────────────
+
+def test_csv_partition_splits_flagged_plans_out():
+    flagged = {"filename": "catalog.csv", "cpq_csv_direct": True}
+    unflagged = _csv_plan("regular.csv")
+
+    csv_plans, remaining = partition_cpq_ingestion_csv_plans([flagged, unflagged])
+
+    assert csv_plans == [flagged]
+    assert remaining == [unflagged]
+
+
+def test_csv_partition_is_a_pure_partition_not_a_second_activation_check():
+    """This function trusts the cpq_csv_direct flag read_files() already
+    set -- it must not re-derive activation from env vars itself, unlike
+    partition_cpq_ingestion_plans (XML) which does re-check via
+    cpq_ingestion_pipeline_active(). No env vars are set here at all."""
+    flagged = {"filename": "catalog.csv", "cpq_csv_direct": True}
+
+    csv_plans, remaining = partition_cpq_ingestion_csv_plans([flagged])
+
+    assert csv_plans == [flagged]
+    assert remaining == []
+
+
+def test_csv_partition_empty_input_returns_empty_outputs():
+    assert partition_cpq_ingestion_csv_plans([]) == ([], [])
+
+
+def test_csv_partition_plan_missing_the_flag_key_entirely_stays_in_remaining():
+    plan_without_flag = {"filename": "regular.csv"}
+
+    csv_plans, remaining = partition_cpq_ingestion_csv_plans([plan_without_flag])
+
+    assert csv_plans == []
+    assert remaining == [plan_without_flag]
+
+
+def test_csv_partition_preserves_plan_order_within_each_bucket():
+    a = {"filename": "a.csv", "cpq_csv_direct": True}
+    b = {"filename": "b.csv"}
+    c = {"filename": "c.csv", "cpq_csv_direct": True}
+    d = {"filename": "d.csv"}
+
+    csv_plans, remaining = partition_cpq_ingestion_csv_plans([a, b, c, d])
+
+    assert csv_plans == [a, c]
+    assert remaining == [b, d]

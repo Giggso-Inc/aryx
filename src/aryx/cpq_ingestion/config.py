@@ -22,9 +22,15 @@ class CpqIngestionSettings(BaseSettings):
     ingest_file_type: str = Field(
         default="",
         description=(
-            "File type this run should treat as CPQ input, e.g. 'xml'. "
-            "Compared case-insensitively against the uploaded file's extension. "
-            "Empty disables file-type gating (the pipeline never activates)."
+            "Comma-separated file type(s) this run should treat as CPQ "
+            "input, e.g. 'xml' or 'xml,csv'. Compared case-insensitively "
+            "against the uploaded file's extension, leading dot ignored on "
+            "both sides. XML routes through the raw-graph resolve/relate "
+            "bridge (see raw_graph/); CSV routes through direct-to-Postgres "
+            "landing with no graph involved (see csv_land.py) -- the two "
+            "file types can be listed together since they take different, "
+            "independent code paths. Empty disables file-type gating (the "
+            "pipeline never activates)."
         ),
     )
     ingest_pipeline: str = Field(

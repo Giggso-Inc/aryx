@@ -100,5 +100,19 @@ class PostgresStore:
             with conn.cursor() as cur:
                 cur.execute(load("finish_run"), (record_count, run_id))
 
+    def count_landed(self, run_id: int) -> int:
+        """Return how many rows a run landed in aryx_landed_record.
+
+        Built for cpq_ingestion's direct-to-Postgres CSV path (see
+        csv_land.py), which has no resolve/project stage of its own to
+        report a summary count from -- discover() itself only returns a
+        run_id, not a row count.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("count_landed_by_run"), (run_id, self._ws))
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+
     def close(self) -> None:
         """No-op: connections are managed by the shared pool (G12)."""
