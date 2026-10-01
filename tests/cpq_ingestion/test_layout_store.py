@@ -51,6 +51,32 @@ class _FakePool:
         return _FakeConn(_FakeCursor(self.upserts))
 
 
+class _FakeDatasourceStore:
+    """Records ensure() calls without touching a real pool -- store_layout_
+    file's own DatasourceStore(dsn) construction would otherwise call the
+    REAL aryx.store.pool.get_pool via aryx.store.datasource_store's own
+    import (a different reference than layout_store.py's patched one), so
+    every test in this file needs this patched too, not just get_pool."""
+
+    calls: list[tuple] = []
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+
+    def ensure(self, workspace_id: int, name: str, kind: str) -> dict:
+        type(self).calls.append((self._dsn, workspace_id, name, kind))
+        return {"id": 1, "workspace_id": workspace_id, "name": name, "kind": kind}
+
+
+@pytest.fixture(autouse=True)
+def _patch_datasource_store(monkeypatch):
+    _FakeDatasourceStore.calls = []
+    monkeypatch.setattr(
+        "aryx.cpq_ingestion.layout_store.DatasourceStore", _FakeDatasourceStore,
+    )
+    yield
+
+
 def test_catalog_prefix_from_filename_uses_raw_stem_not_pascal_case():
     """NOT _stem_type's singularized/PascalCase transform -- real ingested
     catalog_prefix values are raw, filename-derived strings (e.g.
@@ -140,3 +166,46 @@ def test_store_layout_file_invalidation_does_not_disturb_other_keys(monkeypatch)
         assert engine_caches._LAYOUT_COMPONENTS_CACHE[other_key] == [{"keep": True}]
     finally:
         engine_caches._LAYOUT_COMPONENTS_CACHE.pop(other_key, None)
+
+
+def test_store_layout_file_registers_datasource_so_it_shows_on_data_sources_page(monkeypatch):
+    """Previously only written to aryx_cpq_layout_file, which the Data >
+    Sources page (built from DatasourceStore.list()) never reads -- an
+    uploaded layout file was invisible there. ensure() must be called
+    with kind="cpq_layout" so source_catalog_meta._display_kind() renders
+    it as "CPQ Layout File" on that page."""
+    pool = _FakePool()
+    monkeypatch.setattr("aryx.cpq_ingestion.layout_store.get_pool", lambda dsn: pool)
+
+    store_layout_file(
+        b'{"status": "Active"}', "Config Layout APX Next.txt",
+        workspace_id=7, dsn="fake-dsn",
+    )
+
+    assert _FakeDatasourceStore.calls == [
+        ("fake-dsn", 7, "Config Layout APX Next.txt", "cpq_layout"),
+    ]
+
+
+def test_store_layout_file_datasource_ensure_failure_does_not_fail_the_store(monkeypatch):
+    """Best-effort: a datasource-registration failure must never undo or
+    fail the layout storage that already succeeded."""
+    pool = _FakePool()
+    monkeypatch.setattr("aryx.cpq_ingestion.layout_store.get_pool", lambda dsn: pool)
+
+    class _BrokenDatasourceStore:
+        def __init__(self, dsn: str) -> None:
+            pass
+
+        def ensure(self, *a, **k):
+            raise RuntimeError("datasource backend unavailable")
+
+    monkeypatch.setattr(
+        "aryx.cpq_ingestion.layout_store.DatasourceStore", _BrokenDatasourceStore,
+    )
+
+    prefix = store_layout_file(
+        b"{}", "whatever.json", workspace_id=7, dsn="fake-dsn",
+    )
+    assert prefix == "whatever"
+    assert len(pool.upserts) == 1

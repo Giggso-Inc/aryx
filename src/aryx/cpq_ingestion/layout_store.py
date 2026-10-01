@@ -17,9 +17,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aryx.queries import load
+from aryx.store.datasource_store import DatasourceStore
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+# Datasource "kind" for a stored layout file -- surfaced on the Data >
+# Sources catalog page via source_catalog_meta._display_kind(), so an
+# uploaded .txt/.json layout export shows up there like any other
+# upload, not just in aryx_cpq_layout_file (invisible to that page).
+_DATASOURCE_KIND = "cpq_layout"
 
 # Same shape as DiscoveryPayloadTooLarge (discovery_store_codec.py) but sized
 # for this table's actual data: the largest real layout export today is
@@ -85,6 +92,20 @@ def store_layout_file(
         "cpq_ingestion: stored layout file workspace_id=%d catalog_prefix=%r "
         "filename=%r bytes=%d", workspace_id, prefix, filename, len(data),
     )
+    # Register as a datasource so the file shows up on the Data > Sources
+    # catalog page like any other upload -- previously only written to
+    # aryx_cpq_layout_file, which that page never reads. ensure() is a
+    # get-or-create keyed on (workspace_id, filename), so a re-upload of
+    # the same file is a no-op here, not a duplicate row. Best-effort: a
+    # datasource-registration failure must never fail the actual layout
+    # storage that already succeeded above.
+    try:
+        DatasourceStore(dsn).ensure(workspace_id, filename[:255], _DATASOURCE_KIND)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "cpq_ingestion: datasource ensure failed for layout file %r",
+            filename, exc_info=True,
+        )
     # Without this, a re-upload replacing an already-queried (workspace_id,
     # catalog_prefix) pair would keep serving the OLD cached value for the
     # rest of this process's lifetime -- engine_caches.py's layout caches
