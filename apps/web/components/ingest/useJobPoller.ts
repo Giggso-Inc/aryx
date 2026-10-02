@@ -4,7 +4,9 @@ import { api } from "@/lib/api";
 import { isHttpStatusError } from "@/lib/shay-session";
 
 export function useJobPoller(
-  jobId: string | null, onDone: (ok: boolean) => void, workspaceId?: number,
+  jobId: string | null,
+  onDone: (ok: boolean, cancelled?: boolean) => void,
+  workspaceId?: number,
 ) {
   const [stage, setStage] = useState<string | null>(null);
   const [pct, setPct] = useState<number | null>(null);
@@ -36,7 +38,9 @@ export function useJobPoller(
         // state -- without this branch the poller never recognizes it,
         // onDone() never fires, and the UI keeps polling + showing
         // "Ingesting..." forever for a job that will never change state again.
-        if (j.status === "cancelled") { onDoneRef.current(false); return; }
+        // The second arg lets a caller show "Cancelled" instead of a generic
+        // failure message -- a user-initiated cancel isn't a failure.
+        if (j.status === "cancelled") { onDoneRef.current(false, true); return; }
       } catch (err) {
         // A 404 means the job is permanently gone (never existed, or aged
         // out of aryx_job's 30-day retention) — retrying forever here would

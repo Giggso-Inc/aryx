@@ -39,18 +39,20 @@ def _relate_isolated(
     cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
     calls are made regardless of how many individual entities are isolated.
 
-    should_stop — optional, checked while draining the per-type inference
-    futures below. Previously absent entirely: a cancelled job still ran
-    every submitted type's LLM inference to completion (or its individual
-    relate_pair_timeout) before this function returned, since nothing
-    inside it ever read the job's cancellation state back — the same class
-    of bug already fixed for the sibling dimension_link stage (see
-    detect_and_link_dimensions's own should_stop docstring). Checked once
-    per completed future, not per LLM call inside _infer_type, since a
-    single in-flight infer_relationship call can't be interrupted mid-call
-    anyway (same documented limitation as dimension_link's fix) — this
-    stops picking up NEW results and lets already-running futures finish
-    or hit their own timeout, rather than waiting for every type.
+    should_stop — optional, checked both while draining the per-type
+    inference futures below AND between each sample-entity x anchor
+    candidate inside _infer_type's own loop. Previously absent entirely: a
+    cancelled job still ran every submitted type's LLM inference to
+    completion (or its individual relate_pair_timeout) before this
+    function returned, since nothing inside it ever read the job's
+    cancellation state back — the same class of bug already fixed for the
+    sibling dimension_link stage (see detect_and_link_dimensions's own
+    should_stop docstring). The remaining limitation is narrower than that
+    first fix: a single in-flight infer_relationship call can't be
+    interrupted mid-call, but once it returns, _infer_type itself now
+    stops rather than burning through its remaining
+    relate_isolated_max_samples_per_type x relate_isolated_max_anchors
+    combinations with the result discarded.
     """
     cfg = get_settings()
 
@@ -135,13 +137,23 @@ def _relate_isolated(
         answer "unrelated". Each candidate is tried independently; the type
         is only given up on after every sample-entity x anchor combination
         has either errored or come back unrelated.
+
+        Checked against should_stop (the enclosing _relate_isolated's
+        parameter, captured by closure) at the top of both loops, so a
+        cancelled job stops after whichever infer_relationship call is
+        currently in flight returns, instead of working through every
+        remaining combination for this type.
         """
         anchor_candidates = _anchor_candidates(iso_type)
         last_result: tuple[str, int, str | None, float] = (iso_type, -1, None, 0.0)
         for sample_entity in _sample_entities(iso_type):
+            if should_stop is not None and should_stop():
+                return last_result
             _, iso_type_, iso_attrs = sample_entity
             left = _trim(iso_attrs, iso_type_)
             for a_id, a_type, a_attrs in anchor_candidates:
+                if should_stop is not None and should_stop():
+                    return last_result
                 try:
                     name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
                 except Exception as exc:  # noqa: BLE001 — try the next candidate, don't abort the type

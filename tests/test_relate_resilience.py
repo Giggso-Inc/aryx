@@ -330,16 +330,62 @@ def test_relate_isolated_stops_mid_drain_when_job_is_cancelled(monkeypatch):
             time.sleep(0.5)
         return "related_to", 0.9
 
-    should_stop_calls = {"n": 0}
+    # Time-based, not a call counter: _infer_type now also checks should_stop
+    # internally (between its own sample/anchor combinations), so a counter
+    # keyed purely on "how many times has this been called" no longer lines
+    # up with "has Fast's future completed yet" -- wall-clock does.
+    start = time.monotonic()
 
     def fake_should_stop() -> bool:
-        should_stop_calls["n"] += 1
-        return should_stop_calls["n"] > 1  # False on the first check, True after
+        return time.monotonic() - start > 0.2
 
     with patch("aryx.pipeline.enrich.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock(), should_stop=fake_should_stop)
 
     assert count == 1  # only "Fast" got linked; "Slow" was abandoned after cancellation
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_infer_type_stops_between_candidates_when_cancelled(monkeypatch):
+    """PR #416 review (medium/low findings): should_stop was only checked
+    between completed futures, not inside _infer_type's own sample x anchor
+    loop -- an already-running future kept burning through every remaining
+    candidate for its type after cancellation, with the result discarded.
+    One isolated type with two anchor candidates, both "unrelated": once
+    should_stop flips True after the first candidate's call, the second
+    candidate must never be tried."""
+    monkeypatch.setenv("ARYX_RELATE_PAIR_TIMEOUT", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(1, "Iso", {"name": "a"})]
+    store.list_entities_typed_sample.return_value = [
+        (1, "Iso", {"name": "a"}), (2, "A1", {"name": "b"}), (3, "A2", {"name": "c"}),
+    ]
+
+    calls: list[str] = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        return None, 0.0  # every candidate comes back unrelated
+
+    # First two checks (the sample-loop entry, then the anchor-loop entry
+    # for the first candidate) are False so the first candidate actually
+    # gets tried; every check after that -- including the second anchor
+    # candidate's own entry check and the outer drain loop's check -- is
+    # True, simulating a cancel that landed right after the first call.
+    stop_checks = {"n": 0}
+
+    def fake_should_stop() -> bool:
+        stop_checks["n"] += 1
+        return stop_checks["n"] > 2
+
+    with patch("aryx.pipeline.enrich.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock(), should_stop=fake_should_stop)
+
+    assert count == 0
+    assert len(calls) == 1  # second anchor candidate was never tried
     get_settings.cache_clear()
 
 
