@@ -75,7 +75,7 @@ def detect_and_link_dimensions(
     with many distinct attr/val pairs can produce thousands of dimension
     hub entities, one create_entity() call at a time, with no other natural
     exit point. should_stop() itself is cheap (throttled to at most one real
-    check per second, see file_ingest_api._make_should_stop), so checking it
+    check per second, see file_ingest_api.make_should_stop), so checking it
     every inner iteration is safe.
     """
     cfg = get_settings()

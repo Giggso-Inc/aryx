@@ -50,10 +50,10 @@ from aryx.pipeline.doc_discovery.doc_discovery_types import _infer_type, _singul
 from aryx.pipeline.doc_discovery.doc_discovery_xlsx import _sheet_slug, _xlsx_to_csvs
 from aryx.pipeline.doc_discovery.doc_discovery_xml import _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
-from aryx.store.job_store import _make_should_stop
+from aryx.store.job_store import make_should_stop
 from aryx.store.ontology_store import OntologyStore
 from aryx.source.source_catalog import restore_generic_source_entry
 
@@ -234,7 +234,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     """
     settings = get_settings()
     datasource_store = DatasourceStore(settings.effective_dsn())
-    should_stop = _make_should_stop(jobs, job_id)
+    should_stop = make_should_stop(jobs, job_id)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
@@ -515,7 +515,19 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                         job_id, len(dynamic_fk), dynamic_fk)
 
     def _run_one_plan(plan: dict, is_last: bool, plan_step: int) -> None:
-        """Run a single tabular plan through the pipeline."""
+        """Run a single tabular plan through the pipeline.
+
+        PR #416 review: run_pipeline()'s own should_stop checks don't start
+        until its "relate" stage boundary -- discover and resolve_cluster
+        run unconditionally before that. For a queued (not yet started)
+        non-last plan picked up by a worker thread after the job was already
+        cancelled, that meant the whole discover+resolve pass still ran and
+        landed records for a plan nobody wanted anymore. Checking here, at
+        the very top, means a plan that hasn't started yet bails immediately
+        instead of doing any of that work.
+        """
+        if should_stop():
+            raise PipelineCancelled(f"job cancelled before plan={plan['filename']}")
         fname = plan["filename"]
         otype = plan["ontology_type"]
         logger.info("confirm job=%s step=%d/%d file=%s otype=%s is_last=%s",
@@ -601,6 +613,22 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 try:
                     fut.result()
                     logger.info("confirm job=%s plan complete file=%s", job_id, fname_done)
+                except PipelineCancelled:
+                    # PR #416 review: previously caught by the bare `except
+                    # Exception` below, logged as "plan failed" with a full
+                    # stack trace, and the loop just continued on to the next
+                    # plan -- a cancel was indistinguishable from a genuine
+                    # failure, and every other queued plan still ran to
+                    # completion before this function returned. cancel_futures
+                    # abandons any not-yet-started plan immediately (an
+                    # already-running one still bails fast via the should_stop
+                    # check _run_one_plan now does at its own top); re-raising
+                    # propagates PipelineCancelled up to _confirm_job the same
+                    # way the serial "last" plan's cancellation already did.
+                    logger.info("confirm job=%s plan cancelled file=%s — abandoning queued plans",
+                               job_id, fname_done)
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
                 except Exception:
                     logger.warning("confirm job=%s plan failed file=%s",
                                    job_id, fname_done, exc_info=True)

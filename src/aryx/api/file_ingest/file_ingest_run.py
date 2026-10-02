@@ -10,7 +10,6 @@ import csv as _csv
 import io
 import itertools
 import logging
-import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -28,7 +27,7 @@ from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
-from aryx.store.job_store import JobStore, _make_should_stop
+from aryx.store.job_store import JobStore, make_should_stop
 from aryx.source.source_catalog import (
     restore_generic_source_entry,
     upsert_xlsx_catalog_entry,
@@ -135,7 +134,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             except Exception as ds_exc:
                 logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
-        should_stop = _make_should_stop(jobs, job_id)
+        should_stop = make_should_stop(jobs, job_id)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]

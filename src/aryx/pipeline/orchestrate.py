@@ -44,7 +44,7 @@ class PipelineCancelled(Exception):
 
     Caught by the caller (file_ingest_api.py's _run_files) to end the
     worker thread cleanly instead of running the remaining stages to
-    completion -- see _make_should_stop's docstring for the bug this fixes.
+    completion -- see make_should_stop's docstring for the bug this fixes.
     """
 
 
@@ -58,7 +58,7 @@ def _check_cancelled(should_stop: ShouldStop | None, stage: str) -> None:
     """Raise PipelineCancelled if the job was cancelled mid-run.
 
     Called at every stage boundary (cheap: should_stop() itself throttles
-    the underlying DB read, see _make_should_stop) so a cancel takes effect
+    the underlying DB read, see make_should_stop) so a cancel takes effect
     within one stage instead of running the whole remaining pipeline.
     """
     if should_stop is not None and should_stop():

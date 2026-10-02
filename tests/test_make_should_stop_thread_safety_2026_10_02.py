@@ -1,5 +1,5 @@
 """PR #416 review: _relate_isolated's ThreadPoolExecutor is the first caller
-to invoke _make_should_stop's returned closure from more than one thread at
+to invoke make_should_stop's returned closure from more than one thread at
 a time -- every prior caller (dimension_link, orchestrate.py's stage
 boundaries) only ever called it from a single thread. Confirms the closure's
 "at most one real DB read per min_interval_s" promise still holds under
@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from aryx.store.job_store import _make_should_stop
+from aryx.store.job_store import make_should_stop
 
 
 class _FakeJobStore:
@@ -37,7 +37,7 @@ def test_should_stop_throttles_db_reads_under_concurrent_callers():
     jobs = _FakeJobStore(status="running")
     # Large min_interval_s so every thread's call lands in the same window
     # regardless of thread-startup jitter.
-    should_stop = _make_should_stop(jobs, "job-1", min_interval_s=10.0)
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=10.0)
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(lambda _: should_stop(), range(20)))
@@ -51,13 +51,13 @@ def test_should_stop_throttles_db_reads_under_concurrent_callers():
 
 def test_should_stop_returns_false_when_job_is_running():
     jobs = _FakeJobStore(status="running")
-    should_stop = _make_should_stop(jobs, "job-1", min_interval_s=0.0)
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
     assert should_stop() is False
 
 
 def test_should_stop_returns_true_when_job_is_cancelled():
     jobs = _FakeJobStore(status="cancelled")
-    should_stop = _make_should_stop(jobs, "job-1", min_interval_s=0.0)
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
     assert should_stop() is True
 
 
@@ -67,7 +67,7 @@ def test_should_stop_sticky_true_never_rechecks_after_cancelled():
     several more should_stop() calls, even with min_interval_s=0.0 (which
     would otherwise re-check the DB every time)."""
     jobs = _FakeJobStore(status="cancelled")
-    should_stop = _make_should_stop(jobs, "job-1", min_interval_s=0.0)
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
 
     assert should_stop() is True
     assert should_stop() is True

@@ -107,7 +107,7 @@ class JobStore:
         """No-op: connections are managed by the shared pool (G12)."""
 
 
-def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
+def make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
     """Cheap, throttled cancellation check for a running job's worker thread.
 
     POST /admin/jobs/{job_id}/cancel only ever updated the job-store row

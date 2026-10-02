@@ -5,7 +5,7 @@ import importlib
 _EXPORTS = {
     "_chunk_csv_bytes": "file_ingest_run",
     "_get_executor": "file_ingest_api",
-    "_make_should_stop": "file_ingest_run",
+    "make_should_stop": "file_ingest_run",
     "_run_files": "file_ingest_run",
     "_save_tmp": "file_ingest_run",
     "file_ingest_router": "file_ingest_api",
