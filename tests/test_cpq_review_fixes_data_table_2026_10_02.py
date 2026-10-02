@@ -312,3 +312,14 @@ def test_tilde_split_honours_backslash_escape():
     with patch.object(bml_branches, "get_settings", _cfg(cpq_bml_tilde_split_enabled=False)):
         assert split(["A~B"]) == ["A~B"]
         assert split([r"A\~B"]) == [r"A\~B"]  # flag off: byte-identical
+
+
+def test_sparse_base_model_fallback_is_logged(caplog):
+    import logging
+    tables = (_IROWS, [], [], [], [])
+    with patch.object(inf, "_load_all_tables", return_value=tables),             patch.object(inf, "_load_basemodel_to_config_rows", return_value=[]),             caplog.at_level(logging.INFO, logger=inf.logger.name):
+        inf.infer_implied_legal_values("keypad", "M1", 1, base_model="B3")
+        assert any("sparse base-model fallback" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+        inf.infer_implied_legal_values("keypad", "M1", 1, base_model="B1")  # has rows: no fallback
+        assert not any("sparse base-model fallback" in r.getMessage() for r in caplog.records)

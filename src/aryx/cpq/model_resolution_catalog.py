@@ -125,15 +125,16 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
             rule_nodes.setdefault(name, set()).add(str(row.get("ref_id") or "").strip())
 
     data = CatalogData(
-        loaded_at=now, models=models, nodes_by_id=nodes_by_id,
+        loaded_at=time.monotonic(), models=models, nodes_by_id=nodes_by_id,
         node_id_by_name=node_id_by_name, upgrade_models=upgrade_models,
         upgrade_node_ids=upgrade_node_ids,
         rule_nodes_by_name={k: frozenset(v) for k, v in rule_nodes.items()},
     )
     if not nodes_by_id or not models:
         # fetch_entities_by_exact_type swallows DB errors and returns [], so an
-        # empty result is indistinguishable from a transient failure. Never
-        # cache it (it would leave the workspace unresolved for the full TTL).
+        # empty result is indistinguishable from a transient failure, so
+        # keep it only briefly (_EMPTY_TTL_S): a long-lived empty entry would
+        # leave the workspace unresolved for the full catalog TTL.
         logger.warning(
             "cpq: model_resolution catalog empty ws=%s prefix=%r nodes=%d models=%d "
             "-- short-lived empty cache (%.0fs; possible DB error or catalog not ingested)",

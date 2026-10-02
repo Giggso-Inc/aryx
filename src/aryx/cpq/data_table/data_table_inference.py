@@ -7,6 +7,7 @@ on ``cpq_infer_legal_values_enabled``.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from aryx.cpq.data_table.data_table_loader import (
@@ -16,6 +17,8 @@ from aryx.cpq.data_table.data_table_loader import (
 )
 
 CONDITION_COLUMN_SLOTS = range(2, 9)  # attr2..attr8 / val2..val8
+
+logger = logging.getLogger(__name__)
 
 # Module-level TTL cache for the Basemodeltoconfig scan (cleared by
 # data_table_loader._clear_tables_cache via the shared registry).
@@ -144,6 +147,13 @@ def infer_implied_legal_values(
                 constraint_rows, attr_var_name, {norm_model}, base_model=base_model,
             ):
                 return None
+            # Sparse fallback: values may come from sibling base models. Logged
+            # so any wrong blind-fill is visible during the flag rollout.
+            logger.info(
+                "cpq: inferred_legal_values sparse base-model fallback attr=%r "
+                "cpq_model=%r base_model=%r -> wider tiers (sibling base models "
+                "may contribute)", attr_var_name, norm_model, base_model,
+            )
     model_values = _scan_condition_column_values(
         constraint_rows, attr_var_name, {norm_model}, filled=filled,
     )

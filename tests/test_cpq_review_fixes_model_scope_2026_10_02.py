@@ -116,7 +116,7 @@ def test_workspace_or_prefix_mismatch_returns_unfiltered():
 
 
 # ---- catalog cache: Medium 9 ----
-def test_empty_catalog_not_cached_and_warns(caplog):
+def test_empty_catalog_only_briefly_cached_and_warns(caplog):
     empty = FakeRdb({})
     with caplog.at_level(logging.WARNING, logger=mrc.logger.name):
         data = mrc.load_catalog(5, "X", empty)
