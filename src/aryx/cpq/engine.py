@@ -867,6 +867,12 @@ class CpqEngine:
     ) -> str | None:
         return nl_hint_extraction.entity_fetch._match_family_name(self, reader, workspace_id, prefix, hint_norm)
 
+    def _match_basemodel_to_config_name(
+        self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
+        rdb_cache: dict | None = None,
+    ) -> str | None:
+        return nl_hint_extraction.entity_fetch._match_basemodel_to_config_name(self, reader, workspace_id, prefix, hint_norm, rdb_cache)
+
     def _scope_to_catalog(
         self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
     ) -> tuple[list[str], str]:

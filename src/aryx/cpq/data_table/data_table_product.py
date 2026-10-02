@@ -241,7 +241,21 @@ def resolve_product_cpq_models_from_hint(
     Callers must treat an empty result exactly like an unresolvable hint --
     fall through to whatever behavior applies when the device is genuinely
     unknown, never assume it means "no real catalog data exists."
+
+    When `cpq_basemodel_display_name_resolution_enabled` is on, the
+    Basemodeltoconfig displayModel match (`resolve_cpq_model_from_display_
+    name`) is tried FIRST and the constraint-row scan below is only the
+    fallback (dev-rv-msi #341). Flag off: unchanged.
     """
+    from aryx.config import get_settings
+
+    if get_settings().cpq_basemodel_display_name_resolution_enabled:
+        from_display_name = resolve_cpq_model_from_display_name(
+            hint_text, workspace_id, catalog_prefix, cache,
+        )
+        if from_display_name:
+            return from_display_name
+
     # Same product-name -> CPQModel(s) map resolve_product_cpq_models_
     # from_rows itself builds -- memoized in `cache` under the identical
     # key when a cache dict is supplied (so a caller sharing one per-turn
@@ -288,6 +302,60 @@ def resolve_product_cpq_models_from_hint(
     if len(matched_products) != 1:
         return ()
     return tuple(sorted(product_to_models[next(iter(matched_products))]))
+
+
+def resolve_cpq_model_from_display_name(
+    hint_text: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None,
+) -> tuple[str, ...]:
+    """Real CPQModel(s) for a customer's free-text device mention (e.g.
+    "I want APX 900 for United States") via the Basemodeltoconfig-shaped
+    Data Table's displayModel -> cpqModel mapping (dev-rv-msi #341).
+
+    Case-insensitive substring containment of the displayModel inside
+    `hint_text`; internal spacing is preserved (never stripped), because a
+    catalog can map "APX3000" and "APX 3000" to different models. A
+    displayModel shorter than CpqEngine._HINT_MIN_PHRASE_LEN is ignored.
+    Returns () (never guesses) when nothing matches or when 2+ matched
+    displayModels are independent. Nested matches ("APX 3000" inside
+    "APX 3000 FLASHPORT") are not ambiguous: the longest wins.
+    """
+    from aryx.cpq import engine as _engine_module
+    from aryx.cpq.data_table.data_table_inference import _load_basemodel_to_config_rows
+
+    rows = _load_basemodel_to_config_rows(workspace_id, catalog_prefix, cache)
+    if not rows:
+        return ()
+    hint_norm = " ".join((hint_text or "").strip().upper().split())
+    if not hint_norm:
+        return ()
+
+    matched_models: dict[str, set[str]] = {}
+    matched_norms: dict[str, str] = {}
+    for row in rows:
+        display_model = str(row.get("displayModel") or "").strip()
+        cpq_model = row.get("cpqModel")
+        if not display_model or not cpq_model:
+            continue
+        candidate = " ".join(display_model.upper().split())
+        if len(candidate) < _engine_module._HINT_MIN_PHRASE_LEN:
+            continue
+        if candidate in hint_norm:
+            matched_models.setdefault(display_model, set()).add(cpq_model)
+            matched_norms[display_model] = candidate
+
+    if len(matched_models) == 1:
+        return tuple(sorted(next(iter(matched_models.values()))))
+    if len(matched_models) > 1:
+        longest_dm = max(matched_norms, key=lambda dm: len(matched_norms[dm]))
+        longest_norm = matched_norms[longest_dm]
+        if all(
+            norm in longest_norm
+            for dm, norm in matched_norms.items()
+            if dm != longest_dm
+        ):
+            return tuple(sorted(matched_models[longest_dm]))
+    return ()
 
 
 # ---------------------------------------------------------------------------
