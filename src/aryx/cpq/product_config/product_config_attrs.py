@@ -121,6 +121,7 @@ def build_config_attrs(
             select_type=classify_select_type(pg),
             catalog_prefix=_catalog_prefix(ent.get("type") or ""),
             hidden=is_hidden,
+            is_value_rule_target=is_rule_target,
             hide_in_trans=is_hide_in_trans,
             set_type=str(pg.get("set_type") or "").strip(),
             is_array_control=is_array_control,

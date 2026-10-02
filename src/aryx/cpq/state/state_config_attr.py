@@ -60,6 +60,12 @@ class ConfigAttr:
     # default_value (BML scripts elsewhere may reference it) instead of
     # being dropped from the graph entirely.
     hidden: bool = False
+    # True when a real rule action (or, with
+    # cpq_rule_governed_hidden_attr_guard_enabled, a marked-attr link)
+    # targets this attr's VALUE. resolve_array_grid_links skips such attrs
+    # from its name-substring "Quantity" guess when the guard flag is on
+    # (dev-rv-msi #373/#374): real rule data outranks a name-based guess.
+    is_value_rule_target: bool = False
     # True for BM attrs flagged hide_in_trans=1 — the source system's own
     # "don't submit this at transaction/order time" marker (confirmed live
     # against the real CPQ API: productInformationText_astro and

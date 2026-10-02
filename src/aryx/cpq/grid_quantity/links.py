@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from aryx.config import get_settings
 from aryx.cpq.state import ConfigAttr
 
 
@@ -49,12 +50,21 @@ def resolve_array_grid_links(attrs: list[ConfigAttr]) -> dict[str, dict[str, str
     chars, to avoid trivial/short-token false positives like "1" or
     "US"). Ambiguous or too-short tokens are skipped silently — never
     guessed. Returns {selector_vn: {item_value_lower: quantity_vn}}.
+
+    When ``cpq_rule_governed_hidden_attr_guard_enabled`` is on,
+    ``is_value_rule_target`` attrs are excluded from the candidates: a
+    hidden attr a REAL rule already governs gets its value from rule/BML
+    data, and must never be linked (and surfaced as an unanswerable
+    pending question) via this name-substring guess. Flag off: unchanged.
     """
     def norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]", "", s.lower())
 
+    guard = bool(get_settings().cpq_rule_governed_hidden_attr_guard_enabled)
     qty_candidates = [
-        a for a in attrs if a.hidden and "quantity" in a.variable_name.lower()
+        a for a in attrs
+        if a.hidden and "quantity" in a.variable_name.lower()
+        and not (guard and a.is_value_rule_target)
     ]
     if not qty_candidates:
         return {}
