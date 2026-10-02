@@ -556,3 +556,48 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
         ),
     )
+    cpq_tables_cache_lock_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 Part B / #371. When on, "
+            "_load_all_tables serialises concurrent cache-miss scans of the "
+            "same (workspace_id, catalog_prefix) behind a per-key "
+            "threading.Lock with a post-lock cache re-check, so a burst of "
+            "concurrent requests runs one scan instead of one each. The "
+            "lock wait is bounded by cpq_tables_cache_lock_timeout_s; on "
+            "timeout a WARNING is logged and the scan runs unlocked. Off by "
+            "default (no lock). Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_ENABLED=true."
+        ),
+    )
+    cpq_tables_cache_lock_timeout_s: float = Field(
+        default=90.0,
+        description=(
+            "Maximum seconds a request waits for another thread's in-flight "
+            "tables-cache scan before scanning unlocked. Only used when "
+            "cpq_tables_cache_lock_enabled is on. Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_TIMEOUT_S."
+        ),
+    )
+    cpq_post_loop_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #371/#372. When on, the post-loop "
+            "auto_fill in _step10_recompute_pending runs in a bounded "
+            "module-level thread pool (context-copied) and raises HTTP 504 "
+            "after cpq_post_loop_timeout_s; the loop and the post-loop "
+            "auto_fill also share one per-turn Data Table cache. Off by "
+            "default (plain synchronous call, no shared cache). Override "
+            "with ARYX_CPQ_POST_LOOP_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_post_loop_timeout_s: float = Field(
+        default=45.0,
+        description=(
+            "Seconds the post-loop auto_fill may run before the request "
+            "fails with HTTP 504. Only used when "
+            "cpq_post_loop_timeout_enabled is on. Choose a value at or "
+            "above the RDB call timeout. Override with "
+            "ARYX_CPQ_POST_LOOP_TIMEOUT_S."
+        ),
+    )

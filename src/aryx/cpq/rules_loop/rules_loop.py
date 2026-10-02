@@ -39,6 +39,7 @@ def evaluate_rules_loop(
     workspace_id: int | None = None,
     catalog_prefix: str = "",
     product_anchor_hint: str | None = None,
+    _dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> tuple[list[Any], dict[str, str], dict[str, str], dict[int, list[str]]]:
     """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -81,6 +82,10 @@ def evaluate_rules_loop(
 
     skip_always_ask — passed straight through to auto_fill; compute via
     resolve_always_ask_skips() once per turn at the caller.
+
+    _dt_cache — optional caller-owned Data Table cache (same shape as
+    auto_fill's `_dt_cache`) so a later standalone auto_fill can reuse the
+    loop's memoized table scans. None keeps prior behavior.
     """
     sources = filled_source if filled_source is not None else {}
     multi = filled_multi if filled_multi is not None else {}
@@ -97,7 +102,7 @@ def evaluate_rules_loop(
 
     state = LoopState(
         attrs=attrs, filled=filled, display_filled={}, sources=sources,
-        multi=multi, dropped=dropped,
+        multi=multi, dropped=dropped, dt_cache=_dt_cache or {},
     )
     scope = LoopScope(
         hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,

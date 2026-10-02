@@ -1339,8 +1339,10 @@ class CpqEngine:
         return rec_con_rules.load_constraint_rules(
             self, workspace_id, catalog_prefix)
 
-    def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
-        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix)
+    def build_bml_evaluator(
+        self, workspace_id: int, catalog_prefix: str = "", run_id: str = "",
+    ) -> BmlEvaluator:
+        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix, run_id=run_id)
 
     def apply_constraint_rules(
         self,
@@ -1405,12 +1407,13 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
         product_anchor_hint: str | None = None,
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         return rules_loop.evaluate_rules_loop(
             self, attrs, hints, filled, hiding_rules, rec_rules, con_rules,
             bml_eval, filled_source, filled_multi, dropped_multi, country,
             negated_vns, skip_always_ask, rule_conflict_order, display_order,
-            workspace_id, catalog_prefix, product_anchor_hint,
+            workspace_id, catalog_prefix, product_anchor_hint, _dt_cache,
         )
 
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq.auto_fill import auto_fill_resolve, auto_fill_setup
+from aryx.cpq.auto_fill.auto_fill_recommendation_check import log_rec_script_stats
 
 
 def run_auto_fill(
@@ -263,4 +264,5 @@ def run_auto_fill(
             pending, product_anchor_hint, workspace_id, catalog_prefix, _dt_cache,
         )
 
+    log_rec_script_stats(scope.satisfied_recommendation)
     return ctx.filled, ctx.display_filled, pending
