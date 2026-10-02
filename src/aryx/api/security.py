@@ -9,6 +9,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 _EXEMPT_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
@@ -123,16 +125,37 @@ def _verify_key(key: str) -> bool:
         and len(configured_internal_key) >= _MIN_INTERNAL_KEY_LENGTH
         and key == configured_internal_key
     ):
+        raven_log("DEBUG", "P4", "auth.api_key.check allow via internal key", context={
+            "decision": "allow", "reason_code": "INTERNAL_KEY_MATCH", "policy_version": "api_key_v1"})
         return True
+    raven_log("DEBUG", "P4", "auth.api_key.check internal key not matched, trying token store", context={
+        "decision": "continue", "reason_code": "INTERNAL_KEY_NOT_MATCHED",
+        "internal_key_configured": bool(configured_internal_key),
+        "internal_key_is_placeholder": configured_internal_key in _PLACEHOLDER_INTERNAL_KEYS,
+        "internal_key_too_short": 0 < len(configured_internal_key) < _MIN_INTERNAL_KEY_LENGTH,
+        "key_len": len(key or ""), "policy_version": "api_key_v1"})
 
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
         store = McpTokenStore(get_settings().effective_dsn())
         try:
-            return store.verify(key)
+            _ok = store.verify(key)
+            raven_log("DEBUG", "P4", "auth.api_key.check token store verdict", context={
+                "decision": "allow" if _ok else "deny",
+                "reason_code": "TOKEN_VALID" if _ok else "TOKEN_INVALID",
+                "policy_version": "api_key_v1"})
+            return _ok
         finally:
             store.close()
     except Exception as exc:  # noqa: BLE001
         logger.error("api key check failed — failing closed: %s", exc)
+        raven_log(
+            "ERROR", "P1", "auth.api_key.check_failed token store error, failing closed",
+            error_code="ARYX_AUTH_STORE_FAILED",
+            context={"actor": "unknown", "requested_action": "verify_api_key",
+                     "resource": "api", "required_permission": "api_key",
+                     "decision": "deny", "reason_code": "TOKEN_STORE_ERROR",
+                     "policy_version": "api_key_v1", "error_class": type(exc).__name__},
+        )
         return False

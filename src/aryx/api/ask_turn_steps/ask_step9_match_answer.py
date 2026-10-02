@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log
 
 
 def _step9_match_pending_answer(
@@ -70,4 +71,11 @@ def _step9_match_pending_answer(
                 hint_val_for_attr, len(pending_attr.options or []),
                 session.run_id or "-",
             )
+    raven_log("DEBUG", "P4", "ask.reply.match deterministic match tier result", context={
+        "pending_field": pending_attr.variable_name, "select_type": pending_attr.select_type,
+        "matched": bool(result), "multi_match_count": len(multi_matches),
+        "has_hint": bool(hint_val_for_attr), "option_count": len(pending_attr.options or []),
+        "constrained_count": None if pending_constrained is None else len(pending_constrained),
+        "reply_len": len(req.question or ""), "turn": session.turn,
+        "reason_code": "MATCHED" if result else "MISS"})
     return result, multi_matches

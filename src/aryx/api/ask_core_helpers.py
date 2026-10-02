@@ -25,6 +25,7 @@ from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import CpqSession
 from aryx.ports import GraphReaderPort, ports
 from aryx.queries import load
+from aryx.raven_log import raven_log
 from aryx.store.ask_history_store import AskHistoryStore
 from aryx.store.pool import get_pool
 
@@ -147,5 +148,11 @@ def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
             hstore.append(workspace_id, question, answer, [], [], usage)
         finally:
             hstore.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.persist.failed cpq history append failed, swallowed",
+            error_code="ARYX_ASK_PERSIST_FAILED",
+            context={"dependency_name": "adb", "operation": "history_append",
+                     "result": "swallowed", "error_class": type(exc).__name__, "attempt": 1,
+                     "workspace_id": workspace_id, "answer_len": len(answer or "")},
+        )

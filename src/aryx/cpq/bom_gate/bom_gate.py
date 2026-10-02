@@ -27,6 +27,7 @@ from aryx.cpq.bom_gate.bom_gate_provenance import check_provenance
 from aryx.cpq.bom_gate.bom_gate_required import find_missing_required_fields
 from aryx.cpq.bom_gate.bom_gate_types import BomGateResult, StaleConstraintViolation
 from aryx.cpq.state import ConfigAttr, CpqSession
+from aryx.raven_log import raven_log
 
 __all__ = [
     "BomGateResult",
@@ -72,6 +73,12 @@ def validate_before_payload(
     same as provenance — the engine has no value to guess from here either.
     """
     missing_required = find_missing_required_fields(attrs, session)
+    _gate_ctx = {
+        "actor": "customer", "requested_action": "approve_quote",
+        "resource": getattr(session, "product_name", "") or "", "required_permission": "bom_gate",
+        "policy_version": "bom_gate_v1", "run_id": session.run_id or "",
+        "fields_count": len(session.filled) + len(session.filled_multi),
+    }
     if missing_required:
         labels = [
             f"{a.display_label} ({a.variable_name})" for a in missing_required
@@ -79,6 +86,12 @@ def validate_before_payload(
         logger.warning(
             "bom_gate: MISSING REQUIRED run_id=%s fields=%s",
             session.run_id or "-", [a.variable_name for a in missing_required],
+        )
+        raven_log(
+            "WARN", "P3", "ask.bom_gate.decision blocked, required fields missing",
+            error_code="ARYX_ASK_BOM_MISSING_REQUIRED",
+            context={**_gate_ctx, "decision": "fail", "reason_code": "MISSING_REQUIRED",
+                     "missing_fields": [a.variable_name for a in missing_required][:20]},
         )
         catch = (
             "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
@@ -96,6 +109,12 @@ def validate_before_payload(
         stale = recheck_constraints(engine, attrs, session, con_rules, bml_eval)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bom_gate: constraint recheck failed: %r", exc)
+        raven_log(
+            "WARN", "P3", "ask.bom_gate.decision blocked, constraint recheck failed",
+            error_code="ARYX_ASK_BOM_RECHECK_FAILED",
+            context={**_gate_ctx, "decision": "fail", "reason_code": "RECHECK_FAILED",
+                     "error_class": type(exc).__name__},
+        )
         catch = (
             "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
             f"Constraint verification failed unexpectedly ({exc}) — "
@@ -114,6 +133,12 @@ def validate_before_payload(
             "bom_gate: HARD FAIL run_id=%s errors=%s",
             session.run_id or "-", errors[:10],
         )
+        raven_log(
+            "WARN", "P3", "ask.bom_gate.decision blocked, provenance hard fail",
+            error_code="ARYX_ASK_BOM_HARD_FAIL",
+            context={**_gate_ctx, "decision": "fail", "reason_code": "PROVENANCE_HARD_FAIL",
+                     "error_count": len(errors)},
+        )
         catch = (
             "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
             "One or more values could not be verified against the catalog "
@@ -129,8 +154,15 @@ def validate_before_payload(
             "bom_gate: STALE CONSTRAINT run_id=%s attrs=%s",
             session.run_id or "-", [v.attr.variable_name for v in stale],
         )
+        raven_log("INFO", "P4", "ask.bom_gate.decision stale constraint violations, re-ask", context={
+            **_gate_ctx, "decision": "fail", "reason_code": "STALE_CONSTRAINT",
+            "stale_fields": [v.attr.variable_name for v in stale][:20],
+        })
         return BomGateResult(ok=False, errors=[], stale_violations=stale)
 
     logger.info("bom_gate: PASS run_id=%s fields=%d",
                 session.run_id or "-", len(session.filled) + len(session.filled_multi))
+    raven_log("INFO", "P4", "ask.bom_gate.decision pass", context={
+        **_gate_ctx, "decision": "pass", "reason_code": "ALL_CHECKS_PASSED",
+    })
     return BomGateResult(ok=True, errors=[])

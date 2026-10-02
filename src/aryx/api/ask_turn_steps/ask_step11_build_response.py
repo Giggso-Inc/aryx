@@ -25,6 +25,8 @@ from aryx.api.ask_turn_steps.ask_step11_on_request_response import _step11_on_re
 from aryx.api.ask_turn_steps.ask_step11_turn_cap_response import _step11_turn_cap_response
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.cpq.auto_fill_stages import fill_log
+from aryx.raven_log import raven_log
 
 
 def _step11_build_turn_response(
@@ -42,13 +44,17 @@ def _step11_build_turn_response(
         session.run_id, len(pending),
     )
 
+    _branch = "on_request_next_question"
     if not pending:
+        _branch = "grid_gap"
         answer = _step11_grid_gap_response(session, visible_attrs, dropped_note)
         if answer is None:
+            _branch = "stale_reask"
             answer = _step11_stale_reask_response(
                 req, session, attrs, con_rules, bml_eval, catalog_prefix, dropped_note,
             )
         if answer is None:
+            _branch = "completion"
             answer = _step11_completion_response(
                 req, session, attrs, display_filled, rule_ids, dropped_note,
             )
@@ -68,9 +74,11 @@ def _step11_build_turn_response(
             if mode_request is None else None
         )
         if _grid_batch is not None:
+            _branch = "turn_cap_grid_batch"
             session.status = "configuring"
             answer = _grid_batch
         else:
+            _branch = "turn_cap"
             answer = _step11_turn_cap_response(
                 req, session, visible_attrs, pending, constrained_opts, validation_rules,
             )
@@ -85,6 +93,22 @@ def _step11_build_turn_response(
         "cpq_step: step6_4_response_formatting done run_id=%s elapsed_s=%.3f",
         session.run_id, time.monotonic() - _step_format_t0,
     )
+    raven_log("INFO", "P4", "ask.answer.branch answer branch chosen", context={
+        "selected_option": _branch,
+        "available_options": ["grid_gap", "stale_reask", "completion", "turn_cap_grid_batch",
+                              "turn_cap", "on_request_next_question"],
+        "reason_code": "NO_PENDING" if not pending else "PENDING_OPEN",
+        "policy_version": "step11_v1", "open_question_count": len(pending),
+        "open_fields": [getattr(p, "variable_name", str(p)) for p in pending][:25],
+        "turn": session.turn, "max_turns": _ask_api_module._cpq_engine.MAX_TURNS,
+        "mode_request": mode_request, "status": session.status,
+        "answer_len": len(answer or ""), "run_id": session.run_id,
+        "duration_ms": int((time.monotonic() - _step_format_t0) * 1000),
+    })
+    try:
+        fill_log.build_turn_state_record(session, attrs)  # G8 end-of-turn state record
+    except Exception:  # noqa: BLE001 - logging must never break the turn
+        raven_log("DEBUG", "P4", "ask.turn.state record failed", context={"run_id": session.run_id})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer,

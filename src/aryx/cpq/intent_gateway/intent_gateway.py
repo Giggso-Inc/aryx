@@ -84,6 +84,7 @@ from aryx.cpq.telemetry import (
     log_rejection,
 )
 from aryx.llm import complete_text
+from aryx.raven_log import raven_log, submit_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,9 @@ def classify_intent(
     run_id = get_run_id() or "-"
 
     if not question.strip():
+        raven_log("DEBUG", "P4", "ask.intent.gateway empty question, fallback", context={
+            "selected_option": "fallback", "reason_code": "EMPTY_QUESTION",
+            "available_options": ["dispatch", "clarify", "fallback"], "model_id": model_id})
         return GatewayDecision(
             action="fallback", result=None, reason="empty_question",
             model_id=model_id,
@@ -536,8 +540,8 @@ def classify_intent(
         returns within `timeout` seconds as advertised.
         """
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        fut = pool.submit(
-            _llm_classify_once, question, bundles, session, model_id,
+        fut = submit_ctx(
+            pool, _llm_classify_once, question, bundles, session, model_id,
             workspace_id, repair_hint,
         )
         try:
@@ -845,6 +849,30 @@ class AskRouteDecision:
     country: str | None = None
 
 
+_classify_intent_inner = classify_intent  # the original, wrapped below to log its decision
+
+
+def classify_intent(question: str, *args: Any, **kwargs: Any) -> GatewayDecision:
+    """Run the mid-session intent gateway and record the action chosen and why."""
+    _t0 = time.monotonic()
+    decision = _classify_intent_inner(question, *args, **kwargs)
+    res = getattr(decision, "result", None)
+    cat = getattr(getattr(res, "intent_category", None), "value", None)
+    conf = getattr(getattr(res, "confidence", None), "value", None)
+    raven_log("DEBUG", "P4", "ask.intent.gateway classify_intent decided", context={
+        "selected_option": decision.action,
+        "available_options": ["dispatch", "clarify", "fallback"],
+        "reason_code": decision.reason or ("CACHE_HIT" if decision.cache_hit else "CLASSIFIED"),
+        "policy_version": "intent_gateway", "category": cat, "confidence": conf,
+        "variable_name": getattr(res, "variable_name", None), "cache_hit": decision.cache_hit,
+        "model_id": decision.model_id, "prompt_tokens": decision.prompt_tokens,
+        "completion_tokens": decision.completion_tokens,
+        "duration_ms": int((time.monotonic() - _t0) * 1000),
+        "question_len": len(question or ""), "ran_and_did_nothing": decision.action == "fallback",
+    })
+    return decision
+
+
 def _parse_route(raw: dict | None) -> AskRouteDecision | None:
     if not isinstance(raw, dict):
         return None
@@ -1016,7 +1044,7 @@ def classify_ask_route(
     # background instead.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        fut = pool.submit(_call)
+        fut = submit_ctx(pool, _call)
         text, pt, ct = fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(
