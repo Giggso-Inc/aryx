@@ -501,3 +501,14 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Override with ARYX_CPQ_PRODUCT_MATCH_EXACT_FIRST_ENABLED=true."
         ),
     )
+    cpq_free_text_presentable_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #370 (bug 2). When on, apply_answer's "
+            "free-text fallback for an optionless attribute accepts a "
+            "customer's typed answer if it is _presentable() rather than "
+            "_valid(), so a real catalog code such as 'NA' is no longer "
+            "rejected in an endless re-ask loop. Off by default. Override "
+            "with ARYX_CPQ_FREE_TEXT_PRESENTABLE_ENABLED=true."
+        ),
+    )
