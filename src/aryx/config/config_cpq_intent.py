@@ -525,3 +525,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_FREE_TEXT_PRESENTABLE_ENABLED=true."
         ),
     )
+    cpq_basemodel_display_name_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #341/#351/#365/#366. When on, a customer's "
+            "free-text device mention (e.g. 'APX 900') is resolved through "
+            "the Basemodeltoconfig displayModel -> cpqModel Data Table: "
+            "resolve_product_cpq_models_from_hint tries it before the "
+            "constraint-row scan, and resolve_product_hint gets a new "
+            "first pass (graph, then the RDB when the graph is empty) "
+            "that returns a unique catalog match, refuses when 2+ "
+            "catalogs match, and otherwise falls to the existing passes. "
+            "Off by default. Override with "
+            "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
+        ),
+    )
