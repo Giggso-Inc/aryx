@@ -475,6 +475,25 @@ def resolve_variable_name_for_role(
     return next(iter(matches))
 
 
+def list_attribute_role_labels(
+    workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None,
+) -> list[str]:
+    """Every distinct human-readable `attributeName` in the ingested
+    attrToVarMapping-shaped Data Table(s), sorted -- the label vocabulary
+    resolve_variable_name_for_role() / search_products_by_feature() accept.
+    Used to ground a user's free-text attribute phrase ("carrier") onto a
+    real label ("Carrier Selection") before searching.
+    """
+    rows = _load_attr_var_mapping_rows(workspace_id, catalog_prefix, cache)
+    labels = {
+        str(row.get("attributeName")).strip()
+        for row in rows
+        if str(row.get("attributeName") or "").strip()
+    }
+    return sorted(labels)
+
+
 def search_products_by_region(
     region: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,

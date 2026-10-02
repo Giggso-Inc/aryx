@@ -28,6 +28,7 @@ _EXPORTS = {
     "find_inconsistent_filled_pairs_detailed": "data_table_consistency",
     "governed_attr_names_for_base_model": "data_table_governance",
     "governed_required_attr_names_for_base_model": "data_table_governance",
+    "list_attribute_role_labels": "data_table_product",
     "resolve_invalid_product_variant": "data_table_variant",
     "resolve_product_cpq_model_family": "data_table_product",
     "resolve_product_cpq_models_from_rows": "data_table_product",
