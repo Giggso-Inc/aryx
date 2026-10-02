@@ -79,16 +79,19 @@ export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps
     });
   }, [workspaceId, phase, readJobId, discoveryId, summary, approved, confirmJobId]);
 
-  const onReadDone = useCallback(async (ok: boolean) => {
-    if (!ok || !discoveryId) { setPhase("error"); setError("Read job failed"); return; }
+  const onReadDone = useCallback(async (ok: boolean, cancelled?: boolean) => {
+    // A cancel isn't a failure -- distinguish it so the error banner
+    // doesn't tell the user something broke when they stopped it themselves.
+    if (!ok) { setPhase("error"); setError(cancelled ? "Read cancelled" : "Read job failed"); return; }
+    if (!discoveryId) { setPhase("error"); setError("Read job failed"); return; }
     try {
       const s = await api.getDiscoverySummary(discoveryId, workspaceId);
       setSummary(s); setApproved(new Set((s.types || []).map((t) => t.type))); setPhase("summary");
     } catch (e) { setError(e instanceof Error ? e.message : "Summary fetch failed"); setPhase("error"); }
   }, [discoveryId, workspaceId]);
 
-  const onConfirmDone = useCallback((ok: boolean) => {
-    if (!ok) { setPhase("error"); setError("Confirm job failed"); return; }
+  const onConfirmDone = useCallback((ok: boolean, cancelled?: boolean) => {
+    if (!ok) { setPhase("error"); setError(cancelled ? "Confirm cancelled" : "Confirm job failed"); return; }
     setPhase("done");
   }, []);
 

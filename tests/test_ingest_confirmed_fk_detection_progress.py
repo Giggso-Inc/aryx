@@ -24,6 +24,29 @@ def _csv_plan(filename: str, otype: str) -> dict:
     }
 
 
+def _sticky_sequence(values: list[float]):
+    """Like side_effect=values, but repeats the final value forever once
+    exhausted instead of raising StopIteration. PR #416's should_stop()
+    check (now called once per tabular plan, outside the mocked
+    detect_dynamic_fk_links/run_pipeline this file scripts time.monotonic
+    for) is an extra, unrelated caller of the same globally-patched
+    time.monotonic -- a plain finite side_effect list sized only for this
+    test's own on_progress candidates broke the moment anything else called
+    it too."""
+    it = iter(values)
+    last = values[-1] if values else 0.0
+
+    def _next(*_args, **_kwargs):
+        nonlocal last
+        try:
+            last = next(it)
+        except StopIteration:
+            pass
+        return last
+
+    return _next
+
+
 def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=None,
           monotonic_values=None, progress_min_interval_s=2.0):
     data = {
@@ -38,7 +61,7 @@ def _run(*, detect_dynamic_fk_links_impl=None, job_id="job-fk-progress", jobs=No
     )
     monotonic_patch = (
         patch("aryx.pipeline.doc_discovery.doc_discovery.time.monotonic",
-              side_effect=monotonic_values)
+              side_effect=_sticky_sequence(monotonic_values))
         if monotonic_values is not None
         else patch("aryx.pipeline.doc_discovery.doc_discovery.time.monotonic",
                     return_value=0.0)
