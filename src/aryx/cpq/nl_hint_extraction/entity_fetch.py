@@ -102,17 +102,20 @@ def _match_basemodel_to_config_name(
     memoizes its rows per workspace and the same rows are not re-fetched
     for every catalog prefix.
     """
+    prefix_agnostic = False
     try:
         rows = reader.find_entities(
             ontology_type=f"{prefix}Basemodeltoconfig", limit=2000)
         if not rows:
             rows = reader.find_entities(
                 ontology_type="Basemodeltoconfig", limit=2000)
+            prefix_agnostic = bool(rows)
     except Exception:
         rows = []
     if rows:
         row_pg = engine._batch_fetch([e["id"] for e in rows], workspace_id)
     else:
+        prefix_agnostic = True
         cache_key = ("basemodel_to_config_rdb_rows", workspace_id)
         if rdb_cache is not None and cache_key in rdb_cache:
             row_pg = rdb_cache[cache_key]
@@ -127,6 +130,10 @@ def _match_basemodel_to_config_name(
                 rdb_cache[cache_key] = row_pg
         if not row_pg:
             return None
+    if prefix_agnostic and rdb_cache is not None:
+        # The rows do not belong to any one catalog prefix, so a match cannot
+        # say WHICH catalog; the caller must not read it as one per prefix.
+        rdb_cache["prefix_agnostic"] = True
     best_match: str | None = None
     best_len = 0
     for pg in row_pg.values():

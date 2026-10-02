@@ -161,10 +161,21 @@ def test_rdb_rows_fetched_once_per_resolve_call_not_once_per_prefix(monkeypatch)
     assert len(rdb.exact_calls) == 1
 
 
-def test_rdb_match_with_multiple_prefixes_is_ambiguous_returns_none(monkeypatch):
+def test_rdb_match_with_multiple_prefixes_cannot_pick_a_catalog_and_falls_through(monkeypatch):
     """The RDB fallback ignores the catalog prefix, so with 2+ catalogs the
-    same match is reported for each and the 'matches in 2+ catalogs ->
-    None, never fall through' contract applies (documented limitation)."""
+    same match is reported for each. A prefix-agnostic match cannot pick a
+    catalog, so it must neither refuse nor guess: the family pass decides."""
+    reader = _FakeReader(
+        ["AlphaBmPrdFamily", "BetaBmPrdFamily"],
+        {"AlphaBmPrdFamily": [{"id": 500, "name": "aSTRO25"}]},
+    )
+    rdb = _FakeRdb({500: {"name": "aSTRO25"}}, exact_rows=[(1, {"displayModel": "APX 900"})])
+    monkeypatch.setattr(engine_module, "get_cpq_rdb", lambda: rdb)
+    result = CpqEngine().resolve_product_hint(reader, 110, "I want APX 900 aSTRO25 for US")
+    assert result == ("Alpha", "aSTRO25")
+
+
+def test_rdb_match_with_multiple_prefixes_and_no_other_signal_returns_none(monkeypatch):
     reader = _FakeReader(["AlphaBmPrdFamily", "BetaBmPrdFamily"], {})
     rdb = _FakeRdb({}, exact_rows=[(1, {"displayModel": "APX 900"})])
     monkeypatch.setattr(engine_module, "get_cpq_rdb", lambda: rdb)

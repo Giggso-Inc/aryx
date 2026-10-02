@@ -92,8 +92,11 @@ def resolve_product_hint(
         if len(basemodel_matches) == 1:
             prefix, name = next(iter(basemodel_matches.items()))
             return prefix, name
-        if basemodel_matches:
+        if basemodel_matches and not rdb_cache.get("prefix_agnostic"):
             return None  # ambiguous at the most specific signal -- never fall through
+        # prefix-agnostic source (bare type / RDB): the same rows were matched
+        # for every prefix, so the match cannot pick a catalog -- let the
+        # family/option passes decide instead of refusing.
 
     family_matches: dict[str, str] = {}
     for prefix in prefixes:
