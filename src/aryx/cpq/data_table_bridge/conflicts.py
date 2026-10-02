@@ -92,9 +92,9 @@ def find_confirmed_data_table_conflicts(
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
-    cands = _cpq_model_candidates(
+    cands = _without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    )
+    ))
     confirmed_conflicts: set[tuple[str, str]] = set()
     for cpq_model in cands:
         for attr_a, attr_b in dt_find_inconsistent_filled_pairs_detailed(

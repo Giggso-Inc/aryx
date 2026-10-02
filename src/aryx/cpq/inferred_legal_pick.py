@@ -29,7 +29,12 @@ def inferred_first_available(
 ) -> MenuOption | None:
     """Lowest-order option of ``valid_opts`` inside the inferred legal set,
     or None (flag off / no workspace / no candidates / no evidence / no real
-    option in the set). Never raises."""
+    option in the set). Never raises.
+
+    Strict by design: with a known base model only that base model's own rows
+    count (``allow_wider_tiers`` is never passed), so a base model with no rows
+    for the attribute yields no inference rather than a guess pooled from
+    sibling base models."""
     if workspace_id is None or not valid_opts:
         return None
     if not get_settings().cpq_infer_legal_values_enabled:

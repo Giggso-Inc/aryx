@@ -246,6 +246,10 @@ def _split_pipe_caret_values(values: list[str]) -> list[str]:
     matches any real item_value — confirmed live: "Restrict Service Type
     Based on the Solution Type" corrupted Service Type resolution for
     every CapEx-purchase SVX quote this way.
+
+    With `cpq_bml_tilde_split_enabled`, `~` also splits and `\\~` is a literal
+    tilde. An entry made only of separators (e.g. ``"~~"``) has no content
+    and yields no values -- a deliberate no-op, never an error.
     """
     split_tilde = get_settings().cpq_bml_tilde_split_enabled
     out: list[str] = []

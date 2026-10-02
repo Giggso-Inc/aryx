@@ -354,9 +354,11 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Port of the aryxent PR 13/14 fixes: in "
             "data_table_bridge/conflicts.py, (a) _resolve_via_data_tables "
             "skips the generic ('APXNEXT','APXNEXT_BOM') fallback pair when "
-            "it is not the primary candidate, and (b) "
+            "it is not the primary candidate, (b) "
             "_invalidate_inconsistent_paired_values leaves it out of the "
-            "per-model intersection. Off by default -- when off, both "
+            "per-model intersection, and (c) "
+            "find_confirmed_data_table_conflicts ignores it as a non-primary "
+            "candidate. Off by default -- when off, both "
             "behave exactly as before. Override with "
             "ARYX_CPQ_GENERIC_CANDIDATE_EXCLUSION_ENABLED=true."
         ),
@@ -457,9 +459,11 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Port of aryxent D8 (PR 7/15). When on, the blind first-available "
             "picks (tier6_single_b, ask_data_gap, ask_rule_governed_blind) "
             "that found no Whitelist-scoped option infer a legal set from "
-            "the Whitelist condition columns (model+base-model, model, then "
-            "product-line family tiers; cpq/inferred_legal_pick.py) before "
-            "falling back to raw catalog order. Off by default. Override "
+            "the Whitelist condition columns (cpq/inferred_legal_pick.py) before "
+            "falling back to raw catalog order. Strict: with a known base "
+            "model only that base model's own rows count, so a base model "
+            "with no rows for the attribute infers nothing (no pooling from "
+            "sibling base models). Off by default. Override "
             "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
         ),
     )
