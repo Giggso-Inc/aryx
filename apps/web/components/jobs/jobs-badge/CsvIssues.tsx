@@ -111,7 +111,11 @@ function RunIssue(
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="truncate text-[12px] font-semibold text-navy-900">{run.source_file}</span>
-            {run.table_name && <span className="font-mono text-[10px] text-subtle">→ {run.table_name}</span>}
+            {run.table_name && (
+              <span className="font-mono text-[10px] text-subtle" title={run.table_name}>
+                → {run.logical_table || run.table_name}
+              </span>
+            )}
             <span className={cn(
               "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider",
               fileLevel ? "bg-rose-50 text-rose-700" : "bg-amber-100 text-amber-800",

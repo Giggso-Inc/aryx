@@ -19,8 +19,14 @@ from aryx.csv_bml_ingestion.tracking import RunTracker
 
 
 def load_csv_into_table(csv_file: Path, table: str, factory: ConnectionFactory,
-                        opts: IngestOptions, tracker: RunTracker, result: IngestResult) -> None:
-    """Load ``csv_file`` into ``table``; fills ``result`` (status ``loaded`` on success)."""
+                        opts: IngestOptions, tracker: RunTracker, result: IngestResult,
+                        logical: str | None = None) -> None:
+    """Load ``csv_file`` into the Oracle table ``table``; fills ``result`` (status ``loaded`` on success).
+
+    ``logical`` is the file-stem name used for the SQL folder in messages when ``table`` is a
+    per-workspace name (``ws7_attrsequence``).
+    """
+    sql_name = logical or table
     layout = read_layout(csv_file)
     limits = fetch_column_limits(factory, table)
     if not limits:
@@ -28,7 +34,7 @@ def load_csv_into_table(csv_file: Path, table: str, factory: ConnectionFactory,
     missing = [c for c in layout.columns if c not in limits]
     if missing:
         raise SchemaMismatchError(
-            f"CSV columns not in table {table!r}: {missing} — update sql/{table}/schema.sql to match the CSV header"
+            f"CSV columns not in table {table!r}: {missing} — update sql/{sql_name}/schema.sql to match the CSV header"
         )
     tracker.info(C.STEP_CSV_INGEST, "loading rows", table=table, columns=len(layout.columns),
                  replace=opts.replace, overflow_policy=opts.overflow.value)
@@ -59,7 +65,7 @@ def _finish(result: IngestResult, tracker: RunTracker, table: str, loaded: int,
         tracker.warn(
             C.STEP_CSV_INGEST,
             f"{report.rows_rejected} rows rejected and {report.rows_truncated} truncated for exceeding "
-            f"column limits; widen the column in sql/{table}/schema.sql if these values are legitimate",
+            f"column limits; widen the column of {table} (ALTER TABLE) and in its schema.sql if these values are legitimate",
             error_code="CBI_VALUE_TOO_LONG", table=table, by_column=dict(report.by_column),
             longest=report.longest, samples=report.samples, rejects_file=result.rejects_file,
         )

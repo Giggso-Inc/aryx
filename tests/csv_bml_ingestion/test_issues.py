@@ -38,7 +38,7 @@ class IssueCursor(FakeCursor):
         if sql.startswith("INSERT INTO aryx_csv_ingest_run"):
             keys = ("run_id", "workspace_id", "job_id", "source_file", "table_name", "status", "error_code", "message",
                     "rows_loaded", "rows_bad", "rows_rejected", "rows_truncated", "reject_total", "reject_stored",
-                    "file_size", "file_gz_b64", "rerun_of", "state")
+                    "file_size", "file_gz_b64", "rerun_of", "state", "logical_table")
             d.runs[p[0]] = {**dict(zip(keys, p)), "created_at": f"2026-10-02T00:00:{len(d.runs):02d}"}
         elif sql.startswith("SELECT run_id, job_id") and "AND run_id = %s" in sql:
             self._rows = [d.run_tuple(r) for r in d.runs.values() if r["workspace_id"] == p[0] and r["run_id"] == p[1]]
@@ -131,7 +131,8 @@ class IssueDb(FakeDb):
     def run_tuple(r):
         return (r["run_id"], r["job_id"], r["source_file"], r["table_name"], r["status"], r["error_code"], r["message"],
                 r["rows_loaded"], r["rows_bad"], r["rows_rejected"], r["rows_truncated"], r["reject_total"],
-                r["reject_stored"], r["file_size"], 1 if r["file_gz_b64"] else 0, r["rerun_of"], r["state"], r["created_at"], 0)
+                r["reject_stored"], r["file_size"], 1 if r["file_gz_b64"] else 0, r["rerun_of"], r["state"], r["created_at"], 0,
+                r.get("logical_table"))
 
     @contextmanager
     def __call__(self):
@@ -622,3 +623,35 @@ def test_a_failing_revert_after_a_queueing_error_still_answers_503(client, monke
     monkeypatch.setattr(st.IssueStore, "set_run_state", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
     run_id = seeded_run(client.db, ws=3, status="skipped", file_bytes=b"x", rows=[])
     assert client.post(f"/admin/csv-bml/runs/{run_id}/rerun-file", params={"workspace_id": 3}).status_code == 503
+
+
+# ------------------------------------------------------------------ per-workspace table names in stored issues
+def test_stored_run_keeps_the_physical_table_for_rerun_and_the_logical_name_for_display():
+    db = IssueDb()
+    res = IngestResult(source="widgets.csv", status="loaded", table="widgets", physical_table="ws3_widgets",
+                       rows_loaded=2, rows_rejected=1, reject_total=1,
+                       reject_rows=[RejectedRow(2, "CBI_VALUE_TOO_LONG", "r", {"columns": {"name": "x" * 20, "qty": 1}})])
+    run_id = IssueStore(db).record_run(3, "job-1", res)
+    run = IssueStore(db).get_run(3, run_id)
+    assert (run["table_name"], run["logical_table"]) == ("ws3_widgets", "widgets")
+
+
+def test_rerun_loads_into_the_workspaces_own_table_not_the_shared_name():
+    db = IssueDb()
+    db.catalog["WS3_WIDGETS"] = [("NAME", "VARCHAR2", 40, 40, "B", None, None), ("QTY", "NUMBER", 22, None, None, 10, 0)]
+    db.comments["WS3_WIDGETS"] = "csv_bml_ingestion:ws=3"
+    res = IngestResult(source="widgets.csv", status="loaded", table="widgets", physical_table="ws3_widgets",
+                       rows_rejected=1, reject_total=1,
+                       reject_rows=[RejectedRow(2, "CBI_VALUE_TOO_LONG", "r", {"columns": {"name": "x" * 20, "qty": 1}})])
+    run_id = IssueStore(db).record_run(3, "job-1", res)
+    out = rerun_rejects(db, 3, run_id)
+    assert (out["table"], out["inserted"]) == ("ws3_widgets", 1)
+    assert [e[1] for e in db.log if e[0] == "executemany" and e[1].startswith("INSERT INTO")][-1].startswith("INSERT INTO ws3_widgets ")
+
+
+def test_api_returns_both_names(client):
+    db = client.db
+    res = IngestResult(source="widgets.csv", status="skipped", table="widgets", physical_table="ws3_widgets")
+    IssueStore(db).record_run(3, "job-1", res, b"a\n1\n")
+    run = client.get("/admin/csv-bml/runs", params={"workspace_id": 3}).json()[0]
+    assert (run["table_name"], run["logical_table"]) == ("ws3_widgets", "widgets")

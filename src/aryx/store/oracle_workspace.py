@@ -148,10 +148,11 @@ class OracleWorkspaceStore:
         return {"id": row[0], "survivorship": row[1] or {}}
 
     def _purge_csv_issues(self, wid: int | None) -> None:
-        """Stored CSV ingestion issues (rejected rows, kept files) go with the workspace.
+        """Stored CSV ingestion issues (rejected rows, kept files) and the workspace's own
+        ``ws<id>_…`` data tables go with the workspace.
 
-        Best effort and in its own transaction: if the table does not exist (migration 0047 not applied)
-        this logs and returns — it must never make a workspace purge/delete fail.
+        Best effort, each step in its own transaction: if a table does not exist (migration 0047/0048 not
+        applied) or a drop fails, this logs and carries on — it must never make a workspace purge/delete fail.
         """
         try:
             from aryx.csv_bml_ingestion.issue_store import purge_issues  # noqa: PLC0415
@@ -159,6 +160,12 @@ class OracleWorkspaceStore:
             purge_issues(self._pool.connection, wid)
         except Exception:  # noqa: BLE001
             logger.warning("csv ingest issue cleanup skipped (wid=%s)", wid, exc_info=True)
+        try:
+            from aryx.csv_bml_ingestion.workspace_tables import drop_workspace_tables  # noqa: PLC0415
+
+            drop_workspace_tables(self._pool.connection, wid)
+        except Exception:  # noqa: BLE001
+            logger.warning("csv ingest workspace tables cleanup skipped (wid=%s)", wid, exc_info=True)
 
     def purge_data(self, wid: int) -> dict[str, Any]:
         """Delete all data rows for workspace wid (equivalent to truncating partitions)."""

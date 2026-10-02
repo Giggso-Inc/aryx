@@ -208,11 +208,13 @@ def test_session_ingests_bytes_isolates_by_workspace_and_builds_lookup_once(monk
     r1 = sess.ingest(body, "../../AttrSequence.csv")                      # path parts are stripped
     r2 = sess.ingest(body, "attrSequence.csv")
     assert (r1.status, r1.table, r1.rows_loaded) == ("loaded", "attrsequence", 1) and r2.status == "loaded"
+    assert r1.physical_table == "ws3_attrsequence"                        # logical name for step 2, own table in Oracle
     assert built == ["factory", ("lookup", 3)]                            # built once for the whole job
-    assert db.comments["ATTRSEQUENCE"] == "csv_bml_ingestion:ws=3"       # owned by this workspace
+    assert db.comments["WS3_ATTRSEQUENCE"] == "csv_bml_ingestion:ws=3"   # owned by this workspace
+    assert "ATTRSEQUENCE" not in db.catalog                               # the shared logical name is never created
 
 
-def test_session_other_workspace_cannot_touch_a_table_owned_by_workspace_3(monkeypatch, bml_index, tmp_path):
+def test_same_csv_in_two_workspaces_lands_in_two_separate_tables(monkeypatch, bml_index, tmp_path):
     import shutil
     from .conftest import FIXTURE_SQL
     sess3, db, _ = _session(monkeypatch, bml_index, tmp_path)
@@ -223,8 +225,23 @@ def test_session_other_workspace_cannot_touch_a_table_owned_by_workspace_3(monke
     sess4 = uh.CsvBmlUploadSession(4)
     sess4._factory, sess4._lookup = db, bml_index                          # same database, other workspace
     r = sess4.ingest(_seq_body(tmp_path), "attrSequence.csv")
+    assert (r.status, r.physical_table) == ("loaded", "ws4_attrsequence")
+    assert db.comments == {"WS3_ATTRSEQUENCE": "csv_bml_ingestion:ws=3", "WS4_ATTRSEQUENCE": "csv_bml_ingestion:ws=4"}
+    deletes = [e[1] for e in db.log if e[0] == "execute" and e[1].startswith("DELETE")]
+    assert deletes == ["DELETE FROM ws3_attrsequence", "DELETE FROM ws4_attrsequence"]   # each load touches only its own table
+    inserts = [e[1].split(" ")[2] for e in db.log if e[0] == "executemany" and e[1].startswith("INSERT")]
+    assert inserts == ["ws3_attrsequence", "ws4_attrsequence"]
+
+
+def test_a_workspace_table_owned_by_someone_else_is_still_refused(monkeypatch, bml_index, tmp_path):
+    import shutil
+    from .conftest import FIXTURE_SQL
+    sess, db, _ = _session(monkeypatch, bml_index, tmp_path)
+    shutil.copytree(FIXTURE_SQL, tmp_path / "sqlroot" / "ws_3")
+    db.catalog["WS3_ATTRSEQUENCE"] = []                                    # pre-existing, not ours
+    r = sess.ingest(_seq_body(tmp_path), "attrSequence.csv")
     assert (r.status, r.error_code) == ("failed", "CBI_TABLE_PROTECTED")
-    assert [e[1] for e in db.log if e[0] == "execute" and e[1].startswith("DELETE")] == ["DELETE FROM attrsequence"]  # only ws 3's load
+    assert [e for e in db.writes() if "aryx_csv_ingest" not in e[1]] == []      # only the run bookkeeping was written
 
 
 def test_session_never_raises_even_for_hostile_filenames(monkeypatch, bml_index, tmp_path):

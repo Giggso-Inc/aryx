@@ -27,15 +27,17 @@ _BATCH = 500
 _RUN_COLS = ("run_id, job_id, source_file, table_name, status, error_code, message, rows_loaded, rows_bad, "
              "rows_rejected, rows_truncated, reject_total, reject_stored, file_size, "
              "CASE WHEN file_gz_b64 IS NULL THEN 0 ELSE 1 END, rerun_of, state, created_at")
-_OPEN_COUNT = "(SELECT COUNT(*) FROM aryx_csv_ingest_reject r WHERE r.run_id = x.run_id AND r.state = 'open')"
+_OPEN_COUNT = ("(SELECT COUNT(*) FROM aryx_csv_ingest_reject r WHERE r.run_id = x.run_id AND r.state = 'open'), "
+               "x.logical_table")   # last two selected columns: open_rejects, logical_table
 _RUN_KEYS = ("run_id", "job_id", "source_file", "table_name", "status", "error_code", "message", "rows_loaded",
              "rows_bad", "rows_rejected", "rows_truncated", "reject_total", "reject_stored", "file_size",
-             "file_kept", "rerun_of", "state", "created_at", "open_rejects")
+             "file_kept", "rerun_of", "state", "created_at", "open_rejects", "logical_table")
 
 _INSERT_RUN = (
     "INSERT INTO aryx_csv_ingest_run (run_id, workspace_id, job_id, source_file, table_name, status, error_code, "
     "message, rows_loaded, rows_bad, rows_rejected, rows_truncated, reject_total, reject_stored, file_size, "
-    "file_gz_b64, rerun_of, state) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "file_gz_b64, rerun_of, state, logical_table) VALUES "
+    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 _INSERT_REJECT = ("INSERT INTO aryx_csv_ingest_reject (run_id, workspace_id, line_no, reason_code, reason, row_json) "
                   "VALUES (%s, %s, %s, %s, %s, %s)")
@@ -134,10 +136,11 @@ class IssueStore:
         with self._factory() as conn:
             cur = conn.cursor()
             cur.execute(_INSERT_RUN, (
-                run_id, workspace_id, job_id, result.source[:256], result.table, result.status[:16],
+                run_id, workspace_id, job_id, result.source[:256], result.physical_table or result.table,
+                result.status[:16],
                 (result.error_code or None), message or None, result.rows_loaded, result.rows_bad,
                 result.rows_rejected, result.rows_truncated, result.reject_total, len(rows),
-                len(file_bytes) if file_bytes is not None else None, file_text, rerun_of, state))
+                len(file_bytes) if file_bytes is not None else None, file_text, rerun_of, state, result.table))
             for i in range(0, len(rows), _BATCH):
                 cur.executemany(_INSERT_REJECT, rows[i:i + _BATCH])
         return run_id

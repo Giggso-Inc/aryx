@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
@@ -21,6 +22,7 @@ class IngestOptions:
     rejects_dir: Path | None = None               # default: next to the CSV file
     sql_author: Completer | None = None           # None = never author SQL; missing files then fail
     owner: str = C.OWNER_TAG                      # ownership tag a table must carry to be loaded into
+    physical_table: Callable[[str], str] | None = None   # logical name -> Oracle table (None = same name)
 
 
 @dataclass(slots=True)
@@ -29,7 +31,8 @@ class IngestResult:
 
     source: str
     status: str = "failed"          # loaded | skipped | failed
-    table: str | None = None
+    table: str | None = None        # logical name: the CSV file's stem (what the BML queries say)
+    physical_table: str = ""        # the Oracle table actually used (== table unless per-workspace naming)
     rows_loaded: int = 0
     rows_bad: int = 0               # malformed (wrong width / unparsable integer)
     rows_rejected: int = 0          # did not fit their column (policy=reject)

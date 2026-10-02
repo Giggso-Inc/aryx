@@ -20,6 +20,7 @@ from aryx.csv_bml_ingestion.constants import default_sql_root
 from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
 from aryx.csv_bml_ingestion.options import IngestResult
 from aryx.csv_bml_ingestion.ownership import workspace_owner
+from aryx.csv_bml_ingestion.table_naming import physical_table
 
 logger = logging.getLogger(__name__)
 REJECTS_DIR_ENV = "ARYX_CSV_BML_REJECTS_DIR"
@@ -63,7 +64,8 @@ class CsvBmlUploadSession:
             if should_record(result):
                 result.run_id = store.record_run(self.workspace_id, self.job_id, result, data)
             if result.status == "loaded" or result.run_id:
-                store.supersede_older(self.workspace_id, result.source, result.table, result.run_id,
+                store.supersede_older(self.workspace_id, result.source, result.physical_table or result.table,
+                                      result.run_id,
                                       reloaded=result.status == "loaded")
         except Exception as exc:  # noqa: BLE001 -- storing issues must never fail the upload itself
             logger.warning("csv_bml_ingestion: could not store issues for %r: %r", result.source, exc)
@@ -82,7 +84,8 @@ class CsvBmlUploadSession:
                 path.write_bytes(data)
                 return ingest_csv(path, lookup, factory, sql_root=sql_root, rejects_dir=rejects,
                                   sql_author=project_llm_completer(),
-                                  owner=workspace_owner(self.workspace_id))
+                                  owner=workspace_owner(self.workspace_id),
+                                  physical_table=lambda logical: physical_table(logical, self.workspace_id))
         except CsvBmlIngestionError as exc:
             return IngestResult(source=safe_name, status="failed", error_code=exc.code, message=str(exc))
         except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the rest of the upload

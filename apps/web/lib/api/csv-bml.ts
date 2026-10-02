@@ -6,6 +6,8 @@ export type CsvRun = {
   job_id: string | null;
   source_file: string;
   table_name: string | null;
+  /** Name derived from the file (what BML matching used); table_name is this workspace's own table. */
+  logical_table?: string | null;
   status: "loaded" | "skipped" | "failed" | string;
   error_code: string | null;
   message: string | null;

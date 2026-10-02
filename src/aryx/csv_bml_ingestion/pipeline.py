@@ -14,6 +14,7 @@ batch of CSVs keeps going past one bad file.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.bml_index import BmlIndex, BmlLookup
@@ -30,6 +31,7 @@ from aryx.csv_bml_ingestion.sql_author import Completer, author_sql
 from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts
 from aryx.csv_bml_ingestion.sql_validate import validate_statements
 from aryx.csv_bml_ingestion.table_name import extract_table_name
+from aryx.csv_bml_ingestion.table_naming import rename_statements
 from aryx.csv_bml_ingestion.tracking import RunTracker
 
 
@@ -45,6 +47,7 @@ def ingest_csv(
     rejects_dir: Path | None = None,
     sql_author: Completer | None = None,
     owner: str = C.OWNER_TAG,
+    physical_table: Callable[[str], str] | None = None,
 ) -> IngestResult:
     """Run the full pipeline for ``csv_path``.
 
@@ -63,9 +66,12 @@ def ingest_csv(
         owner: Ownership tag. Only a table this pipeline created with the same tag (or an
             administrator adopted via COMMENT ON TABLE) is ever loaded into; any other
             existing table is refused with CBI_TABLE_PROTECTED.
+        physical_table: Maps the logical table name (file stem) to the Oracle table actually used, e.g.
+            ``ws7_attrsequence`` (see ``table_naming``). Called only AFTER step 2, which always matches
+            on the logical name. ``None`` keeps the logical name (the CLI default).
         rejects_dir: Where ``<table>.rejects.csv`` is written (default: the CSV's directory).
     """
-    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir, sql_author, owner)
+    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir, sql_author, owner, physical_table)
     source = Path(str(csv_path)).name if csv_path else "<none>"
     result, tracker = IngestResult(source=source), RunTracker(source)
     tracker.info(C.STEP_RUN, "ingestion started", csv_path=str(csv_path))
@@ -93,8 +99,12 @@ def _run(result: IngestResult, tracker: RunTracker, csv_path, bml_index: BmlInde
         return
     csv_file = Path(str(csv_path))
     read_layout(csv_file)  # fail on a malformed CSV before any SQL is authored or run
-    _step_apply_schema(tracker, factory, table, opts, csv_file, lookup)
-    load_csv_into_table(Path(str(csv_path)), table, factory, opts, tracker, result)
+    physical = opts.physical_table(table) if opts.physical_table else table   # only after step 2
+    result.physical_table = physical
+    if physical != table:
+        tracker.info(C.STEP_BML_LOOKUP, f"workspace table name {physical}", table=table, physical_table=physical)
+    _step_apply_schema(tracker, factory, table, physical, opts, csv_file, lookup)
+    load_csv_into_table(csv_file, physical, factory, opts, tracker, result, logical=table)
 
 
 def _step_table_name(result: IngestResult, tracker: RunTracker, csv_path) -> str:
@@ -133,10 +143,13 @@ def _log_matches(tracker: RunTracker, lookup: BmlLookup) -> None:
     )
 
 
-def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: str,
+def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: str, physical: str,
                        opts: IngestOptions, csv_file: Path, lookup: BmlLookup) -> None:
-    """Step 3 — load (or, if absent and enabled, LLM-author) the SQL files, then apply them."""
-    existed = require_owned_or_absent(factory, table, opts.owner)   # first: before any LLM call, DDL or DELETE
+    """Step 3 — load (or, if absent and enabled, LLM-author) the SQL files, then apply them.
+
+    The SQL files and the validator use the logical ``table``; the statements are applied to ``physical``.
+    """
+    existed = require_owned_or_absent(factory, physical, opts.owner)   # first: before any LLM call, DDL or DELETE
     try:
         artifacts = load_sql_artifacts(table, opts.sql_root)
     except SqlArtifactsMissingError:
@@ -153,7 +166,9 @@ def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: s
     tracker.info(C.STEP_SQL_ARTIFACTS, "loaded schema/index SQL", table=table,
                  schema_statements=len(artifacts.schema_statements),
                  index_statements=len(artifacts.index_statements), directory=str(artifacts.directory))
-    ran = execute_statements(factory, artifacts.schema_statements + artifacts.index_statements)
+    statements = rename_statements(artifacts.schema_statements + artifacts.index_statements, table, physical)
+    ran = execute_statements(factory, statements)
     if not existed:
-        claim_new_table(factory, table, opts.owner)
-    tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table, created=not existed)
+        claim_new_table(factory, physical, opts.owner)
+    tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table, physical_table=physical,
+                 created=not existed)

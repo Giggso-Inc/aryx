@@ -66,6 +66,14 @@ searching **that graph** — the XML is not needed again. Off by default; one sw
   first, before any LLM call, DDL or `DELETE`. Two workspaces therefore cannot overwrite each other's tables.
   To let the pipeline manage a table that already exists, an administrator adopts it explicitly:
   `COMMENT ON TABLE <table> IS 'csv_bml_ingestion';`
+* **One table per workspace.** For uploads the Oracle table is `ws<id>_<file stem>` (e.g. `ws7_attrsequence`),
+  so the same CSV uploaded to two workspaces lands in two independent tables (own columns, own sizes).
+  The *logical* name (the plain lowercase file stem) is still what steps 1–2 use to match the BML script
+  and what the SQL files / validator use; the physical name is applied after step 2 (`table_naming.py`).
+  Names that no longer fit Oracle's limit once prefixed fail with `CBI_TABLE_NAME_INVALID`. The CLI keeps
+  plain logical names. Stored issues keep both (`table_name` = physical, `logical_table`; migration 0048).
+  Purging/deleting a workspace (or a factory reset) drops that workspace's `ws<id>_…` tables — only those
+  whose owner tag *and* name match that id (`ws7` never matches `ws70`); legacy unprefixed tables are left alone.
 * Authored SQL and rejects are kept per workspace (`<sql dir>/ws_<id>/…`).
 * One CSV failing never aborts the rest of the upload; XML files in an upload are processed before CSVs.
 
