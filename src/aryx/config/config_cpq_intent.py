@@ -501,3 +501,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Override with ARYX_CPQ_PRODUCT_MATCH_EXACT_FIRST_ENABLED=true."
         ),
     )
+    cpq_rule_governed_hidden_attr_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #373/#374. When on, (a) rule_target_ids "
+            "also includes BmConfigMarkedAttr targets (not only "
+            "BmConfigRuleAction targets), and (b) resolve_array_grid_links "
+            "excludes rule-governed hidden attrs (ConfigAttr."
+            "is_value_rule_target) from its name-substring 'Quantity' "
+            "candidate guess, so they are never surfaced as unanswerable "
+            "'Please provide a value' questions. Off by default. Override "
+            "with ARYX_CPQ_RULE_GOVERNED_HIDDEN_ATTR_GUARD_ENABLED=true."
+        ),
+    )
