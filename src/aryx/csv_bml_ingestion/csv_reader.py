@@ -117,3 +117,13 @@ def _bad(stats: CsvStats, line_no: int, why: str) -> None:
     stats.rows_bad += 1
     if len(stats.bad_samples) < 5:
         stats.bad_samples.append(f"line {line_no}: {why}")
+
+
+def profile_max_bytes(path: Path, layout: CsvLayout, encoding: str = "utf-8-sig") -> dict[str, int]:
+    """Longest value per column, in UTF-8 bytes (min 1) — sizes the LLM-authored columns."""
+    longest = [1] * len(layout.columns)
+    for row in iter_rows(path, layout, CsvStats(), encoding):
+        for i, v in enumerate(row):
+            if v is not None:
+                longest[i] = max(longest[i], len(str(v).encode("utf-8")))
+    return dict(zip(layout.columns, longest))

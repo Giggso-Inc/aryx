@@ -6,7 +6,8 @@ import re
 import pytest
 
 from aryx.csv_bml_ingestion.bmql import extract_queries, strip_comments
-from aryx.csv_bml_ingestion.constants import SQL_ROOT
+from aryx.csv_bml_ingestion.constants import default_sql_root
+from aryx.csv_bml_ingestion.sql_validate import ColumnSpec, validate_indexes, validate_schema
 from aryx.csv_bml_ingestion.csv_reader import CsvStats, iter_rows, read_layout, to_column_name
 from aryx.csv_bml_ingestion.errors import (
     CsvFormatError, InvalidTableNameError, SqlArtifactsMissingError, TableNameMissingError, XmlSourceError,
@@ -15,7 +16,7 @@ from aryx.csv_bml_ingestion.bml_index import BmlIndex
 from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts, split_statements
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 
-from .conftest import write_csv
+from .conftest import FIXTURE_SQL, write_csv
 
 
 # --- step 1 -----------------------------------------------------------------
@@ -128,22 +129,24 @@ def test_missing_sql_artifacts(tmp_path):
         load_sql_artifacts("nothere", tmp_path)
 
 
-def _committed_tables() -> list[str]:
-    return sorted(p.name for p in SQL_ROOT.iterdir() if p.is_dir())
+def _fixture_tables() -> list[str]:
+    return sorted(p.name for p in FIXTURE_SQL.iterdir() if p.is_dir())
 
 
-@pytest.mark.parametrize("table", _committed_tables())
-def test_committed_sql_is_well_formed(table):
-    """Each committed table: one CREATE TABLE, indexes only reference real columns, files present."""
+@pytest.mark.parametrize("table", _fixture_tables())
+def test_agent_authored_sql_passes_the_strict_validator(table, seeded_sql_root):
+    """Real agent-authored SQL must satisfy the same validator that gates run-time LLM output."""
     art = load_sql_artifacts(table)
-    assert len(art.schema_statements) == 1
-    create = art.schema_statements[0]
-    assert re.match(rf"CREATE TABLE IF NOT EXISTS {table} \(", create)
-    cols = [c.strip().split()[0] for c in re.search(r"\((.*)\)\s*$", create).group(1).split(",\n") or []]
-    cols = re.findall(r"(\w+) (?:VARCHAR2|NUMBER)\(", create)
-    assert cols and len(cols) == len(set(cols))
+    cols = re.findall(r"(\w+) (VARCHAR2|NUMBER)\(", art.schema_statements[0])
+    specs = [ColumnSpec(c.lower(), "text" if t == "VARCHAR2" else "number") for c, t in cols]
+    sizes = validate_schema(art.schema_statements[0] + ";", table, specs)
+    index_sql = "\n".join(s + ";" for s in art.index_statements)
+    assert validate_indexes(index_sql, table, sizes) == len(art.index_statements)
     assert (art.directory / "bml_source.md").is_file()
-    for idx in art.index_statements:
-        m = re.match(rf"CREATE INDEX IF NOT EXISTS idx_{table}_\w+ ON {table} \(([\w, ]+)\)$", idx)
-        assert m, idx
-        assert {c.strip() for c in m.group(1).split(",")} <= set(cols)
+
+
+def test_sql_root_default_and_env_override(monkeypatch, tmp_path):
+    monkeypatch.delenv("ARYX_CSV_BML_SQL_DIR", raising=False)
+    assert default_sql_root().name == "sql" and default_sql_root().parent.name == "csv_bml_ingestion"
+    monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(tmp_path))
+    assert default_sql_root() == tmp_path

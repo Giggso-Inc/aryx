@@ -11,7 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from aryx.csv_bml_ingestion.constants import BML_SOURCE_FILE, INDEXES_FILE, SCHEMA_FILE, SQL_ROOT
+from aryx.csv_bml_ingestion.constants import (
+    BML_SOURCE_FILE, INDEXES_FILE, SCHEMA_FILE, default_sql_root,
+)
 from aryx.csv_bml_ingestion.errors import SqlArtifactsMissingError
 
 
@@ -42,12 +44,12 @@ def split_statements(text: str) -> tuple[str, ...]:
     return tuple(statements)
 
 
-def sql_dir(table: str, root: Path = SQL_ROOT) -> Path:
-    """Directory holding ``table``'s reference SQL files."""
-    return root / table.lower()
+def sql_dir(table: str, root: Path | None = None) -> Path:
+    """Directory holding ``table``'s SQL files (``root`` defaults to ``default_sql_root()``)."""
+    return (root or default_sql_root()) / table.lower()
 
 
-def load_sql_artifacts(table: str, root: Path = SQL_ROOT) -> SqlArtifacts:
+def load_sql_artifacts(table: str, root: Path | None = None) -> SqlArtifacts:
     """Read ``schema.sql`` and ``indexes.sql`` for ``table``.
 
     Raises:
@@ -71,6 +73,6 @@ def load_sql_artifacts(table: str, root: Path = SQL_ROOT) -> SqlArtifacts:
     )
 
 
-def bml_source_doc(table: str, root: Path = SQL_ROOT) -> Path:
+def bml_source_doc(table: str, root: Path | None = None) -> Path:
     """Path of the human-readable BML evidence file for ``table`` (may not exist)."""
     return sql_dir(table, root) / BML_SOURCE_FILE

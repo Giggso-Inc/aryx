@@ -17,12 +17,13 @@ from pathlib import Path
 
 from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.bml_index import BmlIndex, BmlLookup
-from aryx.csv_bml_ingestion.csv_reader import read_layout
+from aryx.csv_bml_ingestion.csv_reader import profile_max_bytes, read_layout
 from aryx.csv_bml_ingestion.db import ConnectionFactory, execute_statements
-from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
+from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError, SqlArtifactsMissingError
 from aryx.csv_bml_ingestion.options import IngestOptions, IngestResult
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.rows_step import load_csv_into_table
+from aryx.csv_bml_ingestion.sql_author import Completer, author_sql
 from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 from aryx.csv_bml_ingestion.tracking import RunTracker
@@ -35,9 +36,10 @@ def ingest_csv(
     *,
     replace: bool = True,
     batch_size: int = C.DEFAULT_BATCH_SIZE,
-    sql_root: Path = C.SQL_ROOT,
+    sql_root: Path | None = None,
     overflow: OverflowPolicy = OverflowPolicy.REJECT,
     rejects_dir: Path | None = None,
+    sql_author: Completer | None = None,
 ) -> IngestResult:
     """Run the full pipeline for ``csv_path``.
 
@@ -47,12 +49,15 @@ def ingest_csv(
         factory: Connection factory (see ``db.oracle_connection_factory``).
         replace: Delete existing rows before loading (default, full refresh).
         batch_size: Rows per ``executemany`` batch.
-        sql_root: Directory holding ``<table>/schema.sql`` + ``indexes.sql``.
+        sql_root: Directory holding ``<table>/schema.sql`` + ``indexes.sql`` (default:
+            ``ARYX_CSV_BML_SQL_DIR`` or the package ``sql/`` folder).
         overflow: What to do with values that exceed their column
             (``reject`` default, ``truncate``, ``fail``) — see ``overflow``.
+        sql_author: LLM completer used to author ``sql/<table>/`` when a BML query exists but the files
+            do not (see ``sql_author``); ``None`` disables authoring.
         rejects_dir: Where ``<table>.rejects.csv`` is written (default: the CSV's directory).
     """
-    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir)
+    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir, sql_author)
     source = Path(str(csv_path)).name if csv_path else "<none>"
     result, tracker = IngestResult(source=source), RunTracker(source)
     tracker.info(C.STEP_RUN, "ingestion started", csv_path=str(csv_path))
@@ -74,10 +79,12 @@ def ingest_csv(
 def _run(result: IngestResult, tracker: RunTracker, csv_path, bml_index: BmlIndex,
          factory: ConnectionFactory, opts: IngestOptions) -> None:
     table = _step_table_name(result, tracker, csv_path)
-    if not _step_bml_lookup(result, tracker, bml_index, table):
+    lookup = _step_bml_lookup(result, tracker, bml_index, table)
+    if lookup is None:
         return
-    read_layout(Path(str(csv_path)))  # fail on a malformed CSV before any DDL runs
-    _step_apply_schema(tracker, factory, table, opts)
+    csv_file = Path(str(csv_path))
+    read_layout(csv_file)  # fail on a malformed CSV before any SQL is authored or run
+    _step_apply_schema(tracker, factory, table, opts, csv_file, lookup)
     load_csv_into_table(Path(str(csv_path)), table, factory, opts, tracker, result)
 
 
@@ -93,19 +100,20 @@ def _step_table_name(result: IngestResult, tracker: RunTracker, csv_path) -> str
     return table
 
 
-def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIndex, table: str) -> bool:
-    """Step 2 — both sides lowercase; returns False (run skipped) when no BML query reads the table."""
+def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIndex,
+                     table: str) -> BmlLookup | None:
+    """Step 2 — both sides lowercase; returns None (run skipped) when no BML query reads the table."""
     lookup = bml_index.lookup(table)
     result.bml_scripts = [m.script_id for m in lookup.matches]
     if lookup.matches:
         _log_matches(tracker, lookup)
-        return True
+        return lookup
     result.status, result.error_code = "skipped", "CBI_BML_NOT_FOUND"
     result.message = f"no BML query reads table {table!r}"
     tracker.error(C.STEP_BML_LOOKUP, result.message + " — skipping (no schema can be derived)",
                   error_code="CBI_BML_NOT_FOUND", table=table, near_misses=list(lookup.near_misses),
                   scripts_scanned=bml_index.script_count)
-    return False
+    return None
 
 
 def _log_matches(tracker: RunTracker, lookup: BmlLookup) -> None:
@@ -117,9 +125,17 @@ def _log_matches(tracker: RunTracker, lookup: BmlLookup) -> None:
 
 
 def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: str,
-                       opts: IngestOptions) -> None:
-    """Step 3 — load the committed SQL files and apply schema, then indexes."""
-    artifacts = load_sql_artifacts(table, opts.sql_root)
+                       opts: IngestOptions, csv_file: Path, lookup: BmlLookup) -> None:
+    """Step 3 — load (or, if absent and enabled, LLM-author) the SQL files, then apply them."""
+    try:
+        artifacts = load_sql_artifacts(table, opts.sql_root)
+    except SqlArtifactsMissingError:
+        if opts.sql_author is None:
+            raise
+        layout = read_layout(csv_file)
+        author_sql(table, layout, profile_max_bytes(csv_file, layout), lookup, opts.sql_author, tracker,
+                   opts.sql_root)
+        artifacts = load_sql_artifacts(table, opts.sql_root)
     tracker.info(C.STEP_SQL_ARTIFACTS, "loaded schema/index SQL", table=table,
                  schema_statements=len(artifacts.schema_statements),
                  index_statements=len(artifacts.index_statements), directory=str(artifacts.directory))

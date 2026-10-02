@@ -16,6 +16,7 @@ from pathlib import Path
 from aryx.csv_bml_ingestion.bml_index import BmlIndex
 from aryx.csv_bml_ingestion.db import oracle_connection_factory
 from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
+from aryx.csv_bml_ingestion.llm_client import project_llm_completer
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.pipeline import ingest_csv
 from aryx.csv_bml_ingestion.table_name import extract_table_name
@@ -37,6 +38,8 @@ def _parser() -> argparse.ArgumentParser:
             s.add_argument("--batch-size", type=int, default=500)
             s.add_argument("--on-overflow", choices=[p.value for p in OverflowPolicy], default="reject",
                            help="values too long for their column: reject the row (default), truncate, or fail")
+            s.add_argument("--no-author-sql", action="store_true",
+                           help="do NOT let an LLM author sql/<table>/ when missing; such CSVs fail instead")
             s.add_argument("--rejects-dir", type=Path, default=None,
                            help="where <table>.rejects.csv is written (default: next to the CSV)")
     return p
@@ -94,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
         return 1
     results = [ingest_csv(c, index, factory, replace=not args.append, batch_size=args.batch_size,
-                          overflow=OverflowPolicy(args.on_overflow), rejects_dir=args.rejects_dir)
+                          overflow=OverflowPolicy(args.on_overflow), rejects_dir=args.rejects_dir,
+                          sql_author=None if args.no_author_sql else project_llm_completer())
                for c in args.csv]
     for r in results:
         print(f"{r.source}: {r.status} table={r.table} rows={r.rows_loaded} bad={r.rows_bad} "

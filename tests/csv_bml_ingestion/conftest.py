@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -27,6 +28,18 @@ rs4 = BMQL(dynamicQuery);
 ]]></script_text>
   </bm_function>
 </bm_config_zip_cache>"""
+
+
+FIXTURE_SQL = Path(__file__).parent / "fixtures" / "sql"   # agent-authored examples (test data only)
+
+
+@pytest.fixture(autouse=True)
+def seeded_sql_root(tmp_path, monkeypatch) -> Path:
+    """Point the pipeline at a temp SQL folder pre-seeded with two authored tables."""
+    root = tmp_path / "sql_root"
+    shutil.copytree(FIXTURE_SQL, root)
+    monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(root))
+    return root
 
 
 @pytest.fixture(scope="session")

@@ -111,13 +111,3 @@ def test_batch_continues_after_one_bad_file(bml_index, tmp_path):
     db = FakeDb()
     results = [ingest_csv(p, bml_index, db) for p in (None, _seq_csv(tmp_path))]
     assert [r.status for r in results] == ["failed", "loaded"]
-
-
-def test_committed_schema_matches_real_csv_header_convention():
-    """The committed attrsequence DDL columns equal to_column_name() of the real CSV header."""
-    from aryx.csv_bml_ingestion.csv_reader import to_column_name
-    from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts
-    import re
-    create = load_sql_artifacts("attrsequence").schema_statements[0]
-    cols = re.findall(r"(\w+) (?:VARCHAR2|NUMBER)\(", create)
-    assert cols == [to_column_name(h) for h in SEQ_HEADER]

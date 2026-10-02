@@ -64,3 +64,9 @@ class SchemaMismatchError(CsvBmlIngestionError):
     """The CSV has columns the database table does not (or the table is missing)."""
 
     code = "CBI_SCHEMA_MISMATCH"
+
+
+class SqlAuthoringError(CsvBmlIngestionError):
+    """LLM-authored SQL was invalid, or could not be produced, after all attempts."""
+
+    code = "CBI_SQL_AUTHOR_FAILED"
