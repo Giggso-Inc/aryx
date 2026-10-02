@@ -21,10 +21,10 @@ DEFAULT_MAX_ROWS = 10_000
 
 
 def csv_safe_cell(v: object) -> object:
-    """Blank for None; prefix ``'`` on text a spreadsheet would run as a formula (``= + - @``)."""
+    """Blank for None; prefix ``'`` on text a spreadsheet would run as a formula (``= + - @``, tab, CR)."""
     if v is None:
         return ""
-    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@") else v
+    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
 
 
 def max_reject_rows() -> int:

@@ -167,8 +167,12 @@ def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: s
                  schema_statements=len(artifacts.schema_statements),
                  index_statements=len(artifacts.index_statements), directory=str(artifacts.directory))
     statements = rename_statements(artifacts.schema_statements + artifacts.index_statements, table, physical)
-    ran = execute_statements(factory, statements)
+    n_schema = len(artifacts.schema_statements)
+    ran = execute_statements(factory, statements[:n_schema])
     if not existed:
+        # Stamp before the indexes: DDL auto-commits, so if an index statement fails the table must already be
+        # ours, or the next run would refuse our own table (CBI_TABLE_PROTECTED).
         claim_new_table(factory, physical, opts.owner)
+    ran += execute_statements(factory, statements[n_schema:])
     tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table, physical_table=physical,
                  created=not existed)

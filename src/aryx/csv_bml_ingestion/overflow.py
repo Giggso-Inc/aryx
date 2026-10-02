@@ -18,6 +18,7 @@ holds fewer than 1000 non-ASCII characters.
 from __future__ import annotations
 
 import csv
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,6 +28,8 @@ from typing import Iterable, Iterator, Sequence
 from aryx.csv_bml_ingestion.column_limits import ColumnLimit
 from aryx.csv_bml_ingestion.errors import ValueTooLongError
 from aryx.csv_bml_ingestion.rejects import RejectCollector, RejectedRow, csv_safe_cell
+
+logger = logging.getLogger(__name__)
 
 
 class OverflowPolicy(str, Enum):
@@ -83,8 +86,13 @@ class _RejectsWriter:
         if self.path is None:
             return
         if self._w is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._fh = self.path.open("w", encoding="utf-8", newline="")
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = self.path.open("w", encoding="utf-8", newline="")
+            except OSError as exc:   # e.g. read-only image: rejects are also stored in the database, keep loading
+                logger.warning("csv_bml_ingestion: cannot write rejects file %s: %r", self.path, exc)
+                self.path = None
+                return
             self._w = csv.writer(self._fh)
             self._w.writerow([*self._columns, "reject_reason"])
         self._w.writerow([*(csv_safe_cell(v) for v in row), reason])

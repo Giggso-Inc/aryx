@@ -9,15 +9,16 @@ A table is dropped only if BOTH hold, so nothing else can ever be touched:
 * its name is exactly ``ws<id>_…`` for that same id (so workspace 7 never matches ``ws70_…``).
 
 Tables created before per-workspace naming (plain ``attrsequence``) carry no such name and are left alone.
-Callers run this best-effort and in its own transaction (see ``OracleWorkspaceStore._purge_csv_data``): a
+Callers run this best-effort and in its own transaction (see ``OracleWorkspaceStore._purge_csv_issues``): a
 failure here must never fail a workspace delete.
 """
 from __future__ import annotations
 
 import logging
 import re
+import shutil
 
-from aryx.csv_bml_ingestion.constants import OWNER_TAG
+from aryx.csv_bml_ingestion.constants import OWNER_TAG, default_sql_root
 from aryx.csv_bml_ingestion.db import ConnectionFactory
 from aryx.csv_bml_ingestion.ownership import workspace_owner
 from aryx.csv_bml_ingestion.table_naming import is_workspace_table
@@ -54,3 +55,30 @@ def drop_workspace_tables(factory: ConnectionFactory, workspace_id: int | None) 
     if dropped:
         logger.info("csv_bml_ingestion: dropped workspace tables %s", dropped)
     return dropped
+
+
+_WS_DIR_RE = re.compile(r"^ws_\d+$")
+
+
+def remove_workspace_files(workspace_id: int | None, *, whole_workspace: bool) -> list[str]:
+    """Remove the per-workspace files this pipeline wrote on disk; returns what was removed.
+
+    Rejected rows are written as plaintext CSV under ``<sql dir>/ws_<id>/_rejects``; they are customer data
+    and must not outlive the workspace's data. ``whole_workspace`` (workspace delete / factory reset) also
+    removes the authored SQL under ``ws_<id>/``; a plain data purge keeps it so it is not re-authored.
+    ``workspace_id=None`` means every workspace. Only directories named exactly ``ws_<digits>`` are touched.
+    """
+    root = default_sql_root()
+    if not root.is_dir():
+        return []
+    if workspace_id is None:
+        dirs = [d for d in root.iterdir() if d.is_dir() and _WS_DIR_RE.match(d.name)]
+    else:
+        dirs = [root / f"ws_{int(workspace_id)}"]
+    removed: list[str] = []
+    for d in dirs:
+        target = d if whole_workspace else d / "_rejects"
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target, ignore_errors=True)
+            removed.append(str(target))
+    return removed

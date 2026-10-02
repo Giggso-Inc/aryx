@@ -101,7 +101,12 @@ def csv_bml_router() -> APIRouter:
         ws = workspace_id
         store = IssueStore(_factory())
         run = _run_or_404(store, ws, run_id)
-        rows = store.list_rejects(ws, run_id, None, 0, 500)
+        rows: list[dict[str, Any]] = []
+        while len(rows) < _MAX_CSV_ROWS:                    # the store pages at 500; a run can hold up to the reject cap
+            page = store.list_rejects(ws, run_id, None, len(rows), 500)
+            rows.extend(page)
+            if len(page) < 500:
+                break
         body = _rejects_csv(rows)
         name = f"{(run['table_name'] or 'rejects')}_{run_id[:8]}_rejects.csv"
         return Response(content=body, media_type="text/csv",
