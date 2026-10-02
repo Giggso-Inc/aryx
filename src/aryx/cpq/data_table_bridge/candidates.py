@@ -39,11 +39,12 @@ def _prepend_resolved_model(
         resolved = ctx.resolution.chosen.cpq_model
         if resolved in primary:
             return primary
-        logger.info(
-            "cpq: model_scope prepended_cpq_model product_name=%r "
-            "base_model=%r was=%r -> (%r, *was)",
-            product_name, base_model, primary, resolved,
-        )
+        if ctx.first_time(("prepend_cpq_model", resolved)):  # ~300 calls/turn
+            logger.info(
+                "cpq: model_scope prepended_cpq_model product_name=%r "
+                "base_model=%r was=%r -> (%r, *was)",
+                product_name, base_model, primary, resolved,
+            )
         return (resolved, *primary)
     except Exception:  # noqa: BLE001 -- never break candidate resolution
         logger.exception("cpq: model_scope candidate prepend failed product_name=%r", product_name)
@@ -107,6 +108,7 @@ def _cpq_model_candidates(
             primary = ()
         else:
             primary = _DEFAULT_CPQ_MODEL_CANDIDATES
+    original = primary
     primary = _prepend_resolved_model(primary, product_name, base_model)
     if not (base_model and workspace_id is not None):
         return primary
@@ -115,12 +117,15 @@ def _cpq_model_candidates(
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
     if (
-        extra and primary == _DEFAULT_CPQ_MODEL_CANDIDATES
+        extra and original == _DEFAULT_CPQ_MODEL_CANDIDATES
         and get_settings().cpq_candidates_real_models_first_enabled
     ):
         # Partial port of aryxent PR 3/10: real models discovered for the
         # known base model go BEFORE the generic APXNEXT fallback, so a
         # caller that stops at the first single value no longer answers
         # for APX NEXT. Off by default.
-        return extra + primary
+        # The resolved-model prepend (if any) stays in front: resolved model,
+        # then real discovered models, then the generic fallback.
+        head = primary[: len(primary) - len(original)]
+        return head + extra + original
     return primary + extra if extra else primary

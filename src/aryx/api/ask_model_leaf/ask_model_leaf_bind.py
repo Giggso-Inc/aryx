@@ -39,7 +39,13 @@ def bind_turn_model_context(
             ) if p
         )
         t0 = time.monotonic()
-        res = _model_resolution.resolve_model(hint, req.workspace_id, catalog_prefix)
+        turn_text = " ".join(
+            p for p in (switch_trigger_question or "", getattr(req, "question", "") or "") if p
+        )
+        res = _model_resolution.resolve_model_turn_first(
+            turn_text, getattr(session, "product_anchor_question", "") or "",
+            req.workspace_id, catalog_prefix,
+        )
         _model_resolution.bind_turn(
             _model_resolution.TurnModelContext(res, req.workspace_id, catalog_prefix),
         )
@@ -70,10 +76,14 @@ def seed_model_vn_from_resolution() -> str:
 
 def pick_top_text_match(text_matches: list[str]) -> str | None:
     """When 2+ leaves match the wording and `cpq_model_leaf_pick_top_enabled`
-    is on, the leaf to take instead of asking: the resolver's chosen node if
+    is on (and ``cpq_model_resolution_enabled`` too), the leaf to take instead of asking: the resolver's chosen node if
     it is one of the matches, else the longest-named match (alphabetical
     tie-break). None when the flag is off or there is nothing to pick."""
-    if len(text_matches) < 2 or not get_settings().cpq_model_leaf_pick_top_enabled:
+    settings = get_settings()
+    if (
+        len(text_matches) < 2 or not settings.cpq_model_leaf_pick_top_enabled
+        or not settings.cpq_model_resolution_enabled
+    ):
         return None
     node = resolved_node_name()
     pick = next((m for m in text_matches if node and _norm_leaf(m) == _norm_leaf(node)), None)

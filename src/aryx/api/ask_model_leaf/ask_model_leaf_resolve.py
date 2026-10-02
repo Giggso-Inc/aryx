@@ -45,10 +45,24 @@ def _resolve_model_leaf(
     bind_turn_model_context(req, session, catalog_prefix, switch_trigger_question)
     model_vn = _cpq_engine.single_model_variable_name(
         reader, req.workspace_id, catalog_prefix)
-    if not model_vn:
+    if not model_vn and not session.pending_model_leaf_candidates:
         # aryxent PR 2 (cpq_model_context_seed_enabled, default off): multi-
-        # leaf catalogs seed the punch-in context from the resolved model.
-        model_vn = seed_model_vn_from_resolution()
+        # leaf catalogs seed the punch-in context from the resolved model --
+        # only when it validates against the catalog's real leaves (same bar
+        # as the resolved-leaf path below), and never while a "which model?"
+        # reply is pending (that reply must still be handled).
+        _seed = seed_model_vn_from_resolution()
+        if _seed:
+            _seed_leaf = next(
+                (leaf for leaf in _cpq_engine.model_variable_candidates(
+                    reader, req.workspace_id, catalog_prefix)
+                 if _norm_leaf(leaf) == _norm_leaf(_seed)),
+                None,
+            )
+            if _seed_leaf:
+                hints["_bm_model_variable_name"] = _seed_leaf  # validated: force-set
+                session.pending_model_leaf_candidates = []
+                return None
     if model_vn:
         hints.setdefault("_bm_model_variable_name", model_vn)
         session.pending_model_leaf_candidates = []

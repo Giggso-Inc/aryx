@@ -50,7 +50,8 @@ def load_hiding_rules(
     rules = _load_type11_hiding_rules(
         engine, workspace_id, catalog_prefix, _t0, product_name,
     )
-    rules = rule_scope.scope_rules_by_ancestry(rules, "hiding_rules")
+    rules = rule_scope.scope_rules_by_ancestry(
+        rules, "hiding_rules", workspace_id, catalog_prefix)
 
     # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
     # real, separate class of "hide" rule authored OUTSIDE rule_type=11

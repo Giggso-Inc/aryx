@@ -38,6 +38,7 @@ install_run_id_logging(__name__)
 __all__ = [
     "ModelCandidate", "ModelResolution", "TurnModelContext", "bind_turn",
     "catalog_node_count", "describe", "get_turn", "rank_candidates", "resolve_model",
+    "resolve_model_turn_first",
 ]
 
 # Catalog's own soft-delete / test markers on CPQModel codes ("-remove",
@@ -184,6 +185,21 @@ def resolve_model(
         chosen=chosen, alternatives=alternatives, deciding_step=step,
         source="hint" if chosen else "unresolved", scope_node_ids=scope,
     )
+
+
+def resolve_model_turn_first(
+    turn_text: str, anchor_text: str, workspace_id: int, catalog_prefix: str,
+    rdb: Any | None = None,
+) -> ModelResolution:
+    """Resolve from the CURRENT turn's wording first; only when that names no
+    model fall back to ``anchor_text + turn_text``. Rule: what the customer
+    says now beats what they said earlier, so "make it APX 8000" after an
+    "APX 6000" anchor resolves to 8000 instead of an anchor-driven tie. The
+    in-pool tie-break stays ``rank_candidates`` (alphabetical last)."""
+    res = resolve_model(turn_text, workspace_id, catalog_prefix, rdb)
+    if res.resolved or not (anchor_text or "").strip():
+        return res
+    return resolve_model(f"{anchor_text} {turn_text}", workspace_id, catalog_prefix, rdb)
 
 
 # ---- Turn binding ----

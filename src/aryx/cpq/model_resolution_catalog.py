@@ -122,9 +122,26 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
         upgrade_node_ids=upgrade_node_ids,
         rule_nodes_by_name={k: frozenset(v) for k, v in rule_nodes.items()},
     )
+    if not nodes_by_id or not models:
+        # fetch_entities_by_exact_type swallows DB errors and returns [], so an
+        # empty result is indistinguishable from a transient failure. Never
+        # cache it (it would leave the workspace unresolved for the full TTL).
+        logger.warning(
+            "cpq: model_resolution catalog empty ws=%s prefix=%r nodes=%d models=%d "
+            "-- not caching (possible DB error or catalog not ingested)",
+            workspace_id, catalog_prefix, len(nodes_by_id), len(models),
+        )
+        return data
     with _cache_lock:
         _cache[key] = data
     return data
+
+
+def invalidate(workspace_id: int | None = None) -> None:
+    """Drop cached catalogs (one workspace, or all). Call after a re-ingest."""
+    with _cache_lock:
+        for k in [k for k in _cache if workspace_id is None or k[0] == int(workspace_id)]:
+            del _cache[k]
 
 
 def catalog_node_count(workspace_id: int, catalog_prefix: str) -> int:

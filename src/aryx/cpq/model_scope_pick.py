@@ -17,6 +17,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq import model_resolution as _model_resolution
+from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.data_table.data_table_resolver import (
     resolve_whitelist_values as dt_resolve_whitelist_values,
 )
@@ -46,7 +47,8 @@ def scoped_first_available(
     if ctx is None or not ctx.resolution.resolved or ctx.resolution.chosen is None:
         return None
     chosen = ctx.resolution.chosen
-    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    base_model = filled.get(
+        resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     scoped_base_model = base_model if base_model in chosen.base_models else ""
     try:
         legal: Any = dt_resolve_whitelist_values(

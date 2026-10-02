@@ -1244,7 +1244,7 @@ class CpqEngine:
                     "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
                     workspace_id, catalog_prefix,
                 )
-                return rule_scope.scope_value_rules_tuple(_cache_result)
+                return rule_scope.scope_value_rules_tuple(_cache_result, workspace_id, catalog_prefix)
 
         _t0 = time.monotonic()
         logger.info(
@@ -1268,7 +1268,7 @@ class CpqEngine:
             self, workspace_id, catalog_prefix, ingest_store, existing_questions, _t0,
         )
         _cache_write_if_marker_unchanged(_VALUE_RULES_CACHE, _cache_key, (time.monotonic(), _result), _marker_at_read)
-        return rule_scope.scope_value_rules_tuple(_result)
+        return rule_scope.scope_value_rules_tuple(_result, workspace_id, catalog_prefix)
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
