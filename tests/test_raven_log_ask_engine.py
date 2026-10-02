@@ -134,7 +134,9 @@ def test_static_model_fallback_warns_once_per_turn(recs, monkeypatch):
     from aryx.cpq.data_table_bridge import candidates as c
     monkeypatch.setattr(c, "dt_resolve_product_cpq_models_from_rows", lambda *a, **k: None)
     monkeypatch.setattr(c, "dt_resolve_product_cpq_model_family", lambda *a, **k: None)
-    monkeypatch.setattr(c, "get_settings", lambda: SimpleNamespace(data_table_candidates_empty_on_no_match_enabled=False))
+    monkeypatch.setattr(c, "get_settings", lambda: SimpleNamespace(data_table_candidates_empty_on_no_match_enabled=False,
+                                                                   cpq_model_scope_lookups_enabled=False,
+                                                                   cpq_candidates_real_models_first_enabled=False))
     assert c._cpq_model_candidates("APX 900", 1) == ("APXNEXT", "APXNEXT_BOM")
     c._cpq_model_candidates("APX 900", 1)
     warns = _ev(recs, "ask.model.fallback_static")

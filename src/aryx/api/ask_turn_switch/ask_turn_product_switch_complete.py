@@ -34,7 +34,7 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
     from aryx.api import ask_api as _ask_api_module
     session.cascade_log.append({
         "event": "product_switch", "from": session.product_name,
-        "to": new_product, "turn": session.turn,
+        "to": new_product, "turn": getattr(session, "turn", None),
     })
     # Snapshot the OUTGOING product before wiping it — even a
     # product visited only once is captured, ready for a much later

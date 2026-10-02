@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 
+from aryx.config import get_settings
 from aryx.cpq.bml.bml_conditions import _parse_boolean_expr, _parse_condition
 from aryx.cpq.bml.bml_text import _find_block, _strip_block_comments, _strip_line_comments
 
@@ -245,13 +246,31 @@ def _split_pipe_caret_values(values: list[str]) -> list[str]:
     matches any real item_value — confirmed live: "Restrict Service Type
     Based on the Solution Type" corrupted Service Type resolution for
     every CapEx-purchase SVX quote this way.
+
+    With `cpq_bml_tilde_split_enabled`, `~` also splits and `\\~` is a literal
+    tilde. An entry made only of separators (e.g. ``"~~"``) has no content
+    and yields no values -- a deliberate no-op, never an error.
     """
+    split_tilde = get_settings().cpq_bml_tilde_split_enabled
     out: list[str] = []
     for v in values:
-        if "|^|" in v:
-            out.extend(part.strip() for part in v.split("|^|") if part.strip())
-        elif v:
-            out.append(v)
+        parts = v.split("|^|") if "|^|" in v else [v]
+        for part in parts:
+            if split_tilde and "~" in part.replace("\\~", ""):
+                # `~` is the catalog's other multi-value packing convention
+                # (aryxent PR 12), e.g. "A~B~C" -- gated, off by default.
+                # A literal tilde is written `\~` and never splits.
+                out.extend(
+                    sub.replace("\\~", "~").strip()
+                    for sub in re.split(r"(?<!\\)~", part) if sub.strip()
+                )
+            elif split_tilde and "\\~" in part:
+                out.append(part.replace("\\~", "~").strip())
+            elif "|^|" in v:
+                if part.strip():
+                    out.append(part.strip())
+            elif part:
+                out.append(part)
     return out
 
 def _branch_values(body: str) -> list[str] | None:

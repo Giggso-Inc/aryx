@@ -62,7 +62,7 @@ def _step1_resolve_product_anchor(
         )
         raven_log("DEBUG", "P4", "ask.anchor.resolved question-shaped reply routed to qa", context={
             "selected_option": "qa", "available_options": ["qa", "anchor"],
-            "reason_code": "QUESTION_SHAPED_PENDING_ANCHOR", "turn": session.turn})
+            "reason_code": "QUESTION_SHAPED_PENDING_ANCHOR", "turn": getattr(session, "turn", None)})
         return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, [], reader, resume_review=False)
     # PROMPT 7: reply to a prior "did you mean" / family list first
     detected = ""
@@ -81,7 +81,7 @@ def _step1_resolve_product_anchor(
             "result": _sres0 if isinstance(_sres0, str) else (
                 "matched" if _sres0.matched else "no_match"),
             "suggestion_count": len(getattr(_sres0, "suggestions", []) or []),
-            "turn": session.turn})
+            "turn": getattr(session, "turn", None)})
         if _sres0 == "skip":
             return _build_scope_skip_response(
                 req, session, _scope_cands0, "product family",
@@ -147,7 +147,7 @@ def _step1_resolve_product_anchor(
         raven_log("DEBUG", "P4", "ask.anchor.not_found customer asked or auto-resolved", context={
             "selected_option": "ask_customer" if _response is not None else "auto_resolve",
             "available_options": ["ask_customer", "auto_resolve"],
-            "reason_code": "NO_PRODUCT_DETECTED", "turn": session.turn,
+            "reason_code": "NO_PRODUCT_DETECTED", "turn": getattr(session, "turn", None),
             "auto_resolved_product": detected or "",
             "pending_anchor": session.pending_anchor})
         if _response is not None:
@@ -158,7 +158,7 @@ def _step1_resolve_product_anchor(
         "available_options": ["scope_reply", "mention", "mention_after_stale_scope",
                               "family_scope_ladder", "resolve_product_hint",
                               "family_prompt_auto_resolve"],
-        "turn": session.turn, "run_id": session.run_id})
+        "turn": getattr(session, "turn", None), "run_id": session.run_id})
     session.product_name = detected
     # Keep the longer order utterance (often has country + customer) when
     # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /

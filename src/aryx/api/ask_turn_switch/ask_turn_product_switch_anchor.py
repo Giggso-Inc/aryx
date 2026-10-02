@@ -36,7 +36,7 @@ def _handle_product_switch_pending_anchor(
         "available_options": ["switch_country", "suggest_switch", "confirm_switch", "none"],
         "reason_code": "PENDING_SWITCH_ANCHOR" if _anchor in (
             "switch_country", "suggest_switch", "confirm_switch") else "NO_SWITCH_ANCHOR",
-        "pending_anchor": _anchor or "", "turn": session.turn,
+        "pending_anchor": _anchor or "", "turn": getattr(session, "turn", None),
         "pending_switch_product": getattr(session, "pending_switch_product", "") or ""})
     if session.pending_anchor == "switch_country":
         return _handle_switch_country_anchor(req, session, reader)

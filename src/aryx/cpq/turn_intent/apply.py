@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from aryx.config import get_settings
 from aryx.cpq.engine import (
     _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE,
     _option_matches_with_unit_normalization,
@@ -129,7 +130,12 @@ def apply_answer(
         return alias_match
 
     # Free-text field
-    if not attr.options and allowed is None and _valid(user_answer):
+    # #370 bug 2: _valid() is auto_fill's blind-guess filter ("na", "none",
+    # ...); a customer's deliberate typed answer only needs _presentable().
+    _free_text_ok = (
+        _presentable if get_settings().cpq_free_text_presentable_enabled else _valid
+    )
+    if not attr.options and allowed is None and _free_text_ok(user_answer):
         return user_answer.strip(), user_answer.strip()
 
     return None

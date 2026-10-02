@@ -87,6 +87,6 @@ def _preamble_extract_hints_and_resolve_country(
             else "route_meta" if (route_meta is not None and route_meta.country)
             else "session" if session.country else "none"),
         "country_llm_call_failed": _country_llm_call_failed,
-        "session_country_set": bool(session.country), "turn": session.turn,
+        "session_country_set": bool(session.country), "turn": getattr(session, "turn", None),
     })
     return hints, _country_llm_call_failed

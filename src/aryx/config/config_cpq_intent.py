@@ -324,3 +324,340 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
         ),
     )
+
+    cpq_bml_tilde_split_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 12 fix (aryxent_bug_cpq-blind-pick-"
+            "unscoped-menu.md): also split a BML script's quoted return "
+            "value on '~' (e.g. \"A~B~C\"), the catalog's second real "
+            "multi-value packing convention besides '|^|'. Off by default "
+            "-- when off, only '|^|' is split, exactly as before. Override "
+            "with ARYX_CPQ_BML_TILDE_SPLIT_ENABLED=true."
+        ),
+    )
+    cpq_base_model_placeholder_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 4 fix: reject the placeholder value '*' "
+            "(see cpq/base_model_placeholder.py) when a recommendation rule "
+            "tries to write it into a base-model attribute, at the three "
+            "write sites (apply_recommendation_rules, "
+            "resync_stale_recommendations, tier2_satisfied_rec). Off by "
+            "default -- when off, behaviour is byte-identical to before. "
+            "Override with ARYX_CPQ_BASE_MODEL_PLACEHOLDER_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_generic_candidate_exclusion_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of the aryxent PR 13/14 fixes: in "
+            "data_table_bridge/conflicts.py, (a) _resolve_via_data_tables "
+            "skips the generic ('APXNEXT','APXNEXT_BOM') fallback pair when "
+            "it is not the primary candidate, (b) "
+            "_invalidate_inconsistent_paired_values leaves it out of the "
+            "per-model intersection, and (c) "
+            "find_confirmed_data_table_conflicts ignores it as a non-primary "
+            "candidate. Off by default -- when off, both "
+            "behave exactly as before. Override with "
+            "ARYX_CPQ_GENERIC_CANDIDATE_EXCLUSION_ENABLED=true."
+        ),
+    )
+    cpq_candidates_real_models_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Partial port of the aryxent PR 3/10 candidate-order fix: in "
+            "data_table_bridge/candidates.py, when the primary candidates "
+            "are the generic ('APXNEXT','APXNEXT_BOM') fallback and real "
+            "CPQModels were discovered for the known base model, put the "
+            "real models FIRST so callers (which stop at the first single "
+            "value) no longer answer for APX NEXT. Does not add a "
+            "resolved-model object (dev_oci has no model_resolution). Off "
+            "by default -- when off, order is unchanged. Override with "
+            "ARYX_CPQ_CANDIDATES_REAL_MODELS_FIRST_ENABLED=true."
+        ),
+    )
+    cpq_model_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 1 (model_resolution). When on, the ask flow "
+            "resolves, once per turn, which catalog model the customer's "
+            "wording refers to (Basemodeltoconfig + BmCatalog tree + "
+            "Flagsforflashport) and binds it to the turn via a contextvar "
+            "(cpq/model_resolution.py). Binding alone changes nothing; it is "
+            "what the cpq_model_context_seed_enabled, "
+            "cpq_model_scope_lookups_enabled and cpq_model_leaf_pick_top_"
+            "enabled flags read. Off by default -- when off no resolution "
+            "runs and behaviour is unchanged. Override with "
+            "ARYX_CPQ_MODEL_RESOLUTION_ENABLED=true."
+        ),
+    )
+    cpq_model_leaf_pick_top_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_model_resolution_enabled. In the ask flow's model-leaf "
+            "disambiguation (ask_model_leaf_resolve.py), when the customer's "
+            "wording matches 2+ catalog model leaves, pick the resolver's "
+            "top match (deterministic ranking) and log that it did so, "
+            "instead of asking which model was meant (aryxent behaviour). "
+            "Off by default -- when off, the existing question is asked. "
+            "Override with ARYX_CPQ_MODEL_LEAF_PICK_TOP_ENABLED=true."
+        ),
+    )
+    cpq_model_context_seed_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 2. Needs cpq_model_resolution_enabled. When "
+            "single_model_variable_name finds nothing (multi-leaf catalog), "
+            "seed _bm_model_variable_name from the turn's resolved model "
+            "node so model-guarded rule scripts can evaluate. Never "
+            "overrides the single-leaf mechanism. Off by default. Override "
+            "with ARYX_CPQ_MODEL_CONTEXT_SEED_ENABLED=true."
+        ),
+    )
+    cpq_model_scope_lookups_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 3. Needs cpq_model_resolution_enabled. When "
+            "on: (a) _cpq_model_candidates prepends the resolved model's "
+            "cpqModel when missing; (b) the blind first-available picks "
+            "(tier6_single_b, ask_data_gap, ask_rule_governed_blind) take "
+            "the first option the resolved model's own Whitelist allows "
+            "(cpq/model_scope_pick.py). Off by default -- when off, "
+            "behaviour is byte-identical. Override with "
+            "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
+        ),
+    )
+    cpq_rule_scope_filter_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 6. Needs cpq_model_resolution_enabled. When "
+            "on, loaded hiding/recommendation/constraint/validation rules "
+            "are kept only if their catalog-node ref_id is the resolved "
+            "model's node, one of its ancestors, or unbound (empty). Off by "
+            "default -- when off, rule loading is byte-identical. Override "
+            "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
+        ),
+    )
+    cpq_defaultinattr_shape_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D7 (Defaultinattr; aryxent only planned it, so "
+            "this is a minimal new implementation). When on, a Defaultinattr-"
+            "shaped Data Table (BaseModel + attrN/valN, no CPQModel) is read "
+            "(cpq/data_table/data_table_defaultinattr.py) and "
+            "_resolve_via_data_tables falls back to its default for the "
+            "known base model when Whitelist gave no single legal value and "
+            "the default is a real option. Off by default -- when off, "
+            "behaviour is unchanged. Override with "
+            "ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true."
+        ),
+    )
+    cpq_infer_legal_values_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D8 (PR 7/15). When on, the blind first-available "
+            "picks (tier6_single_b, ask_data_gap, ask_rule_governed_blind) "
+            "that found no Whitelist-scoped option infer a legal set from "
+            "the Whitelist condition columns (cpq/inferred_legal_pick.py) before "
+            "falling back to raw catalog order. With a known base model its "
+            "own rows win; if it has rows but none match the filled "
+            "conditions nothing is inferred, and if it has no rows at all "
+            "(sparse data) the model tier is used. Off by default. Override "
+            "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
+        ),
+    )
+    cpq_derive_base_model_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D10 (PR 8). When on, the Base Model auto_fill "
+            "stage narrows the model's real base models to exactly one using "
+            "already-known attribute values (Whitelist evidence) and fills "
+            "it (source 'derived_from_known_attrs') instead of leaving the "
+            "full raw list to be asked. Off by default. Override with "
+            "ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true."
+        ),
+    )
+    cpq_whitelist_narrow_questions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D13/D17 (PR 11). When on, (a) the in-loop "
+            "apply_constraint_rules also intersects the Whitelist-narrowed "
+            "legal set (_resolve_narrowed_legal_values, 2+ values) for "
+            "unanswered attrs into constrained_opts, so question option "
+            "lists are narrowed; (b) resolve_pending_grid_quantities, when "
+            "given a workspace, uses the same narrowed set for a selector "
+            "with no constraint result. Off by default. Override with "
+            "ARYX_CPQ_WHITELIST_NARROW_QUESTIONS_ENABLED=true."
+        ),
+    )
+    cpq_product_match_exact_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D11 (PR 9). When on, Product seeding/matching "
+            "tries the turn's resolved model's exact name first, and the "
+            "bidirectional-substring Product match prefers an exact name "
+            "over a longer name that merely contains it. Off by default. "
+            "Override with ARYX_CPQ_PRODUCT_MATCH_EXACT_FIRST_ENABLED=true."
+        ),
+    )
+    cpq_rule_governed_hidden_attr_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #373/#374. When on, (a) rule_target_ids "
+            "also includes BmConfigMarkedAttr targets (not only "
+            "BmConfigRuleAction targets), and (b) resolve_array_grid_links "
+            "excludes rule-governed hidden attrs (ConfigAttr."
+            "is_value_rule_target) from its name-substring 'Quantity' "
+            "candidate guess, so they are never surfaced as unanswerable "
+            "'Please provide a value' questions. Side effect: the wider "
+            "rule_target_ids also changes which attrs build_config_attrs "
+            "keeps -- hidden, no-default attrs that are marked-attr-only "
+            "targets used to be dropped and are now retained (Amendment 13 "
+            "rationale); confirm no other consumer surfaces them during "
+            "rollout. Off by default. Override "
+            "with ARYX_CPQ_RULE_GOVERNED_HIDDEN_ATTR_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_free_text_presentable_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #370 (bug 2). When on, apply_answer's "
+            "free-text fallback for an optionless attribute accepts a "
+            "customer's typed answer if it is _presentable() rather than "
+            "_valid(), so a real catalog code such as 'NA' is no longer "
+            "rejected in an endless re-ask loop. Off by default. Override "
+            "with ARYX_CPQ_FREE_TEXT_PRESENTABLE_ENABLED=true."
+        ),
+    )
+    cpq_not_applicable_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #362/#364/#365. When on, (a) a new first "
+            "auto-fill stage skips and clears (never a customer-confirmed "
+            "'user' value) any non-anchor attribute, and Hardware "
+            "Version, that real Data Table evidence confirms is never "
+            "governed for the device resolved from the customer's "
+            "original wording, so it is no longer blind-filled; and (b) "
+            "run_auto_fill drops such attributes from the pending list so "
+            "shared multi-model layouts stop asking irrelevant questions. "
+            "One-sided: never adds or forces an attribute; a no-op when "
+            "the device is unresolved or ambiguous. Off by default. "
+            "Override with ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_basemodel_display_name_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #341/#351/#365/#366. When on, a customer's "
+            "free-text device mention (e.g. 'APX 900') is resolved through "
+            "the Basemodeltoconfig displayModel -> cpqModel Data Table: "
+            "resolve_product_cpq_models_from_hint tries it before the "
+            "constraint-row scan, and resolve_product_hint gets a new "
+            "first pass (graph, then the RDB when the graph is empty) "
+            "that returns a unique catalog match, refuses when 2+ "
+            "catalogs match, and otherwise falls to the existing passes. "
+            "Off by default. Override with "
+            "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
+        ),
+    )
+    cpq_rdb_call_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 (Part A). When on, CPQ RDB reads bound "
+            "each borrowed connection: Postgres issues SET statement_timeout "
+            "(int literal) and resets it to DEFAULT on release; Oracle sets "
+            "connection.call_timeout and restores the previous value. A "
+            "timeout inside a swallowed rdb error is logged at WARNING. "
+            "Off by default. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rdb_call_timeout_ms: int = Field(
+        default=60000,
+        description=(
+            "Per-call timeout in milliseconds for CPQ RDB reads when "
+            "cpq_rdb_call_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_write_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #363. When on, RuleTraceStore.open_session "
+            "and append_entry are bounded (Postgres SET LOCAL "
+            "statement_timeout; Oracle connection.call_timeout restored "
+            "afterwards) and a per-run circuit breaker stops DB writes "
+            "after repeated consecutive append failures. Off by default. "
+            "Override with ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rule_trace_write_timeout_ms: int = Field(
+        default=5000,
+        description=(
+            "Timeout in milliseconds for rule-trace DB writes when "
+            "cpq_rule_trace_write_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_breaker_threshold: int = Field(
+        default=5,
+        description=(
+            "Consecutive append_entry failures for one run_id after which "
+            "rule-trace DB writes for that run stop (local .jsonl is "
+            "unaffected). Override with ARYX_CPQ_RULE_TRACE_BREAKER_THRESHOLD."
+        ),
+    )
+    cpq_tables_cache_lock_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 Part B / #371. When on, "
+            "_load_all_tables serialises concurrent cache-miss scans of the "
+            "same (workspace_id, catalog_prefix) behind a per-key "
+            "threading.Lock with a post-lock cache re-check, so a burst of "
+            "concurrent requests runs one scan instead of one each. The "
+            "lock wait is bounded by cpq_tables_cache_lock_timeout_s; on "
+            "timeout a WARNING is logged and the scan runs unlocked. Off by "
+            "default (no lock). Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_ENABLED=true."
+        ),
+    )
+    cpq_tables_cache_lock_timeout_s: float = Field(
+        default=90.0,
+        description=(
+            "Maximum seconds a request waits for another thread's in-flight "
+            "tables-cache scan before scanning unlocked. Only used when "
+            "cpq_tables_cache_lock_enabled is on. Keep it above "
+            "cpq_rdb_call_timeout_ms (so a waiter outlasts a bounded scan) "
+            "and BELOW cpq_post_loop_timeout_s (so the request does not "
+            "504 while its waiters are still blocked). Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_TIMEOUT_S."
+        ),
+    )
+    cpq_post_loop_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #371/#372. When on, the post-loop "
+            "auto_fill in _step10_recompute_pending runs in a bounded "
+            "module-level thread pool (context-copied) and raises HTTP 504 "
+            "after cpq_post_loop_timeout_s; the loop and the post-loop "
+            "auto_fill also share one per-turn Data Table cache. Off by "
+            "default (plain synchronous call, no shared cache). Override "
+            "with ARYX_CPQ_POST_LOOP_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_post_loop_timeout_s: float = Field(
+        default=120.0,
+        description=(
+            "Seconds the post-loop auto_fill may run before the request "
+            "fails with HTTP 504. Only used when "
+            "cpq_post_loop_timeout_enabled is on. Must be ABOVE "
+            "cpq_rdb_call_timeout_ms (default 60 s) and above "
+            "cpq_tables_cache_lock_timeout_s (default 90 s); a warning is "
+            "logged once if the ordering is inverted. The pool has a fixed "
+            "number of workers that cannot be cancelled, so when every "
+            "worker is busy (including abandoned timed-out ones) new calls "
+            "are rejected with HTTP 503 instead of queueing. Override with "
+            "ARYX_CPQ_POST_LOOP_TIMEOUT_S."
+        ),
+    )

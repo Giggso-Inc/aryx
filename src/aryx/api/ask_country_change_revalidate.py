@@ -137,7 +137,7 @@ def _rederive_and_revalidate_for_country_change(
             error_code="ARYX_ASK_COUNTRY_REDERIVE_FAILED",
             context={"triggering_error": "rederive_exception", "attempt": 1, "max_attempts": 1,
                      "recovery_selected": "skip_revalidation", "fallback_target": "display_update_only",
-                     "exit_condition": "exception", "result": "degraded", "turn": session.turn,
+                     "exit_condition": "exception", "result": "degraded", "turn": getattr(session, "turn", None),
                      "product": session.product_name, "new_country": new_country,
                      "run_id": getattr(session, "run_id", "")},
         )

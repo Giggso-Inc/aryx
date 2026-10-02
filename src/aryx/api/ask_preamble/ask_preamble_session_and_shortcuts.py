@@ -57,7 +57,7 @@ def _preamble_init_session(req: "Any", reader: Any) -> "tuple[Any, str]":
     raven_log("DEBUG", "P4", "ask.preamble.session session restored or new", context={
         "selected_option": "restored" if req.session_data.get("mode") == "cpq" else "new",
         "available_options": ["restored", "new"], "reason_code": "SESSION_MODE_CHECK",
-        "turn": session.turn, "run_id": session.run_id, "product": session.product_name or "",
+        "turn": getattr(session, "turn", None), "run_id": session.run_id, "product": session.product_name or "",
         "status": session.status, "pending_anchor": _incoming_pending_anchor or "",
         "history_len": len(req.history or []), "question_len": len(req.question or ""),
     })
@@ -73,7 +73,7 @@ def _preamble_undo_gate(req: "Any", session: Any, reader: Any) -> dict[str, Any]
     _is_undo = detect_undo(req.question)
     if not _is_undo:
         raven_log("DEBUG", "P4", "ask.preamble.undo not an undo request", context={
-            "gate": "undo", "handled_turn": False, "reason_code": "NOT_UNDO", "turn": session.turn})
+            "gate": "undo", "handled_turn": False, "reason_code": "NOT_UNDO", "turn": getattr(session, "turn", None)})
         return None
     _undo_switch_target = _safe_detect_product_mention(
         req.question, reader, req.workspace_id,
@@ -85,13 +85,13 @@ def _preamble_undo_gate(req: "Any", session: Any, reader: Any) -> dict[str, Any]
     if _is_product_switch_instead:
         raven_log("DEBUG", "P4", "ask.preamble.undo undo yields to a product switch", context={
             "gate": "undo", "handled_turn": False, "reason_code": "PRODUCT_SWITCH_INSTEAD",
-            "switch_target": _undo_switch_target, "turn": session.turn})
+            "switch_target": _undo_switch_target, "turn": getattr(session, "turn", None)})
         return None
     _restored = restore_last_snapshot(session)
     raven_log("DEBUG", "P4", "ask.preamble.undo undo handled the turn", context={
         "gate": "undo", "handled_turn": True,
         "reason_code": "SNAPSHOT_RESTORED" if _restored else "NO_SNAPSHOT",
-        "turn": session.turn})
+        "turn": getattr(session, "turn", None)})
     if _restored:
         answer = undo_success_message(session)
     else:
@@ -119,7 +119,7 @@ def _preamble_shortcut_gates(req: "Any", session: Any, reader: Any) -> dict[str,
         _summary_resp = _ask_build_show_summary_response_module._build_show_summary_response(req, session, reader)
         raven_log("DEBUG", "P4", "ask.preamble.summary show-summary shortcut checked", context={
             "gate": "show_summary", "handled_turn": _summary_resp is not None,
-            "reason_code": "SUMMARY_REQUEST", "turn": session.turn})
+            "reason_code": "SUMMARY_REQUEST", "turn": getattr(session, "turn", None)})
         if _summary_resp is not None:
             return _summary_resp
 
@@ -127,7 +127,7 @@ def _preamble_shortcut_gates(req: "Any", session: Any, reader: Any) -> dict[str,
     raven_log("DEBUG", "P4", "ask.preamble.guided guided-mode shortcut checked", context={
         "gate": "guided_mode", "handled_turn": bool(_guided_accept and not session.guided_mode),
         "guided_accept": bool(_guided_accept), "already_guided": bool(session.guided_mode),
-        "turn": session.turn})
+        "turn": getattr(session, "turn", None)})
     if _guided_accept and not session.guided_mode:
         session.guided_mode = True
         session.unresolved_turns = 0

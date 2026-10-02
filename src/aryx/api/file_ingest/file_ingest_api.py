@@ -6,7 +6,7 @@ Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→enti
 
 As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), the size/type
 limits live in `api.file_ingest_limits` and the background worker
-(`_run_files` + its helpers `_save_tmp`/`_chunk_csv_bytes`/`_make_should_stop`)
+(`_run_files` + its helpers `_save_tmp`/`_chunk_csv_bytes`/`make_should_stop`)
 lives in `api.file_ingest_run` -- both re-imported here so `main.py`'s
 existing import, `_run_files`'s external callers, and direct imports of the
 helpers keep working unchanged. Whitebox patches on `_run_files`'s OWN
@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from aryx.api.file_ingest.file_ingest_limits import _ALL, _FK_REQUIRED_KEYS, _MAX_FILE, _MAX_FILES, _MAX_TOTAL
-from aryx.api.file_ingest.file_ingest_run import _chunk_csv_bytes, _make_should_stop, _run_files, _save_tmp
+from aryx.api.file_ingest.file_ingest_run import _chunk_csv_bytes, make_should_stop, _run_files, _save_tmp
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log, submit_ctx, would_log
 from aryx.store.job_store import JobStore
@@ -39,7 +39,7 @@ from aryx.store.job_store import JobStore
 __all__ = [
     "_chunk_csv_bytes",
     "_get_executor",
-    "_make_should_stop",
+    "make_should_stop",
     "_run_files",
     "_save_tmp",
     "file_ingest_router",

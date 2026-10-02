@@ -22,6 +22,7 @@ from typing import Any
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
+from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
 
 
 def _step8_qa_and_pending_collision(
@@ -101,6 +102,7 @@ def _resolve_pending_question_collision(
     _pqc_grid_pending = _cpq_engine.append_pending_grid_quantities(
         [_pqc_resolved_attr], attrs, session.filled, session.filled_multi,
         session.filled_source, _pqc_constrained_opts,
+        **grid_narrow_kwargs(req.workspace_id, catalog_prefix),
     )
     if (
         _pqc_grid_pending

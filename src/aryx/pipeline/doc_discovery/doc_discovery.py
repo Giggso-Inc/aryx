@@ -50,11 +50,12 @@ from aryx.pipeline.doc_discovery.doc_discovery_types import _infer_type, _singul
 from aryx.pipeline.doc_discovery.doc_discovery_xlsx import _sheet_slug, _xlsx_to_csvs
 from aryx.pipeline.doc_discovery.doc_discovery_xml import _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.raven_log import raven_log, submit_ctx, would_log
 from aryx.worker.job_partial import note_hidden
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
+from aryx.store.job_store import make_should_stop
 from aryx.store.ontology_store import OntologyStore
 from aryx.source.source_catalog import restore_generic_source_entry
 
@@ -250,9 +251,22 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     confirm_state enables crash-safe resume: completed plans are skipped and
     progress is persisted to DB after each plan so a restart picks up where
     it left off.
+
+    PR #416 review: this (the Documents-tab confirm path) built no
+    should_stop at all, unlike the /admin/ingest/file path -- a job
+    cancelled here while "Connecting remaining isolated entities" or any
+    other run_pipeline() stage kept running server-side regardless, never
+    reaching the cancellation support added to _relate_isolated/
+    dimension_link. Built once and passed to every run_pipeline() call
+    below (both the per-mention-type loop and _run_one_plan's per-file
+    loop) so both loops observe the same cancellation state. Caller
+    (_confirm_job) must catch PipelineCancelled separately -- it propagates
+    out of run_pipeline() at the next stage boundary after should_stop()
+    starts returning True.
     """
     settings = get_settings()
     datasource_store = DatasourceStore(settings.effective_dsn())
+    should_stop = make_should_stop(jobs, job_id)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
     raven_log("INFO", "P4", "ingest.confirm.start confirm plans received",
@@ -300,12 +314,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 logger.info("confirm job=%s otype=%s stage=%s pct=%d %s",
                             job_id, _otype, stage, pct, detail)
 
-            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.effective_dsn(),
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id, relate=is_last, skip_graph=not is_last,
-                         on_progress=_progress_otype)
+                         on_progress=_progress_otype, should_stop=should_stop)
         else:
             logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
                         job_id, step, total, otype)
@@ -611,7 +624,19 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                         job_id, len(dynamic_fk), dynamic_fk)
 
     def _run_one_plan(plan: dict, is_last: bool, plan_step: int) -> None:
-        """Run a single tabular plan through the pipeline."""
+        """Run a single tabular plan through the pipeline.
+
+        PR #416 review: run_pipeline()'s own should_stop checks don't start
+        until its "relate" stage boundary -- discover and resolve_cluster
+        run unconditionally before that. For a queued (not yet started)
+        non-last plan picked up by a worker thread after the job was already
+        cancelled, that meant the whole discover+resolve pass still ran and
+        landed records for a plan nobody wanted anymore. Checking here, at
+        the very top, means a plan that hasn't started yet bails immediately
+        instead of doing any of that work.
+        """
+        if should_stop():
+            raise PipelineCancelled(f"job cancelled before plan={plan['filename']}")
         fname = plan["filename"]
         otype = plan["ontology_type"]
         logger.info("confirm job=%s step=%d/%d file=%s otype=%s is_last=%s",
@@ -654,7 +679,6 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
             # it calls estore.list_entities() which covers ALL workspace entities.
-            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=conn, dsn=settings.effective_dsn(),
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=otype, match_keys=plan["match_keys"],
@@ -662,7 +686,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          fk_links=auto_fk if is_last else None,
                          relate=is_last and settings.ingest_relate,
                          skip_graph=not is_last,
-                         on_progress=_progress_plan)
+                         on_progress=_progress_plan, should_stop=should_stop)
             suffix = Path(fname).suffix.lower()
             if suffix in {".csv", ".json"}:
                 restore_generic_source_entry(
@@ -715,6 +739,28 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 try:
                     fut.result()
                     logger.info("confirm job=%s plan complete file=%s", job_id, fname_done)
+                except PipelineCancelled:
+                    # PR #416 review: previously caught by the bare `except
+                    # Exception` below, logged as "plan failed" with a full
+                    # stack trace, and the loop just continued on to the next
+                    # plan -- a cancel was indistinguishable from a genuine
+                    # failure, and every other queued plan still ran to
+                    # completion before this function returned. cancel_futures
+                    # abandons any not-yet-started plan immediately (an
+                    # already-running one still bails fast via the should_stop
+                    # check _run_one_plan now does at its own top); re-raising
+                    # propagates PipelineCancelled up to _confirm_job the same
+                    # way the serial "last" plan's cancellation already did.
+                    logger.info("confirm job=%s plan cancelled file=%s — abandoning queued plans",
+                               job_id, fname_done)
+                    raven_log("INFO", "P3", "ingest.confirm.plan_cancelled queued plans abandoned",
+                              context={"job_id": job_id, "object_id": job_id, "filename": fname_done,
+                                       "previous_state": "running", "requested_state": "cancelled",
+                                       "final_state": "cancelled", "trigger": "should_stop",
+                                       "result": "abandoned_queued", "reason_code": "USER_CANCEL",
+                                       "plans_total": len(valid_plans)})
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
                 except Exception as plan_exc:
                     logger.warning("confirm job=%s plan failed file=%s",
                                    job_id, fname_done, exc_info=True)

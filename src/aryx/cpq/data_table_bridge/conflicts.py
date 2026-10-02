@@ -9,14 +9,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.raven_log import raven_log, would_log
-from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
+from aryx.cpq.data_table_bridge.candidates import (
+    _DEFAULT_CPQ_MODEL_CANDIDATES,
+    _cpq_model_candidates,
+)
 from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs,
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
     resolve_whitelist_values as dt_resolve_whitelist_values,
 )
+from aryx.cpq.data_table.data_table_defaultinattr import resolve_defaultinattr_value
 from aryx.cpq.state import MenuOption
 
 # Same three "customer already confirmed this" source tags CpqEngine itself
@@ -24,6 +29,19 @@ from aryx.cpq.state import MenuOption
 # a circular import, since `engine.py` imports THIS package, not the
 # reverse. Keep in sync with `CpqEngine._CONFIRMED_SOURCES` in engine.py.
 _CONFIRMED_SOURCES: frozenset[str] = frozenset({"user", "hint", "cascade"})
+
+
+def _without_generic_non_primary(cands: tuple[str, ...]) -> tuple[str, ...]:
+    """Port of aryxent PR 13/14: drop the generic APXNEXT fallback pair from
+    every position except the first (the primary), so it can neither
+    contribute a spurious single value nor veto a real contradiction.
+    No-op unless `cpq_generic_candidate_exclusion_enabled` is on."""
+    if not get_settings().cpq_generic_candidate_exclusion_enabled:
+        return cands
+    return tuple(
+        c for i, c in enumerate(cands)
+        if i == 0 or c not in _DEFAULT_CPQ_MODEL_CANDIDATES
+    )
 
 
 def _invalidate_inconsistent_paired_values(
@@ -43,9 +61,9 @@ def _invalidate_inconsistent_paired_values(
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
-    cands = _cpq_model_candidates(
+    cands = _without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    )
+    ))
     # Intersection, not union: `base_model` can legitimately map to multiple
     # real CPQModel candidates. A combo is only a real contradiction if NO
     # candidate model accepts it.
@@ -77,9 +95,9 @@ def find_confirmed_data_table_conflicts(
     if not base_model:
         return set()
     product = filled.get("productSelectionProduct_all", "")
-    cands = _cpq_model_candidates(
+    cands = _without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    )
+    ))
     confirmed_conflicts: set[tuple[str, str]] = set()
     for cpq_model in cands:
         for attr_a, attr_b in dt_find_inconsistent_filled_pairs_detailed(
@@ -129,17 +147,19 @@ def _resolve_via_data_tables(
         _log_lookup("_resolve_via_data_tables", vn, "none", "NO_BASE_MODEL_YET")
         return None
     product = filled.get("productSelectionProduct_all", "")
-    _models = list(_cpq_model_candidates(
+    _models = list(_without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    ))
+    )))
     _ambiguous = 0
     _widest = 0
+    any_whitelist_coverage = False
     for cpq_model in _models:
         values = dt_resolve_whitelist_values(
             cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
         )
         if values is None:
             continue
+        any_whitelist_coverage = True
         if len(values) != 1:
             # This candidate is ambiguous -- try the REST of the candidate
             # tuple before giving up (same "continue past ambiguous, don't
@@ -152,12 +172,43 @@ def _resolve_via_data_tables(
                     candidate_count=len(values), legal=list(values),
                     falls_to=None if _hit is not None else "value_not_in_valid_opts")
         return _hit
-    if _ambiguous:
+    if any_whitelist_coverage and get_settings().cpq_defaultinattr_shape_enabled:
+        # The Whitelist spoke for this attr (empty or 2+ legal values): a
+        # Defaultinattr default must not override it. Fall back only when
+        # EVERY candidate returned None (no Whitelist coverage at all).
+        if _ambiguous:
+            _log_lookup("_resolve_via_data_tables", vn, "ambiguous_discarded", "AMBIGUOUS_DISCARDED",
+                        models=_models, candidate_count=_widest, legal="n/a", falls_to="raw_catalog_order",
+                        discarded=True)
+        else:
+            _log_lookup("_resolve_via_data_tables", vn, "none", "WHITELIST_EMPTY", models=_models, legal=[])
+        return None
+    _opt = _defaultinattr_option(vn, base_model, valid_opts, workspace_id, catalog_prefix, cache)
+    if _opt is not None:
+        _log_lookup("_resolve_via_data_tables", vn, "single_match", "DEFAULTINATTR_DEFAULT", models=_models,
+                    candidate_count=1, legal=[_opt.item_value], falls_to=None)
+    elif _ambiguous:
         _log_lookup("_resolve_via_data_tables", vn, "ambiguous_discarded", "AMBIGUOUS_DISCARDED", models=_models,
                     candidate_count=_widest, legal="n/a", falls_to="raw_catalog_order", discarded=True)
     else:
-        _log_lookup("_resolve_via_data_tables", vn, "none", "NO_TABLE_ROWS", models=_models)
-    return None
+        _log_lookup("_resolve_via_data_tables", vn, "none",
+                    "NO_TABLE_ROWS" if not any_whitelist_coverage else "WHITELIST_EMPTY", models=_models)
+    return _opt
+
+
+def _defaultinattr_option(
+    vn: str, base_model: str, valid_opts: list[MenuOption],
+    workspace_id: int, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+) -> MenuOption | None:
+    """Port of aryxent D7: Defaultinattr's default for this base model, when
+    it is a real option. No-op (None) unless cpq_defaultinattr_shape_enabled."""
+    if not get_settings().cpq_defaultinattr_shape_enabled:
+        return None
+    default = resolve_defaultinattr_value(base_model, vn, workspace_id, catalog_prefix, cache)
+    if default is None:
+        return None
+    return next((o for o in valid_opts if o.item_value == default), None)
 
 
 def _resolve_narrowed_legal_values(

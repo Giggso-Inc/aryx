@@ -71,7 +71,7 @@ def _step10_commit_and_drain(
         if old_val != new_val:
             session.cascade_log.append({
                 "var": var, "old": old_val, "new": new_val,
-                "rule": session.filled_source.get(var, ""), "turn": session.turn,
+                "rule": session.filled_source.get(var, ""), "turn": getattr(session, "turn", None),
             })
 
     logger.info(

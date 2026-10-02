@@ -78,7 +78,7 @@ def jobs_router() -> APIRouter:
         """Mark a job cancelled so the UI frees up, AND actually stop it.
 
         The running worker thread polls this row via `should_stop()`
-        (see file_ingest_api._make_should_stop) at every pipeline stage
+        (see file_ingest_api.make_should_stop) at every pipeline stage
         boundary and inside the dimension-linking loop specifically — the
         stage previously observed running for 20+ minutes after a
         "cancel" that only ever updated this row. A thread genuinely

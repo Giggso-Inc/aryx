@@ -100,7 +100,7 @@ def _step11_build_turn_response(
         "reason_code": "NO_PENDING" if not pending else "PENDING_OPEN",
         "policy_version": "step11_v1", "open_question_count": len(pending),
         "open_fields": [getattr(p, "variable_name", str(p)) for p in pending][:25],
-        "turn": session.turn, "max_turns": _ask_api_module._cpq_engine.MAX_TURNS,
+        "turn": getattr(session, "turn", None), "max_turns": _ask_api_module._cpq_engine.MAX_TURNS,
         "mode_request": mode_request, "status": session.status,
         "answer_len": len(answer or ""), "run_id": session.run_id,
         "duration_ms": int((time.monotonic() - _step_format_t0) * 1000),

@@ -11,6 +11,7 @@ dotted path.
 from __future__ import annotations
 
 import re
+import time
 from typing import Callable
 
 from aryx.llm import llm_runtime
@@ -52,7 +53,12 @@ def _narrate_cpq_summary(
         # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
         # is the customer-facing summary of a real quote; the same reasoning
         # tier already used for CPQ's own BML Tier-2 script fallback.
+        _nar_t0 = time.monotonic()
         text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
+        _ask_api_module.logger.info(
+            "cpq_perf: summary narration LLM call took %.3fs",
+            time.monotonic() - _nar_t0,
+        )
         text = _strip_think(text).strip()
         segments = [s.strip() for s in text.split(_CPQ_SEGMENT_DELIM)]
         if len(segments) == expected_segments and all(segments):

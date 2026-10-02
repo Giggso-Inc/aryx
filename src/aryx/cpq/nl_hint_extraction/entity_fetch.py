@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.raven_log import raven_log
 
 
 def _batch_fetch(
@@ -79,3 +80,86 @@ def _match_family_name(
         if fname_norm in hint_norm or hint_norm in fname_norm:
             return fname
     return None
+
+
+def _match_basemodel_to_config_name(
+    engine: Any, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
+    rdb_cache: dict | None = None,
+) -> str | None:
+    """The real Basemodeltoconfig displayModel name whose normalized text
+    substring-matches hint_norm (longest match wins), or None. Port of
+    dev-rv-msi #351/#365/#366; only called when
+    `cpq_basemodel_display_name_resolution_enabled` is on.
+
+    Basemodeltoconfig names specific devices (e.g. "APX 900" -> APX900),
+    unlike family-level BmPrdFamily/BmCatalog names. Same
+    _HINT_MIN_PHRASE_LEN short-string guard as `_match_family_name`.
+
+    Source order: the graph under `{prefix}Basemodeltoconfig`, then the bare
+    `Basemodeltoconfig` (the table is ingested unprefixed, #365), and when
+    both are empty the RDB via `fetch_entities_by_exact_type` (it is a CSV
+    Data Table that is never graph-ingested, #366). The RDB fallback ignores
+    `prefix`, so `rdb_cache` (a dict the caller owns for one resolve call)
+    memoizes its rows per workspace and the same rows are not re-fetched
+    for every catalog prefix.
+    """
+    prefix_agnostic = False
+    try:
+        rows = reader.find_entities(
+            ontology_type=f"{prefix}Basemodeltoconfig", limit=2000)
+        if not rows:
+            rows = reader.find_entities(
+                ontology_type="Basemodeltoconfig", limit=2000)
+            prefix_agnostic = bool(rows)
+    except Exception as exc:
+        rows = []
+        raven_log("WARN", "P3", "ask.product_hint.graph_read_failed Basemodeltoconfig graph read failed, trying RDB",
+                  error_code="ARYX_ASK_BASEMODEL_GRAPH_READ_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "rdb_fallback", "fallback_target": "rdb",
+                           "exit_condition": "fallback", "result": "degraded", "workspace_id": workspace_id})
+    if rows:
+        row_pg = engine._batch_fetch([e["id"] for e in rows], workspace_id)
+    else:
+        prefix_agnostic = True
+        cache_key = ("basemodel_to_config_rdb_rows", workspace_id)
+        if rdb_cache is not None and cache_key in rdb_cache:
+            row_pg = rdb_cache[cache_key]
+        else:
+            try:
+                pg_rows = _engine_module.get_cpq_rdb().fetch_entities_by_exact_type(
+                    workspace_id, "Basemodeltoconfig")
+            except Exception as exc:
+                raven_log("WARN", "P3", "ask.product_hint.rdb_read_failed Basemodeltoconfig unavailable, no device match",
+                          error_code="ARYX_ASK_BASEMODEL_RDB_READ_FAILED",
+                          context={"dependency_name": "oracle_adb", "operation": "fetch_entities_by_exact_type",
+                                   "duration_ms": None, "result": "none_returned",
+                                   "error_class": type(exc).__name__, "attempt": 1, "workspace_id": workspace_id})
+                return None
+            row_pg = {eid: attrs for eid, attrs in (pg_rows or [])}
+            if rdb_cache is not None:
+                rdb_cache[cache_key] = row_pg
+        if not row_pg:
+            return None
+    if prefix_agnostic and rdb_cache is not None:
+        # The rows do not belong to any one catalog prefix, so a match cannot
+        # say WHICH catalog; the caller must not read it as one per prefix.
+        rdb_cache["prefix_agnostic"] = True
+    best_match: str | None = None
+    best_len = 0
+    for pg in row_pg.values():
+        display_name = str((pg or {}).get("displayModel") or "").strip()
+        if not display_name:
+            continue
+        name_norm = _engine_module._normalize_for_hint(display_name)
+        if not name_norm:
+            continue
+        shorter_len = min(len(name_norm), len(hint_norm))
+        if shorter_len < _engine_module._HINT_MIN_PHRASE_LEN:
+            continue
+        if name_norm in hint_norm or hint_norm in name_norm:
+            # Longest displayModel wins ("APX 900 FLASHPORT" over "APX 900").
+            if len(name_norm) > best_len:
+                best_match = display_name
+                best_len = len(name_norm)
+    return best_match

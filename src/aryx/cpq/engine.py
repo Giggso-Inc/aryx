@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq import rule_scope
 from aryx.cpq import data_table_bridge
 from aryx.cpq.bml.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
@@ -867,6 +868,12 @@ class CpqEngine:
     ) -> str | None:
         return nl_hint_extraction.entity_fetch._match_family_name(self, reader, workspace_id, prefix, hint_norm)
 
+    def _match_basemodel_to_config_name(
+        self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
+        rdb_cache: dict | None = None,
+    ) -> str | None:
+        return nl_hint_extraction.entity_fetch._match_basemodel_to_config_name(self, reader, workspace_id, prefix, hint_norm, rdb_cache)
+
     def _scope_to_catalog(
         self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
     ) -> tuple[list[str], str]:
@@ -1086,9 +1093,13 @@ class CpqEngine:
         filled_multi: dict[str, list[str]],
         constrained_opts: dict[int, list[str]] | None = None,
         selector_vns: set[str] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[ConfigAttr]:
         return grid_quantity.resolve_pending_grid_quantities(
             attrs, filled, filled_multi, constrained_opts, selector_vns,
+            workspace_id, catalog_prefix, dt_cache,
         )
 
     def _finalize_grid_selections_from_quantities(
@@ -1107,10 +1118,13 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
         selector_vns: set[str] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[ConfigAttr]:
         return grid_quantity.append_pending_grid_quantities(
             self, pending, attrs, filled, filled_multi, filled_source,
-            constrained_opts, selector_vns,
+            constrained_opts, selector_vns, workspace_id, catalog_prefix, dt_cache,
         )
 
     @staticmethod
@@ -1239,7 +1253,7 @@ class CpqEngine:
                 )
                 _fill_log.log_load("value_rules_cache", result="hit", workspace_id=workspace_id,
                                    catalog_prefix=catalog_prefix)
-                return _cache_result
+                return rule_scope.scope_value_rules_tuple(_cache_result, workspace_id, catalog_prefix)
         _fill_log.log_load("value_rules_cache", result="miss" if _cache_hit is None else "expired",
                            workspace_id=workspace_id, catalog_prefix=catalog_prefix)
 
@@ -1267,7 +1281,7 @@ class CpqEngine:
             self, workspace_id, catalog_prefix, ingest_store, existing_questions, _t0,
         )
         _cache_write_if_marker_unchanged(_VALUE_RULES_CACHE, _cache_key, (time.monotonic(), _result), _marker_at_read)
-        return _result
+        return rule_scope.scope_value_rules_tuple(_result, workspace_id, catalog_prefix)
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -1332,8 +1346,10 @@ class CpqEngine:
         return rec_con_rules.load_constraint_rules(
             self, workspace_id, catalog_prefix)
 
-    def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
-        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix)
+    def build_bml_evaluator(
+        self, workspace_id: int, catalog_prefix: str = "", run_id: str = "",
+    ) -> BmlEvaluator:
+        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix, run_id=run_id)
 
     def apply_constraint_rules(
         self,
@@ -1348,11 +1364,12 @@ class CpqEngine:
         _constraint_cache: dict[str, tuple] | None = None,
         _signature_exclude_vns: frozenset[str] | None = None,
         narrowing_rec_rules: list[RecommendationRule] | None = None,
+        narrow_from_data_tables: bool = False,
     ) -> dict[int, list[str]]:
         return constraint_rules.apply_constraint_rules(
             self, attrs, rules, filled, bml_eval, filled_multi,
             workspace_id, catalog_prefix, _dt_cache, _constraint_cache,
-            _signature_exclude_vns, narrowing_rec_rules,
+            _signature_exclude_vns, narrowing_rec_rules, narrow_from_data_tables,
         )
 
 
@@ -1397,12 +1414,13 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
         product_anchor_hint: str | None = None,
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         return rules_loop.evaluate_rules_loop(
             self, attrs, hints, filled, hiding_rules, rec_rules, con_rules,
             bml_eval, filled_source, filled_multi, dropped_multi, country,
             negated_vns, skip_always_ask, rule_conflict_order, display_order,
-            workspace_id, catalog_prefix, product_anchor_hint,
+            workspace_id, catalog_prefix, product_anchor_hint, _dt_cache,
         )
 
 
@@ -1716,6 +1734,25 @@ class CpqEngine:
         patch (same re-export-hub pitfall documented elsewhere in this
         codebase).
         """
+        # TODO(hardcoding): the "hWVersion_astro" literal is kept (not
+        # derived from the attr) so flag-off results stay provably identical.
+        return CpqEngine._named_attr_confirmed_not_applicable(
+            "hWVersion_astro", hint_text, workspace_id, catalog_prefix, cache,
+        )
+
+    @staticmethod
+    def _named_attr_confirmed_not_applicable(
+        vn: str, hint_text: str | None, workspace_id: int | None,
+        catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> bool:
+        """`_hardware_version_confirmed_not_applicable`'s one-sided "real
+        Data Table evidence, never a guess" contract for any variable name
+        `vn` (port of dev-rv-msi #365). True ONLY when `hint_text` resolves
+        to a confident set of CPQModel candidates and NONE of them is ever
+        seen governing `vn`. Callers decide whether `vn` is safe to check
+        this way (structural anchors must be exempted by the caller).
+        """
         if not hint_text or workspace_id is None:
             return False
         candidates = dt_resolve_product_cpq_models_from_hint(
@@ -1725,9 +1762,23 @@ class CpqEngine:
             return False
         return not any(
             dt_attr_ever_governed_for_cpq_model(
-                cm, "hWVersion_astro", workspace_id, catalog_prefix, cache,
+                cm, vn, workspace_id, catalog_prefix, cache,
             )
             for cm in candidates
+        )
+
+    @staticmethod
+    def _attrs_confirmed_not_applicable_for_hint(
+        pending: list["ConfigAttr"], hint_text: str | None,
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list["ConfigAttr"]:
+        """Drop pending attrs never governed for the device resolved from
+        `hint_text` (port of dev-rv-msi #362). See
+        aryx.cpq.auto_fill.auto_fill_pending_prune."""
+        from aryx.cpq.auto_fill import auto_fill_pending_prune
+        return auto_fill_pending_prune.attrs_confirmed_not_applicable_for_hint(
+            pending, hint_text, workspace_id, catalog_prefix, cache,
         )
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────

@@ -260,9 +260,41 @@ def build_turn_state_record(session: Any, attrs: Any = None, *, emit: bool = Tru
         }
         if emit and would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ask.turn.state final filled state of the turn", context=ctxd)
+            _mark_turn_state(ctxd["object_id"], getattr(session, "turn", None))
         return ctxd
     except Exception:
         return {}
+
+
+_TURN_STATE_DONE: dict[tuple, None] = {}  # insertion-ordered set of (run_id, turn) already logged
+_TURN_STATE_MAX = 2000
+
+
+def _mark_turn_state(run_id: Any, turn: Any) -> None:
+    with _SEEN_LOCK:
+        _TURN_STATE_DONE[(run_id, turn)] = None
+        while len(_TURN_STATE_DONE) > _TURN_STATE_MAX:
+            _TURN_STATE_DONE.pop(next(iter(_TURN_STATE_DONE)))
+
+
+def turn_state_from_session_data(session_data: Any) -> None:
+    """ask.turn.state for turns that ended before step 11 (gates, product or model questions).
+
+    Reads the serialized session (``result["session_data"]``); a turn whose step 11 already
+    wrote the record is skipped. No attribute definitions here, so every value is logged as
+    length + hash (D6 free-text form).
+    """
+    try:
+        if not would_log("DEBUG") or not isinstance(session_data, dict):
+            return
+        key = (session_data.get("run_id") or current_run_id(), session_data.get("turn"))
+        with _SEEN_LOCK:
+            if key in _TURN_STATE_DONE:
+                return
+        build_turn_state_record(SimpleNamespace(**{k: session_data.get(k) for k in (
+            "run_id", "turn", "filled", "filled_multi", "filled_source", "pending_variables")}))
+    except Exception:
+        return
 
 
 def _count(items: Any) -> dict[str, int]:

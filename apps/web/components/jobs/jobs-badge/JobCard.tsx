@@ -4,11 +4,13 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { CsvIssues } from "./CsvIssues";
 import { EventLog } from "./EventLog";
 import { RUNNING, type JobRow } from "./types";
 
 export function JobCard(
-  { job, workspaceId, onChanged }: { job: JobRow; workspaceId: number; onChanged: () => void },
+  { job, workspaceId, onChanged, issueCount = 0 }:
+  { job: JobRow; workspaceId: number; onChanged: () => void; issueCount?: number },
 ) {
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -78,6 +80,11 @@ export function JobCard(
             </div>
           </div>
         )}
+        {issueCount > 0 && (
+          <div className="ml-5 mt-1.5 inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-800">
+            <AlertTriangle size={10} /> {issueCount} CSV issue{issueCount === 1 ? "" : "s"} — open for details
+          </div>
+        )}
         {job.detail && (
           <div className="ml-5 mt-1.5 truncate text-[11px] text-navy-700">
             {job.detail}
@@ -121,6 +128,9 @@ export function JobCard(
       )}
 
       {open && <EventLog jobId={job.job_id} workspaceId={workspaceId} live={isRunning} />}
+      {open && !isRunning && (
+        <CsvIssues jobId={job.job_id} workspaceId={workspaceId} onChanged={onChanged} />
+      )}
     </li>
   );
 }

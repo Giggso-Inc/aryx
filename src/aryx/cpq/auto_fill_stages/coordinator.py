@@ -34,6 +34,7 @@ from aryx.cpq.auto_fill_stages import (
     tier0_already_filled,
     tier0_already_filled_multi,
     tier0_hidden,
+    tier0_not_applicable_guard,
     tier1_hint_match,
     tier2_satisfied_rec,
     tier3_default_value,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
 # takes (engine, attr, ctx, scope, state), mutates `state`/`ctx` in place,
 # and sets `state.done` where the original returned out of the function.
 _STAGES = (
+    tier0_not_applicable_guard.stage_not_applicable_guard,
     tier0_already_filled.stage_already_filled,
     tier0_already_filled_multi.stage_already_filled_multi,
     tier0_hidden.stage_hidden,

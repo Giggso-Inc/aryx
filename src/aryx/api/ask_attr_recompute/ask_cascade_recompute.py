@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_attr_recompute.ask_cascade_user_value_precedence import _revert_overridden_user_value
+from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
 from aryx.cpq.session_guard.session_guard import clear_queue_vn, drain_intent_queue_into_pending
 
 
@@ -85,14 +86,14 @@ def _recompute_after_cascade(
         ]
     pending = _cpq_engine.append_pending_grid_quantities(
         pending, visible_attrs, filled, session.filled_multi, session.filled_source,
-        constrained_opts)
+        constrained_opts, **grid_narrow_kwargs(req.workspace_id, catalog_prefix))
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
         if old_val != new_val:
             session.cascade_log.append({
                 "var": var, "old": old_val, "new": new_val,
                 "rule": "cascade" if var == changed_attr.variable_name else "cascade-dependent",
-                "turn": session.turn,
+                "turn": getattr(session, "turn", None),
             })
     session.filled = filled
     session.display_filled = display_filled

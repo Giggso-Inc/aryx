@@ -55,7 +55,7 @@ def _handle_cpq_qa(
         "available_options": ["fast_path", "graph_search"],
         "reason_code": "ATTRIBUTE_OPTIONS_ANSWERED" if _fast_path_result is not None
         else "FAST_PATH_NO_ANSWER", "attr_count": len(attrs), "resume_review": bool(resume_review),
-        "product_hint": product_hint or "", "turn": session.turn})
+        "product_hint": product_hint or "", "turn": getattr(session, "turn", None)})
     if _fast_path_result is not None:
         qa_answer, (p_in, p_out, p_ms, s_in, s_out, s_ms) = _fast_path_result
     else:

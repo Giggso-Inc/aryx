@@ -73,7 +73,7 @@ def _llm_first_gateway_turn(
                 else "GUIDED_MODE" if session.guided_mode
                 else "TOP_LEVEL_ROUTE_USED" if _ask_api_module.top_level_route_used()
                 else "DEFER_TO_PENDING_ANSWER"),
-            "guided_mode": bool(session.guided_mode), "turn": session.turn,
+            "guided_mode": bool(session.guided_mode), "turn": getattr(session, "turn", None),
             "ran_and_did_nothing": False})
         return None
 
@@ -130,6 +130,6 @@ def _llm_first_gateway_turn(
     # deterministic path.
     raven_log("DEBUG", "P4", "ask.intent.gateway_turn gateway ran and did nothing", context={
         "selected_option": "fall_through", "reason_code": _gw.reason or f"ACTION_{_gw.action.upper()}",
-        "gateway_action": _gw.action, "turn": session.turn, "ran_and_did_nothing": True,
+        "gateway_action": _gw.action, "turn": getattr(session, "turn", None), "ran_and_did_nothing": True,
         "category": _gw.result.intent_category.value if _gw.result else None})
     return None

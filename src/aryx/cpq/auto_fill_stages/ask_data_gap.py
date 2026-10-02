@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.inferred_legal_pick import inferred_first_available
+from aryx.cpq.model_scope_pick import scoped_first_available
 from aryx.cpq.engine import (
     _KNOWN_MISSING_DATA_TABLES,
     _valid,
@@ -107,7 +109,27 @@ def try_dt_governed_blind(
             and (_blind_allowed is None or o.item_value in _blind_allowed)
         ]
         if _blind_opts:
-            _blind_first = _blind_opts[0]
+            # Same pick order as before (model-scoped, then inferred-legal,
+            # then raw catalog order); split out so the picker that answered
+            # is logged.
+            _blind_first = scoped_first_available(
+                state.vn, _blind_opts, ctx.filled, scope.workspace_id,
+                scope.catalog_prefix, ctx.dt_cache,
+            )
+            _blind_pick_by = "model_scoped"
+            if not _blind_first:
+                _blind_first = inferred_first_available(
+                    state.vn, _blind_opts, ctx.filled, scope.workspace_id,
+                    scope.catalog_prefix, ctx.dt_cache,
+                )
+                _blind_pick_by = "inferred_legal"
+            if not _blind_first:
+                _blind_first = _blind_opts[0]
+                _blind_pick_by = "raw_catalog_order"
+            fill_log.log_decision(state.vn, "try_dt_governed_blind", "picked", _blind_pick_by.upper(),
+                                  selected_option=_blind_pick_by,
+                                  available_options=["model_scoped", "inferred_legal", "raw_catalog_order"],
+                                  options_count=len(_blind_opts))
             fill_log.log_write(ctx, attr, state.vn, _blind_first.item_value, _blind_first.display_name,
                                "blind_pick_governed", "blind_pick_governed")
             ctx.filled[state.vn] = _blind_first.item_value

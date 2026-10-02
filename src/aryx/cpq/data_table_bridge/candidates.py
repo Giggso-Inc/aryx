@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from aryx.config import get_settings
+from aryx.cpq import model_resolution as _model_resolution
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table.data_table_resolver import (
@@ -20,7 +21,8 @@ from aryx.cpq.data_table.data_table_resolver import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
-_TIERS = ["tier1_text_match", "tier2_model_resolution", "tier3_base_model", "static_fallback"]
+_TIERS = ["tier1_text_match", "tier2_model_resolution", "tier3_base_model", "resolved_model_prepend",
+          "real_models_first", "static_fallback"]
 
 
 def _log_candidates(tier: str, result: tuple, product_name: str, workspace_id: int | None,
@@ -37,6 +39,42 @@ def _log_candidates(tier: str, result: tuple, product_name: str, workspace_id: i
                   error_code="ARYX_ASK_MODEL_FALLBACK_STATIC", context={**ctxd, "first_in_turn": True})
     elif would_log("DEBUG"):
         raven_log("DEBUG", "P4", "ask.model.candidates tier answered", context=ctxd)
+
+
+def _prepend_resolved_model(
+    primary: tuple[str, ...], product_name: str, base_model: str,
+) -> tuple[str, ...]:
+    """Port of aryxent PR 3: when `cpq_model_scope_lookups_enabled` is on and
+    this turn's resolver knows which model the customer wants, make sure its
+    cpqModel is a candidate -- prepended if missing, never replacing or
+    removing what tiers 1-3 found. Flag off / no bound turn: `primary`
+    returned unchanged.
+    """
+    if not get_settings().cpq_model_scope_lookups_enabled:
+        return primary
+    try:
+        ctx = _model_resolution.get_turn()
+        if ctx is None or not ctx.resolution.resolved or ctx.resolution.chosen is None:
+            return primary
+        resolved = ctx.resolution.chosen.cpq_model
+        if resolved in primary:
+            return primary
+        if ctx.first_time(("prepend_cpq_model", resolved)):  # ~300 calls/turn
+            logger.info(
+                "cpq: model_scope prepended_cpq_model product_name=%r "
+                "base_model=%r was=%r -> (%r, *was)",
+                product_name, base_model, primary, resolved,
+            )
+        return (resolved, *primary)
+    except Exception as exc:  # noqa: BLE001 -- never break candidate resolution
+        logger.exception("cpq: model_scope candidate prepend failed product_name=%r", product_name)
+        raven_log("WARN", "P3", "ask.model.prepend_failed resolved model not prepended to candidates",
+                  error_code="ARYX_ASK_MODEL_PREPEND_FAILED",
+                  context={"product_name": product_name, "triggering_error": type(exc).__name__,
+                           "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                           "recovery_selected": "tier_candidates_only", "fallback_target": "tier_candidates",
+                           "exit_condition": "degraded", "result": "degraded"})
+        return primary
 
 
 def _cpq_model_candidates(
@@ -104,6 +142,12 @@ def _cpq_model_candidates(
         else:
             primary = _DEFAULT_CPQ_MODEL_CANDIDATES
             tier = "static_fallback"
+    original = primary
+    primary = _prepend_resolved_model(primary, product_name, base_model)
+    if primary != original:
+        # A turn-resolved cpqModel was put in front: the static pair is no
+        # longer what callers try first, so it is not a static fallback.
+        tier = "resolved_model_prepend"
     if not (base_model and workspace_id is not None):
         _log_candidates(tier, primary, product_name, workspace_id)
         return primary
@@ -111,5 +155,19 @@ def _cpq_model_candidates(
         base_model, workspace_id, catalog_prefix, cache,
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
+    if (
+        extra and original == _DEFAULT_CPQ_MODEL_CANDIDATES
+        and get_settings().cpq_candidates_real_models_first_enabled
+    ):
+        # Partial port of aryxent PR 3/10: real models discovered for the
+        # known base model go BEFORE the generic APXNEXT fallback, so a
+        # caller that stops at the first single value no longer answers
+        # for APX NEXT. Off by default.
+        # The resolved-model prepend (if any) stays in front: resolved model,
+        # then real discovered models, then the generic fallback.
+        head = primary[: len(primary) - len(original)]
+        result = head + extra + original
+        _log_candidates("real_models_first", result, product_name, workspace_id, len(extra))
+        return result
     _log_candidates(tier, primary + extra, product_name, workspace_id, len(extra))
     return primary + extra if extra else primary

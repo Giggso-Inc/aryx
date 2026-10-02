@@ -85,9 +85,16 @@ def _load_type11_hiding_rules(
         # rule_type="6" flow rules already opted into this exact filter
         # for the identical reason (dead/superseded rules alongside live
         # ones); hiding rules never had — this closes that gap.
-        for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
-            workspace_id, "11", catalog_prefix, active_only=True,
+        from aryx.cpq import rule_scope  # noqa: PLC0415
+        _scope = rule_scope.rule_scope_enabled()
+        _rkw = {"with_ref_id": True} if _scope else {}
+        _marks: list[tuple[int, str]] = []
+        for row in rdb.fetch_rules(
+            workspace_id, "11", catalog_prefix, active_only=True, **_rkw,
         ):
+            eid, src_id, rule_name, fn_id = row[:4]
+            if _scope:
+                _marks.append((len(rules), str(row[4] or "")))
             key = engine._rule_key(eid, src_id, inputs, actions)
             targets = engine._resolve_targets(key, actions, marked, chain)
             if not targets:
@@ -159,6 +166,8 @@ def _load_type11_hiding_rules(
                     hide=(int(action_type or 2) == 2),
                     conditions=list(inp_list),
                 ))
+        if _scope:
+            rule_scope.tag_ref_ids(rules, _marks)
     except Exception:
         logger.debug("cpq: hiding rule load failed", exc_info=True)
 

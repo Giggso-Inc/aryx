@@ -53,21 +53,21 @@ def _preamble_run(
     _no_quote_response = _preamble_quantity_no_quote_gate(req, session, reader, _qty_hint)
     raven_log("DEBUG", "P4", "ask.preamble.gate quantity-no-quote gate", context={
         "gate": "quantity_no_quote", "handled_turn": _no_quote_response is not None,
-        "quantity_hint_found": bool(_qty_hint), "turn": session.turn})
+        "quantity_hint_found": bool(_qty_hint), "turn": getattr(session, "turn", None)})
     if _no_quote_response is not None:
         return _no_quote_response, session, {}, False, _incoming_pending_anchor
 
     _qty_gate_response = _preamble_dedicated_quantity_gate(req, session, reader)
     raven_log("DEBUG", "P4", "ask.preamble.gate dedicated quantity gate", context={
         "gate": "dedicated_quantity", "handled_turn": _qty_gate_response is not None,
-        "turn": session.turn})
+        "turn": getattr(session, "turn", None)})
     if _qty_gate_response is not None:
         return _qty_gate_response, session, {}, False, _incoming_pending_anchor
 
     _country_change_response = _preamble_country_change_gate(req, session, reader)
     raven_log("DEBUG", "P4", "ask.preamble.gate country change gate", context={
         "gate": "country_change", "handled_turn": _country_change_response is not None,
-        "turn": session.turn})
+        "turn": getattr(session, "turn", None)})
     if _country_change_response is not None:
         return _country_change_response, session, {}, False, _incoming_pending_anchor
 

@@ -6,6 +6,8 @@ No database is used: stores are faked the way the existing ingest tests do.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import importlib
 import json
 import threading
@@ -156,7 +158,14 @@ def test_extract_mentions_all_failed_is_error_and_trace_crosses_pool(records, mo
     monkeypatch.setenv("ARYX_EXTRACT_MENTION_RETRIES", "1")
     monkeypatch.setenv("ARYX_EXTRACT_MENTION_RETRY_DELAY", "0")
     from aryx.config import get_settings
+    from aryx.ontology import extract as extract_mod
     get_settings.cache_clear()
+    # Pin the retry count on the module itself: other tests in the same worker
+    # can leave a different extract_mention_retries behind (seen under xdist).
+    real = get_settings()
+    pinned = {k: getattr(real, k) for k in dir(real) if not k.startswith("_")}
+    pinned.update(extract_mention_retries=1, extract_mention_retry_delay=0)
+    monkeypatch.setattr(extract_mod, "get_settings", lambda: SimpleNamespace(**pinned))
     seen = []
 
     def fail(*a, **k):

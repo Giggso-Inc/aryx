@@ -19,6 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.api.ask_model_leaf.ask_model_leaf_bind import (
+    bind_turn_model_context,
+    pick_top_text_match,
+    seed_model_vn_from_resolution,
+)
 from aryx.api.ask_model_leaf.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
 from aryx.api.ask_model_leaf.ask_model_leaf_norm import _norm_leaf
 from aryx.api.ask_model_leaf.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
@@ -38,18 +43,37 @@ def _resolve_model_leaf(
     """
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
+    bind_turn_model_context(req, session, catalog_prefix, switch_trigger_question)
     model_vn = _cpq_engine.single_model_variable_name(
         reader, req.workspace_id, catalog_prefix)
+    if not model_vn and not session.pending_model_leaf_candidates:
+        # aryxent PR 2 (cpq_model_context_seed_enabled, default off): multi-
+        # leaf catalogs seed the punch-in context from the resolved model --
+        # only when it validates against the catalog's real leaves (same bar
+        # as the resolved-leaf path below), and never while a "which model?"
+        # reply is pending (that reply must still be handled).
+        _seed = seed_model_vn_from_resolution()
+        if _seed:
+            _seed_leaf = next(
+                (leaf for leaf in _cpq_engine.model_variable_candidates(
+                    reader, req.workspace_id, catalog_prefix)
+                 if _norm_leaf(leaf) == _norm_leaf(_seed)),
+                None,
+            )
+            if _seed_leaf:
+                hints["_bm_model_variable_name"] = _seed_leaf  # validated: force-set
+                session.pending_model_leaf_candidates = []
+                return None
     if model_vn:
         raven_log("DEBUG", "P4", "ask.model_leaf.resolved single model variable seeded", context={
             "selected_option": "single_leaf", "reason_code": "SINGLE_MODEL_VARIABLE",
-            "model_variable": model_vn, "catalog_prefix": catalog_prefix, "turn": session.turn})
+            "model_variable": model_vn, "catalog_prefix": catalog_prefix, "turn": getattr(session, "turn", None)})
         hints.setdefault("_bm_model_variable_name", model_vn)
         session.pending_model_leaf_candidates = []
         return None
     if session.model_leaf_resolved:
         raven_log("DEBUG", "P4", "ask.model_leaf.resolved already resolved earlier", context={
-            "selected_option": "skip", "reason_code": "ALREADY_RESOLVED", "turn": session.turn})
+            "selected_option": "skip", "reason_code": "ALREADY_RESOLVED", "turn": getattr(session, "turn", None)})
         # Live-confirmed bug (2026-08-13): this whole ambiguous-tree
         # re-resolution block had no `model_leaf_resolved` short-circuit
         # at all, unlike every other call site in this file that checks
@@ -71,7 +95,7 @@ def _resolve_model_leaf(
     if not _leaf_candidates:
         raven_log("DEBUG", "P4", "ask.model_leaf.resolved no model leaves in catalog", context={
             "selected_option": "none", "reason_code": "NO_LEAF_CANDIDATES",
-            "catalog_prefix": catalog_prefix, "turn": session.turn})
+            "catalog_prefix": catalog_prefix, "turn": getattr(session, "turn", None)})
         return None
     # A DIFFERENT, pre-existing mechanism (extract_flag_hints) can already
     # set _bm_model_variable_name from a literal camelCase token in the
@@ -107,6 +131,10 @@ def _resolve_model_leaf(
         ]
         if len(_text_matches) == 1:
             _resolved_leaf = _text_matches[0]
+        else:
+            # cpq_model_leaf_pick_top_enabled (default off): 2+ matches ->
+            # take the top one instead of asking.
+            _resolved_leaf = pick_top_text_match(_text_matches)
 
     raven_log("DEBUG", "P4", "ask.model_leaf.resolved leaf pick or ask", context={
         "selected_option": "pick" if _resolved_leaf else "ask_customer",
@@ -115,8 +143,8 @@ def _resolve_model_leaf(
             "HINT_MATCHED_LEAF" if _existing_hint and _resolved_leaf else
             "PENDING_REPLY_OR_TEXT_MATCH" if _resolved_leaf else "AMBIGUOUS_LEAVES"),
         "leaf_candidates": list(_leaf_candidates)[:20], "leaf_count": len(_leaf_candidates),
-        "picked_leaf": _resolved_leaf or "", "had_pending_candidates": bool(session.pending_model_leaf_candidates),
-        "turn": session.turn})
+        "picked_leaf": _resolved_leaf or "", "had_pending_candidates": bool(getattr(session, "pending_model_leaf_candidates", None)),
+        "turn": getattr(session, "turn", None)})
     if _resolved_leaf:
         # Force-set, not setdefault: extract_flag_hints may have already
         # put an unvalidated value here — this is the validated,

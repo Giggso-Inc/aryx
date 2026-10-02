@@ -76,6 +76,6 @@ def _step9_match_pending_answer(
         "matched": bool(result), "multi_match_count": len(multi_matches),
         "has_hint": bool(hint_val_for_attr), "option_count": len(pending_attr.options or []),
         "constrained_count": None if pending_constrained is None else len(pending_constrained),
-        "reply_len": len(req.question or ""), "turn": session.turn,
+        "reply_len": len(req.question or ""), "turn": getattr(session, "turn", None),
         "reason_code": "MATCHED" if result else "MISS"})
     return result, multi_matches

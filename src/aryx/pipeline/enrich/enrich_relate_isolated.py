@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from aryx.broker import Broker
@@ -22,7 +23,9 @@ from aryx.store.entity_store import EntityStore
 logger = logging.getLogger(__name__)
 
 
-def _relate_isolated(store: EntityStore, broker: Broker) -> int:
+def _relate_isolated(
+    store: EntityStore, broker: Broker, should_stop: Callable[[], bool] | None = None,
+) -> int:
     """Connect isolated entity types via a few LLM calls per type, not per entity.
 
     Runs after _relate, schema_fk, and link_by_attribute. Operates type-aware:
@@ -36,6 +39,21 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
     For the small-file CSV case (a handful of unreferenced supplier rows), the
     cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
     calls are made regardless of how many individual entities are isolated.
+
+    should_stop — optional, checked both while draining the per-type
+    inference futures below AND between each sample-entity x anchor
+    candidate inside _infer_type's own loop. Previously absent entirely: a
+    cancelled job still ran every submitted type's LLM inference to
+    completion (or its individual relate_pair_timeout) before this
+    function returned, since nothing inside it ever read the job's
+    cancellation state back — the same class of bug already fixed for the
+    sibling dimension_link stage (see detect_and_link_dimensions's own
+    should_stop docstring). The remaining limitation is narrower than that
+    first fix: a single in-flight infer_relationship call can't be
+    interrupted mid-call, but once it returns, _infer_type itself now
+    stops rather than burning through its remaining
+    relate_isolated_max_samples_per_type x relate_isolated_max_anchors
+    combinations with the result discarded.
     """
     cfg = get_settings()
 
@@ -133,13 +151,23 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
         answer "unrelated". Each candidate is tried independently; the type
         is only given up on after every sample-entity x anchor combination
         has either errored or come back unrelated.
+
+        Checked against should_stop (the enclosing _relate_isolated's
+        parameter, captured by closure) at the top of both loops, so a
+        cancelled job stops after whichever infer_relationship call is
+        currently in flight returns, instead of working through every
+        remaining combination for this type.
         """
         anchor_candidates = _anchor_candidates(iso_type)
         last_result: tuple[str, int, str | None, float] = (iso_type, -1, None, 0.0)
         for sample_entity in _sample_entities(iso_type):
+            if should_stop is not None and should_stop():
+                return last_result
             _, iso_type_, iso_attrs = sample_entity
             left = _trim(iso_attrs, iso_type_)
             for a_id, a_type, a_attrs in anchor_candidates:
+                if should_stop is not None and should_stop():
+                    return last_result
                 try:
                     name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
                 except Exception as exc:  # noqa: BLE001 — try the next candidate, don't abort the type
@@ -182,7 +210,15 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
         # stage), so it must be at least as resilient as _relate() itself: one
         # flaky/stuck type must not stop the rest of the isolated types from
         # being connected, or block the run indefinitely.
+        types_processed = 0
         for fut, iso_type in _drain_with_timeout(futures, cfg.relate_pair_timeout, "_relate_isolated"):
+            if should_stop is not None and should_stop():
+                logger.warning(
+                    "_relate_isolated: job cancelled — stopping after %d/%d type(s), "
+                    "%d edge(s) linked so far", types_processed, len(futures), len(rels),
+                )
+                break
+            types_processed += 1
             try:
                 iso_type, anchor_id, name, conf = fut.result()
             except Exception as exc:  # noqa: BLE001
