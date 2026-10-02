@@ -134,6 +134,26 @@ def test_get_unknown_id_returns_none() -> None:
     assert result is None
 
 
+def test_get_status_returns_status_column() -> None:
+    store, mock_pool = _make_store()
+    cur = _cursor_returning(("pending",))
+    conn = _conn_with_cursor(cur)
+    mock_pool.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
+
+    assert store.get_status(_DID, _WS) == "pending"
+
+
+def test_get_status_unknown_id_returns_none() -> None:
+    store, mock_pool = _make_store()
+    cur = _cursor_returning(None)
+    conn = _conn_with_cursor(cur)
+    mock_pool.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
+
+    assert store.get_status("nonexistent", _WS) is None
+
+
 def test_put_upsert_is_idempotent() -> None:
     """put() must call execute exactly once — upsert handles conflict in DB."""
     store, mock_pool = _make_store()

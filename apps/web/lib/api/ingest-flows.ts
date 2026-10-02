@@ -51,6 +51,12 @@ export const ingestFlowsApi = {
   listDiscoveries: (workspaceId = 1) =>
     fetchJSON<DiscoveryHistoryItem[]>(`/admin/docs/history?workspace_id=${workspaceId}`),
 
+  dismissDiscovery: (discoveryId: string, workspaceId = 1) =>
+    fetchJSON<{ status: string }>(
+      `/admin/docs/${discoveryId}/dismiss?workspace_id=${workspaceId}`,
+      { method: "POST" },
+    ),
+
   confirmDiscovery: (
     discoveryId: string,
     approvedTypes: string[],

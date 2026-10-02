@@ -103,6 +103,19 @@ class DiscoveryStore:
             return None
         return json.loads(row[0] or "{}")
 
+    def get_status(self, discovery_id: str, workspace_id: int) -> str | None:
+        """Return just the status column, scoped to the calling workspace.
+
+        Cheap existence + workspace-ownership check for actions (like dismiss)
+        that need to branch on status without paying for the full get()'s
+        data_json deserialization or even get_summary()'s JSON parse.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_discovery_status"), (discovery_id, workspace_id))
+                row = cur.fetchone()
+        return row[0] if row else None
+
     def drop(self, discovery_id: str) -> None:
         """Delete a discovery row (no workspace guard — internal cleanup only)."""
         with self._pool.connection() as conn:

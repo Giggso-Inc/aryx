@@ -88,6 +88,27 @@ def doc_discover_router() -> APIRouter:
         finally:
             store.close()
 
+    @router.post("/{did}/dismiss")
+    def dismiss(did: str, workspace_id: int = 1) -> dict[str, Any]:
+        # get_status (not get_summary) is the cheap existence + workspace-
+        # ownership check here since it also gives us the branch below for
+        # free — no need for a second DB round trip to decide confirming/
+        # partial vs. pending.
+        status = discoveries.get_status(did, workspace_id)
+        if status is None:
+            logger.warning("doc dismiss rejected discovery_id=%s: unknown or expired", did)
+            raise HTTPException(404, "unknown discovery or workspace mismatch")
+        if status in ("confirming", "partial"):
+            # A confirm job already exists for this discovery (see /confirm
+            # above) -- dropping the discovery row here would orphan that
+            # job with no way to look up what it was confirming. Cancelling
+            # an in-progress confirm is a job-cancellation concern (see
+            # POST /admin/jobs/{job_id}/cancel), not a discovery-dismiss one.
+            raise HTTPException(409, f"cannot dismiss a discovery with status={status}")
+        discoveries.drop(did)
+        logger.info("doc discovery dismissed did=%s workspace_id=%d", did, workspace_id)
+        return {"status": "dismissed"}
+
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
         # Existence/workspace-ownership check only needs the summary, not the

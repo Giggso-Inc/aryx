@@ -39,6 +39,19 @@ export default function IngestPage() {
     setTab("docs");
   };
 
+  const handleDismiss = (id: string) => {
+    if (!window.confirm("Dismiss this discovery? This can't be undone.")) return;
+    // Optimistic removal -- a dismiss failing (e.g. a confirm job started
+    // for it moments ago, in another tab) is rare enough that re-fetching
+    // the list on error is simpler than reconciling a partial rollback.
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
+    api.dismissDiscovery(id, workspaceId).catch(() => {
+      api.listDiscoveries(workspaceId)
+        .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed" && i.status !== "confirming")))
+        .catch(() => {});
+    });
+  };
+
   const handleAction = (id: string, restart: boolean) => {
     setRestartFlag(restart);
     setRestoreId(id);
@@ -99,12 +112,20 @@ export default function IngestPage() {
                         </button>
                       </span>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleConfirm(item.discovery_id)}
-                        className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap shrink-0">
-                        Confirm
-                      </button>
+                      <span className="flex gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirm(item.discovery_id)}
+                          className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap">
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDismiss(item.discovery_id)}
+                          className="rounded-md border border-amber-700 px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 whitespace-nowrap">
+                          Dismiss
+                        </button>
+                      </span>
                     )}
                   </div>
                 ))}
