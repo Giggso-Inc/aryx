@@ -5,9 +5,13 @@ block. Logic unchanged from the original inline closure.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Callable
 
 from aryx.cpq.engine import RecommendationRule, _condition_value_matches
+
+logger = logging.getLogger(__name__)
 
 
 def build_rec_by_target(
@@ -28,6 +32,10 @@ def make_satisfied_recommendation(
     engine: Any, filled: dict[str, str], rec_by_target: dict[int, list[RecommendationRule]],
     attr_by_rule_id: dict[int, Any], bml_eval: Any | None,
 ) -> Callable[[Any, list[Any]], tuple[str, str, str] | None]:
+    # Aggregate BML script cost (port of dev-rv-msi #371); logged once at the
+    # end of run_auto_fill via log_rec_script_stats. Logging only.
+    _stats = {"n": 0, "s": 0.0}
+
     def _satisfied_recommendation(
         attr: Any, candidate_opts: list[Any],
     ) -> tuple[str, str, str] | None:
@@ -64,14 +72,20 @@ def make_satisfied_recommendation(
                 if rrule.script is not None:
                     if bml_eval is None:
                         continue
+                    _t = time.monotonic()
                     allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
+                    _stats["n"] += 1
+                    _stats["s"] += time.monotonic() - _t
                     if not allowed or len(allowed) != 1:
                         continue  # unknown, or ambiguous — never guess
                     recommended_value = allowed[0]
                 elif rrule.condition_script is not None:
                     if bml_eval is None:
                         continue
+                    _t = time.monotonic()
                     fires = bml_eval.condition_holds(rrule.condition_script, filled)
+                    _stats["n"] += 1
+                    _stats["s"] += time.monotonic() - _t
                     if fires is not True:
                         continue  # False or unknown — never guess, doesn't fire
                     recommended_value = rrule.recommended_value
@@ -94,4 +108,15 @@ def make_satisfied_recommendation(
                     return match.item_value, match.display_name, rrule.rule_name
         return None
 
+    _satisfied_recommendation.script_stats = _stats  # type: ignore[attr-defined]
     return _satisfied_recommendation
+
+
+def log_rec_script_stats(satisfied_recommendation: Any) -> None:
+    """Log the aggregate rec-script timing once per auto_fill (silent if none)."""
+    stats = getattr(satisfied_recommendation, "script_stats", None)
+    if isinstance(stats, dict) and stats.get("n"):
+        logger.info(
+            "cpq_perf: auto_fill rec script timing script_rules=%d script_s=%.3f",
+            stats["n"], stats["s"],
+        )

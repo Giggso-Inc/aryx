@@ -53,6 +53,7 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -103,8 +104,11 @@ class BmlEvaluator:
         self, scripts: dict[int, str], use_llm: bool = True,
         workspace_id: int = 0, catalog_prefix: str = "",
         tier2_max_per_turn: int | None = None,
+        run_id: str = "",
     ) -> None:
         """scripts — {bm_function_id: script_text} from the RDB.
+
+        run_id — optional, log correlation only (see _call_tier2).
 
         workspace_id/catalog_prefix scope the shared cache (see
         _SHARED_SCRIPT_CACHE) so results never cross-contaminate between
@@ -124,6 +128,7 @@ class BmlEvaluator:
         self._use_llm = use_llm
         self._workspace_id = workspace_id
         self._catalog_prefix = catalog_prefix
+        self._run_id = run_id
         if tier2_max_per_turn is None:
             from aryx.config import get_settings
             tier2_max_per_turn = get_settings().bml_tier2_max_per_turn
@@ -333,12 +338,27 @@ class BmlEvaluator:
         if found:
             self.stats["durable_hit"] += 1
             return result
+        _t0 = time.monotonic()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "bml_tier2: call kind=%s run_id=%s workspace_id=%s var_count=%d script=%r",
+                kind, self._run_id, self._workspace_id, len(variables), script[:2000],
+            )
+        _before_pt = self.stats.get("prompt_tokens", 0)
+        _before_ct = self.stats.get("completion_tokens", 0)
         result = {
             "hide": self._evaluate_llm_hide,
             "cond": self._evaluate_llm_condition,
             "values": self._evaluate_llm,
             "ask_worthy": self._evaluate_llm_ask_worthy,
         }[kind](script, dict(variables))
+        logger.info(
+            "bml_tier2: result kind=%s run_id=%s workspace_id=%s elapsed_s=%.3f "
+            "prompt_tokens=%d completion_tokens=%d result=%.500r",
+            kind, self._run_id, self._workspace_id, time.monotonic() - _t0,
+            self.stats.get("prompt_tokens", 0) - _before_pt,
+            self.stats.get("completion_tokens", 0) - _before_ct, result,
+        )
         self._durable_put(durable_key, kind, result)
         return result
 

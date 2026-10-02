@@ -18,9 +18,17 @@ singleton via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
+from aryx.api.ask_turn_steps.post_loop_executor import run_post_loop_bounded
+from aryx.config import get_settings
 from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
+from aryx.cpq.logging_context import install_run_id_logging
+
+logger = logging.getLogger(__name__)
+install_run_id_logging(__name__)
 
 
 
@@ -33,6 +41,12 @@ def _step10_recompute_pending(
     constrained_opts, rule_ids)."""
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
+    _settings = get_settings()
+    _bounded = bool(_settings.cpq_post_loop_timeout_enabled)
+    # Flag on: one per-turn Data Table cache shared by the loop and the
+    # post-loop auto_fill (dev-rv-msi #371/#372). Flag off: today's behavior.
+    _dt_cache: "dict | None" = {} if _bounded else None
+    _loop_kwargs = {"_dt_cache": _dt_cache} if _bounded else {}
 
     v_attrs, f, d_filled, c_opts = _cpq_engine.evaluate_rules_loop(
         attrs, cur_hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
@@ -43,21 +57,32 @@ def _step10_recompute_pending(
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        **_loop_kwargs,
     )
     g_ids = _cpq_engine.governed_target_ids(v_attrs, hiding_rules, rec_rules, con_rules)
     r_ids = _cpq_engine.rule_governed_ids(v_attrs, hiding_rules, rec_rules, con_rules)
-    f, d_filled, p = _cpq_engine.auto_fill(
-        v_attrs, cur_hints, already_filled=f, constrained_opts=c_opts,
-        governed_ids=g_ids, already_filled_multi=session.filled_multi,
-        dropped_multi=dropped_multi, rule_governed_ids=r_ids, country=session.country,
-        negated_vns=negated_vns, filled_source=session.filled_source,
-        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
-        validation_rules=validation_rules,
-        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
-        hiding_rules=hiding_rules,
-        grid_declined_vns=frozenset(session.pending_grid_declined_vns),
+    def _post_loop_auto_fill() -> tuple:
+        return _cpq_engine.auto_fill(
+            v_attrs, cur_hints, already_filled=f, constrained_opts=c_opts,
+            governed_ids=g_ids, already_filled_multi=session.filled_multi,
+            dropped_multi=dropped_multi, rule_governed_ids=r_ids, country=session.country,
+            negated_vns=negated_vns, filled_source=session.filled_source,
+            skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+            validation_rules=validation_rules,
+            display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+            workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+            hiding_rules=hiding_rules,
+            grid_declined_vns=frozenset(session.pending_grid_declined_vns),
+            **_loop_kwargs,
         )
+
+    _pl_t0 = time.monotonic()
+    if _bounded:
+        f, d_filled, p = run_post_loop_bounded(
+            _post_loop_auto_fill, float(_settings.cpq_post_loop_timeout_s))
+    else:
+        f, d_filled, p = _post_loop_auto_fill()
+    logger.info("cpq_perf: post_loop_auto_fill took %.3fs", time.monotonic() - _pl_t0)
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
