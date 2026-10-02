@@ -21,6 +21,7 @@ from aryx.cpq.constraint_rules.constraint_rules_apply import apply_rules
 from aryx.cpq.constraint_rules.constraint_rules_dt_narrowing import apply_data_table_narrowing
 from aryx.cpq.constraint_rules.constraint_rules_fallback import resolve_empty_intersections
 from aryx.cpq.constraint_rules.constraint_rules_narrowing import apply_narrowing_rec_rules
+from aryx.cpq.constraint_rules.constraint_rules_stats import ScriptEvalStats
 from aryx.cpq.engine import logger
 
 
@@ -104,15 +105,21 @@ def apply_constraint_rules(
     # rules get a per-rule-unique key so they're never grouped/dropped.
     contributions: dict[int, list[tuple[frozenset, list[str], str]]] = {}
 
+    # #358/#367 timing instrumentation: fresh per call, never accumulated.
+    script_stats = ScriptEvalStats()
+    cond_stats = ScriptEvalStats()
+    narrow_stats = ScriptEvalStats()
     apply_rules(
         rules, by_rule_id, filled, filled_by_rule_id, bml_eval, workspace_id,
         catalog_prefix, _dt_cache, constrained, contributions,
+        script_stats, cond_stats,
     )
     resolve_empty_intersections(rules, by_rule_id, constrained, contributions)
     if narrowing_rec_rules:
         apply_narrowing_rec_rules(
             narrowing_rec_rules, by_rule_id, filled, bml_eval, workspace_id,
             catalog_prefix, _dt_cache, constrained, contributions,
+            narrow_stats,
         )
     if narrow_from_data_tables:
         apply_data_table_narrowing(
@@ -120,6 +127,20 @@ def apply_constraint_rules(
             constrained, contributions,
         )
 
+    if script_stats.count or cond_stats.count:
+        logger.info(
+            "cpq_perf: constraint script-eval script_rules=%d script_eval_s=%.3f "
+            "condition_script_rules=%d condition_eval_s=%.3f total_script_eval_s=%.3f",
+            script_stats.count, script_stats.seconds,
+            cond_stats.count, cond_stats.seconds,
+            script_stats.seconds + cond_stats.seconds,
+        )
+    if narrow_stats.count:
+        logger.info(
+            "cpq_perf: constraint narrowing-rec script-eval script_rules=%d "
+            "script_eval_s=%.3f",
+            narrow_stats.count, narrow_stats.seconds,
+        )
     if constrained:
         names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
         logger.info("cpq: constraint rules active for %s", names)

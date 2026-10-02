@@ -23,6 +23,7 @@ from typing import Any
 
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
+from aryx.cpq.constraint_rules.constraint_rules_stats import ScriptEvalStats
 from aryx.cpq.engine import _substitute_util_get_constraint_vals
 
 
@@ -36,6 +37,7 @@ def apply_narrowing_rec_rules(
     dt_cache: dict[tuple[int, str], tuple] | None,
     constrained: dict[int, list[str]],
     contributions: dict[int, list[tuple[frozenset, list[str], str]]],
+    stats: ScriptEvalStats | None = None,
 ) -> None:
     """Mutates `constrained`/`contributions` in place for every
     script-backed narrowing RecommendationRule that resolves 2+ values.
@@ -66,7 +68,10 @@ def apply_narrowing_rec_rules(
         _script = _substitute_util_get_constraint_vals(
             rule.script, filled, workspace_id, catalog_prefix, dt_cache,
         )
-        allowed = bml_eval.allowed_values_for_script(_script, filled)
+        if stats is not None:
+            allowed = stats.timed(bml_eval.allowed_values_for_script, _script, filled)
+        else:
+            allowed = bml_eval.allowed_values_for_script(_script, filled)
         if allowed and len(allowed) >= 2:
             intersect(
                 constrained, contributions, target, allowed,
