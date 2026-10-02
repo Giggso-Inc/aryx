@@ -158,7 +158,7 @@ services:
       # and ARYX_INGEST_PIPELINE are set -- the master switch alone is
       # deliberately not enough, so a deployment can run XML raw-graph
       # writes without every .txt/.json upload silently changing behavior.
-      - ARYX_INGEST_FILE_TYPE=${ARYX_INGEST_FILE_TYPE:-xml}
+      - ARYX_INGEST_FILE_TYPE=${ARYX_INGEST_FILE_TYPE:-xml,csv}
       - ARYX_INGEST_PIPELINE=${ARYX_INGEST_PIPELINE:-cpq_ingestion}
       - ARYX_CPQ_LAYOUT_SOURCE=${ARYX_CPQ_LAYOUT_SOURCE:-oracle}
       # DB connection pool sizing -- default max_size (25) covers one
