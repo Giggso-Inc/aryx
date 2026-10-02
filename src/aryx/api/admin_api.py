@@ -13,6 +13,7 @@ architectural change than this plan's mechanical splits).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -21,6 +22,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from aryx.api.admin_broker import _local_broker
 from aryx.api.admin_models import EntityCreateRequest, EntityUpdateRequest, FkLink, IngestDbRequest
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.worker.job_partial import pop_hidden
 from aryx.connectors.postgres import PostgresConnector
 from aryx.graph import FalkorStore
 from aryx.pipeline.enrich.enrich import _build_type_ancestors
@@ -45,6 +48,9 @@ logger = logging.getLogger(__name__)
 
 
 def _run_db(req: IngestDbRequest, job_id: str) -> None:
+    bind_run_id(job_id)
+    t0 = time.monotonic()
+    stage_seen = ["start"]
     settings = get_settings()
     jobs = JobStore(settings.effective_dsn())
     try:
@@ -58,14 +64,29 @@ def _run_db(req: IngestDbRequest, job_id: str) -> None:
             ontology_type=req.ontology_type,
             match_keys=[k.strip() for k in req.match_keys.split(",") if k.strip()],
             graph_url=settings.graph_url, broker=_local_broker(),
-            on_progress=lambda stage, pct, detail: jobs.update_stage(job_id, stage, pct, detail),
+            on_progress=lambda stage, pct, detail: (stage_seen.__setitem__(0, stage),
+                                                    jobs.update_stage(job_id, stage, pct, detail))[1],
             fk_links=[link.model_dump() for link in req.fk_links],
             workspace_id=req.workspace_id,
             relate=True,
         )
         jobs.finish(job_id, run_id=summary.get("run_id"), status="complete")
+        hidden = pop_hidden(job_id)
+        raven_log("INFO", "P4", "ingest.job.completed db ingest finished",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "complete", "stage": "finish",
+                           "duration_ms": int((time.monotonic() - t0) * 1000),
+                           "result": "partial" if hidden else "ok",
+                           "reason_code": "HIDDEN_FAILURES" if hidden else "OK",
+                           "impact_scope": {"table": req.table, "hidden_failures": hidden}})
     except Exception as exc:  # noqa: BLE001 — record failure for the dashboard
         logger.warning("ingest failed job=%s: %s", job_id, exc)
+        pop_hidden(job_id)
+        raven_log("ERROR", "P2", "ingest.job.failed db ingest failed",
+                  error_code="ARYX_ING_JOB_FAILED",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
+                           "error": str(exc)[:300]})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()
@@ -144,6 +165,7 @@ def admin_router() -> APIRouter:
 
     @router.post("/ingest/db")
     def ingest_db(req: IngestDbRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
+        t0 = time.monotonic()
         settings = get_settings()
         jobs = JobStore(settings.effective_dsn())
         job_id = uuid.uuid4().hex
@@ -152,6 +174,12 @@ def admin_router() -> APIRouter:
             jobs.create(job_id, req.system, req.table, req.workspace_id)
         finally:
             jobs.close()
+        bind_run_id(job_id)
+        raven_log("INFO", "P4", "ingest.job.queued db ingest accepted",
+                  context={"job_id": job_id, "workspace_id": req.workspace_id, "road": "db", "file_count": 1,
+                           "total_bytes": 0, "worker_backend": "background_task", "system": req.system,
+                           "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_run_db, req, job_id)
         return {"status": "queued", "job_id": job_id, "table": req.table}
 

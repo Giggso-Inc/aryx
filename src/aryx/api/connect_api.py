@@ -7,6 +7,7 @@ and create the relationship edges). Works for any SQLAlchemy-reachable RDBMS.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -17,6 +18,8 @@ from aryx import connections
 from aryx.api.admin_api import _local_broker
 from aryx.api.security import require_api_key
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.worker.job_partial import pop_hidden
 from aryx.connectors.schema_inspect import introspect, test_connection
 from aryx.connectors.sql_source import SqlConnector
 from aryx.pipeline.orchestrate import run_pipeline
@@ -58,7 +61,13 @@ def _build_url(req: ConnectRequest) -> str:
         return req.url
     driver = _DRIVERS.get(req.dialect)
     if not driver:
+        raven_log("WARN", "P3", "ingest.db.refused unsupported dialect", error_code="ARYX_ING_DB_REFUSED",
+                  context={"check": "dialect", "measured": req.dialect, "available_options": sorted(_DRIVERS),
+                           "decision": "refuse", "reason_code": "UNSUPPORTED_DIALECT"})
         raise HTTPException(400, f"unsupported dialect: {req.dialect}")
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.db.check dialect supported",
+                  context={"check": "dialect", "measured": req.dialect, "decision": "pass"})
     if req.dialect == "sqlite":
         return f"sqlite:///{req.database}"
     auth = f"{req.user}:{req.password}@" if req.user else ""
@@ -68,6 +77,9 @@ def _build_url(req: ConnectRequest) -> str:
 
 def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
+    bind_run_id(job_id)
+    t0 = time.monotonic()
+    stage_seen = ["start"]
     settings = get_settings()
     jobs = JobStore(settings.effective_dsn())
     broker = _local_broker()
@@ -75,6 +87,15 @@ def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
         total = len(tables)
         for i, t in enumerate(tables):
             pct = int(10 + i * 80 / max(total, 1))
+            stage_seen[0] = f"Table {i + 1}/{total}"
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.multi.table start",
+                          context={"job_id": job_id, "table": t.get("table"), "index": i + 1, "total": total,
+                                   "ontology_type": t.get("ontology_type"),
+                                   "match_keys": t.get("match_keys") or ["id"],
+                                   "fk_links": len(edges) if i == total - 1 else 0,
+                                   "selected_option": "last_table_links" if i == total - 1 else "no_links",
+                                   "reason_code": "EDGES_ON_LAST_TABLE"})
             jobs.update_stage(job_id, f"Table {i + 1}/{total}", pct, f"Ingesting {t['table']}")
             keys = t.get("match_keys") or ["id"]
             run_pipeline(
@@ -87,8 +108,22 @@ def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
                 relate=True,
             )
         jobs.finish(job_id, run_id=None, status="complete")
+        hidden = pop_hidden(job_id)
+        raven_log("INFO", "P4", "ingest.job.completed multi ingest finished",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "complete", "stage": "finish",
+                           "duration_ms": int((time.monotonic() - t0) * 1000),
+                           "result": "partial" if hidden else "ok",
+                           "reason_code": "HIDDEN_FAILURES" if hidden else "OK",
+                           "impact_scope": {"files_total": total, "hidden_failures": hidden}})
     except Exception as exc:  # noqa: BLE001
         logger.warning("multi ingest failed job=%s: %s", job_id, exc)
+        pop_hidden(job_id)
+        raven_log("ERROR", "P2", "ingest.job.failed multi ingest failed",
+                  error_code="ARYX_ING_JOB_FAILED",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
+                           "error": str(exc)[:300]})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()
@@ -104,6 +139,10 @@ def connect_router() -> APIRouter:
             test_connection(url)
             schema = introspect(url)
         except Exception as exc:  # noqa: BLE001
+            raven_log("WARN", "P3", "ingest.db.connect_failed connection test failed",
+                      error_code="ARYX_ING_DB_CONNECT_FAILED",
+                      context={"dialect": req.dialect, "error_class": type(exc).__name__, "decision": "refuse",
+                               "reason_code": "CONNECT_FAILED"})
             raise HTTPException(400, f"connection failed: {exc}") from exc
         return {"connection_id": connections.put(url),
                 "tables": [t["table"] for t in schema], "schema": schema}
@@ -118,8 +157,11 @@ def connect_router() -> APIRouter:
     @router.post("/ingest/multi")
     def ingest_multi(req: IngestMultiRequest, background_tasks: BackgroundTasks,
                       _: str = Depends(require_api_key)) -> dict[str, Any]:
+        t0 = time.monotonic()
         url = connections.get(req.connection_id)
         if not url:
+            raven_log("WARN", "P3", "ingest.db.refused unknown connection", error_code="ARYX_ING_DB_REFUSED",
+                      context={"check": "connection_known", "decision": "refuse", "reason_code": "UNKNOWN_CONNECTION"})
             raise HTTPException(404, "unknown connection")
         settings = get_settings()
         job_id = uuid.uuid4().hex
@@ -128,6 +170,12 @@ def connect_router() -> APIRouter:
             jobs.create(job_id, "rdb", f"{len(req.tables)} table(s)", req.workspace_id)
         finally:
             jobs.close()
+        bind_run_id(job_id)
+        raven_log("INFO", "P4", "ingest.job.queued multi-table ingest accepted",
+                  context={"job_id": job_id, "workspace_id": req.workspace_id, "road": "multi",
+                           "file_count": len(req.tables), "total_bytes": 0, "worker_backend": "background_task",
+                           "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_run_multi, url, req.tables, req.edges, job_id, req.workspace_id)
         return {"status": "queued", "job_id": job_id,
                 "tables": [t["table"] for t in req.tables]}

@@ -17,10 +17,13 @@ import io
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
+from aryx.raven_log import bind_run_id, raven_log
 from aryx.worker.fn_handler_dispatch import _dispatch
+from aryx.worker.job_partial import pop_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,8 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
     if missing:
         raise ValueError(f"fn_handler: missing required payload fields: {sorted(missing)}")
     job_id        = payload["job_id"]
+    bind_run_id(job_id)
+    t0 = time.monotonic()
     workspace_id  = int(payload.get("workspace_id", 1))
     filename      = payload["filename"]
     encoded_b64   = payload["file_b64"]
@@ -76,6 +81,12 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
 
     logger.info("aryx-ingest-fn: received job_id=%s filename=%s workspace_id=%s",
                 job_id, filename, workspace_id)
+    raven_log("INFO", "P4", "ingest.fn.received OCI Function entry",
+              context={"job_id": job_id, "workspace_id": workspace_id, "filename": filename,
+                       "suffix": Path(filename).suffix.lower(), "encoded_bytes": len(encoded_b64),
+                       "decoded_bytes": len(file_bytes), "llm_cheap_backend": settings.effective_llm_cheap_backend(),
+                       "selected_option": "oci_broker" if settings.effective_llm_cheap_backend() == "oci" else "default_broker",
+                       "available_options": ["oci_broker", "default_broker"], "reason_code": "LLM_CHEAP_BACKEND"})
 
     try:
         suffix = Path(filename).suffix.lower()
@@ -94,6 +105,13 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
         )
         jobs.finish(job_id, run_id=None, status="complete")
         logger.info("aryx-ingest-fn: completed job_id=%s filename=%s", job_id, filename)
+        hidden = pop_hidden(job_id)
+        raven_log("INFO", "P4", "ingest.job.completed OCI Function ingest finished",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "complete", "stage": "finish",
+                           "duration_ms": int((time.monotonic() - t0) * 1000),
+                           "result": "partial" if hidden else "ok",
+                           "reason_code": "HIDDEN_FAILURES" if hidden else "OK",
+                           "impact_scope": {"files_total": 1, "hidden_failures": hidden}})
         return fdk_response.Response(
             ctx,
             response_data=json.dumps({"status": "ok", "job_id": job_id}),
@@ -102,6 +120,13 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("aryx-ingest-fn failed job=%s", job_id)
+        pop_hidden(job_id)
+        raven_log("ERROR", "P2", "ingest.job.failed OCI Function ingest failed",
+                  error_code="ARYX_ING_JOB_FAILED",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": "dispatch",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
+                           "error": str(exc)[:300]})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
         return fdk_response.Response(
             ctx,

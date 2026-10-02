@@ -33,6 +33,8 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
 from aryx.pipeline.orchestrate import project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +72,9 @@ def resolve_and_relate_raw_graph(
             "raw_graph resolve_and_relate did=%s source_key=%s: no nodes to resolve",
             log_id, source_key,
         )
+        raven_log("DEBUG", "P4", "ingest.raw_graph.resolve nothing to resolve",
+                  context={"log_id": log_id, "source_key": source_key, "decision": "early_return",
+                           "reason_code": "NO_NODES"})
         return {"tags": 0, "entities": 0, "relationships": 0}
 
     by_tag = group_nodes_by_tag(projection)
@@ -93,6 +98,10 @@ def resolve_and_relate_raw_graph(
                 "raw_graph resolve_and_relate did=%s source_key=%s tag=%s run_id=%s entities=%d",
                 log_id, source_key, tag, summary["run_id"], summary["entities"],
             )
+            raven_log("DEBUG", "P4", "ingest.raw_graph.resolve tag resolved",
+                      context={"log_id": log_id, "source_key": source_key, "tag": tag, "nodes": len(nodes),
+                               "run_id": summary["run_id"], "entities": summary["entities"],
+                               "match_keys": inferred["match_keys"]})
 
         relationships = translate_containment_edges(
             projection.edges, node_id_to_entity_id, log_id=log_id,
@@ -108,4 +117,7 @@ def resolve_and_relate_raw_graph(
               "relationships": len(relationships), **graph_counts}
     logger.info("raw_graph resolve_and_relate complete did=%s source_key=%s %s",
                 log_id, source_key, result)
+    raven_log("INFO", "P4", "ingest.raw_graph.resolved raw graph resolved into curated graph",
+              context={"log_id": log_id, "source_key": source_key, "workspace_id": workspace_id,
+                       "tags": len(by_tag), "entities": total_entities, "relationships": len(relationships)})
     return result

@@ -5,6 +5,8 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
@@ -24,6 +26,8 @@ class ImageConnector:
         img = Image.open(str(self._path))
         text = pytesseract.image_to_string(img).strip()
         logger.info("ocr image path=%s chars=%d", self._path.name, len(text))
+        raven_log("DEBUG", "P4", "ingest.doc.image ocr finished",
+                  context={"filename": self._path.name, "chars": len(text), "zero_chars": len(text) == 0})
         yield None, text
 
     def close(self) -> None:

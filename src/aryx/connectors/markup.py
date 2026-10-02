@@ -8,6 +8,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +23,10 @@ class MarkupConnector:
         """Yield a single (None, text) tuple — markup has no natural page breaks."""
         suffix = self._path.suffix.lower()
         raw = self._path.read_text(encoding="utf-8", errors="replace")
+        raven_log("DEBUG", "P4", "ingest.doc.markup read",
+                  context={"filename": self._path.name, "encoding": "utf-8", "errors": "replace", "chars": len(raw),
+                           "selected_option": "xml" if suffix == ".xml" else "html",
+                           "available_options": ["xml", "html"], "reason_code": "EXTENSION"})
         if suffix == ".xml":
             yield None, _extract_xml(raw)
         else:
@@ -36,6 +42,10 @@ def _extract_xml(raw: str) -> str:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
         logger.warning("xml parse failed, falling back to regex strip: %s", exc)
+        raven_log("WARN", "P3", "ingest.doc.markup xml parse failed, regex strip used",
+                  error_code="ARYX_ING_XML_DOC_PARSE_FALLBACK",
+                  context={"triggering_error": type(exc).__name__, "recovery_selected": "regex_strip",
+                           "fallback_target": "regex_strip", "exit_condition": "degraded", "result": "degraded"})
         return re.sub(r"<[^>]+>", " ", raw)
     lines: list[str] = []
     for elem in root.iter():
@@ -85,4 +95,8 @@ def _extract_html(raw: str) -> str:
         parser.feed(raw)
     except Exception as exc:
         logger.warning("html parse error: %s", exc)
+        raven_log("WARN", "P3", "ingest.doc.markup html parse error, partial text kept",
+                  error_code="ARYX_ING_HTML_PARSE_ERROR",
+                  context={"triggering_error": type(exc).__name__, "recovery_selected": "keep_partial_text",
+                           "exit_condition": "degraded", "result": "degraded"})
     return parser.text()

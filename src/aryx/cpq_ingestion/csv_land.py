@@ -19,10 +19,13 @@ independent pieces) -- not something this module should grow into itself.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from aryx.connectors.csv_source import CsvConnector
 from aryx.discover import discover
+from aryx.raven_log import raven_log
+from aryx.worker.job_partial import note_hidden
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.postgres_store import PostgresStore
 
@@ -65,6 +68,11 @@ def land_csv_directly(
     Returns:
         ``{"run_id": ..., "source_key": ..., "rows_landed": ...}``.
     """
+    t0 = time.monotonic()
+    raven_log("INFO", "P4", "ingest.csv_direct.start direct CSV landing chosen",
+              context={"log_id": log_id, "stem": stem, "workspace_id": workspace_id, "bytes": len(data),
+                       "selected_option": "csv_direct", "available_options": ["csv_direct", "entity_pipeline"],
+                       "reason_code": "CPQ_INGESTION_FILE_TYPE_CSV"})
     connector = CsvConnector(data, system=SOURCE_SYSTEM, dataset=stem)
     store = PostgresStore(dsn, workspace_id)
     logger.info(
@@ -77,6 +85,10 @@ def land_csv_directly(
     finally:
         store.close()
     result = {"run_id": run_id, "source_key": stem, "rows_landed": rows_landed}
+    raven_log("INFO", "P4", "ingest.csv_direct.landed rows landed without graph",
+              context={"log_id": log_id, "stem": stem, "workspace_id": workspace_id, "run_id": run_id,
+                       "rows_landed": rows_landed, "zero_rows": rows_landed == 0,
+                       "duration_ms": int((time.monotonic() - t0) * 1000)})
     logger.info(
         "cpq_ingestion csv_direct landed did=%s source_key=%s workspace_id=%s run_id=%s rows=%d",
         log_id, stem, workspace_id, run_id, rows_landed,
@@ -90,9 +102,16 @@ def land_csv_directly(
     # that already succeeded above.
     try:
         DatasourceStore(dsn).ensure(workspace_id, f"{stem}.csv"[:255], _DATASOURCE_KIND)
-    except Exception:  # noqa: BLE001
+    except Exception as ds_exc:  # noqa: BLE001
         logger.warning(
             "cpq_ingestion: datasource ensure failed for landed csv %r",
             stem, exc_info=True,
         )
+        note_hidden()
+        raven_log("WARN", "P3", "ingest.datasource.register_failed landed csv not in Data > Sources",
+                  error_code="ARYX_ING_DATASOURCE_FAILED",
+                  context={"dependency_name": "adb", "operation": "datasource_ensure",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "error_class": type(ds_exc).__name__, "attempt": 1,
+                           "filename": f"{stem}.csv"[:255], "kind": _DATASOURCE_KIND})
     return result

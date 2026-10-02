@@ -6,6 +6,7 @@ from pathlib import Path
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.constants import PIPELINE_CPQ_INGESTION
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,19 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
     """
     settings = get_cpq_ingestion_settings()
     if not settings.ingest_file_type or not settings.ingest_pipeline:
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.route.cpq_pipeline inactive, flags unset",
+                      context={"filename": filename, "selected_option": "standard", "reason_code": "FLAGS_UNSET",
+                               "available_options": ["cpq_ingestion", "standard"],
+                               "has_pipeline": bool(settings.ingest_pipeline),
+                               "has_file_type": bool(settings.ingest_file_type)})
         return False
     if settings.ingest_pipeline.strip().lower() != PIPELINE_CPQ_INGESTION:
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.route.cpq_pipeline inactive, pipeline name differs",
+                      context={"filename": filename, "selected_option": "standard",
+                               "available_options": ["cpq_ingestion", "standard"],
+                               "reason_code": "PIPELINE_NAME_MISMATCH", "ARYX_INGEST_PIPELINE": settings.ingest_pipeline})
         logger.debug(
             "cpq_ingestion: ARYX_INGEST_PIPELINE=%r does not match %r, not routing %s",
             settings.ingest_pipeline, PIPELINE_CPQ_INGESTION, filename,
@@ -59,6 +71,11 @@ def cpq_ingestion_pipeline_active(filename: str) -> bool:
     suffix = Path(filename).suffix.lower().lstrip(".")
     active_types = _active_file_types()
     active = suffix in active_types
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.route.cpq_pipeline decision by extension",
+                  context={"filename": filename, "suffix": suffix, "active_types": sorted(active_types),
+                           "selected_option": "cpq_ingestion" if active else "standard",
+                           "available_options": ["cpq_ingestion", "standard"], "reason_code": "FILE_TYPE_MATCH"})
     logger.debug(
         "cpq_ingestion: routing decision for %s: suffix=%r active_types=%r active=%s",
         filename, suffix, active_types, active,
@@ -91,6 +108,10 @@ def partition_cpq_ingestion_plans(
             cpq_ingestion_source_files.setdefault(source_filename, plan)
             continue
         remaining_plans.append(plan)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.route.partition_xml plans split",
+                  context={"plans": len(plans), "cpq_source_files": len(cpq_ingestion_source_files),
+                           "remaining": len(remaining_plans), "reason_code": "XML_CPQ_ACTIVE"})
     return cpq_ingestion_source_files, remaining_plans
 
 
@@ -109,6 +130,10 @@ def partition_cpq_ingestion_csv_plans(
     """
     csv_plans = [p for p in plans if p.get("cpq_csv_direct")]
     remaining_plans = [p for p in plans if not p.get("cpq_csv_direct")]
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.route.partition_csv plans split",
+                  context={"plans": len(plans), "csv_direct": len(csv_plans), "remaining": len(remaining_plans),
+                           "reason_code": "CPQ_CSV_DIRECT_FLAG"})
     return csv_plans, remaining_plans
 
 
@@ -134,11 +159,26 @@ def cpq_layout_upload_active(filename: str) -> bool:
     """
     settings = get_cpq_ingestion_settings()
     if settings.ingest_pipeline.strip().lower() != PIPELINE_CPQ_INGESTION:
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.route.layout inactive, pipeline name differs",
+                      context={"filename": filename, "selected_option": "normal_ingest",
+                               "available_options": ["layout_store", "normal_ingest"],
+                               "reason_code": "PIPELINE_NAME_MISMATCH"})
         return False
     if not settings.cpq_layout_source.strip():
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.route.layout inactive, layout source unset",
+                      context={"filename": filename, "selected_option": "normal_ingest",
+                               "available_options": ["layout_store", "normal_ingest"],
+                               "reason_code": "CPQ_LAYOUT_SOURCE_UNSET"})
         return False
     suffix = Path(filename).suffix.lower().lstrip(".")
     active = suffix in _LAYOUT_UPLOAD_SUFFIXES
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.route.layout decision by extension",
+                  context={"filename": filename, "suffix": suffix,
+                           "selected_option": "layout_store" if active else "normal_ingest",
+                           "available_options": ["layout_store", "normal_ingest"], "reason_code": "SUFFIX_MATCH"})
     logger.debug(
         "cpq_ingestion: layout-upload routing decision for %s: suffix=%r active=%s",
         filename, suffix, active,

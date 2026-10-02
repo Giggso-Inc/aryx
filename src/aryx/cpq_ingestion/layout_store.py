@@ -12,11 +12,14 @@ its downstream consumer (``CpqEngine``) does not.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from aryx.queries import load
+from aryx.raven_log import raven_log
+from aryx.worker.job_partial import note_hidden
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.pool import get_pool
 
@@ -69,12 +72,22 @@ def store_layout_file(
     the whole upload batch over one oversized file, matching the raw-graph
     write's best-effort posture (see cpq_ingestion/pipeline.py).
     """
+    t0 = time.monotonic()
     if len(data) > _MAX_LAYOUT_FILE_BYTES:
+        raven_log("WARN", "P3", "ingest.layout.too_large layout file over size guard",
+                  error_code="ARYX_ING_LAYOUT_SKIPPED",
+                  context={"filename": filename, "limit": _MAX_LAYOUT_FILE_BYTES, "measured": len(data),
+                           "decision": "refuse", "reason_code": "TOO_LARGE"})
         raise CpqLayoutFileTooLarge(
             f"layout file {filename!r} is {len(data)} bytes -- exceeds "
             f"the {_MAX_LAYOUT_FILE_BYTES} byte guard"
         )
     prefix = catalog_prefix or catalog_prefix_from_filename(filename)
+    raven_log("DEBUG", "P4", "ingest.layout.prefix catalog prefix chosen",
+              context={"filename": filename, "catalog_prefix": prefix,
+                       "selected_option": "explicit" if catalog_prefix else "filename_stem",
+                       "available_options": ["explicit", "filename_stem"], "reason_code": "CATALOG_PREFIX",
+                       "bytes": len(data), "limit": _MAX_LAYOUT_FILE_BYTES})
     content = data.decode("utf-8")
     params = {
         "layout_id": uuid.uuid4().hex,
@@ -101,11 +114,18 @@ def store_layout_file(
     # storage that already succeeded above.
     try:
         DatasourceStore(dsn).ensure(workspace_id, filename[:255], _DATASOURCE_KIND)
-    except Exception:  # noqa: BLE001
+    except Exception as ds_exc:  # noqa: BLE001
         logger.warning(
             "cpq_ingestion: datasource ensure failed for layout file %r",
             filename, exc_info=True,
         )
+        note_hidden()
+        raven_log("WARN", "P3", "ingest.datasource.register_failed layout file not in Data > Sources",
+                  error_code="ARYX_ING_DATASOURCE_FAILED",
+                  context={"dependency_name": "adb", "operation": "datasource_ensure",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "error_class": type(ds_exc).__name__, "attempt": 1,
+                           "filename": filename[:255], "kind": _DATASOURCE_KIND})
     # Without this, a re-upload replacing an already-queried (workspace_id,
     # catalog_prefix) pair would keep serving the OLD cached value for the
     # rest of this process's lifetime -- engine_caches.py's layout caches
@@ -114,4 +134,7 @@ def store_layout_file(
     # time for callers that never touch it.
     from aryx.cpq.engine_caches import invalidate_layout_cache  # noqa: PLC0415
     invalidate_layout_cache(workspace_id, prefix)
+    raven_log("DEBUG", "P4", "ingest.layout.stored layout file upserted and cache invalidated",
+              context={"filename": filename, "catalog_prefix": prefix, "workspace_id": workspace_id,
+                       "bytes": len(data), "duration_ms": int((time.monotonic() - t0) * 1000)})
     return prefix

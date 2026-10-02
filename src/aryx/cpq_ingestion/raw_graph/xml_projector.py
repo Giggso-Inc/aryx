@@ -16,6 +16,7 @@ import defusedxml.ElementTree as defused_ET
 
 from aryx.cpq_ingestion.constants import RAW_EDGE_CONTAINS, RAW_PROP_TEXT
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
+from aryx.raven_log import raven_log
 
 
 def _strip_ns(tag: str) -> str:
@@ -65,4 +66,7 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
             walk(child, my_id)
 
     walk(root, None)
+    raven_log("DEBUG", "P4", "ingest.raw_graph.project xml walked into nodes and edges",
+              context={"nodes": len(nodes), "edges": len(edges), "root_tag": _strip_ns(root.tag),
+                       "bytes": len(data)})
     return RawGraphProjection(nodes=nodes, edges=edges)

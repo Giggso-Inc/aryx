@@ -17,6 +17,8 @@ from aryx.cpq_ingestion.naming import raw_workspace_id, raw_ws_graph
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection, RawGraphWriteResult
 from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +113,10 @@ def write_raw_graph(
         workspace_id, source_key, backend, graph_ref, len(projection.nodes), len(projection.edges),
     )
     store = get_raw_graph_store(workspace_id, source_key, dsn=dsn, graph_url=graph_url)
+    raven_log("DEBUG", "P4", "ingest.raw_graph.write clearing and rewriting file scope",
+              context={"workspace_id": workspace_id, "source_key": source_key, "backend": backend,
+                       "graph_ref": graph_ref, "nodes": len(projection.nodes), "edges": len(projection.edges),
+                       "selected_option": "full_rebuild", "reason_code": "CLEAR_THEN_WRITE"})
     store.clear()
     entities = [(n.id, n.tag, n.properties, None, None) for n in projection.nodes]
     relationships = [(e.source_id, e.target_id, e.name) for e in projection.edges]
