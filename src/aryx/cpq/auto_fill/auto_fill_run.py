@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.auto_fill import auto_fill_resolve, auto_fill_setup
 
 
@@ -254,5 +255,12 @@ def run_auto_fill(
         workspace_id=workspace_id, catalog_prefix=catalog_prefix,
         cache=_dt_cache, product_anchor_hint=product_anchor_hint,
     )
+
+    # dev-rv-msi #362: drop attrs confirmed never-applicable to the device
+    # resolved from the customer's wording (one-sided; flagged).
+    if get_settings().cpq_not_applicable_guard_enabled:
+        pending = engine._attrs_confirmed_not_applicable_for_hint(
+            pending, product_anchor_hint, workspace_id, catalog_prefix, _dt_cache,
+        )
 
     return ctx.filled, ctx.display_filled, pending

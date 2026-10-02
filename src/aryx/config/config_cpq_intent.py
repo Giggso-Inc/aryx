@@ -525,3 +525,19 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_FREE_TEXT_PRESENTABLE_ENABLED=true."
         ),
     )
+    cpq_not_applicable_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #362/#364/#365. When on, (a) a new first "
+            "auto-fill stage skips and clears (never a customer-confirmed "
+            "'user' value) any non-anchor attribute, and Hardware "
+            "Version, that real Data Table evidence confirms is never "
+            "governed for the device resolved from the customer's "
+            "original wording, so it is no longer blind-filled; and (b) "
+            "run_auto_fill drops such attributes from the pending list so "
+            "shared multi-model layouts stop asking irrelevant questions. "
+            "One-sided: never adds or forces an attribute; a no-op when "
+            "the device is unresolved or ambiguous. Off by default. "
+            "Override with ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true."
+        ),
+    )
