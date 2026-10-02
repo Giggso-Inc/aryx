@@ -556,3 +556,50 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
         ),
     )
+    cpq_rdb_call_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 (Part A). When on, CPQ RDB reads bound "
+            "each borrowed connection: Postgres issues SET statement_timeout "
+            "(int literal) and resets it to DEFAULT on release; Oracle sets "
+            "connection.call_timeout and restores the previous value. A "
+            "timeout inside a swallowed rdb error is logged at WARNING. "
+            "Off by default. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rdb_call_timeout_ms: int = Field(
+        default=60000,
+        description=(
+            "Per-call timeout in milliseconds for CPQ RDB reads when "
+            "cpq_rdb_call_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_write_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #363. When on, RuleTraceStore.open_session "
+            "and append_entry are bounded (Postgres SET LOCAL "
+            "statement_timeout; Oracle connection.call_timeout restored "
+            "afterwards) and a per-run circuit breaker stops DB writes "
+            "after repeated consecutive append failures. Off by default. "
+            "Override with ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rule_trace_write_timeout_ms: int = Field(
+        default=5000,
+        description=(
+            "Timeout in milliseconds for rule-trace DB writes when "
+            "cpq_rule_trace_write_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_breaker_threshold: int = Field(
+        default=5,
+        description=(
+            "Consecutive append_entry failures for one run_id after which "
+            "rule-trace DB writes for that run stop (local .jsonl is "
+            "unaffected). Override with ARYX_CPQ_RULE_TRACE_BREAKER_THRESHOLD."
+        ),
+    )
