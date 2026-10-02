@@ -26,6 +26,7 @@ from typing import Iterable, Iterator, Sequence
 
 from aryx.csv_bml_ingestion.column_limits import ColumnLimit
 from aryx.csv_bml_ingestion.errors import ValueTooLongError
+from aryx.csv_bml_ingestion.rejects import RejectCollector, RejectedRow, csv_safe_cell
 
 
 class OverflowPolicy(str, Enum):
@@ -46,6 +47,7 @@ class OverflowReport:
     longest: dict[str, int] = field(default_factory=dict)  # column -> longest offending size
     samples: list[str] = field(default_factory=list)
     rejects_file: Path | None = None
+    rejects: RejectCollector = field(default_factory=RejectCollector)
 
 
 def _violation(value: object, col: str, limit: ColumnLimit) -> tuple[str, int] | None:
@@ -71,26 +73,21 @@ def _truncate(value: str, limit: ColumnLimit) -> str:
     return value[: limit.max_chars]
 
 
-def _safe_cell(v: object) -> object:
-    """Blank for None; prefix ``'`` on text a spreadsheet would run as a formula."""
-    if v is None:
-        return ""
-    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@") else v
-
-
 class _RejectsWriter:
     """Lazily-created rejects CSV: the table's columns plus ``reject_reason``."""
 
-    def __init__(self, path: Path, columns: Sequence[str]) -> None:
+    def __init__(self, path: Path | None, columns: Sequence[str]) -> None:
         self.path, self._columns, self._fh, self._w = path, columns, None, None
 
     def write(self, row: Sequence[object], reason: str) -> None:
+        if self.path is None:
+            return
         if self._w is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = self.path.open("w", encoding="utf-8", newline="")
             self._w = csv.writer(self._fh)
             self._w.writerow([*self._columns, "reject_reason"])
-        self._w.writerow([*(_safe_cell(v) for v in row), reason])
+        self._w.writerow([*(csv_safe_cell(v) for v in row), reason])
 
     def close(self) -> None:
         if self._fh:
@@ -103,16 +100,29 @@ def guard_rows(
     limits: dict[str, ColumnLimit],
     policy: OverflowPolicy,
     report: OverflowReport,
-    rejects_path: Path,
+    rejects_path: Path | None,
 ) -> Iterator[tuple]:
     """Yield only rows that fit (or were truncated to fit), per ``policy``."""
+    return guard_numbered_rows(((0, r) for r in rows), columns, limits, policy, report, rejects_path)
+
+
+def guard_numbered_rows(
+    rows: Iterable[tuple[int, tuple]],
+    columns: Sequence[str],
+    limits: dict[str, ColumnLimit],
+    policy: OverflowPolicy,
+    report: OverflowReport,
+    rejects_path: Path | None,
+) -> Iterator[tuple]:
+    """``guard_rows`` over ``(source line number, row)`` pairs; rejected rows are also kept
+    structurally in ``report.rejects`` (line, reason, column values) so they can be re-run."""
     checked = [(i, c, limits[c]) for i, c in enumerate(columns)
                if c in limits and limits[c].kind in ("text", "number")]
     if rejects_path is not None:
         rejects_path.unlink(missing_ok=True)  # never leave a previous run's rejects looking current
     writer = _RejectsWriter(rejects_path, columns)
     try:
-        for row in rows:
+        for line_no, row in rows:
             bad = [(c, v) for i, c, lim in checked if (v := _violation(row[i], c, lim))]
             if not bad:
                 yield row
@@ -131,7 +141,10 @@ def guard_rows(
             else:
                 report.rows_rejected += 1
                 report.rejects_file = rejects_path
-                writer.write(row, "; ".join(v[0] for _, v in bad))
+                reason = "; ".join(v[0] for _, v in bad)
+                writer.write(row, reason)
+                report.rejects.add(RejectedRow(line_no=line_no, code="CBI_VALUE_TOO_LONG", reason=reason[:900],
+                                               payload={"columns": dict(zip(columns, row))}))
     finally:
         writer.close()
 

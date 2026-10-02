@@ -346,7 +346,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 # XML knowledge graph already ingested into this workspace (csv_bml_ingestion).
                 from aryx.csv_bml_ingestion.upload_hook import CsvBmlUploadSession
 
-                bml_session = bml_session or CsvBmlUploadSession(workspace_id)
+                bml_session = bml_session or CsvBmlUploadSession(workspace_id, job_id)
                 jobs.update_stage(job_id, "Ingest", 20, f"Processing {name} (csv_bml_ingestion)")
                 bml_res = bml_session.ingest(data, name)
                 jobs.update_stage(job_id, "Ingest", 20,

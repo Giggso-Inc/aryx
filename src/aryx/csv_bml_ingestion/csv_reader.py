@@ -24,6 +24,7 @@ from typing import Callable, Iterator
 
 from aryx.csv_bml_ingestion.constants import CSV_META_END, CSV_META_START, ORACLE_RESERVED
 from aryx.csv_bml_ingestion.errors import CsvFormatError
+from aryx.csv_bml_ingestion.rejects import BAD_ROW, RejectCollector, RejectedRow
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -49,6 +50,7 @@ class CsvStats:
     rows_read: int = 0
     rows_bad: int = 0
     bad_samples: list[str] = field(default_factory=list)
+    rejects: RejectCollector = field(default_factory=RejectCollector)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,13 @@ def read_layout(path: Path, encoding: str = "utf-8-sig") -> CsvLayout:
 def iter_rows(path: Path, layout: CsvLayout, stats: CsvStats,
               encoding: str = "utf-8-sig") -> Iterator[tuple[object, ...]]:
     """Yield converted data rows; bad rows are counted in ``stats`` and skipped."""
+    for _line_no, row in iter_numbered_rows(path, layout, stats, encoding):
+        yield row
+
+
+def iter_numbered_rows(path: Path, layout: CsvLayout, stats: CsvStats,
+                       encoding: str = "utf-8-sig") -> Iterator[tuple[int, tuple[object, ...]]]:
+    """Like ``iter_rows`` but yields ``(source line number, row)``; bad rows are kept in ``stats.rejects``."""
     converters = [_convert_cell(t) for t in layout.types]
     width = len(layout.columns)
     try:
@@ -103,18 +112,21 @@ def iter_rows(path: Path, layout: CsvLayout, stats: CsvStats,
                     continue
                 stats.rows_read += 1
                 if len(row) != width:
-                    _bad(stats, line_no, f"expected {width} cells, got {len(row)}")
+                    _bad(stats, line_no, f"expected {width} cells, got {len(row)}", row)
                     continue
                 try:
-                    yield tuple(conv(cell) for conv, cell in zip(converters, row))
+                    converted = tuple(conv(cell) for conv, cell in zip(converters, row))
                 except ValueError as exc:
-                    _bad(stats, line_no, str(exc))
+                    _bad(stats, line_no, str(exc), row)
+                    continue
+                yield line_no, converted
     except (OSError, UnicodeDecodeError, csv.Error) as exc:
         raise CsvFormatError(f"{path}: cannot read CSV: {exc}") from exc
 
 
-def _bad(stats: CsvStats, line_no: int, why: str) -> None:
+def _bad(stats: CsvStats, line_no: int, why: str, cells: list[str]) -> None:
     stats.rows_bad += 1
+    stats.rejects.add(RejectedRow(line_no=line_no, code=BAD_ROW, reason=why[:900], payload={"cells": list(cells)}))
     if len(stats.bad_samples) < 5:
         stats.bad_samples.append(f"line {line_no}: {why}")
 

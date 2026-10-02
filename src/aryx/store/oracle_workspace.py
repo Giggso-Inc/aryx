@@ -147,6 +147,19 @@ class OracleWorkspaceStore:
         logger.info("survivorship policy updated ws=%s", wid)
         return {"id": row[0], "survivorship": row[1] or {}}
 
+    def _purge_csv_issues(self, wid: int | None) -> None:
+        """Stored CSV ingestion issues (rejected rows, kept files) go with the workspace.
+
+        Best effort and in its own transaction: if the table does not exist (migration 0047 not applied)
+        this logs and returns — it must never make a workspace purge/delete fail.
+        """
+        try:
+            from aryx.csv_bml_ingestion.issue_store import purge_issues  # noqa: PLC0415
+
+            purge_issues(self._pool.connection, wid)
+        except Exception:  # noqa: BLE001
+            logger.warning("csv ingest issue cleanup skipped (wid=%s)", wid, exc_info=True)
+
     def purge_data(self, wid: int) -> dict[str, Any]:
         """Delete all data rows for workspace wid (equivalent to truncating partitions)."""
         wid = int(wid)
@@ -161,6 +174,7 @@ class OracleWorkspaceStore:
                 cur.execute(load("delete_profiles_by_workspace"), (wid,))
                 cur.execute(load("delete_tags_by_workspace"), (wid,))
                 cur.execute(load("reset_workspace_context"), {"wid": wid})
+        self._purge_csv_issues(wid)
         logger.info("workspace purged id=%s", wid)
         return {"status": "purged", "workspace_id": wid}
 
@@ -177,6 +191,7 @@ class OracleWorkspaceStore:
                     self._drop_partitions(int(wid))
                 cur.execute(load("delete_non_default_workspaces"))
                 cur.execute(load("reset_workspace_context"), {"wid": 1})
+        self._purge_csv_issues(None)
         logger.info("system nuked — factory reset complete")
         # workspace_ids: see workspaces/__init__.py's WorkspaceStore.nuke()
         # sibling method for why this additive field exists (CPQ_Hardcode_
@@ -199,4 +214,5 @@ class OracleWorkspaceStore:
                 cur.execute(load("delete_runs_by_workspace"), (wid,))
                 cur.execute(load("delete_jobs_by_workspace"), (wid,))
                 cur.execute(load("delete_workspace_row"), (wid,))
+        self._purge_csv_issues(wid)
         logger.info("workspace deleted id=%s", wid)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from aryx.csv_bml_ingestion.constants import OWNER_TAG
 from aryx.csv_bml_ingestion.db import ConnectionFactory
 from aryx.csv_bml_ingestion.errors import TableProtectedError
 
@@ -22,6 +23,11 @@ _STATE_SQL = (
     "SELECT c.comments FROM user_tables t LEFT JOIN user_tab_comments c "
     "ON c.table_name = t.table_name WHERE t.table_name = %s"
 )
+
+
+def workspace_owner(workspace_id: int) -> str:
+    """Owner tag for tables created through uploads into ``workspace_id``."""
+    return f"{OWNER_TAG}:ws={int(workspace_id)}"
 
 
 def table_state(factory: ConnectionFactory, table: str) -> tuple[bool, str | None]:

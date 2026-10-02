@@ -287,7 +287,7 @@ def _run_upload(monkeypatch, result_status):
     class FakeSession:
         instances = 0
 
-        def __init__(self, workspace_id):
+        def __init__(self, workspace_id, job_id=None):
             FakeSession.instances += 1
             self.ws = workspace_id
 
@@ -341,7 +341,7 @@ def test_upload_loop_processes_xml_before_csv_when_enabled(monkeypatch):
     monkeypatch.setattr(fr, "upsert_xml_catalog_entry", lambda *a, **k: None)
     monkeypatch.setattr(fr, "xml_asset_record", lambda *a, **k: {})
     from aryx.csv_bml_ingestion.options import IngestResult
-    monkeypatch.setattr("aryx.csv_bml_ingestion.upload_hook.CsvBmlUploadSession", lambda ws: SimpleNamespace(
+    monkeypatch.setattr("aryx.csv_bml_ingestion.upload_hook.CsvBmlUploadSession", lambda ws, job=None: SimpleNamespace(
         ingest=lambda d, n: (order.append("csv"), IngestResult(source=n, status="loaded"))[1]))
     fr._run_files([(b"a,b\n1,2\n", "x.csv"), (b"<r/>", "g.xml")], "T", [], [], "job3", workspace_id=1)
     assert order == ["xml", "csv"]

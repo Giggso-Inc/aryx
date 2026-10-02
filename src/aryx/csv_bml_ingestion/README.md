@@ -72,6 +72,34 @@ searching **that graph** — the XML is not needed again. Off by default; one sw
 Order matters: ingest the XML **first**; XMLs ingested before the switch was on carry no query lists and
 must be re-ingested. The CLI can use the same graph: `inspect|ingest --workspace-id N csv...`.
 
+## Rejected rows and failed files: stored, shown, re-runnable
+
+A CSV that is skipped or fails, or loads with some rows left out, is **stored** so it can be handled later
+instead of being lost in a log line. (Runs that load cleanly are not stored.)
+
+* **What is kept** (migration `0047_csv_ingest_issues.sql`, Oracle): `aryx_csv_ingest_run` — one row per stored
+  run (file, table, status, error code, counts, upload job id); `aryx_csv_ingest_reject` — one row per rejected
+  CSV row (source line number, reason, the row as JSON). For a skipped/failed run the original file is also kept
+  (gzip + base64 text, capped at `ARYX_CSV_BML_MAX_STORED_FILE_MB`, default 20) so it can be re-run without a re-upload.
+  Per run at most `ARYX_CSV_BML_MAX_REJECT_ROWS` (default 10,000) rows are kept; the true total is still counted.
+* **Two kinds of rejected row.** `CBI_VALUE_TOO_LONG`: parsed fine but a value does not fit — stored with its column
+  values, so it can be inserted again once the column is widened. `CBI_BAD_ROW`: malformed (wrong cell count, bad
+  integer) — stored as the raw cells; it **cannot** be re-run as it is (the file has to be corrected).
+* **UI:** in the Ingest jobs panel, a job with open issues shows "N CSV issues"; opening it lists each file/table with
+  its rejected rows (line, reason, values), and offers **Re-run rejected rows** (skip rows that still don't fit, or cut
+  values to fit), **Re-run file** (for skipped/failed files whose file was kept) and **Download rejected rows**.
+* **Re-run rows** (`rerun.py`): one transaction — claim the run's open rows (`retrying`, under row locks), insert the
+  ones that now fit, mark them `resolved`, put the rest back to `open` with the new reason and `attempts + 1`, commit.
+  A second click finds nothing left to claim, so rows are never inserted twice; an error rolls everything back. Only a
+  table this workspace's pipeline owns is touched, and only columns that exist in it.
+* **Re-run file:** the stored file goes back through the normal upload job (so it shows up in the jobs panel); the old
+  run is marked `superseded`, and if the new attempt also fails it appears as a new open run.
+* **API** (`/admin/csv-bml`, Oracle only, every route scoped by `workspace_id`; another workspace's run is a 404):
+  `GET /runs`, `GET /runs/{id}`, `GET /runs/{id}/rejects`, `GET /runs/{id}/rejects.csv`,
+  `POST /runs/{id}/rerun-rows?policy=reject|truncate`, `POST /runs/{id}/rerun-file`.
+* **Data handling:** rejected rows and kept files contain the uploaded data, so they are workspace-scoped and are
+  deleted with the workspace (`purge_workspace_data.sql`). There is no automatic expiry.
+
 ## The SQL files (step 3)
 
 Nothing per-table is committed. Files are written the first time a table is ingested to

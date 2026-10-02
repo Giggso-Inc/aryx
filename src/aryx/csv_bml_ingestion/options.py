@@ -6,6 +6,7 @@ from pathlib import Path
 
 from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
+from aryx.csv_bml_ingestion.rejects import RejectedRow
 from aryx.csv_bml_ingestion.sql_author import Completer
 
 
@@ -37,3 +38,6 @@ class IngestResult:
     error_code: str = ""
     message: str = ""
     bml_scripts: list[str] = field(default_factory=list)
+    reject_rows: list[RejectedRow] = field(default_factory=list)   # rows not loaded, for storage / re-run
+    reject_total: int = 0                                          # true count (list is capped)
+    run_id: str = ""                                                # set when the run was stored
