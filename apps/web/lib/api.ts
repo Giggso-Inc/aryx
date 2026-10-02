@@ -1,4 +1,5 @@
 import { askApi } from "./api/ask";
+import { csvBmlApi } from "./api/csv-bml";
 import { dataSourcesApi } from "./api/data-sources";
 import { entityGraphApi } from "./api/entity-graph-api";
 import { ingestFlowsApi } from "./api/ingest-flows";
@@ -20,6 +21,7 @@ export const api = {
   ...ontologyRulesApi,
   ...ontologyVersionsInterchangeApi,
   ...jobsApi,
+  ...csvBmlApi,
   ...wizardApi,
   ...entityGraphApi,
   ...ingestFlowsApi,

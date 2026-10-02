@@ -22,6 +22,7 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge, store_layout_file
 from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten
 from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active, cpq_layout_upload_active
+from aryx.csv_bml_ingestion.config import csv_bml_enabled
 from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
@@ -216,6 +217,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         else:
             xlsx_auto_fk = []
 
+        csv_bml_problems: list[str] = []
+        bml_session = None
+        if csv_bml_enabled():
+            # XML first, so its knowledge graph exists before any CSV in the same upload looks for it
+            data_files = sorted(data_files, key=lambda f: Path(f[1]).suffix.lower() != ".xml")
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
@@ -303,6 +309,18 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     assets=asset_rows,
                 )
                 continue
+            elif suffix == ".csv" and csv_bml_enabled():
+                # CSV -> table named after the file, only if a query for that table exists in the
+                # XML knowledge graph already ingested into this workspace (csv_bml_ingestion).
+                from aryx.csv_bml_ingestion.upload_hook import CsvBmlUploadSession
+
+                bml_session = bml_session or CsvBmlUploadSession(workspace_id, job_id)
+                jobs.update_stage(job_id, "Ingest", 20, f"Processing {name} (csv_bml_ingestion)")
+                bml_res = bml_session.ingest(data, name)
+                jobs.update_stage(job_id, "Ingest", 20,
+                                  f"{name}: {bml_res.status} rows={bml_res.rows_loaded} {bml_res.error_code}".strip())
+                if bml_res.status != "loaded":
+                    csv_bml_problems.append(f"{name}: {bml_res.status} {bml_res.error_code} {bml_res.message}"[:300])
             elif suffix == ".xlsx":
                 # Sheets + FK links (column-name AND dynamic value+LLM) were
                 # already computed ONCE across ALL xlsx files in this batch,
@@ -406,7 +424,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
-        jobs.finish(job_id, run_id=None, status="complete")
+        if csv_bml_problems:
+            jobs.finish(job_id, run_id=None, status="failed", error="; ".join(csv_bml_problems)[:2000])
+        else:
+            jobs.finish(job_id, run_id=None, status="complete")
     except PipelineCancelled:
         # The job row is already "cancelled" (that's what should_stop() just
         # read to get here) -- leave it alone, don't overwrite it with
