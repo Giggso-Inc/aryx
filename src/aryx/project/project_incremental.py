@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from aryx.graph import FalkorStore
 
 from aryx.project.project_full import _entity_iri
+from aryx.raven_log import raven_log
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,11 @@ def project_incremental(
     since = pstore.watermark()
     ancestors_for = type_ancestors or {}
     dirty = pstore.dirty_entities(since)
+    raven_log("DEBUG", "P4", "ingest.project.incremental_scope incremental projection scope",
+              context={"stage": "project", "mode": "incremental", "workspace_id": workspace_id,
+                       "dirty_entities": len(dirty), "watermark_found": since is not None,
+                       "selected_option": "batch" if hasattr(graph, "add_entities_batch") else "per_row",
+                       "available_options": ["batch", "per_row"], "reason_code": "WRITER_CAPABILITY"})
     if hasattr(graph, "add_entities_batch"):
         rows = [
             (eid, ot, attrs, ancestors_for.get(ot, []),
@@ -85,6 +91,10 @@ def project_incremental(
         for src, tgt, name in relationships:
             graph.add_relationship(src, tgt, name)
     tombstones = pstore.tombstones()
+    raven_log("DEBUG", "P4", "ingest.project.incremental_edges edge scope and tombstones",
+              context={"stage": "project", "workspace_id": workspace_id, "edge_scope_ids": len(edge_scope_ids),
+                       "relationships": len(relationships), "tombstones": len(tombstones),
+                       "provenance": len(provenance)})
     # Captured *before* DETACH DELETE below — a tombstone's neighbor can
     # become newly isolated once its only edge is gone, and that neighbor
     # is otherwise outside this batch's own dirty set (Raven review, PR

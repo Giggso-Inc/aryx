@@ -10,6 +10,8 @@ import logging
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from typing import Any, Iterator
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,14 @@ def _drain_with_timeout(
                 "abandoning the rest of this stage (a later safety net can "
                 "still connect them)", label, len(pending), idle_timeout,
             )
+            raven_log("WARN", "P2", "ingest.relate.drain_timeout stuck LLM calls abandoned",
+                      error_code="ARYX_ING_RELATE_DEGRADED",
+                      context={"stage": label, "triggering_error": "IDLE_TIMEOUT", "attempt": 1,
+                               "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "abandon_pending",
+                               "fallback_target": "relate_isolated_safety_net", "result": "partial",
+                               "exit_condition": "no_completion_within_idle_timeout",
+                               "pairs_total": len(futures), "pairs_failed": len(pending),
+                               "threshold": idle_timeout})
             return
         for fut in done:
             yield fut, futures[fut]

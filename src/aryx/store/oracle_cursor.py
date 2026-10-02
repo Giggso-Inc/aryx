@@ -8,7 +8,11 @@ Split out of `store/oracle_pool.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 import logging
+import re
+import time
 from typing import Any, Iterator
+
+from aryx.raven_log import raven_log, would_log
 
 from aryx.store.oracle_clob import _coerce_clob, _hint_clob_many
 from aryx.store.oracle_param_coerce import (
@@ -21,6 +25,53 @@ from aryx.store.oracle_param_coerce import (
 from aryx.store.oracle_sql_translate import _BIND_NAME_RE, _MERGE_ON_RE, _translate_sql
 
 logger = logging.getLogger(__name__)
+
+# Statements slower than this are always logged (INFO), whatever the level filter.
+SLOW_STATEMENT_MS = 2000
+_VERB_TABLE_RE = re.compile(
+    r"^\s*(?:(INSERT)\s+INTO|(UPDATE)|(DELETE)\s+FROM|(MERGE)\s+INTO|(SELECT)\b.*?\bFROM)\s+([\w.\"$#]+)",
+    re.I | re.S,
+)
+
+
+def _sql_op(sql: str) -> str:
+    """SQL verb and table name only (never text, never binds): 'INSERT entities'."""
+    try:
+        m = _VERB_TABLE_RE.match(sql or "")
+        if m:
+            return f"{next(g for g in m.groups()[:5] if g).upper()} {m.group(6)}"
+        return ((sql or "").split(None, 1) or ["?"])[0].upper()
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _ora_code(exc: BaseException) -> str:
+    """ORA-/DPY- code from an exception message ('' when none)."""
+    m = re.search(r"\b(ORA|DPY)-\d{4,5}\b", str(exc))
+    return m.group(0) if m else ""
+
+
+def _log_stmt_ok(op: str, method: str, rows: int, t0: float) -> None:
+    """DEBUG per statement; INFO when slower than SLOW_STATEMENT_MS."""
+    ms = int((time.monotonic() - t0) * 1000)
+    if ms >= SLOW_STATEMENT_MS:
+        raven_log("INFO", "P4", "db.oracle.slow_statement slow oracle statement",
+                  context={"dependency_name": "oracle_adb", "operation": op, "method": method,
+                           "rows": rows, "duration_ms": ms, "threshold_ms": SLOW_STATEMENT_MS,
+                           "result": "ok"})
+    elif would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "db.oracle.statement oracle statement done",
+                  context={"dependency_name": "oracle_adb", "operation": op, "method": method,
+                           "rows": rows, "duration_ms": ms, "result": "ok"})
+
+
+def _log_stmt_failed(op: str, method: str, exc: BaseException, t0: float) -> None:
+    """ERROR for every failing statement (no params, no row0, no SQL text)."""
+    raven_log("ERROR", "P2", "db.oracle.call_failed oracle statement failed",
+              error_code="ARYX_DB_CALL_FAILED",
+              context={"dependency_name": "oracle_adb", "operation": op, "method": method,
+                       "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                       "error_class": type(exc).__name__, "ora_code": _ora_code(exc), "attempt": 1})
 
 
 class OracleCursorWrapper:
@@ -106,16 +157,23 @@ class OracleCursorWrapper:
                 _on_excl = frozenset(_BIND_NAME_RE.findall(_m.group(1)))
         oracle_params = _coerce_clob(oracle_params, self._cur, oracledb, force=_is_merge, exclude=_on_excl)
         logger.debug("execute sql=%s params=%s", oracle_sql[:120], oracle_params)
+        _op, _t0 = _sql_op(oracle_sql), time.monotonic()
         try:
             self._cur.execute(oracle_sql, oracle_params)
         except oracledb.IntegrityError as exc:
             # ORA-00001: unique constraint violated — treat as DO NOTHING when flagged
             if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
+                raven_log("DEBUG", "P4", "db.oracle.conflict_ignored unique violation ignored (DO NOTHING)",
+                          context={"operation": _op, "ora_code": "ORA-00001", "conflict_ignore": True})
                 return
+            _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         except Exception as exc:
             logger.error("execute failed sql=%r params=%r error=%s", oracle_sql, oracle_params, exc)
+            _log_stmt_failed(_op, "execute", exc, _t0)
             raise
+        else:
+            _log_stmt_ok(_op, "execute", int(getattr(self._cur, "rowcount", 0) or 0), _t0)
 
     def executemany(self, sql: str, seq: Any) -> None:
         """Execute SQL for a sequence of parameter sets."""
@@ -137,20 +195,28 @@ class OracleCursorWrapper:
                 _on_excl = frozenset(_BIND_NAME_RE.findall(_strip_sql_comments(_m.group(1))))
         _hint_clob_many(self._cur, oracle_seq, oracledb, force_merge=_is_merge, on_excl=_on_excl)
         logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
+        _op, _t0 = _sql_op(oracle_sql), time.monotonic()
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except oracledb.IntegrityError as exc:
             _args0 = getattr(exc, "args", (None,))
             _val = _args0[0] if _args0 else None
             if self._conflict_ignore and _val and "ORA-00001" in str(_val):
+                raven_log("DEBUG", "P4", "db.oracle.conflict_ignored unique violation ignored (DO NOTHING)",
+                          context={"operation": _op, "ora_code": "ORA-00001", "conflict_ignore": True,
+                                   "rows": len(oracle_seq)})
                 return
+            _log_stmt_failed(_op, "executemany", exc, _t0)
             logger.warning("executemany IntegrityError (not swallowed) sql=%r conflict_ignore=%s exc=%s args=%r",
                            oracle_sql[:120], self._conflict_ignore, exc, exc.args)
             raise
         except Exception as exc:
             sample = oracle_seq[0] if oracle_seq else None
             logger.error("executemany failed sql=%r row0=%r error=%s", oracle_sql, sample, exc)
+            _log_stmt_failed(_op, "executemany", exc, _t0)
             raise
+        else:
+            _log_stmt_ok(_op, "executemany", len(oracle_seq), _t0)
 
     def executemany_returning(self, sql: str, seq: Any) -> list[Any]:
         """Batch INSERT...RETURNING in one Oracle round-trip; returns scalar list.
@@ -191,12 +257,16 @@ class OracleCursorWrapper:
             "executemany_returning sql=%r rows=%d row0_len=%d arraysize=%d",
             oracle_sql[:120], n, len(oracle_seq[0]), array_vars[0].size,
         )
+        _op, _t0 = _sql_op(oracle_sql), time.monotonic()
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except Exception as exc:
             logger.error("executemany_returning failed sql=%r row0=%r error=%s",
                          oracle_sql, oracle_seq[0], exc)
+            _log_stmt_failed(_op, "executemany_returning", exc, _t0)
             raise
+        else:
+            _log_stmt_ok(_op, "executemany_returning", n, _t0)
         raw = array_vars[0].getvalue()
         logger.info("executemany_returning raw_ids type=%s len=%s sample=%s",
                     type(raw).__name__, len(raw) if isinstance(raw, list) else "scalar", raw if not isinstance(raw, list) else raw[:3])

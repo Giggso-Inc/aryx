@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.llm import complete_json
+from aryx.raven_log import raven_log, submit_ctx, would_log
 from aryx.pipeline.dynamic_fk.dynamic_fk_sampling import (
     _candidate_columns,
     _headers,
@@ -109,10 +110,21 @@ def generate_candidate_pairs(
             if type_a == type_b:
                 continue
             if (type_a, type_b) in already_linked or (type_b, type_a) in already_linked:
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.fk.pair_skipped type pair already linked by column-name pass",
+                              context={"stage": "dynamic_fk", "type_a": type_a, "type_b": type_b,
+                                       "selected_option": "skip", "available_options": ["score", "skip"],
+                                       "reason_code": "ALREADY_LINKED"})
                 continue
             for col_a in _candidate_columns(plan_headers[i]):
                 values_a = _values(i, col_a)
                 if len(values_a) < 2:
+                    if would_log("DEBUG"):
+                        raven_log("DEBUG", "P4", "ingest.fk.column_skipped column has too few distinct values",
+                                  context={"stage": "dynamic_fk", "type": type_a, "column": col_a,
+                                           "distinct_sampled": len(values_a), "selected_option": "skip",
+                                           "available_options": ["score", "skip"],
+                                           "reason_code": "FEWER_THAN_2_DISTINCT"})
                     continue
                 for col_b in _candidate_columns(plan_headers[j]):
                     pair_key = (type_a, col_a, type_b, col_b)
@@ -142,6 +154,13 @@ def generate_candidate_pairs(
                                 f"Table B's column truncated to its first {prefix_len_b} character(s)"
                             )
                     if ratio < threshold:
+                        if would_log("DEBUG"):
+                            raven_log("DEBUG", "P4", "ingest.fk.candidate_rejected value overlap below threshold",
+                                      context={"stage": "dynamic_fk", "type_a": type_a, "col_a": col_a,
+                                               "type_b": type_b, "col_b": col_b, "overlap": round(ratio, 4),
+                                               "threshold": threshold, "selected_option": "reject",
+                                               "available_options": ["candidate", "reject"],
+                                               "reason_code": "OVERLAP_BELOW_THRESHOLD"})
                         continue
                     # Selectivity guard: a candidate can have a perfectly
                     # reasonable DISTINCT-value overlap ratio while still
@@ -170,9 +189,22 @@ def generate_candidate_pairs(
                             log_id, type_a, col_a, type_b, col_b, ratio,
                             transform_desc, fanout, max_fanout,
                         )
+                        raven_log("DEBUG", "P4", "ingest.fk.candidate_rejected join non-selective (fanout too high)",
+                                  context={"stage": "dynamic_fk", "type_a": type_a, "col_a": col_a,
+                                           "type_b": type_b, "col_b": col_b, "overlap": round(ratio, 4),
+                                           "estimated_fanout": fanout, "threshold": max_fanout,
+                                           "selected_option": "reject", "available_options": ["candidate", "reject"],
+                                           "reason_code": "FANOUT_EXCEEDS_MAX", "transform": transform_desc})
                         seen_cols.add(pair_key)
                         continue
                     seen_cols.add(pair_key)
+                    if would_log("DEBUG"):
+                        raven_log("DEBUG", "P4", "ingest.fk.candidate_accepted value-overlap candidate accepted",
+                                  context={"stage": "dynamic_fk", "type_a": type_a, "col_a": col_a,
+                                           "type_b": type_b, "col_b": col_b, "overlap": round(ratio, 4),
+                                           "estimated_fanout": fanout, "threshold": threshold,
+                                           "selected_option": "candidate", "available_options": ["candidate", "reject"],
+                                           "reason_code": "OVERLAP_AND_FANOUT_OK", "transform": transform_desc})
                     candidates.append({
                         "type_a": type_a, "col_a": col_a,
                         "type_b": type_b, "col_b": col_b,
@@ -286,6 +318,12 @@ def _judge_batch(
             "fk_llm_verdict log_id=%s batch judge call failed for %d candidate(s): %s",
             log_id, len(batch), exc,
         )
+        raven_log("WARN", "P3", "ingest.fk.judge_batch_failed fk judge batch failed, candidates treated as not linked",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "dynamic_fk", "triggering_error": type(exc).__name__, "attempt": 1,
+                           "max_attempts": 1, "recovery_selected": "treat_as_not_linked", "result": "partial",
+                           "exit_condition": "batch_dropped", "pairs_total": len(batch),
+                           "pairs_failed": len(batch)})
         return [None] * len(batch)
 
     verdicts_by_index = _extract_verdicts_by_index(result.get("verdicts") or [], len(batch))
@@ -299,6 +337,11 @@ def _judge_batch(
                 "response missing verdict for index %d — treating as not linked",
                 log_id, candidate["type_a"], candidate["type_b"], i,
             )
+            raven_log("DEBUG", "P4", "ingest.fk.verdict judge returned no verdict for candidate",
+                      context={"stage": "dynamic_fk", "type_a": candidate["type_a"], "col_a": candidate["col_a"],
+                               "type_b": candidate["type_b"], "col_b": candidate["col_b"],
+                               "selected_option": "not_linked", "available_options": ["linked", "not_linked"],
+                               "reason_code": "VERDICT_MISSING"})
             links.append(None)
             continue
         linked = bool(verdict.get("linked"))
@@ -309,6 +352,13 @@ def _judge_batch(
             log_id, candidate["type_a"], candidate["col_a"],
             candidate["type_b"], candidate["col_b"], linked, reason,
         )
+        raven_log("DEBUG", "P4", "ingest.fk.verdict judge verdict",
+                  context={"stage": "dynamic_fk", "type_a": candidate["type_a"], "col_a": candidate["col_a"],
+                           "type_b": candidate["type_b"], "col_b": candidate["col_b"],
+                           "selected_option": "linked" if linked else "not_linked",
+                           "available_options": ["linked", "not_linked"],
+                           "reason_code": "LLM_VERDICT_LINKED" if linked else "LLM_VERDICT_NOT_LINKED",
+                           "overlap": candidate.get("overlap"), "cardinality": verdict.get("cardinality")})
         if not linked:
             links.append(None)
             continue
@@ -355,7 +405,7 @@ def judge_candidates_with_llm(
     done = 0
     links: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_judge_batch, batch, broker, log_id): batch for batch in batches}
+        futures = {submit_ctx(pool, _judge_batch, batch, broker, log_id): batch for batch in batches}
         for future in as_completed(futures):
             batch_links = future.result()
             for link in batch_links:
@@ -389,6 +439,11 @@ def detect_dynamic_fk_links(
     """
     settings = get_settings()
     if not settings.fk_dynamic_detection_enabled or len(plans) < 2:
+        raven_log("DEBUG", "P4", "ingest.fk.dynamic_skipped dynamic fk detection skipped",
+                  context={"stage": "dynamic_fk", "selected_option": "skip",
+                           "available_options": ["detect", "skip"],
+                           "reason_code": "DISABLED" if not settings.fk_dynamic_detection_enabled else "FEWER_THAN_2_PLANS",
+                           "enabled": bool(settings.fk_dynamic_detection_enabled), "plans": len(plans)})
         return []
     t0 = time.monotonic()
     candidates = generate_candidate_pairs(plans, already_linked=already_linked, log_id=log_id)
@@ -401,4 +456,8 @@ def detect_dynamic_fk_links(
         log_id, len(plans), len(candidates), len(links),
         int((t1 - t0) * 1000), int((t2 - t1) * 1000),
     )
+    raven_log("INFO", "P4", "ingest.fk.dynamic_done dynamic fk detection finished",
+              context={"stage": "dynamic_fk", "plans": len(plans), "candidates": len(candidates),
+                       "links_found": len(links), "value_sample_ms": int((t1 - t0) * 1000),
+                       "llm_judge_ms": int((t2 - t1) * 1000), "duration_ms": int((t2 - t0) * 1000)})
     return links

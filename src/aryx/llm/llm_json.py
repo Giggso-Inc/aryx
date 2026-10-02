@@ -11,6 +11,7 @@ from typing import Any
 
 from aryx.broker import Broker
 from aryx.broker.specs import ModelSpec, Tier
+from aryx.raven_log import raven_log, would_log
 from aryx.llm.llm_call_log import _log_llm_call
 from aryx.llm.llm_normalize import normalize as _normalize_json
 from aryx.llm.llm_oci_route import _oci_model_for, _use_oci_for
@@ -31,6 +32,10 @@ def complete_json(
     When ARYX_LLM_*_BACKEND=oci the OCI path short-circuits before the broker
     registry is consulted — no local models need to be registered.
     """
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "llm.route complete_json provider route chosen",
+                  context={"role": str(tier), "selected_option": "oci" if _use_oci_for(tier) else "broker",
+                           "available_options": ["oci", "broker"], "reason_code": "TIER_BACKEND_SETTING"})
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")

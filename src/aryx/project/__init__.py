@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aryx.graph import FalkorStore
 
+from aryx.raven_log import raven_log
+from aryx.resolution.stats import bump
 from aryx.project.project_full import ProjectProgress, _entity_iri, project_graph
 from aryx.project.project_incremental import project_incremental
 from aryx.store.entity_store import EntityStore
@@ -61,10 +63,23 @@ def project_auto(
         pass
     lo, hi = pct_range
     since = pstore.watermark()
+    _ws = kwargs.get("workspace_id")
+    _mode_ctx = {"stage": "project", "workspace_id": _ws, "backend": type(graph).__name__,
+                 "graph_ref": getattr(graph, "name", None) or getattr(graph, "graph_name", None),
+                 "available_options": ["incremental", "full"], "threshold": dirty_ratio_max,
+                 "policy_version": "ARYX_PROJECT_DIRTY_MAX", "watermark_found": since is not None}
     if since is not None:
         total = pstore.total_entities()
         dirty = len(pstore.dirty_entities(since))
+        raven_log("DEBUG", "P4", "ingest.project.dirty_check dirty fraction computed",
+                  context={**_mode_ctx, "total_entities": total, "dirty_entities": dirty,
+                           "dirty_fraction": round(dirty / total, 4) if total else None})
         if total and dirty / total < dirty_ratio_max:
+            bump(("project", _ws), "incremental")
+            raven_log("INFO", "P4", "ingest.project.mode_chosen projection mode: incremental",
+                      context={**_mode_ctx, "selected_option": "incremental",
+                               "reason_code": "WATERMARK_AND_DIRTY_BELOW_MAX",
+                               "total_entities": total, "dirty_entities": dirty})
             if on_progress is not None:
                 on_progress("Project", lo, "incremental projection starting")
             counts = project_incremental(store, pstore, graph, **kwargs)
@@ -72,6 +87,25 @@ def project_auto(
                 on_progress("Project", hi,
                             f"{counts.get('entities', 0)} entities updated (incremental)")
             return counts
+        if not total:
+            raven_log("INFO", "P4", "ingest.project.mode_chosen projection mode: full (no entities)",
+                      context={"stage": "project", "selected_option": "full",
+                               "available_options": ["incremental", "full"],
+                               "reason_code": "NO_ENTITIES", "total_entities": total,
+                               "policy_version": "ARYX_PROJECT_DIRTY_MAX"})
+        else:
+            raven_log("INFO", "P4", "ingest.project.mode_chosen projection mode: full (dirty too large)",
+                      context={"stage": "project", "selected_option": "full",
+                               "available_options": ["incremental", "full"],
+                               "reason_code": "DIRTY_FRACTION_AT_OR_ABOVE_MAX", "total_entities": total,
+                               "dirty_entities": dirty, "threshold": dirty_ratio_max,
+                               "policy_version": "ARYX_PROJECT_DIRTY_MAX"})
+    else:
+        raven_log("INFO", "P4", "ingest.project.mode_chosen projection mode: full (no watermark)",
+                  context={"stage": "project", "selected_option": "full",
+                           "available_options": ["incremental", "full"],
+                           "reason_code": "NO_WATERMARK", "watermark_found": False,
+                           "policy_version": "ARYX_PROJECT_DIRTY_MAX"})
     counts = project_graph(store, graph, on_progress=on_progress,
                            pct_range=pct_range, **kwargs)
     pstore.mark_projected([e[0] for e in store.list_entities()])

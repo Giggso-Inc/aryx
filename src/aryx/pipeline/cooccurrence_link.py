@@ -27,6 +27,7 @@ from itertools import combinations
 
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.raven_log import raven_log
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)
@@ -61,15 +62,27 @@ def detect_and_link_cooccurrence(estore: EntityStore) -> int:
     """
     cfg = get_settings()
     if not cfg.cooccurrence_link_enabled:
+        raven_log("DEBUG", "P4", "ingest.cooccurrence.skipped cooccurrence linking disabled",
+                  context={"stage": "cooccurrence_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "FLAG_DISABLED",
+                           "enabled": False})
         return 0
 
     entities = list(estore.list_entities())
     if not entities:
+        raven_log("DEBUG", "P4", "ingest.cooccurrence.skipped no entities",
+                  context={"stage": "cooccurrence_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "NO_ENTITIES",
+                           "entities": 0})
         return 0
 
     groups = _chunk_groups(entities)
     if not groups:
         logger.debug("cooccurrence_link: no document-derived (doc_id, chunk_index) entities — skipping")
+        raven_log("DEBUG", "P4", "ingest.cooccurrence.skipped no document chunks",
+                  context={"stage": "cooccurrence_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "NO_DOC_CHUNK_ENTITIES",
+                           "entities": len(entities)})
         return 0
 
     max_pairs = cfg.cooccurrence_max_pairs_per_chunk
@@ -86,6 +99,13 @@ def detect_and_link_cooccurrence(estore: EntityStore) -> int:
                 "exceeds cooccurrence_max_pairs_per_chunk=%d, capping",
                 doc_id, chunk_idx, len(ids), len(pairs), max_pairs,
             )
+            raven_log("WARN", "P3", "ingest.cooccurrence.pairs_capped chunk pairs capped",
+                      error_code="ARYX_ING_RELATE_DEGRADED",
+                      context={"stage": "cooccurrence_link", "chunk_entities": len(ids),
+                               "pairs_total": len(pairs), "threshold": max_pairs,
+                               "triggering_error": "PAIRS_EXCEED_CAP", "attempt": 1, "max_attempts": 1,
+                               "recovery_selected": "truncate_pairs", "result": "partial",
+                               "exit_condition": "cap_applied"})
             pairs = pairs[:max_pairs]
         for a, b in pairs:
             rels.append(Relationship(
@@ -99,4 +119,8 @@ def detect_and_link_cooccurrence(estore: EntityStore) -> int:
             "cooccurrence_link: chunks_linked=%d edges=%d",
             chunks_linked, len(rels),
         )
+    raven_log("INFO", "P4", "ingest.cooccurrence.summary cooccurrence linking finished",
+              context={"stage": "cooccurrence_link", "chunk_groups": len(groups),
+                       "chunks_linked": chunks_linked, "edges": len(rels), "saved": bool(rels),
+                       "max_pairs_per_chunk": max_pairs})
     return len(rels)
