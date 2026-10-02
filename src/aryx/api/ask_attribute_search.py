@@ -27,17 +27,26 @@ from aryx.api import ask_attribute_handoff as _handoff
 from aryx.api.ask_attribute_search_answers import _format_answer
 from aryx.api.ask_request_models import AskRequest
 from aryx.config import get_settings
+from aryx.cpq.attribute_search.budget import BudgetExceeded, run_with_budget
 from aryx.cpq.attribute_search.lookup import AttributeSearchResult, find_products_by_attribute
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CHOICES = 5
+_DEFAULT_BUDGET_S = 25.0
 
 
 def _max_choices() -> int:
     """ARYX_CPQ_ATTR_SEARCH_MAX_CHOICES, or 5 when unset or not an int."""
     value = getattr(get_settings(), "cpq_attr_search_max_choices", _DEFAULT_MAX_CHOICES)
     return value if isinstance(value, int) and value >= 2 else _DEFAULT_MAX_CHOICES
+
+
+def _budget_s() -> float:
+    """ARYX_CPQ_ATTR_SEARCH_BUDGET_S, or 25 s when unset or not a positive number."""
+    value = getattr(get_settings(), "cpq_attr_search_budget_s", _DEFAULT_BUDGET_S)
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    return float(value) if ok else _DEFAULT_BUDGET_S
 
 
 def _names_a_product(engine: Any, req: AskRequest, reader: Any) -> bool:
@@ -118,10 +127,14 @@ def _route_attribute_search(req: AskRequest, reader: Any, route_meta: Any) -> di
         logger.info("attribute_search: message names a product → quote path")
         return None
     try:
-        res = find_products_by_attribute(
+        res = run_with_budget(lambda: find_products_by_attribute(
             route_meta.attribute_label or "", route_meta.attribute_value,
             workspace_id=req.workspace_id, reader=reader, engine=engine,
-        )
+        ), budget_s=_budget_s())
+    except BudgetExceeded:
+        logger.warning("attribute_search: cold catalog cache, over budget → quote path "
+                       "(the lookup keeps warming the cache)")
+        return None
     except Exception as exc:  # noqa: BLE001 -- never let a search error break the turn
         logger.warning(
             "attribute_search: lookup failed label=%r value=%r: %s",

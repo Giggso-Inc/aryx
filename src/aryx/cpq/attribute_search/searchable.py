@@ -4,8 +4,10 @@
 - Yes/no attributes (no menu, or a menu of only yes/no options): a family
   "offers" one when it has the attribute; the value can only be a yes/no word.
 - Internal yes/no flags are left out: "Is ..." predicates ("Is Item Type ...",
-  "isRelatedService..."), "... Flag" labels and single-token names
-  ("BoolContinue1", "Edit") -- checked on workspace 704, 2026-10-02. A menu of
+  camel-case "isRelatedService..."), "... Flag" labels and single-token names
+  ("BoolContinue1", "Edit") -- checked on workspace 704, 2026-10-02.
+  Acronym-led labels ("ISM Band Support", "ISDN Line Required") are real
+  features and stay searchable (PR #423 review). A menu of
   yes/no options is a real customer-facing question, so it is never filtered.
 - Hidden attributes are never searchable: they aren't offered to the customer.
 """
@@ -37,7 +39,8 @@ def _looks_like_feature(label: str) -> bool:
     words = label.strip().split()
     if len(words) < 2 or words[-1].casefold() == "flag":
         return False
-    return not re.match(r"(?i:is)(\b|[A-Z_])", words[0])
+    first = words[0]
+    return first.casefold() != "is" and not re.match(r"is[A-Z]", first)
 
 
 def searchable_entry(attr: Any) -> Entry | None:

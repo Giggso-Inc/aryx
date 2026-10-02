@@ -452,3 +452,33 @@ LLM accuracy until that's fixed.
 - Some test files are over 150 lines (see `wc -l tests/test_cpq_attribute_search_*.py`);
   they can be split if the style gate requires it.
 - No new libraries.
+
+## 10. PR #423 review follow-up (2026-10-02)
+
+Raven review (gsivasankari-giggso): CONDITIONAL PASS — safe to merge disabled;
+fix the cold-cache path before enabling. Decided with raven-expert:
+
+| Finding | Decision | Change |
+|---|---|---|
+| **Medium** — cold cache loads every family sequentially in the request (~10–17 s each); 5-min TTL makes idle chats cold; failed families retried at full cost | Fix now. Rejected: warming every workspace at startup (28 workspaces × families × ~15 s at boot is the DB burst that caused today's ORA-12523); returning partial results on a timeout (could auto-start a quote for the wrong family). | **TTL 5 min → 6 h** (the re-ingest marker already guarantees freshness). **Time budget** `ARYX_CPQ_ATTR_SEARCH_BUDGET_S` (default 25 s) around the whole lookup, in a background worker: over budget → normal quote path, never partial, while the worker finishes and warms the cache (`budget.py`, same pattern as `classify_intent`'s timeout). **Families load in parallel, at most 2 at a time**; at most 2 lookups at once → the feature holds ≤ 4 of the pool's 25 connections. **Failed family loads are not retried for 60 s.** Follow-up lookups share one budget. |
+| **Low** — flag filter dropped "ISM Band Support", "ISDN Line Required", "ISO Certified" | Fix now (real false negatives) | Internal flag = first word exactly "is" (any case) or camel-case `is[A-Z]…`; acronym-led labels stay searchable. |
+| **Low** — no cold-cache test | Fix now, as behaviour tests (not timing benchmarks) | New `tests/test_cpq_attribute_search_budget.py`: over budget → fallback within the budget and the work still finishes; errors re-raised; handler falls back; ≤ 2 family loads at once. Cache tests updated for the 6 h TTL and the 60 s failure memory. |
+
+**Files:** new `src/aryx/cpq/attribute_search/budget.py`; edits to `menu_source.py`,
+`searchable.py`, `ask_attribute_search.py`, `ask_attribute_followup.py`,
+`config_cpq_intent.py`; new `tests/test_cpq_attribute_search_budget.py`; updated
+`tests/test_cpq_attribute_search_menu_source.py`.
+
+**Verification:** 115 attribute-search tests pass. Not re-run on real data — the
+local stack was stopped and the ADB was refusing connections (ORA-12523).
+
+**Raven review of this follow-up** (fixed before commit):
+- At most 4 lookups in flight (running or queued); beyond that a lookup is
+  refused at once and the turn takes the quote path — so a DB outage can't pile
+  up a backlog of long scans that all hit the database when it recovers.
+- Workers run in a copy of the caller's context, so `run_id` log fields carry over.
+- Tests: in-flight cap, context propagation (117 attribute-search tests pass).
+- Noted, not changed: two cold requests for the same family can load it twice
+  (bounded by the caps above); a failed-family entry survives a re-ingest for up
+  to 60 s; abandoned workers can delay process shutdown until their DB calls
+  return.

@@ -131,21 +131,33 @@ def test_reingest_marker_change_clears_the_cache():
     assert eng.load_product_config.call_count == 4
 
 
-def test_expired_entries_are_reloaded():
+def test_snapshots_stay_cached_for_hours_not_minutes():
+    """Freshness comes from the re-ingest marker, so an idle chat stays warm."""
     eng = _engine()
     with patch.object(menu_source.time, "monotonic", return_value=1000.0):
         search_menu_options("carrier", "ATT", reader=object(), engine=eng, workspace_id=704)
     with patch.object(menu_source.time, "monotonic", return_value=1000.0 + 301):
         search_menu_options("carrier", "ATT", reader=object(), engine=eng, workspace_id=704)
+    assert eng.load_product_config.call_count == 2
+    with patch.object(menu_source.time, "monotonic", return_value=1000.0 + 6 * 3600 + 1):
+        search_menu_options("carrier", "ATT", reader=object(), engine=eng, workspace_id=704)
     assert eng.load_product_config.call_count == 4
 
 
-def test_failed_family_load_is_not_cached():
+def test_failed_family_load_is_not_retried_for_a_minute():
     eng = _engine(families=("aSTRO25_bom",))
     eng.load_product_config.side_effect = [RuntimeError("boom"), (_ASTRO, "aSTRO25_bom")]
-    first, _ = search_menu_options("carrier", "ATT", reader=object(), engine=eng, workspace_id=704)
-    second, _ = search_menu_options("carrier", "ATT", reader=object(), engine=eng, workspace_id=704)
-    assert first == [] and {h["model"] for h in second} == {"aSTRO25_bom"}
+    with patch.object(menu_source.time, "monotonic", return_value=1000.0):
+        first, _ = search_menu_options("carrier", "ATT", reader=object(), engine=eng,
+                                       workspace_id=704)
+    with patch.object(menu_source.time, "monotonic", return_value=1030.0):
+        again, _ = search_menu_options("carrier", "ATT", reader=object(), engine=eng,
+                                       workspace_id=704)
+    assert first == again == [] and eng.load_product_config.call_count == 1
+    with patch.object(menu_source.time, "monotonic", return_value=1061.0):
+        later, _ = search_menu_options("carrier", "ATT", reader=object(), engine=eng,
+                                       workspace_id=704)
+    assert {h["model"] for h in later} == {"aSTRO25_bom"}
 
 
 # ── yes/no (boolean) attributes ──────────────────────────────────────────────
@@ -268,3 +280,23 @@ def test_yes_no_menu_stores_its_own_yes_code():
     eng.load_product_config.side_effect = lambda rd, ws, f: (fam, f)
     hits, _ = search_menu_options("spare radio", None, reader=object(), engine=eng, workspace_id=1)
     assert [h["item_value"] for h in hits] == ["Y1"]
+
+
+
+def test_acronym_led_features_are_searchable():
+    fam = [_bool("ism", "ISM Band Support"), _bool("isdn", "ISDN Line Required"),
+           _bool("iso", "ISO Certified")]
+    eng = _bool_engine()
+    eng.load_product_config.side_effect = lambda rd, ws, f: (fam, f)
+    for phrase, vn in (("ism band", "ism"), ("isdn line", "isdn"), ("iso certified", "iso")):
+        hits, _ = search_menu_options(phrase, None, reader=object(), engine=eng, workspace_id=1)
+        assert [h["attribute"] for h in hits] == [vn], phrase
+
+
+def test_is_predicates_are_still_filtered():
+    fam = [_bool("a", "Is Item Type SVX Spare"), _bool("b", "isRelatedService DEVICE"),
+           _bool("c", "IS Item Type Spare")]
+    eng = _bool_engine()
+    eng.load_product_config.side_effect = lambda rd, ws, f: (fam, f)
+    assert search_menu_options("item type spare", None, reader=object(), engine=eng,
+                               workspace_id=1) == ([], [])

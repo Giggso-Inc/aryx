@@ -15,8 +15,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aryx.api.ask_attribute_search import decide
+from aryx.api.ask_attribute_search import _budget_s, decide
 from aryx.api.ask_request_models import AskRequest
+from aryx.cpq.attribute_search.budget import run_with_budget
 from aryx.cpq.attribute_search.lookup import find_products_by_attribute
 from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 from aryx.cpq.pending_scope.pending_scope import resolve_against_scope
@@ -32,7 +33,9 @@ def _route_attribute_followup(req: AskRequest, reader: Any) -> dict[str, Any] | 
     session = CpqSession.from_dict(req.session_data)
     label = session.pending_attribute_label
     engine = _ask_api_module._cpq_engine
-    try:
+
+    def _lookup() -> tuple[Any, Any] | None:
+        """(match, result) for the reply, or None when it isn't an offered value."""
         offered = find_products_by_attribute(label, None, workspace_id=req.workspace_id,
                                              reader=reader, engine=engine)
         if offered is None or not offered.offered_values:
@@ -41,13 +44,17 @@ def _route_attribute_followup(req: AskRequest, reader: Any) -> dict[str, Any] | 
         if not match.matched:
             logger.info("attribute_search: follow-up %r is not a %r value", req.question, label)
             return None
-        res = find_products_by_attribute(label, match.matched, workspace_id=req.workspace_id,
-                                         reader=reader, engine=engine)
-    except Exception:  # noqa: BLE001 -- never let a search error break the turn
-        logger.warning("attribute_search: follow-up lookup failed", exc_info=True)
+        return match, find_products_by_attribute(label, match.matched, reader=reader,
+                                                 workspace_id=req.workspace_id, engine=engine)
+
+    try:
+        found = run_with_budget(_lookup, budget_s=_budget_s())
+    except Exception:  # noqa: BLE001 -- over budget or failed: route the reply normally
+        logger.warning("attribute_search: follow-up lookup failed or over budget", exc_info=True)
         return None
-    if res is None:
+    if found is None or found[1] is None:
         return None
+    match, res = found
     meta = AskRouteDecision(
         route="attribute_search", confidence="high", clarifying_question=None,
         rationale="attribute_search_followup", attribute_label=label,

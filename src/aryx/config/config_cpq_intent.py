@@ -351,3 +351,14 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_ATTR_SEARCH_MAX_CHOICES."
         ),
     )
+    cpq_attr_search_budget_s: float = Field(
+        default=25.0,
+        description=(
+            "Attribute-first discovery: time budget (seconds) for one "
+            "attribute search. A cold catalog cache can take tens of seconds "
+            "to load; past the budget the turn takes the normal quote path "
+            "(never a partial result) while the lookup keeps running to warm "
+            "the cache. Keep it under the deployment's proxy timeout. "
+            "Override with ARYX_CPQ_ATTR_SEARCH_BUDGET_S."
+        ),
+    )

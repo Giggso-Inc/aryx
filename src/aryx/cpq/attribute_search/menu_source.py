@@ -15,12 +15,16 @@ The phrase is grounded once against every family's labels, so a loose
 match in one family never beats an exact match in another.
 
 load_product_config costs ~10-17s per family on workspace 704, so each
-family's (label, variable, options) snapshot is cached per workspace for
-5 minutes and cleared when the catalog is re-ingested -- same TTL and
-re-ingest marker as data_table_product's attrToVarMapping cache.
+family's (label, variable, options) snapshot is cached per workspace and
+cleared when the catalog is re-ingested (same re-ingest marker as
+data_table_product's attrToVarMapping cache). The marker guarantees
+freshness, so the TTL is long (6 h) -- a 5-minute TTL made an idle chat's
+next search cold (PR #423 review). Families load in parallel, at most 2 at
+a time, and a family that fails to load isn't retried for 60 s.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import time
 from typing import Any
@@ -37,7 +41,14 @@ from aryx.cpq.data_table import data_table_cache
 
 logger = logging.getLogger(__name__)
 
-_TTL_SECONDS = 300.0
+_TTL_SECONDS = 6 * 3600.0
+_FAILED_TTL_SECONDS = 60.0
+# At most 2 family loads at once across all requests (DB pool headroom).
+_FAMILY_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="attr-search-family",
+)
+# (workspace_id, family) -> when its load last failed
+_FAILED: dict[tuple[int, str], float] = {}
 # (workspace_id, family) -> (cached_at, [entry, ...])
 _MENU_CACHE: dict[tuple[int, str], tuple[float, list[Entry]]] = {}
 _MENU_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
@@ -46,6 +57,7 @@ _MENU_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
 def clear_menu_cache() -> None:
     """Drop every cached family snapshot (tests, or after a known re-ingest)."""
     _MENU_CACHE.clear()
+    _FAILED.clear()
     _MENU_CACHE_LAST_SEEN_MARKER[0] = None
 
 
@@ -58,13 +70,18 @@ def _family_snapshot(
     )
     key = (workspace_id, family)
     hit = _MENU_CACHE.get(key)
-    if hit is not None and time.monotonic() - hit[0] < _TTL_SECONDS:
+    now = time.monotonic()
+    if hit is not None and now - hit[0] < _TTL_SECONDS:
         return hit[1]
+    if now - _FAILED.get(key, -_FAILED_TTL_SECONDS) < _FAILED_TTL_SECONDS:
+        return None
     try:
         attrs, _resolved = engine.load_product_config(reader, workspace_id, family)
     except Exception as exc:  # noqa: BLE001 -- one bad family must not end the search
         logger.warning("attribute_search: load_product_config(%r) failed: %s", family, exc)
+        _FAILED[key] = now
         return None
+    _FAILED.pop(key, None)
     snapshot = [e for e in (searchable_entry(a) for a in attrs) if e is not None]
     data_table_cache._cache_write_if_marker_unchanged(
         _MENU_CACHE, key, (time.monotonic(), snapshot), marker,
@@ -95,10 +112,11 @@ def search_menu_options(
     spellings = value_variants(value or "")
     answer = yes_no(value)
     hits: list[dict[str, Any]] = []
-    snapshots = {
-        family: _family_snapshot(engine, reader, workspace_id, family) or []
-        for family in engine.list_ingested_families(reader, workspace_id)
-    }
+    families = list(engine.list_ingested_families(reader, workspace_id))
+    loaded = _FAMILY_POOL.map(
+        lambda family: _family_snapshot(engine, reader, workspace_id, family) or [], families,
+    )
+    snapshots = dict(zip(families, loaded))
     all_labels = list(dict.fromkeys(e[0] for snap in snapshots.values() for e in snap))
     labels = ground_attribute_label(phrase, all_labels)
     for family, snapshot in snapshots.items():
