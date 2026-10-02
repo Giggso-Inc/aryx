@@ -67,3 +67,29 @@ def test_an_unwritable_rejects_folder_does_not_fail_the_load(tmp_path):
     w.write(("y",), "too long")
     w.close()
     assert w.path is None
+
+
+def test_override_rejects_folder_files_go_with_the_workspace(tmp_path, monkeypatch):
+    sql, over = tmp_path / "sql", tmp_path / "over"
+    sql.mkdir()
+    over.mkdir()
+    monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(sql))
+    monkeypatch.setenv("ARYX_CSV_BML_REJECTS_DIR", str(over))
+    for name in ("ws7_attrsequence.rejects.csv", "ws70_attrsequence.rejects.csv", "ws9_x.rejects.csv", "notes.txt"):
+        (over / name).write_text("customer data")
+    remove_workspace_files(7, whole_workspace=False)
+    assert sorted(f.name for f in over.iterdir()) == ["notes.txt", "ws70_attrsequence.rejects.csv", "ws9_x.rejects.csv"]
+    remove_workspace_files(None, whole_workspace=True)                # factory reset: every workspace's files
+    assert [f.name for f in over.iterdir()] == ["notes.txt"]
+
+
+def test_no_rejects_file_is_reported_when_it_could_not_be_written(tmp_path):
+    from aryx.csv_bml_ingestion.column_limits import ColumnLimit
+    from aryx.csv_bml_ingestion.overflow import OverflowPolicy, OverflowReport, guard_rows
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    report = OverflowReport()
+    out = list(guard_rows([("toolong",), ("ok",)], ["a"], {"a": ColumnLimit("text", 2, None)}, OverflowPolicy.REJECT,
+                          report, blocker / "sub" / "t.rejects.csv"))
+    assert out == [("ok",)] and report.rows_rejected == 1
+    assert report.rejects_file is None                                # nothing was written, so nothing to point at

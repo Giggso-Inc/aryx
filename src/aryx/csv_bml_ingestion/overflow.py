@@ -127,7 +127,10 @@ def guard_numbered_rows(
     checked = [(i, c, limits[c]) for i, c in enumerate(columns)
                if c in limits and limits[c].kind in ("text", "number")]
     if rejects_path is not None:
-        rejects_path.unlink(missing_ok=True)  # never leave a previous run's rejects looking current
+        try:
+            rejects_path.unlink(missing_ok=True)  # never leave a previous run's rejects looking current
+        except OSError as exc:   # e.g. read-only folder holding an old file
+            logger.warning("csv_bml_ingestion: cannot remove old rejects file %s: %r", rejects_path, exc)
     writer = _RejectsWriter(rejects_path, columns)
     try:
         for line_no, row in rows:
@@ -148,9 +151,9 @@ def guard_numbered_rows(
                 yield fixed
             else:
                 report.rows_rejected += 1
-                report.rejects_file = rejects_path
                 reason = "; ".join(v[0] for _, v in bad)
                 writer.write(row, reason)
+                report.rejects_file = writer.path     # None once the file could not be written
                 report.rejects.add(RejectedRow(line_no=line_no, code="CBI_VALUE_TOO_LONG", reason=reason[:900],
                                                payload={"columns": dict(zip(columns, row))}))
     finally:
