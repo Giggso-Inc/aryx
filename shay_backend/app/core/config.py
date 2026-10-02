@@ -120,6 +120,18 @@ class Settings(BaseSettings):
     
     DATABASE_POOL_SIZE: int = int(os.environ.get("DATABASE_POOL_SIZE", "10"))
     DATABASE_MAX_OVERFLOW: int = int(os.environ.get("DATABASE_MAX_OVERFLOW", "20"))
+    # Seconds a pooled connection may live before SQLAlchemy transparently
+    # replaces it -- see docs/oci-oracle/SHAY_API_ORACLE_POOL_EXHAUSTION_
+    # PLAN_2026-09-14.md / SHAY_API_ORACLE_POOL_EXHAUSTION_INCIDENT_2026-09-30.md:
+    # without this, a connection ADB silently drops while idle stays in the
+    # pool as "checked-in and valid" indefinitely.
+    DATABASE_POOL_RECYCLE_SECONDS: int = int(os.environ.get("DATABASE_POOL_RECYCLE_SECONDS", "1800"))
+    # Oracle-only: per-call timeout in milliseconds (oracledb's
+    # connection.call_timeout), set via a SQLAlchemy "connect" event
+    # listener in database.py. A query stuck server-side now fails and
+    # releases its pool slot instead of holding it forever -- the primary
+    # fix for the incidents referenced above.
+    DATABASE_ORACLE_CALL_TIMEOUT_MS: int = int(os.environ.get("DATABASE_ORACLE_CALL_TIMEOUT_MS", "60000"))
     
     # PostgreSQL Specific Settings
     POSTGRES_USE_NATIVE_UUID: bool = os.environ.get("POSTGRES_USE_NATIVE_UUID", "true").lower() == "true"

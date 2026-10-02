@@ -35,6 +35,7 @@ import pytest
 from app.core.database import (
     _normalize_postgres_url,
     _oracle_repair_partial_unique_indexes,
+    _set_oracle_call_timeout,
     create_postgresql_optimizations,
     get_db,
 )
@@ -278,3 +279,29 @@ class TestExtractOracleDsn:
         clean_url, dsn = _extract_oracle_dsn(url)
         assert dsn is None
         assert clean_url == url
+
+
+# ---------------------------------------------------------------------------
+# _set_oracle_call_timeout -- docs/oci-oracle/SHAY_API_ORACLE_POOL_
+# EXHAUSTION_PLAN_2026-09-14.md / SHAY_API_ORACLE_POOL_EXHAUSTION_
+# INCIDENT_2026-09-30.md fix: caps how long a single Oracle call may
+# block, so a stuck query releases its pool slot instead of holding it
+# forever and silently draining the pool.
+# ---------------------------------------------------------------------------
+class TestSetOracleCallTimeout:
+    def test_sets_call_timeout_from_settings(self):
+        dbapi_connection = MagicMock()
+        with patch("app.core.database.settings") as mock_settings:
+            mock_settings.DATABASE_ORACLE_CALL_TIMEOUT_MS = 60000
+            _set_oracle_call_timeout(dbapi_connection, MagicMock())
+        assert dbapi_connection.call_timeout == 60000
+
+    def test_logs_warning_instead_of_raising_when_attribute_unsupported(self):
+        class _NoCallTimeout:
+            def __setattr__(self, name, value):
+                if name == "call_timeout":
+                    raise AttributeError("call_timeout not supported")
+                super().__setattr__(name, value)
+
+        # Should not raise despite the driver not supporting call_timeout.
+        _set_oracle_call_timeout(_NoCallTimeout(), MagicMock())
