@@ -94,3 +94,28 @@ def validate_indexes(sql: str, table: str, sizes: dict[str, int]) -> int:
         seen_names.add(name)
         seen_cols.add(cols)
     return len(stmts)
+
+
+def validate_statements(schema_statements: tuple[str, ...], index_statements: tuple[str, ...], table: str) -> None:
+    """Safety-check SQL that already exists on disk (hand-written or saved earlier).
+
+    Same whitelist as for LLM output, but column names/sizes are taken from the schema itself
+    (there is no CSV to compare with here): one plain ``CREATE TABLE IF NOT EXISTS`` and a few
+    ``CREATE INDEX IF NOT EXISTS`` — nothing else may ever run, whoever wrote the file.
+
+    Raises:
+        SqlAuthoringError: a statement is outside the whitelist.
+    """
+    schema_sql = ";\n".join(schema_statements) + ";"
+    m = re.fullmatch(rf"CREATE TABLE IF NOT EXISTS {re.escape(table)} \((.*)\);", schema_sql.replace("\n", " "),
+                     re.IGNORECASE | re.DOTALL | re.ASCII)
+    if not m or len(schema_statements) != 1:
+        raise SqlAuthoringError(f"schema must be one 'CREATE TABLE IF NOT EXISTS {table} (...)' and nothing else")
+    specs = []
+    for cell in (c.strip() for c in m.group(1).split(",")):
+        c = _COL_RE.fullmatch(cell)
+        if not c:
+            raise SqlAuthoringError(f"column not a plain VARCHAR2(n)/NUMBER(p): {cell[:60]!r}")
+        specs.append(ColumnSpec(c.group(1).lower(), "text" if c.group(2) else "number", 1))
+    sizes = validate_schema(schema_sql, table, specs)
+    validate_indexes(";\n".join(index_statements) + (";" if index_statements else ""), table, sizes)

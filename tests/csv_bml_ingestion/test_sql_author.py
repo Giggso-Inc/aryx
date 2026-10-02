@@ -71,7 +71,7 @@ def test_never_valid_fails_without_touching_db_or_disk(idx, csv_file, tmp_path):
     db = FakeDb()
     r = ingest_csv(csv_file, idx, db, sql_root=tmp_path / "sql", sql_author=FakeLlm("nonsense", "still nonsense"))
     assert (r.status, r.error_code) == ("failed", "CBI_SQL_AUTHOR_FAILED")
-    assert db.log == [] and not (tmp_path / "sql").exists()
+    assert db.writes() == [] and not (tmp_path / "sql").exists()
 
 
 def test_authoring_disabled_keeps_missing_sql_failure(idx, csv_file, tmp_path):
@@ -140,7 +140,7 @@ def test_llm_failure_is_a_clean_authoring_error_and_not_retried(idx, csv_file, t
     db = FakeDb()
     r = ingest_csv(csv_file, idx, db, sql_root=tmp_path / "sql", sql_author=boom)
     assert (r.status, r.error_code) == ("failed", "CBI_SQL_AUTHOR_FAILED")
-    assert "LLM call failed" in r.message and len(calls) == 1 and db.log == []
+    assert "LLM call failed" in r.message and len(calls) == 1 and db.writes() == []
 
 
 def test_integer_column_must_hold_the_longest_csv_value():

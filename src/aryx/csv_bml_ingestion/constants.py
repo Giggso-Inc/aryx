@@ -32,6 +32,14 @@ BML_SOURCE_FILE = "bml_source.md"
 # validated before it is ever interpolated into DDL/DML).
 TABLE_NAME_RE = r"^[a-z][a-z0-9_]{0,62}$"  # ADB identifiers allow 128; stay well inside it
 
+# A table named after an uploaded file must never be an application or system table. The allowed
+# names come from the (user-supplied) XML, so these are refused outright, whatever the XML says.
+DENIED_TABLE_PREFIXES = ("aryx_", "gg_", "cpq_", "sys_", "dba_", "all_", "user_", "cdb_", "mdsys", "ctxsys", "ords_")
+DENIED_TABLE_NAMES = frozenset({"dual", "sys", "system", "public"})
+
+# Ownership marker kept as the table's COMMENT: only tables carrying it are ever deleted from / loaded.
+OWNER_TAG = "csv_bml_ingestion"
+
 CSV_META_START = "_start meta data"
 CSV_META_END = "_end meta data"
 

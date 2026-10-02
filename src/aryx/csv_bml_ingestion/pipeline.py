@@ -19,12 +19,16 @@ from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.bml_index import BmlIndex, BmlLookup
 from aryx.csv_bml_ingestion.csv_reader import profile_max_bytes, read_layout
 from aryx.csv_bml_ingestion.db import ConnectionFactory, execute_statements
-from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError, SqlArtifactsMissingError
+from aryx.csv_bml_ingestion.errors import (
+    CsvBmlIngestionError, SqlArtifactsMissingError, SqlAuthoringError, SqlUnsafeError,
+)
 from aryx.csv_bml_ingestion.options import IngestOptions, IngestResult
+from aryx.csv_bml_ingestion.ownership import claim_new_table, require_owned_or_absent
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.rows_step import load_csv_into_table
 from aryx.csv_bml_ingestion.sql_author import Completer, author_sql
 from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts
+from aryx.csv_bml_ingestion.sql_validate import validate_statements
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 from aryx.csv_bml_ingestion.tracking import RunTracker
 
@@ -40,6 +44,7 @@ def ingest_csv(
     overflow: OverflowPolicy = OverflowPolicy.REJECT,
     rejects_dir: Path | None = None,
     sql_author: Completer | None = None,
+    owner: str = C.OWNER_TAG,
 ) -> IngestResult:
     """Run the full pipeline for ``csv_path``.
 
@@ -55,9 +60,12 @@ def ingest_csv(
             (``reject`` default, ``truncate``, ``fail``) — see ``overflow``.
         sql_author: LLM completer used to author ``sql/<table>/`` when a BML query exists but the files
             do not (see ``sql_author``); ``None`` disables authoring.
+        owner: Ownership tag. Only a table this pipeline created with the same tag (or an
+            administrator adopted via COMMENT ON TABLE) is ever loaded into; any other
+            existing table is refused with CBI_TABLE_PROTECTED.
         rejects_dir: Where ``<table>.rejects.csv`` is written (default: the CSV's directory).
     """
-    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir, sql_author)
+    opts = IngestOptions(replace, batch_size, sql_root, overflow, rejects_dir, sql_author, owner)
     source = Path(str(csv_path)).name if csv_path else "<none>"
     result, tracker = IngestResult(source=source), RunTracker(source)
     tracker.info(C.STEP_RUN, "ingestion started", csv_path=str(csv_path))
@@ -67,7 +75,8 @@ def ingest_csv(
         result.status, result.error_code, result.message = "failed", exc.code, str(exc)
         tracker.error(C.STEP_RUN, f"ingestion failed: {exc}", error_code=exc.code, table=result.table)
     except Exception as exc:  # noqa: BLE001 -- unexpected: log with full detail, keep the batch alive
-        result.status, result.error_code, result.message = "failed", "CBI_UNEXPECTED", repr(exc)
+        result.status, result.error_code = "failed", "CBI_UNEXPECTED"
+        result.message = f"unexpected {type(exc).__name__}; see the Raven log for details"
         tracker.error(C.STEP_RUN, f"unexpected failure: {exc!r}", error_code="CBI_UNEXPECTED",
                       table=result.table)
     else:
@@ -127,6 +136,7 @@ def _log_matches(tracker: RunTracker, lookup: BmlLookup) -> None:
 def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: str,
                        opts: IngestOptions, csv_file: Path, lookup: BmlLookup) -> None:
     """Step 3 — load (or, if absent and enabled, LLM-author) the SQL files, then apply them."""
+    existed = require_owned_or_absent(factory, table, opts.owner)   # first: before any LLM call, DDL or DELETE
     try:
         artifacts = load_sql_artifacts(table, opts.sql_root)
     except SqlArtifactsMissingError:
@@ -136,8 +146,14 @@ def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: s
         author_sql(table, layout, profile_max_bytes(csv_file, layout), lookup, opts.sql_author, tracker,
                    opts.sql_root)
         artifacts = load_sql_artifacts(table, opts.sql_root)
+    try:
+        validate_statements(artifacts.schema_statements, artifacts.index_statements, table)
+    except SqlAuthoringError as exc:
+        raise SqlUnsafeError(f"SQL files in {artifacts.directory} failed the safety validator: {exc}") from exc
     tracker.info(C.STEP_SQL_ARTIFACTS, "loaded schema/index SQL", table=table,
                  schema_statements=len(artifacts.schema_statements),
                  index_statements=len(artifacts.index_statements), directory=str(artifacts.directory))
     ran = execute_statements(factory, artifacts.schema_statements + artifacts.index_statements)
-    tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table)
+    if not existed:
+        claim_new_table(factory, table, opts.owner)
+    tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table, created=not existed)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from aryx.csv_bml_ingestion.constants import TABLE_NAME_RE
+from aryx.csv_bml_ingestion.constants import DENIED_TABLE_NAMES, DENIED_TABLE_PREFIXES, TABLE_NAME_RE
 from aryx.csv_bml_ingestion.errors import InvalidTableNameError, TableNameMissingError
 
 _SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xls"}
@@ -32,6 +32,9 @@ def extract_table_name(filename: str | Path | None) -> str:
     name = stem.strip().lower()
     if not name:
         raise TableNameMissingError(f"filename {str(filename)!r} has no usable stem")
+    if name in DENIED_TABLE_NAMES or name.startswith(DENIED_TABLE_PREFIXES):
+        raise InvalidTableNameError(
+            f"table name {name!r} is reserved (application/system tables are never ingested into)")
     if not re.match(TABLE_NAME_RE, name):
         raise InvalidTableNameError(
             f"table name {name!r} (from {str(filename)!r}) is not a safe SQL identifier "

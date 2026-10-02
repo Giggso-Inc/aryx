@@ -84,7 +84,7 @@ def test_near_miss_table_still_not_ingested(bml_index, tmp_path):
 def test_bml_found_but_sql_files_missing(bml_index, tmp_path):
     db = FakeDb()
     r = ingest_csv(_seq_csv(tmp_path), bml_index, db, sql_root=tmp_path / "empty")
-    assert (r.status, r.error_code) == ("failed", "CBI_SQL_ARTIFACTS_MISSING") and db.log == []
+    assert (r.status, r.error_code) == ("failed", "CBI_SQL_ARTIFACTS_MISSING") and db.writes() == []
 
 
 def test_bad_rows_counted_but_load_succeeds(bml_index, tmp_path):
@@ -103,7 +103,7 @@ def test_malformed_csv_layout_fails_gracefully(bml_index, tmp_path):
 def test_db_failure_rolls_back_and_reports(bml_index, tmp_path):
     db = FakeDb(fail_on="INSERT INTO")
     r = ingest_csv(_seq_csv(tmp_path), bml_index, db)
-    assert r.status == "failed" and r.error_code == "CBI_UNEXPECTED" and "ORA-boom" in r.message
+    assert r.status == "failed" and r.error_code == "CBI_UNEXPECTED" and "RuntimeError" in r.message and "ORA-boom" not in r.message
     assert db.rolled_back == 1
 
 
@@ -111,3 +111,72 @@ def test_batch_continues_after_one_bad_file(bml_index, tmp_path):
     db = FakeDb()
     results = [ingest_csv(p, bml_index, db) for p in (None, _seq_csv(tmp_path))]
     assert [r.status for r in results] == ["failed", "loaded"]
+
+
+# --- ownership: only tables this pipeline created are ever deleted from / loaded -----------------
+def test_new_table_is_stamped_with_the_owner_tag(bml_index, tmp_path):
+    db = FakeDb()
+    assert ingest_csv(_seq_csv(tmp_path), bml_index, db).status == "loaded"
+    assert db.comments["ATTRSEQUENCE"] == "csv_bml_ingestion"
+    assert ingest_csv(_seq_csv(tmp_path), bml_index, db).status == "loaded"       # owned -> reload allowed
+
+
+def test_existing_unowned_table_is_refused_before_any_ddl_or_delete(bml_index, tmp_path):
+    db = FakeDb()
+    db.catalog["ATTRSEQUENCE"] = []                       # exists, no owner comment (e.g. an application table)
+    r = ingest_csv(_seq_csv(tmp_path), bml_index, db)
+    assert (r.status, r.error_code) == ("failed", "CBI_TABLE_PROTECTED")
+    assert "COMMENT ON TABLE attrsequence IS 'csv_bml_ingestion'" in r.message      # how an admin adopts it
+    assert not [e for e in db.log if e[0] == "executemany" or (e[0] == "execute" and not e[1].startswith("SELECT"))]
+
+
+def test_table_owned_by_someone_else_is_refused(bml_index, tmp_path):
+    db = FakeDb()
+    db.catalog["ATTRSEQUENCE"] = []
+    db.comments["ATTRSEQUENCE"] = "csv_bml_ingestion:ws=9"
+    assert ingest_csv(_seq_csv(tmp_path), bml_index, db).error_code == "CBI_TABLE_PROTECTED"
+    assert ingest_csv(_seq_csv(tmp_path), bml_index, db, owner="csv_bml_ingestion:ws=9").status == "loaded"
+
+
+def test_admin_adopted_table_is_accepted(bml_index, tmp_path):
+    db = FakeDb()
+    db.catalog["ATTRSEQUENCE"] = []
+    db.comments["ATTRSEQUENCE"] = "csv_bml_ingestion"
+    assert ingest_csv(_seq_csv(tmp_path), bml_index, db).status == "loaded"
+
+
+def test_losing_a_create_race_never_loads_into_the_winners_table(bml_index, tmp_path, monkeypatch):
+    """Run A claimed the new table between this run's check and its stamp: refuse, don't overwrite."""
+    from aryx.csv_bml_ingestion import pipeline as pl
+    db = FakeDb()
+    real = pl.require_owned_or_absent
+
+    def stale(factory, table, owner):                      # sees the table as absent ...
+        real(factory, table, owner)
+        db.catalog["ATTRSEQUENCE"] = []                    # ... then the other run creates and claims it
+        db.comments["ATTRSEQUENCE"] = "csv_bml_ingestion:ws=B"
+        return False
+    monkeypatch.setattr(pl, "require_owned_or_absent", stale)
+    r = ingest_csv(_seq_csv(tmp_path), bml_index, db, owner="csv_bml_ingestion:ws=A")
+    assert (r.status, r.error_code) == ("failed", "CBI_TABLE_PROTECTED")
+    assert db.comments["ATTRSEQUENCE"] == "csv_bml_ingestion:ws=B"                 # winner's tag intact
+    assert not [e for e in db.log if e[0] == "executemany" or e[1].startswith("DELETE")]
+
+
+def test_hand_written_sql_must_pass_the_same_safety_validator(bml_index, tmp_path):
+    root = tmp_path / "sql" / "attrsequence"
+    root.mkdir(parents=True)
+    (root / "schema.sql").write_text("CREATE TABLE IF NOT EXISTS attrsequence (a VARCHAR2(10));\n")
+    (root / "indexes.sql").write_text("GRANT ALL ON attrsequence TO PUBLIC;\n")
+    db = FakeDb()
+    r = ingest_csv(_seq_csv(tmp_path), bml_index, db, sql_root=tmp_path / "sql")
+    assert (r.status, r.error_code) == ("failed", "CBI_SQL_UNSAFE")
+    assert db.writes() == []
+
+
+@pytest.mark.parametrize("name", ["gg_messages.csv", "cpq_cache_invalidation_marker.csv"])
+def test_other_application_tables_are_denied(name):
+    from aryx.csv_bml_ingestion.errors import InvalidTableNameError
+    from aryx.csv_bml_ingestion.table_name import extract_table_name
+    with pytest.raises(InvalidTableNameError, match="reserved"):
+        extract_table_name(name)

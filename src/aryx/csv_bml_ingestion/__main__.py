@@ -1,8 +1,11 @@
 """CLI: ``python -m aryx.csv_bml_ingestion``.
 
-    ingest  --xml CONFIG.xml  CSV [CSV ...]   run the full pipeline per CSV
-    inspect --xml CONFIG.xml  CSV [CSV ...]   steps 1-2 only: show the query
-                                              each CSV's table maps to (no DB needed)
+    ingest  GRAPH-SOURCE  CSV [CSV ...]   run the full pipeline per CSV
+    inspect GRAPH-SOURCE  CSV [CSV ...]   steps 1-2 only: which queries each CSV's table maps to
+
+GRAPH-SOURCE (exactly one):
+    --xml FILE            any XML; its graph is generated now (inspect then needs no database)
+    --workspace-id N      search the XML knowledge graphs already stored for workspace N
 
 Exit status: 0 when every CSV loaded, 1 when any CSV failed or was skipped.
 """
@@ -19,6 +22,7 @@ from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
 from aryx.csv_bml_ingestion.llm_client import project_llm_completer
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.pipeline import ingest_csv
+from aryx.csv_bml_ingestion.stored_graph import StoredGraphLookup
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 from aryx.csv_bml_ingestion.tracking import RunTracker
 
@@ -31,7 +35,9 @@ def _parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     for name in ("ingest", "inspect"):
         s = sub.add_parser(name)
-        s.add_argument("--xml", required=True, type=Path, help="CPQ/BML XML export to build the graph from")
+        s.add_argument("--xml", type=Path, help="any XML file; its graph is generated now")
+        s.add_argument("--workspace-id", type=int,
+                       help="instead of --xml: search the XML knowledge graphs already stored for this workspace")
         s.add_argument("csv", nargs="+", type=Path, help="CSV file(s); filename stem = table name")
         if name == "ingest":
             s.add_argument("--append", action="store_true", help="keep existing rows instead of replacing")
@@ -45,16 +51,17 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _load_index(xml: Path) -> BmlIndex | None:
-    tracker = RunTracker(xml.name)
+def _load_index(args: argparse.Namespace, factory) -> "BmlIndex | StoredGraphLookup | None":
+    label = args.xml.name if args.xml else f"workspace={args.workspace_id}"
+    tracker = RunTracker(label)
     try:
-        index = BmlIndex.from_xml_file(xml)
+        index = BmlIndex.from_xml_file(args.xml) if args.xml else StoredGraphLookup(factory, args.workspace_id)
     except CsvBmlIngestionError as exc:
         tracker.error("xml_graph", f"cannot build XML graph: {exc}", error_code=exc.code)
         print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
         return None
-    tracker.info("xml_graph", "XML graph built", nodes=index.node_count, scripts=index.script_count,
-                 queried_tables=len(index.tables))
+    tracker.info("xml_graph", "XML graph ready", source="xml" if args.xml else "stored_graph",
+                 nodes=index.node_count, query_nodes=index.script_count, queried_tables=len(index.tables))
     return index
 
 
@@ -84,18 +91,23 @@ def _inspect(index: BmlIndex, csvs: list[Path]) -> int:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    args = _parser().parse_args(argv)
-    index = _load_index(args.xml)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if bool(args.xml) == (args.workspace_id is not None):
+        parser.error("give exactly one graph source: --xml FILE or --workspace-id N")
+    factory = None
+    if args.command == "ingest" or args.workspace_id is not None:
+        try:
+            factory = oracle_connection_factory()
+        except CsvBmlIngestionError as exc:
+            RunTracker(args.xml.name if args.xml else "cli").error("db", str(exc), error_code=exc.code)
+            print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
+            return 1
+    index = _load_index(args, factory)
     if index is None:
         return 1
     if args.command == "inspect":
         return _inspect(index, args.csv)
-    try:
-        factory = oracle_connection_factory()
-    except CsvBmlIngestionError as exc:
-        RunTracker(args.xml.name).error("db", str(exc), error_code=exc.code)
-        print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
-        return 1
     results = [ingest_csv(c, index, factory, replace=not args.append, batch_size=args.batch_size,
                           overflow=OverflowPolicy(args.on_overflow), rejects_dir=args.rejects_dir,
                           sql_author=None if args.no_author_sql else project_llm_completer())

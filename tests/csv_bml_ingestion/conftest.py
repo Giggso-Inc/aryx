@@ -48,8 +48,8 @@ def bml_index() -> BmlIndex:
 
 
 class FakeCursor:
-    def __init__(self, log: list, catalog: dict) -> None:
-        self.log, self.catalog, self._rows = log, catalog, []
+    def __init__(self, log: list, catalog: dict, comments: dict) -> None:
+        self.log, self.catalog, self.comments, self._rows = log, catalog, comments, []
 
     def execute(self, sql: str, params=None) -> None:
         self.log.append(("execute", sql))
@@ -60,6 +60,11 @@ class FakeCursor:
                 for n, n_len in re.findall(r"(\w+) VARCHAR2\((\d+)\)", m.group(2))
             ] + [(n.upper(), "NUMBER", 22, None, None, int(p), 0)
                  for n, p in re.findall(r"(\w+) NUMBER\((\d+)\)", m.group(2))]
+        cm = re.match(r"COMMENT ON TABLE (\w+) IS '([^']*)'", sql)
+        if cm:
+            self.comments[cm.group(1).upper()] = cm.group(2)
+        if "user_tab_comments" in sql:
+            self._rows = [(self.comments.get(params[0]),)] if params[0] in self.catalog else []
         if "user_tab_columns" in sql:
             self._rows = self.catalog.get(params[0], [])
 
@@ -76,6 +81,7 @@ class FakeDb:
     def __init__(self, fail_on: str | None = None) -> None:
         self.log: list = []
         self.catalog: dict = {}
+        self.comments: dict = {}
         self.fail_on = fail_on
         self.committed = 0
         self.rolled_back = 0
@@ -86,7 +92,7 @@ class FakeDb:
 
         class Conn:
             def cursor(self_inner):  # noqa: N805
-                cur = FakeCursor(db.log, db.catalog)
+                cur = FakeCursor(db.log, db.catalog, db.comments)
                 if db.fail_on:
                     orig = cur.executemany
 
@@ -103,6 +109,10 @@ class FakeDb:
         except Exception:
             self.rolled_back += 1
             raise
+
+    def writes(self) -> list:
+        """Everything that changed (or could change) data: DDL, DML, COMMENT. Reads (SELECT) excluded."""
+        return [e for e in self.log if e[0] == "executemany" or not e[1].startswith("SELECT")]
 
     def statements(self, kind: str) -> list:
         return [e for e in self.log if e[0] == kind]

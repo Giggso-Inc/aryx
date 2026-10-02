@@ -136,6 +136,26 @@ def project_and_write_raw_graph(
 ) -> RawGraphWriteResult:
     """Convenience wrapper: parse XML and write the resulting raw graph in one call."""
     projection = project_xml_to_raw_graph(data)
+    projection = _with_query_tables(projection)
     return write_raw_graph(
         projection, workspace_id=workspace_id, source_key=source_key, dsn=dsn, graph_url=graph_url,
     )
+
+
+def _with_query_tables(projection: RawGraphProjection) -> RawGraphProjection:
+    """Opt-in (``ARYX_CSV_BML_ENABLED``): record on each node which tables its SQL queries read.
+
+    The store clips string properties to ~200 chars, so script text cannot be searched later;
+    short list properties survive. Best-effort: any failure keeps the plain projection.
+    """
+    from aryx.csv_bml_ingestion.config import csv_bml_enabled  # lazy: avoids an import cycle
+
+    if not csv_bml_enabled():
+        return projection
+    try:
+        from aryx.csv_bml_ingestion.bml_graph import enrich_projection
+
+        return enrich_projection(projection)
+    except Exception:  # noqa: BLE001 -- the raw graph is a best-effort provenance layer
+        logger.warning("cpq_ingestion: query-table enrichment failed; writing the plain raw graph", exc_info=True)
+        return projection

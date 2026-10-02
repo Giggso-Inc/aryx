@@ -70,3 +70,15 @@ class SqlAuthoringError(CsvBmlIngestionError):
     """LLM-authored SQL was invalid, or could not be produced, after all attempts."""
 
     code = "CBI_SQL_AUTHOR_FAILED"
+
+
+class SqlUnsafeError(CsvBmlIngestionError):
+    """Existing schema/index SQL files contain statements the safety validator does not allow."""
+
+    code = "CBI_SQL_UNSAFE"
+
+
+class TableProtectedError(CsvBmlIngestionError):
+    """The table exists but was not created by this pipeline for this owner; it is never touched."""
+
+    code = "CBI_TABLE_PROTECTED"

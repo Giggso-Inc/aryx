@@ -19,6 +19,7 @@ class IngestOptions:
     overflow: OverflowPolicy = OverflowPolicy.REJECT
     rejects_dir: Path | None = None               # default: next to the CSV file
     sql_author: Completer | None = None           # None = never author SQL; missing files then fail
+    owner: str = C.OWNER_TAG                      # ownership tag a table must carry to be loaded into
 
 
 @dataclass(slots=True)

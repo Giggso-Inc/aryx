@@ -176,3 +176,15 @@ def test_existing_projection_can_be_indexed_without_reparsing():
     from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
     idx = BmlIndex.from_projection(project_xml_to_raw_graph(OTHER_XML))
     assert idx.tables == ["discounts", "hidden_table", "tiers"]
+
+
+# --- application / system tables are never ingestable --------------------------------------
+@pytest.mark.parametrize("name", ["aryx_workspace.csv", "ARYX_Entity.csv", "sys_x.csv", "dba_users.csv",
+                                  "user_tables.csv", "dual.csv", "system.csv"])
+def test_reserved_table_names_are_refused(name):
+    with pytest.raises(InvalidTableNameError, match="reserved"):
+        extract_table_name(name)
+
+
+def test_ordinary_names_with_similar_prefixes_still_work():
+    assert extract_table_name("arxy_ok.csv") == "arxy_ok" and extract_table_name("usersettings.csv") == "usersettings"

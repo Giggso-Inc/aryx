@@ -7,9 +7,11 @@ vendor, tags or layout is assumed. A caller that already holds a projection
 (e.g. the XML ingestion path) can skip parsing entirely and pass it to
 ``BmlIndex.from_projection``.
 
-Why not read the *stored* raw graph back? The store clips every property to ~200
-characters (a script's ``text`` is saved as 201 characters), so query text cannot
-be recovered from it; reading it would silently miss most queries.
+This module is the "from an XML file" source. The "from the stored knowledge graph"
+source is ``stored_graph.StoredGraphLookup``. It cannot simply re-read script text:
+the store clips every string property to ~200 characters (a script's ``text`` is
+saved as 201), so ``bml_graph`` records the queries' tables as short list properties
+at XML-ingest time, and the stored-graph lookup searches those.
 """
 from __future__ import annotations
 

@@ -29,6 +29,49 @@ python -m aryx.csv_bml_ingestion inspect --xml SL3500e_config.xml attrSequence.c
 python -m aryx.csv_bml_ingestion ingest --xml SL3500e_config.xml attrSequence.csv attrToPDNonFrequency.csv
 ```
 
+## Knowledge-graph route (upload integration)
+
+When an XML is ingested it becomes a knowledge graph; later, a CSV upload finds its BML scripts by
+searching **that graph** — the XML is not needed again. Off by default; one switch turns it on.
+
+1. **XML ingest** (existing path, `ARYX_INGEST_FILE_TYPE=xml` + `ARYX_INGEST_PIPELINE=cpq_ingestion`,
+   Oracle graph backend): with `ARYX_CSV_BML_ENABLED=true`, `raw_graph/store.py` also records, on every
+   graph node whose text holds SQL queries, three short **list** properties — `bml_tables`,
+   `bml_queries`, `bml_query_tables` (`bml_graph.py`). They are needed because the graph store clips
+   every *string* property to ~200 characters (an Oracle bind-size guard) so the script text itself cannot
+   be searched once stored; lists are not clipped.
+2. **CSV upload** (`POST /admin/ingest/file`, unchanged API/UI): with the switch on, each uploaded `.csv`
+   goes to `upload_hook.ingest_uploaded_csv` instead of the generic CSV path. Step 2 is
+   `stored_graph.StoredGraphLookup`: one JSON query over this workspace's raw-graph id range finds the
+   enriched nodes (typically a few dozen of hundreds of thousands), across **all** XMLs ingested into the
+   workspace; neighbours in the graph give each match its identity and path.
+3. Steps 3–4 are unchanged (LLM-authored SQL if needed, validated load). A CSV whose table no stored
+   query reads is **skipped** (`CBI_BML_NOT_FOUND`) and the upload job finishes as `failed` with the
+   per-file reasons in its error text — it is never silently ingested another way.
+
+| Variable | Meaning |
+|---|---|
+| `ARYX_CSV_BML_ENABLED` | `true` turns on both halves above (default off: existing XML/CSV ingestion unchanged) |
+| `ARYX_INGEST_FILE_TYPE=xml`, `ARYX_INGEST_PIPELINE=cpq_ingestion` | existing switches that make XML ingestion write the raw graph (needed for step 1) |
+| `ARYX_CSV_BML_SQL_DIR` | where authored SQL is saved (default: package `sql/`) |
+| `ARYX_CSV_BML_REJECTS_DIR` | where `<table>.rejects.csv` goes for uploads (default: `<sql dir>/ws_<id>/_rejects`) |
+
+**Safety — which tables may be touched.** The names a CSV may be loaded into come from queries in an
+*uploaded* XML, i.e. from the uploader, so the loader never trusts a name just because a query mentions it:
+
+* `aryx_*` and system-style names (`sys_`, `dba_`, `all_`, `user_`, `dual`, …) are refused outright (`CBI_TABLE_NAME_INVALID`).
+* **Ownership:** every table the pipeline creates is stamped with an owner tag as its table `COMMENT`
+  (`csv_bml_ingestion`, or `csv_bml_ingestion:ws=<id>` for uploads). An existing table is used only if its
+  comment equals the caller's owner tag; otherwise the CSV is refused with `CBI_TABLE_PROTECTED` — checked
+  first, before any LLM call, DDL or `DELETE`. Two workspaces therefore cannot overwrite each other's tables.
+  To let the pipeline manage a table that already exists, an administrator adopts it explicitly:
+  `COMMENT ON TABLE <table> IS 'csv_bml_ingestion';`
+* Authored SQL and rejects are kept per workspace (`<sql dir>/ws_<id>/…`).
+* One CSV failing never aborts the rest of the upload; XML files in an upload are processed before CSVs.
+
+Order matters: ingest the XML **first**; XMLs ingested before the switch was on carry no query lists and
+must be re-ingested. The CLI can use the same graph: `inspect|ingest --workspace-id N csv...`.
+
 ## The SQL files (step 3)
 
 Nothing per-table is committed. Files are written the first time a table is ingested to
@@ -59,6 +102,6 @@ query needs no manual step.
 * DDL is Oracle-specific (ADB 26ai `IF NOT EXISTS`); the connection factory is
   Oracle-only by design (`DatabaseUnavailableError` otherwise).
 * A query assembled at run time from non-literal pieces cannot be resolved statically and is skipped.
-* Step 2 builds the graph from the XML rather than reading the stored raw graph: the store clips every property to ~200 characters, so query text cannot be recovered from it.
+* Querying the stored graph needs the Oracle graph backend; on FalkorDB use `--xml`. Step 2 with `--xml` builds the graph from the file; with `--workspace-id` it searches the stored graph via the query lists written at XML-ingest time (not the clipped script text).
 * Run-time authoring needs the project's LLM configured and its SDK importable (OCI GenAI needs the `oci` package, present in the app image).
 * `IF NOT EXISTS` does not alter an existing table: if a column is widened in `schema.sql`, apply the `ALTER TABLE ... MODIFY` (or drop/recreate) yourself.

@@ -54,6 +54,20 @@ class BmlLookup:
     near_misses: tuple[str, ...] = field(default=())  # other tables sharing the name as a prefix
 
 
+def iter_query_nodes(projection: RawGraphProjection):
+    """Yield ``(node, property, queries)`` for every node string value that holds SQL queries.
+
+    Shared by the in-memory index and the XML-ingest enrichment, so both agree on what
+    counts as a query.
+    """
+    for node in projection.nodes:
+        for prop, value in node.properties.items():
+            if isinstance(value, str) and len(value) >= MIN_QUERY_TEXT:
+                queries = extract_queries(value)
+                if queries:
+                    yield node, prop, queries
+
+
 class BmlIndex:
     """``lowercase table -> graph locations that query it`` for one XML graph."""
 
@@ -72,15 +86,9 @@ class BmlIndex:
         for child, parent in parent_of.items():
             children.setdefault(parent, []).append(child)
         by_id = {n.id: n for n in projection.nodes}
-        for node in projection.nodes:
-            for prop, value in node.properties.items():
-                if not isinstance(value, str) or len(value) < MIN_QUERY_TEXT:
-                    continue
-                queries = extract_queries(value)
-                if not queries:
-                    continue
-                index.script_count += 1
-                index._add(node, prop, queries, by_id, parent_of, children)
+        for node, prop, queries in iter_query_nodes(projection):
+            index.script_count += 1
+            index._add(node, prop, queries, by_id, parent_of, children)
         return index
 
     @classmethod
@@ -104,7 +112,7 @@ class BmlIndex:
             self._by_table.setdefault(table, []).append(BmlMatch(
                 table=table, node_id=node.id, node_tag=node.tag, prop=prop,
                 path=_path(node.id, by_id, parent_of), identity=identity,
-                label=_label(identity, node.tag, node.id), queries=tuple(qs),
+                label=make_label(identity, node.tag, node.id), queries=tuple(qs),
             ))
 
     def lookup(self, table: str) -> BmlLookup:
@@ -140,7 +148,8 @@ def _path(node_id: int, by_id: dict, parent_of: dict) -> tuple[str, ...]:
     return tuple(reversed(tags))
 
 
-def _label(identity: dict[str, str], tag: str, node_id: int) -> str:
+def make_label(identity: dict[str, str], tag: str, node_id: int) -> str:
+    """Short display name for a match: the first of id/guid/name/key present, else ``tag#node``."""
     for hint in LABEL_HINTS:
         if hint in identity:
             return f"{hint}={identity[hint]}"
