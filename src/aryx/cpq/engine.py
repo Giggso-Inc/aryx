@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq import rule_scope
 from aryx.cpq import data_table_bridge
 from aryx.cpq.bml.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
@@ -1236,7 +1237,7 @@ class CpqEngine:
                     "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
                     workspace_id, catalog_prefix,
                 )
-                return _cache_result
+                return rule_scope.scope_value_rules_tuple(_cache_result)
 
         _t0 = time.monotonic()
         logger.info(
@@ -1260,7 +1261,7 @@ class CpqEngine:
             self, workspace_id, catalog_prefix, ingest_store, existing_questions, _t0,
         )
         _cache_write_if_marker_unchanged(_VALUE_RULES_CACHE, _cache_key, (time.monotonic(), _result), _marker_at_read)
-        return _result
+        return rule_scope.scope_value_rules_tuple(_result)
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",

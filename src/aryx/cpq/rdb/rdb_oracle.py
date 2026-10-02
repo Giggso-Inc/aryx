@@ -134,13 +134,16 @@ class OracleCpqRdb(PostgresCpqRdb):
 
     def fetch_rules(
         self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, int]]:
-        rows: list[tuple[int, int | None, str, int]] = []
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
+        """See the Postgres dialect; with_ref_id appends ref_id ("" if none)."""
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = (
             " AND JSON_VALUE(attributes, '$.status') = '1'" if active_only else ""
         )
+        ref_col = (", JSON_VALUE(attributes, '$.ref_id')"
+                   if with_ref_id else "")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -149,7 +152,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                         SELECT id,
                                JSON_VALUE(attributes, '$.id'),
                                JSON_VALUE(attributes, '$.name'),
-                               JSON_VALUE(attributes, '$.condition_function_id')
+                               JSON_VALUE(attributes, '$.condition_function_id')""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :3
@@ -157,22 +160,27 @@ class OracleCpqRdb(PostgresCpqRdb):
                         """ + status_clause,
                         (workspace_id, rule_type, type_pattern),
                     )
-                    for eid, src_id, name, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     _as_int(fn_id) or -1))
+                    for row in cur.fetchall():
+                        eid, src_id, name, fn_id = row[:4]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[4] or ""),) if with_ref_id else out)
         except Exception:
             logger.debug("cpq rdb(oracle): rule fetch failed", exc_info=True)
         return rows
 
     def fetch_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, str, int]]:
-        rows: list[tuple[int, int | None, str, str, int]] = []
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
+        """See the Postgres dialect; with_ref_id appends ref_id ("" if none)."""
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = (
             " AND JSON_VALUE(attributes, '$.status') = '1'" if active_only else ""
         )
+        ref_col = (", JSON_VALUE(attributes, '$.ref_id')"
+                   if with_ref_id else "")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -182,7 +190,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.id'),
                                JSON_VALUE(attributes, '$.name'),
                                JSON_VALUE(attributes, '$.rule_type'),
-                               JSON_VALUE(attributes, '$.condition_function_id')
+                               JSON_VALUE(attributes, '$.condition_function_id')""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
@@ -191,9 +199,11 @@ class OracleCpqRdb(PostgresCpqRdb):
                         """ + status_clause,
                         (workspace_id, type_pattern),
                     )
-                    for eid, src_id, name, rule_type, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     rule_type or "", _as_int(fn_id) or -1))
+                    for row in cur.fetchall():
+                        eid, src_id, name, rule_type, fn_id = row[:5]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               rule_type or "", _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[5] or ""),) if with_ref_id else out)
         except Exception:
             logger.debug("cpq rdb(oracle): value-rule fetch failed", exc_info=True)
         return rows

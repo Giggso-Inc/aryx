@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+from aryx.cpq import rule_scope
 from aryx.cpq.engine import logger
 from aryx.cpq.hiding_rules.type11 import _load_type11_hiding_rules
 from aryx.cpq.state import HidingRule
@@ -49,6 +50,7 @@ def load_hiding_rules(
     rules = _load_type11_hiding_rules(
         engine, workspace_id, catalog_prefix, _t0, product_name,
     )
+    rules = rule_scope.scope_rules_by_ancestry(rules, "hiding_rules")
 
     # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
     # real, separate class of "hide" rule authored OUTSIDE rule_type=11

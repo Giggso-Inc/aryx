@@ -426,3 +426,14 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
         ),
     )
+    cpq_rule_scope_filter_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent PR 6. Needs cpq_model_resolution_enabled. When "
+            "on, loaded hiding/recommendation/constraint/validation rules "
+            "are kept only if their catalog-node ref_id is the resolved "
+            "model's node, one of its ancestors, or unbound (empty). Off by "
+            "default -- when off, rule loading is byte-identical. Override "
+            "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
+        ),
+    )
