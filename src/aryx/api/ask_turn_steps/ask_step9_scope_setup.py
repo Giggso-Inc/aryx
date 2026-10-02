@@ -17,6 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply
+from aryx.raven_log import raven_log
+
+_SCOPE_OPTIONS = ["skip", "family_only", "scope_matched", "scope_no_match", "no_scope_resolve"]
 
 
 def _step9_scope_and_constraint_setup(
@@ -82,12 +85,32 @@ def _step9_scope_and_constraint_setup(
             pending_constrained = _scope_ivs
 
     _scope_match_text = req.question
+    _run_scope_resolve = bool(_scope_for_attr and pending_attr.select_type != "multi")
+    raven_log("DEBUG", "P4", "ask.reply.scope pending constraint and scope set up", context={
+        "pending_field": pending_var, "select_type": getattr(pending_attr, "select_type", None),
+        "has_hint": hint_val_for_attr is not None,
+        "rule_constrained_count": None if _pc is None else len(_pc),
+        "constrained_count": None if pending_constrained is None else len(pending_constrained),
+        "scope_candidate_count": len(_scope_cands), "scope_for_attr": bool(_scope_for_attr),
+        "selected_option": "scope_resolve" if _run_scope_resolve else "no_scope_resolve",
+        "available_options": ["scope_resolve", "no_scope_resolve"],
+        "reason_code": (
+            "SCOPE_FOR_ATTR" if _run_scope_resolve
+            else "MULTI_SELECT" if _scope_for_attr else "NO_SCOPE_FOR_ATTR"),
+        "turn": getattr(session, "turn", None)})
     if _scope_for_attr and pending_attr.select_type != "multi":
         _scope_label_early = _cpq_engine.disambiguated_label(pending_attr, attrs)
         _scope_reply = _resolve_scope_reply(
             req.question, _scope_cands, _scope_label_early,
             session, req.workspace_id,
         )
+        if _scope_reply in ("skip", "family_only"):
+            raven_log("DEBUG", "P4", "ask.reply.scope scoped reply answered the turn", context={
+                "selected_option": _scope_reply, "available_options": _SCOPE_OPTIONS,
+                "reason_code": "SCOPE_SKIP" if _scope_reply == "skip" else "SCOPE_FAMILY_ONLY",
+                "pending_field": pending_var, "scope_candidate_count": len(_scope_cands),
+                "reply_len": len(getattr(req, "question", None) or ""),
+                "turn": getattr(session, "turn", None)})
         if _scope_reply == "skip":
             return (
                 _build_scope_skip_response(
@@ -105,6 +128,14 @@ def _step9_scope_and_constraint_setup(
                 _scope_match_text,
             )
         _sres = _scope_reply
+        raven_log("DEBUG", "P4", "ask.reply.scope scoped reply match tier", context={
+            "selected_option": "scope_matched" if getattr(_sres, "matched", None) else "scope_no_match",
+            "available_options": _SCOPE_OPTIONS,
+            "reason_code": "SCOPE_MATCHED" if getattr(_sres, "matched", None) else "SCOPE_NO_MATCH",
+            "pending_field": pending_var, "match_tier": getattr(_sres, "tier", None),
+            "scope_candidate_count": len(_scope_cands),
+            "reply_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         if _sres.matched:
             _scope_match_text = _sres.matched
             logger.info(

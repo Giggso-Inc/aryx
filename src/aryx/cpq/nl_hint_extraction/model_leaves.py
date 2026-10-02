@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log
 
 def single_model_variable_name(
     engine: Any, reader: Any, workspace_id: int, catalog_prefix: str,
@@ -34,10 +35,17 @@ def single_model_variable_name(
     native id is never another node's parent_id.
     """
     if not catalog_prefix:
+        raven_log("DEBUG", "P4", "ask.model_leaf.single no catalog prefix, model not seeded", context={
+            "selected_option": "none", "available_options": ["single_leaf", "none"],
+            "reason_code": "NO_CATALOG_PREFIX", "workspace_id": workspace_id})
         return ""
     cat_ents = reader.find_entities(
         ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
     if not cat_ents:
+        raven_log("DEBUG", "P4", "ask.model_leaf.single no bm_catalog nodes, model not seeded", context={
+            "selected_option": "none", "available_options": ["single_leaf", "none"],
+            "reason_code": "NO_BM_CATALOG_NODES", "catalog_prefix": catalog_prefix,
+            "workspace_id": workspace_id})
         return ""
     pg = engine._batch_fetch([e["id"] for e in cat_ents], workspace_id)
     nodes: list[tuple[str, str, str]] = []  # (native_id, parent_id, name)
@@ -50,7 +58,15 @@ def single_model_variable_name(
             nodes.append((native, parent, name))
     parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
     leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
-    return leaves[0] if len(leaves) == 1 else ""
+    _single_leaf = leaves[0] if len(leaves) == 1 else ""
+    raven_log("DEBUG", "P4", "ask.model_leaf.single model leaf tree walked", context={
+        "selected_option": "single_leaf" if _single_leaf else "none",
+        "available_options": ["single_leaf", "none"],
+        "reason_code": "EXACTLY_ONE_LEAF" if _single_leaf
+        else "NO_LEAVES" if not leaves else "MULTIPLE_LEAVES",
+        "leaf_count": len(leaves), "node_count": len(nodes), "model_variable": _single_leaf,
+        "catalog_prefix": catalog_prefix, "workspace_id": workspace_id})
+    return _single_leaf
 
 
 def model_variable_candidates(
@@ -74,10 +90,17 @@ def model_variable_candidates(
     names for the caller to present as a disambiguation choice.
     """
     if not catalog_prefix:
+        raven_log("DEBUG", "P4", "ask.model_leaf.candidates no catalog prefix, no candidates", context={
+            "selected_option": "none", "available_options": ["candidates", "none"],
+            "reason_code": "NO_CATALOG_PREFIX", "workspace_id": workspace_id})
         return []
     cat_ents = reader.find_entities(
         ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
     if not cat_ents:
+        raven_log("DEBUG", "P4", "ask.model_leaf.candidates no bm_catalog nodes, no candidates", context={
+            "selected_option": "none", "available_options": ["candidates", "none"],
+            "reason_code": "NO_BM_CATALOG_NODES", "catalog_prefix": catalog_prefix,
+            "workspace_id": workspace_id})
         return []
     pg = engine._batch_fetch([e["id"] for e in cat_ents], workspace_id)
     nodes: list[tuple[str, str, str]] = []
@@ -90,4 +113,12 @@ def model_variable_candidates(
             nodes.append((native, parent, name))
     parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
     leaves = sorted({nm for native, _p, nm in nodes if native not in parent_ids})
+    raven_log("DEBUG", "P4", "ask.model_leaf.candidates model leaf candidates selected", context={
+        "selected_option": "candidates" if len(leaves) >= 2 else "none",
+        "available_options": ["candidates", "none"],
+        "reason_code": "MULTIPLE_LEAVES" if len(leaves) >= 2
+        else "SINGLE_LEAF" if leaves else "NO_LEAVES",
+        "leaf_count": len(leaves), "node_count": len(nodes),
+        "candidates": leaves if len(leaves) >= 2 else [],
+        "catalog_prefix": catalog_prefix, "workspace_id": workspace_id})
     return leaves if len(leaves) >= 2 else []

@@ -33,6 +33,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _pending_are_one_grid_batch(pending_vns, attrs: list) -> bool:
@@ -150,6 +151,15 @@ def _try_apply_grid_quantities_batch_reply(
         (vn, by_vn[vn].display_label) for vn in pending_vns if vn in by_vn
     ]
     resolved = _cpq_engine.parse_grid_batch_quantities(candidates, question)
+    raven_log("DEBUG", "P4", "ask.grid_batch.reply batched quantity reply parsed", context={
+        "selected_option": "apply_batch" if resolved else "single_attr_fallback",
+        "available_options": ["apply_batch", "single_attr_fallback"],
+        "reason_code": (
+            "NOTHING_RESOLVED" if not resolved
+            else "ALL_RESOLVED" if len(resolved) >= len(candidates) else "PARTIAL_RESOLVED"),
+        "candidate_count": len(candidates), "resolved_count": len(resolved or {}),
+        "resolved_fields": list(resolved or {})[:25],
+        "reply_len": len(question or ""), "turn": getattr(session, "turn", None)})
     if not resolved:
         return set()
     for vn, qty in resolved.items():
@@ -206,6 +216,12 @@ def _grid_batch_count_mismatch_message(
     else:
         bad_label = _cpq_engine.grid_batch_unparseable_segment(candidates, req.question)
         if bad_label is None:
+            raven_log("DEBUG", "P4", "ask.grid_batch.mismatch no positional reply problem", context={
+                "selected_option": "single_attr_fallback",
+                "available_options": ["count_mismatch_reask", "unparseable_reask", "single_attr_fallback"],
+                "reason_code": "NOT_POSITIONAL_PROBLEM", "candidate_count": len(candidates),
+                "reply_len": len(getattr(req, "question", None) or ""),
+                "turn": getattr(session, "turn", None)})
             return None
         answer = (
             f"I couldn't read one of those quantities — the value for "
@@ -213,6 +229,13 @@ def _grid_batch_count_mismatch_message(
             f"quantity for each, in the same order, or name just the "
             f'ones you mean (e.g. "{candidates[0][1]}: 3").'
         )
+    raven_log("DEBUG", "P4", "ask.grid_batch.mismatch positional reply re-ask", context={
+        "selected_option": "count_mismatch_reask" if given is not None else "unparseable_reask",
+        "available_options": ["count_mismatch_reask", "unparseable_reask", "single_attr_fallback"],
+        "reason_code": "WRONG_VALUE_COUNT" if given is not None else "UNPARSEABLE_SEGMENT",
+        "given_count": given, "candidate_count": len(candidates),
+        "reply_len": len(getattr(req, "question", None) or ""),
+        "turn": getattr(session, "turn", None)})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_grid_batch_count_mismatch()"],

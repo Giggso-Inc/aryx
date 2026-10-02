@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log, would_log
+
 
 _PRODUCT_SNAPSHOT_CAP = 5
 
@@ -32,6 +34,8 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
     and re-asked, exactly like any other turn's continuation (see
     docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md §3)."""
     from aryx.api import ask_api as _ask_api_module
+    _from_product = getattr(session, "product_name", "") or ""
+    _caller_country_given = bool(new_country)
     session.cascade_log.append({
         "event": "product_switch", "from": session.product_name,
         "to": new_product, "turn": getattr(session, "turn", None),
@@ -55,6 +59,11 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
         while len(session.product_snapshots) > _PRODUCT_SNAPSHOT_CAP:
             oldest = next(iter(session.product_snapshots))
             session.product_snapshots.pop(oldest)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ask.switch.snapshot_evicted oldest product snapshot dropped at cap",
+                          context={"reason_code": "SNAPSHOT_CAP_EXCEEDED", "evicted_product": oldest,
+                                   "snapshot_cap": _PRODUCT_SNAPSHOT_CAP,
+                                   "turn": getattr(session, "turn", None)})
 
     snap = session.product_snapshots.get(new_product)
     if snap:
@@ -113,3 +122,13 @@ def _complete_product_switch(session: Any, new_product: str, new_country: str) -
         session.turn, new_product, new_country or "(none — will be asked fresh)",
         "restored from snapshot" if snap else "reset",
     )
+    raven_log("INFO", "P4", "ask.switch.completed product switch committed", context={
+        "selected_option": "restore_snapshot" if snap else "reset_config",
+        "available_options": ["restore_snapshot", "reset_config"],
+        "reason_code": "PRIOR_SNAPSHOT_FOUND" if snap else "NO_PRIOR_SNAPSHOT",
+        "from_product": _from_product, "to_product": new_product,
+        "country_source": "caller" if _caller_country_given
+        else "snapshot" if new_country else "none",
+        "restored_filled_count": len(session.filled or {}) if snap else 0,
+        "snapshot_count": len(getattr(session, "product_snapshots", None) or {}),
+        "turn": getattr(session, "turn", None)})

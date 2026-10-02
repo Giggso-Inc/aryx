@@ -23,6 +23,7 @@ from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
+from aryx.raven_log import raven_log
 
 
 def _step8_qa_and_pending_collision(
@@ -49,18 +50,30 @@ def _step8_qa_and_pending_collision(
         pending_attr_for_qa = next(
             (a for a in attrs if a.variable_name == pending_var_for_qa), None,
         )
-        if _cpq_engine.detect_qa_question(req.question, pending_attr_for_qa, strict=True):
+        _qa_strict = _cpq_engine.detect_qa_question(req.question, pending_attr_for_qa, strict=True)
+        raven_log("DEBUG", "P4", "ask.qa.strict pending-turn question check", context={
+            "selected_option": "qa" if _qa_strict else "continue",
+            "available_options": ["qa", "continue"],
+            "reason_code": "STRICT_QA_QUESTION" if _qa_strict else "NOT_QA_QUESTION",
+            "pending_field": pending_var_for_qa,
+            "pending_attr_found": pending_attr_for_qa is not None,
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
+        if _qa_strict:
             return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, attrs, reader, resume_review=False)
 
     if session.pending_label_collision_vns and not session.pending_label_collision_question:
         _pqc_reply = req.question.strip()
         _pqc_resolved_vn = None
+        _pqc_tier = "none"
         if _pqc_reply in session.pending_label_collision_vns:
             _pqc_resolved_vn = _pqc_reply
+            _pqc_tier = "exact_variable_name"
         elif _pqc_reply.isdigit():
             _pqc_idx = int(_pqc_reply) - 1
             if 0 <= _pqc_idx < len(session.pending_label_collision_vns):
                 _pqc_resolved_vn = session.pending_label_collision_vns[_pqc_idx]
+                _pqc_tier = "index"
         if _pqc_resolved_vn is None:
             _pqc_candidates = [
                 a for a in attrs if a.variable_name in session.pending_label_collision_vns
@@ -68,6 +81,15 @@ def _step8_qa_and_pending_collision(
             if _pqc_candidates:
                 _pqc_resolved_vn = _ask_decline_reply_and_label_collision_llm_module._llm_resolve_label_collision(
                     _pqc_reply, _pqc_candidates, session, req.workspace_id)
+                _pqc_tier = "llm" if _pqc_resolved_vn else "llm_no_match"
+        raven_log("DEBUG", "P4", "ask.collision.pending system collision reply resolved", context={
+            "selected_option": "resolve_collision" if _pqc_resolved_vn else "clear_stale_collision",
+            "available_options": ["resolve_collision", "clear_stale_collision"],
+            "reason_code": "COLLISION_RESOLVED" if _pqc_resolved_vn else "COLLISION_REPLY_UNRECOGNIZED",
+            "match_tier": _pqc_tier,
+            "resolved_field": _pqc_resolved_vn,
+            "candidate_count": len(getattr(session, "pending_label_collision_vns", None) or []),
+            "reply_len": len(_pqc_reply or ""), "turn": getattr(session, "turn", None)})
         if _pqc_resolved_vn:
             return _resolve_pending_question_collision(
                 req, session, attrs, _pqc_resolved_vn, hiding_rules, rec_rules,
@@ -89,6 +111,12 @@ def _resolve_pending_question_collision(
         (a for a in attrs if a.variable_name == pqc_resolved_vn), None)
     session.pending_label_collision_vns = []
     if _pqc_resolved_attr is None:
+        raven_log("WARN", "P3", "ask.collision.pending resolved field not in catalog attrs",
+                  error_code="ARYX_ASK_COLLISION_ATTR_MISSING", context={
+                      "selected_option": "continue", "reason_code": "RESOLVED_ATTR_MISSING",
+                      "resolved_field": pqc_resolved_vn, "recovery_selected": "fall_through",
+                      "fallback_target": "step5_pending_answer", "result": "collision_cleared",
+                      "turn": getattr(session, "turn", None)})
         return None
     session.pending_variables = [_pqc_resolved_attr.variable_name] + [
         v for v in session.pending_variables if v != _pqc_resolved_attr.variable_name
@@ -104,6 +132,17 @@ def _resolve_pending_question_collision(
         session.filled_source, _pqc_constrained_opts,
         **grid_narrow_kwargs(req.workspace_id, catalog_prefix),
     )
+    _pqc_grid_redirect = bool(
+        _pqc_grid_pending
+        and _pqc_grid_pending[0].variable_name != _pqc_resolved_attr.variable_name
+    )
+    raven_log("DEBUG", "P4", "ask.collision.pending next question chosen", context={
+        "selected_option": "grid_quantity_first" if _pqc_grid_redirect else "resolved_attr",
+        "available_options": ["resolved_attr", "grid_quantity_first"],
+        "reason_code": "GRID_QUANTITY_PENDING" if _pqc_grid_redirect else "RESOLVED_ATTR_NEXT",
+        "resolved_field": getattr(_pqc_resolved_attr, "variable_name", None),
+        "grid_pending_count": len(_pqc_grid_pending or []),
+        "turn": getattr(session, "turn", None)})
     if (
         _pqc_grid_pending
         and _pqc_grid_pending[0].variable_name != _pqc_resolved_attr.variable_name

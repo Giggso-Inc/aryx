@@ -20,6 +20,7 @@ from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 from aryx.api.ask_handle.ask_handle_bulk_quantity_change import _handle_bulk_quantity_change
 from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
+from aryx.raven_log import raven_log
 
 
 def _step6_bulk_and_removal(
@@ -36,6 +37,11 @@ def _step6_bulk_and_removal(
         req.question, attrs, session.filled_multi)
     if _bulk_qty_match:
         _bulk_selector_vn, _bulk_item_values, _bulk_new_qty = _bulk_qty_match
+        raven_log("DEBUG", "P4", "ask.change.bulk_quantity routed to bulk handler", context={
+            "selected_option": "bulk_quantity", "available_options": ["bulk_quantity", "removal", "none"],
+            "reason_code": "BULK_QUANTITY_DETECTED", "selector_variable_name": _bulk_selector_vn,
+            "row_count": len(_bulk_item_values or []), "new_quantity": _bulk_new_qty,
+            "turn": getattr(session, "turn", None)})
         return _handle_bulk_quantity_change(
             req, session, attrs, _bulk_selector_vn, _bulk_item_values, _bulk_new_qty,
             hiding_rules, rec_rules, con_rules,
@@ -43,11 +49,20 @@ def _step6_bulk_and_removal(
 
     _removal_match = _cpq_engine.detect_multi_select_removal(
         req.question, attrs, session.filled_multi)
-    if _removal_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
+    _removal_ok = _removal_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.MULTI_SELECT_REMOVAL,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_removal_match[0].variable_name,
-    ):
+    )
+    if _removal_match:
+        raven_log("DEBUG", "P4", "ask.change.removal detected, llm confirm result", context={
+            "selected_option": "removal" if _removal_ok else "llm_rejected",
+            "available_options": ["removal", "llm_rejected"],
+            "reason_code": "REMOVAL_CONFIRMED" if _removal_ok else "REMOVAL_NOT_CONFIRMED",
+            "variable_name": getattr(_removal_match[0], "variable_name", None),
+            "remove_count": len(_removal_match[1] or []),
+            "turn": getattr(session, "turn", None)})
+    if _removal_ok:
         _removal_attr, _to_remove = _removal_match
         return _ask_handle_multi_select_removal_module._handle_multi_select_removal(
             req, session, attrs, _removal_attr, _to_remove,

@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_llm.ask_llm_resolve_quantity_target import _llm_resolve_quantity_target, _quantity_message_might_name_candidate
+from aryx.raven_log import raven_log
 
 
 def _preamble_resolve_quantity_target(
@@ -37,6 +38,12 @@ def _preamble_resolve_quantity_target(
         or a.variable_name in session.filled_multi
     ]
     if not _qty_candidates:
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_target resolved to product, no filled candidates",
+                  context={
+                      "selected_option": "product", "available_options": ["product", "attr", "ambiguous"],
+                      "reason_code": "NO_FILLED_CANDIDATE", "llm_consulted": False,
+                      "catalog_candidate_count": len(qty_pre.get("candidates") or []),
+                      "turn": getattr(session, "turn", None)})
         return "product", _qty_candidates
 
     _qty_provenance = [
@@ -56,6 +63,12 @@ def _preamble_resolve_quantity_target(
             "call run_id=%s candidates=%s",
             session.run_id, _qty_provenance,
         )
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_target resolved to product by deterministic backstop",
+                  context={
+                      "selected_option": "product", "available_options": ["product", "attr", "ambiguous"],
+                      "reason_code": "NO_USER_SOURCED_OR_NAMED_CANDIDATE", "llm_consulted": False,
+                      "candidate_provenance": [list(p) for p in _qty_provenance],
+                      "turn": getattr(session, "turn", None)})
         return "product", _qty_candidates
 
     _qty_target = _llm_resolve_quantity_target(
@@ -78,4 +91,13 @@ def _preamble_resolve_quantity_target(
             _qty_target, session.filled_source.get(_qty_target),
             session.run_id, _qty_provenance,
         )
+    raven_log("DEBUG", "P4", "ask.preamble.quantity_target resolved by LLM", context={
+        "selected_option": "product" if _qty_target == "product"
+        else "ambiguous" if _qty_target is None else "attr",
+        "available_options": ["product", "attr", "ambiguous"],
+        "reason_code": "LLM_RESOLVED_TARGET", "llm_consulted": True,
+        "target_variable": _qty_target, "has_user_sourced": _qty_has_user_sourced,
+        "maybe_named": _qty_maybe_named,
+        "candidate_provenance": [list(p) for p in _qty_provenance],
+        "turn": getattr(session, "turn", None)})
     return _qty_target, _qty_candidates

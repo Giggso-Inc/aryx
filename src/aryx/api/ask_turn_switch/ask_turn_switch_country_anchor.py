@@ -16,6 +16,7 @@ from typing import Any
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_turn_country_available_for import _country_available_for
 from aryx.api.ask_turn_switch.ask_turn_product_switch_complete import _complete_product_switch
+from aryx.raven_log import raven_log
 
 
 def _handle_switch_country_anchor(
@@ -52,6 +53,12 @@ def _handle_switch_country_anchor(
             "cpq_switch: switch_country declined turn=%s staying on product=%r",
             session.turn, session.product_name,
         )
+        raven_log("INFO", "P4", "ask.switch.country_declined switch abandoned at country re-ask", context={
+            "selected_option": "decline",
+            "available_options": ["decline", "complete_switch", "reask_country"],
+            "reason_code": "EXACT_DECLINE_PHRASE", "turn": getattr(session, "turn", None),
+            "current_product": getattr(session, "product_name", "") or "",
+            "reply_len": len(_sc_reply)})
         answer = f"OK — continuing with **{session.product_name}**."
         _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
@@ -71,6 +78,12 @@ def _handle_switch_country_anchor(
     new_country = req.question.strip()
     new_product = session.pending_switch_product
     if _country_available_for(reader, req.workspace_id, new_product, new_country):
+        raven_log("DEBUG", "P4", "ask.switch.country_accepted replacement country valid, completing switch",
+                  context={
+                      "selected_option": "complete_switch",
+                      "available_options": ["decline", "complete_switch", "reask_country"],
+                      "reason_code": "COUNTRY_AVAILABLE", "new_product": new_product,
+                      "country_len": len(new_country), "turn": getattr(session, "turn", None)})
         _complete_product_switch(session, new_product, new_country)
         # Fall through — Step 1 below sees session.country already set
         # and session.product_name already the new product, so it
@@ -80,6 +93,11 @@ def _handle_switch_country_anchor(
         "cpq_switch: country=%r still invalid for pending_product=%r turn=%s",
         new_country, new_product, session.turn,
     )
+    raven_log("INFO", "P4", "ask.switch.country_reask replacement country still invalid, asking again", context={
+        "selected_option": "reask_country",
+        "available_options": ["decline", "complete_switch", "reask_country"],
+        "reason_code": "COUNTRY_NOT_AVAILABLE_FOR_NEW_PRODUCT", "new_product": new_product,
+        "country_len": len(new_country), "turn": getattr(session, "turn", None)})
     answer = (
         f"**{new_product}** isn't available for **{new_country}** either. "
         f"Could you provide a different country to continue switching?"

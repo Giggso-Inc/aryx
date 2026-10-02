@@ -15,6 +15,7 @@ from typing import Any
 
 from aryx.api.ask_label_collision.ask_label_collision_prompt_and_narrow import _narrow_label_collision
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _qa_label_collision_response(
@@ -30,7 +31,12 @@ def _qa_label_collision_response(
     from aryx.api import ask_api as _ask_api_module
     _collision = _ask_api_module._cpq_engine.detect_label_collision(req.question, attrs)
     if not _collision:
+        raven_log("DEBUG", "P4", "ask.qa.label_collision none detected", context={
+            "selected_option": "no_collision", "available_options": ["no_collision", "disambiguate"],
+            "reason_code": "NO_SHARED_LABEL", "turn": getattr(session, "turn", None),
+            "run_id": getattr(session, "run_id", None), "attr_count": len(attrs or []), "road": "qa"})
         return None
+    _detected_count = len(_collision) if hasattr(_collision, "__len__") else None
     _collision = _narrow_label_collision(req.question, _collision)
     _lines = "\n".join(
         f"- **{a.variable_name}**"
@@ -50,6 +56,12 @@ def _qa_label_collision_response(
     # change-request collision via pending_change_collision_vns).
     session.pending_label_collision_vns = [a.variable_name for a in _collision]
     session.pending_label_collision_question = req.question
+    raven_log("INFO", "P4", "ask.qa.label_collision asked customer to disambiguate", context={
+        "selected_option": "disambiguate", "available_options": ["no_collision", "disambiguate"],
+        "reason_code": "SHARED_DISPLAY_LABEL", "turn": getattr(session, "turn", None),
+        "run_id": getattr(session, "run_id", None), "detected_count": _detected_count,
+        "narrowed_count": len(_collision), "candidate_vns": session.pending_label_collision_vns[:10],
+        "answer_len": len(qa_answer), "road": "qa"})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
     return {
         "answer": qa_answer, "terms": [], "tools_called": ["cpq_label_collision()"],

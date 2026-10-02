@@ -18,6 +18,7 @@ from typing import Any
 
 from aryx.api.ask_intent_queue_text_helpers import _queue_followup_note, _scan_and_enqueue_remaining_targets
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _step6_change_collision_detect(
@@ -53,6 +54,12 @@ def _step6_change_collision_detect(
     answer += _queue_followup_note(session, attrs)
     session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
     session.pending_change_collision_question = req.question
+    raven_log("INFO", "P4", "ask.collision.change_detect which-attribute asked", context={
+        "selected_option": "ask_which_attr", "available_options": ["ask_which_attr", "no_collision"],
+        "reason_code": "CHANGE_LABEL_COLLISION", "candidate_vns": list(session.pending_change_collision_vns),
+        "candidate_count": len(_change_collision),
+        "display_label": getattr(_change_collision[0], "display_label", None),
+        "answer_len": len(answer or ""), "turn": getattr(session, "turn", None)})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_change_label_collision()"],

@@ -15,6 +15,7 @@ from typing import Any
 
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _label_collision_for
 from aryx.api.ask_label_collision.ask_label_collision_prompt_and_narrow import _label_collision_prompt
+from aryx.raven_log import raven_log
 
 
 def _step11_turn_cap_response(
@@ -35,6 +36,13 @@ def _step11_turn_cap_response(
             next_attr, "", constrained_opts.get(next_attr.entity_id),
             validation_rules=validation_rules, attrs=visible_attrs,
         )
+    raven_log("DEBUG", "P4", "ask.response.turn_cap incomplete configuration re-ask built", context={
+        "selected_option": "label_collision" if _pending_collision else "next_question",
+        "available_options": ["label_collision", "next_question"],
+        "reason_code": "NEXT_ATTR_LABEL_COLLISION" if _pending_collision else "TURN_CAP_REACHED",
+        "unresolved_count": len(unresolved), "next_field": getattr(next_attr, "variable_name", None),
+        "product_name": getattr(session, "product_name", None),
+        "turn": getattr(session, "turn", None)})
     return (
         f"⚠️ The configuration for **{session.product_name}** is "
         f"**incomplete** — {len(unresolved)} attribute(s) still need "
