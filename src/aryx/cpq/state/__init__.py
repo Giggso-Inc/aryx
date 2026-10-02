@@ -330,6 +330,14 @@ class CpqSession:
     # harmless to keep once the product is set, same convention as
     # product_name itself.
     product_anchor_question: str = ""
+    # Attribute-first discovery (api/ask_attribute_search.py). The attribute
+    # phrase the bot just asked "which value?" for -- the next reply is
+    # matched as that attribute's value. "" when not waiting.
+    pending_attribute_label: str = ""
+    # family -> [{vn, item_value, display, select_type}]: values to fill in
+    # once the customer picks one of the offered families (step 1 applies
+    # them, then clears this). {} when nothing is pending.
+    attribute_search_seeds: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
     # Post-failure prevention (session_guard): deep-copied CpqSession
     # dicts taken BEFORE each mutating intent. Cap 10 (evict oldest).
