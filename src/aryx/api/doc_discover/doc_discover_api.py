@@ -23,7 +23,8 @@ from pydantic import BaseModel
 
 from aryx import discoveries
 from aryx.api.doc_discover.doc_discover_confirm_job import _confirm_job
-from aryx.api.doc_discover.doc_discover_read_job import _read_job
+from aryx.api.doc_discover.doc_discover_read_job import JOB_TERMINAL_STATUSES, _read_job
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
@@ -35,10 +36,6 @@ logger = logging.getLogger(__name__)
 # request. Separate endpoint duplicating the same constant rather than
 # sharing it.
 _MAX_FILE = 500 * 1024 * 1024
-
-# Job statuses that mean "this job will never write to the discovery row
-# again" -- see dismiss()'s still-running-read-job check below.
-_JOB_TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
 
 
 class ConfirmRequest(BaseModel):
@@ -93,23 +90,29 @@ def doc_discover_router() -> APIRouter:
             store.close()
 
     @router.post("/{did}/dismiss")
-    def dismiss(did: str, workspace_id: int = 1) -> dict[str, Any]:
+    def dismiss(did: str, workspace_id: int | None = None) -> dict[str, Any]:
+        # T9/T11 warn-mode convention (PR #391/#401) for mutating routes --
+        # this is a destructive endpoint, same class of concern as jobs_api's
+        # cancel/resume.
+        workspace_id = resolve_workspace_id_warn(workspace_id, "POST /admin/docs/{did}/dismiss")
+
         # The read job (POST /admin/docs/read, above) uses `did` as its own
-        # job_id. While it's still running, _build_read_progress's on_progress
-        # callback keeps calling discoveries.put() after every chunk, which
-        # upserts the row back with status='pending' (put()'s ON CONFLICT
-        # never touches status -- a fresh INSERT after a delete always lands
-        # 'pending'). Dismissing mid-read would just get silently undone by
-        # the next progress write (or the final one): the row reappears in
-        # the banner moments later. 409 here instead of letting that race
-        # play out live (confirmed: this exact sequence reproduces it).
+        # job_id. A still-running read job's on_progress callback (see
+        # doc_discover_read_job.py) keeps writing to the discovery row;
+        # cancelling it only flips this job row to 'cancelled' without
+        # actually stopping the worker thread (nothing in read_files()/
+        # extract_mentions() checks should_stop), so 'cancelled' counting as
+        # terminal here is safe only because _build_read_progress and
+        # _read_job's own final write both now check this same job row and
+        # suppress their write once it's terminal -- see that module's
+        # _is_job_terminal for the other half of this fix.
         jobs = JobStore(get_settings().effective_dsn())
         try:
             job = jobs.get(did)
         finally:
             jobs.close()
         if (job is not None and job.get("workspace_id") == workspace_id
-                and job.get("status") not in _JOB_TERMINAL_STATUSES):
+                and job.get("status") not in JOB_TERMINAL_STATUSES):
             raise HTTPException(409, "cannot dismiss a discovery while its read job is still running")
 
         # Folds the "is it still pending" check into the DELETE itself

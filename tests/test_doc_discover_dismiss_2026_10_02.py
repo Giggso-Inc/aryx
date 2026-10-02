@@ -130,6 +130,19 @@ def test_dismiss_toctou_race_is_closed_by_a_single_conditional_delete(client):
     mock_unconditional_drop.assert_not_called()
 
 
+def test_dismiss_omitted_workspace_id_defaults_to_1_with_warning(client):
+    """Low finding: this destructive route used a bare `workspace_id: int
+    = 1` default instead of the resolve_workspace_id_warn() convention
+    PR #391/#401 established for mutating routes -- a caller that forgot
+    the param silently acted on workspace 1 with no way to audit it later.
+    Warn-mode, not enforcement: an old/forgetful caller keeps working
+    against workspace 1, but the omission is now observable (logged)."""
+    with _with_job(None), _with_drop_if_pending(True) as mock_drop:
+        resp = client.post("/admin/docs/did-1/dismiss")
+    assert resp.status_code == 200
+    mock_drop.assert_called_once_with("did-1", 1)
+
+
 def test_dismiss_scoped_to_workspace(client):
     """A discovery in workspace 7 must not be dismissable (or even
     confirmed to exist) by a caller claiming workspace 9 -- same
