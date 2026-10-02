@@ -16,6 +16,7 @@ from aryx.cpq.engine import (
     _no_real_fill_justification,
     _sole_opt_out_option,
 )
+from aryx.cpq.inferred_legal_pick import inferred_first_available
 from aryx.cpq.model_policy import resolve_blind_fill_risk_accepted_membership
 from aryx.cpq.model_scope_pick import scoped_first_available
 
@@ -32,7 +33,13 @@ def _model_scoped_first(ctx: "FillContext", scope: "FillScope", state: AttrResol
         state.vn, state.valid_opts, ctx.filled,
         scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
     )
-    return scoped if scoped is not None else state.valid_opts[0]
+    if scoped is not None:
+        return scoped
+    inferred = inferred_first_available(
+        state.vn, state.valid_opts, ctx.filled,
+        scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+    )
+    return inferred if inferred is not None else state.valid_opts[0]
 
 
 def single_chain_tail(

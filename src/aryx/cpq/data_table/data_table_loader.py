@@ -16,7 +16,7 @@ from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
 )
-from aryx.cpq.data_table.data_table_shapes import _detect_shape
+from aryx.cpq.data_table.data_table_shapes import _detect_shape, _is_defaultinattr_shaped
 from aryx.cpq.rdb.rdb import get_cpq_rdb
 
 logger = logging.getLogger(__name__)
@@ -174,3 +174,25 @@ def _load_all_tables(
         cache[(workspace_id, catalog_prefix)] = result
     _cache_write_if_marker_unchanged(_TABLES_CACHE, _mod_key, (time.monotonic(), result), _marker_at_read)
     return result
+
+
+def _load_defaultinattr_rows(
+    workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Standalone scan for Defaultinattr-shaped rows (BaseModel + attrN/valN,
+    no CPQModel). Kept out of _load_all_tables' fixed 5-tuple (every caller
+    unpacks it by position). Memoized in the caller's per-turn `cache`
+    under a distinct key; no module-level cache (callers only reach this
+    behind cpq_defaultinattr_shape_enabled)."""
+    key = (workspace_id, catalog_prefix, "defaultinattr")
+    if cache is not None and key in cache:
+        return cache[key]
+    rows: list[dict[str, Any]] = []
+    for entities in get_cpq_rdb().fetch_all_entities_grouped_by_type(workspace_id).values():
+        for _eid, attrs in entities:
+            if _is_defaultinattr_shaped(set(attrs.keys())):
+                rows.append(attrs)
+    if cache is not None:
+        cache[key] = rows
+    return rows

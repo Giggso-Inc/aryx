@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.inferred_legal_pick import inferred_first_available
 from aryx.cpq.model_scope_pick import scoped_first_available
 from aryx.cpq.engine import (
     _KNOWN_MISSING_DATA_TABLES,
@@ -107,6 +108,9 @@ def try_dt_governed_blind(
         ]
         if _blind_opts:
             _blind_first = scoped_first_available(
+                state.vn, _blind_opts, ctx.filled, scope.workspace_id,
+                scope.catalog_prefix, ctx.dt_cache,
+            ) or inferred_first_available(
                 state.vn, _blind_opts, ctx.filled, scope.workspace_id,
                 scope.catalog_prefix, ctx.dt_cache,
             ) or _blind_opts[0]

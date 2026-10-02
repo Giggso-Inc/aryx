@@ -437,3 +437,63 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
         ),
     )
+    cpq_defaultinattr_shape_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D7 (Defaultinattr; aryxent only planned it, so "
+            "this is a minimal new implementation). When on, a Defaultinattr-"
+            "shaped Data Table (BaseModel + attrN/valN, no CPQModel) is read "
+            "(cpq/data_table/data_table_defaultinattr.py) and "
+            "_resolve_via_data_tables falls back to its default for the "
+            "known base model when Whitelist gave no single legal value and "
+            "the default is a real option. Off by default -- when off, "
+            "behaviour is unchanged. Override with "
+            "ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true."
+        ),
+    )
+    cpq_infer_legal_values_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D8 (PR 7/15). When on, the blind first-available "
+            "picks (tier6_single_b, ask_data_gap, ask_rule_governed_blind) "
+            "that found no Whitelist-scoped option infer a legal set from "
+            "the Whitelist condition columns (model+base-model, model, then "
+            "product-line family tiers; cpq/inferred_legal_pick.py) before "
+            "falling back to raw catalog order. Off by default. Override "
+            "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
+        ),
+    )
+    cpq_derive_base_model_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D10 (PR 8). When on, the Base Model auto_fill "
+            "stage narrows the model's real base models to exactly one using "
+            "already-known attribute values (Whitelist evidence) and fills "
+            "it (source 'derived_from_known_attrs') instead of leaving the "
+            "full raw list to be asked. Off by default. Override with "
+            "ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true."
+        ),
+    )
+    cpq_whitelist_narrow_questions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D13/D17 (PR 11). When on, (a) the in-loop "
+            "apply_constraint_rules also intersects the Whitelist-narrowed "
+            "legal set (_resolve_narrowed_legal_values, 2+ values) for "
+            "unanswered attrs into constrained_opts, so question option "
+            "lists are narrowed; (b) resolve_pending_grid_quantities, when "
+            "given a workspace, uses the same narrowed set for a selector "
+            "with no constraint result. Off by default. Override with "
+            "ARYX_CPQ_WHITELIST_NARROW_QUESTIONS_ENABLED=true."
+        ),
+    )
+    cpq_product_match_exact_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of aryxent D11 (PR 9). When on, Product seeding/matching "
+            "tries the turn's resolved model's exact name first, and the "
+            "bidirectional-substring Product match prefers an exact name "
+            "over a longer name that merely contains it. Off by default. "
+            "Override with ARYX_CPQ_PRODUCT_MATCH_EXACT_FIRST_ENABLED=true."
+        ),
+    )

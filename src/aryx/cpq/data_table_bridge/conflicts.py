@@ -18,6 +18,7 @@ from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
     resolve_whitelist_values as dt_resolve_whitelist_values,
 )
+from aryx.cpq.data_table.data_table_defaultinattr import resolve_defaultinattr_value
 from aryx.cpq.state import MenuOption
 
 # Same three "customer already confirmed this" source tags CpqEngine itself
@@ -136,7 +137,22 @@ def _resolve_via_data_tables(
             # abort" contract `_resolve_narrowed_legal_values` uses below).
             continue
         return next((o for o in valid_opts if o.item_value == values[0]), None)
-    return None
+    return _defaultinattr_option(vn, base_model, valid_opts, workspace_id, catalog_prefix, cache)
+
+
+def _defaultinattr_option(
+    vn: str, base_model: str, valid_opts: list[MenuOption],
+    workspace_id: int, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+) -> MenuOption | None:
+    """Port of aryxent D7: Defaultinattr's default for this base model, when
+    it is a real option. No-op (None) unless cpq_defaultinattr_shape_enabled."""
+    if not get_settings().cpq_defaultinattr_shape_enabled:
+        return None
+    default = resolve_defaultinattr_value(base_model, vn, workspace_id, catalog_prefix, cache)
+    if default is None:
+        return None
+    return next((o for o in valid_opts if o.item_value == default), None)
 
 
 def _resolve_narrowed_legal_values(

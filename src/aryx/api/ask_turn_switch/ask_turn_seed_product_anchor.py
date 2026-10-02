@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.product_match_exact_first import resolved_model_seed_texts
 from aryx.cpq.session_guard.session_guard import push_snapshot
 
 
@@ -51,6 +52,7 @@ def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:
         return
     _seed_candidates = [
         c for c in (
+            *resolved_model_seed_texts(_product_attr.options),  # D11: [] unless flag on
             session.pending_switch_question,
             session.product_anchor_question,
             session.product_name,

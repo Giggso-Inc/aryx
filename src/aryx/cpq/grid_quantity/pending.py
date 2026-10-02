@@ -7,6 +7,7 @@ functional -- no ``CpqEngine`` instance needed.
 from __future__ import annotations
 
 from aryx.cpq.grid_quantity.links import resolve_array_grid_links
+from aryx.cpq.grid_quantity.narrow import whitelist_narrowed_selector_options
 from aryx.cpq.state import ConfigAttr
 
 
@@ -15,6 +16,9 @@ def resolve_pending_grid_quantities(
     filled_multi: dict[str, list[str]],
     constrained_opts: dict[int, list[str]] | None = None,
     selector_vns: set[str] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[ConfigAttr]:
     """Extra pending ConfigAttrs for grid-quantity attrs whose selector
     has a selected row without a quantity yet (resolve_array_grid_links).
@@ -78,6 +82,11 @@ def resolve_pending_grid_quantities(
                     constrained_opts.get(selector_attr.entity_id)
                     if constrained_opts else None
                 )
+                if allowed is None:
+                    # D17: Whitelist narrowing (flag-gated; None when off).
+                    allowed = whitelist_narrowed_selector_options(
+                        selector_vn, filled, workspace_id, catalog_prefix, dt_cache,
+                    )
                 selected = [
                     o.item_value for o in selector_attr.options
                     if o.item_value.strip().lower() in item_map

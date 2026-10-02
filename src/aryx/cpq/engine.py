@@ -1086,9 +1086,13 @@ class CpqEngine:
         filled_multi: dict[str, list[str]],
         constrained_opts: dict[int, list[str]] | None = None,
         selector_vns: set[str] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[ConfigAttr]:
         return grid_quantity.resolve_pending_grid_quantities(
             attrs, filled, filled_multi, constrained_opts, selector_vns,
+            workspace_id, catalog_prefix, dt_cache,
         )
 
     def _finalize_grid_selections_from_quantities(
@@ -1107,10 +1111,13 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
         selector_vns: set[str] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> list[ConfigAttr]:
         return grid_quantity.append_pending_grid_quantities(
             self, pending, attrs, filled, filled_multi, filled_source,
-            constrained_opts, selector_vns,
+            constrained_opts, selector_vns, workspace_id, catalog_prefix, dt_cache,
         )
 
     @staticmethod
@@ -1342,11 +1349,12 @@ class CpqEngine:
         _constraint_cache: dict[str, tuple] | None = None,
         _signature_exclude_vns: frozenset[str] | None = None,
         narrowing_rec_rules: list[RecommendationRule] | None = None,
+        narrow_from_data_tables: bool = False,
     ) -> dict[int, list[str]]:
         return constraint_rules.apply_constraint_rules(
             self, attrs, rules, filled, bml_eval, filled_multi,
             workspace_id, catalog_prefix, _dt_cache, _constraint_cache,
-            _signature_exclude_vns, narrowing_rec_rules,
+            _signature_exclude_vns, narrowing_rec_rules, narrow_from_data_tables,
         )
 
 

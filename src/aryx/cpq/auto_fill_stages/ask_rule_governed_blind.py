@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.inferred_legal_pick import inferred_first_available
 from aryx.cpq.model_scope_pick import scoped_first_available
 from aryx.cpq.engine import (
     _NEVER_GUESS_SCRIPT_GOVERNED,
@@ -98,6 +99,9 @@ def try_rule_governed_blind(
         ]
         if _rg_opts:
             _rg_first = scoped_first_available(
+                state.vn, _rg_opts, ctx.filled, scope.workspace_id,
+                scope.catalog_prefix, ctx.dt_cache,
+            ) or inferred_first_available(
                 state.vn, _rg_opts, ctx.filled, scope.workspace_id,
                 scope.catalog_prefix, ctx.dt_cache,
             ) or _rg_opts[0]

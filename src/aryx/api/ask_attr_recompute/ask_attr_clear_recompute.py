@@ -14,6 +14,7 @@ from typing import Any
 
 from aryx.api.ask_scope_and_pending.ask_pending_exclusion import _hard_exclude_from_pending
 from aryx.api.ask_scope_and_pending.ask_singleton_pending import _auto_resolve_singleton_pending
+from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
 
 
 def _recompute_after_attr_clear(
@@ -92,7 +93,7 @@ def _recompute_after_attr_clear(
         ]
     pending = _cpq_engine.append_pending_grid_quantities(
         pending, visible_attrs, filled, session.filled_multi, session.filled_source,
-        constrained_opts)
+        constrained_opts, **grid_narrow_kwargs(req.workspace_id, catalog_prefix))
 
     session.filled = filled
     session.display_filled = display_filled
