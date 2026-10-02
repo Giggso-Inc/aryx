@@ -27,8 +27,15 @@ logger = logging.getLogger(__name__)
 
 # Circuit breaker state (module-level: RuleTraceStore is re-created per call).
 _breaker_lock = threading.Lock()
+_MAX_TRACKED_RUNS = 1000  # cap so runs that never seal cannot grow memory without bound
 _fail_counts: dict[str, int] = {}
-_open_runs: set[str] = set()
+_open_runs: dict[str, None] = {}  # insertion-ordered set; oldest evicted past the cap
+
+
+def _evict_oldest(store: dict) -> None:
+    """Drop oldest entries (dicts keep insertion order) beyond the cap."""
+    while len(store) > _MAX_TRACKED_RUNS:
+        store.pop(next(iter(store)))
 
 
 @contextmanager
@@ -115,8 +122,10 @@ class RuleTraceStore:
         with _breaker_lock:
             n = _fail_counts.get(run_id, 0) + 1
             _fail_counts[run_id] = n
+            _evict_oldest(_fail_counts)
             if n >= threshold and run_id not in _open_runs:
-                _open_runs.add(run_id)
+                _open_runs[run_id] = None
+                _evict_oldest(_open_runs)
                 logger.error(
                     "rule_trace_store: circuit breaker open run_id=%s after %d consecutive "
                     "append failures; DB writes stopped for this run", run_id, n,
@@ -130,7 +139,7 @@ class RuleTraceStore:
                 sealed = cur.rowcount > 0
         with _breaker_lock:
             _fail_counts.pop(run_id, None)
-            _open_runs.discard(run_id)
+            _open_runs.pop(run_id, None)
         if sealed:
             logger.info("rule_trace_store.seal_session run_id=%s status=%s", run_id, status)
         return sealed

@@ -627,7 +627,10 @@ class CpqIntentSettingsMixin(BaseSettings):
         description=(
             "Maximum seconds a request waits for another thread's in-flight "
             "tables-cache scan before scanning unlocked. Only used when "
-            "cpq_tables_cache_lock_enabled is on. Override with "
+            "cpq_tables_cache_lock_enabled is on. Keep it above "
+            "cpq_rdb_call_timeout_ms (so a waiter outlasts a bounded scan) "
+            "and BELOW cpq_post_loop_timeout_s (so the request does not "
+            "504 while its waiters are still blocked). Override with "
             "ARYX_CPQ_TABLES_CACHE_LOCK_TIMEOUT_S."
         ),
     )
@@ -644,12 +647,17 @@ class CpqIntentSettingsMixin(BaseSettings):
         ),
     )
     cpq_post_loop_timeout_s: float = Field(
-        default=45.0,
+        default=120.0,
         description=(
             "Seconds the post-loop auto_fill may run before the request "
             "fails with HTTP 504. Only used when "
-            "cpq_post_loop_timeout_enabled is on. Choose a value at or "
-            "above the RDB call timeout. Override with "
+            "cpq_post_loop_timeout_enabled is on. Must be ABOVE "
+            "cpq_rdb_call_timeout_ms (default 60 s) and above "
+            "cpq_tables_cache_lock_timeout_s (default 90 s); a warning is "
+            "logged once if the ordering is inverted. The pool has a fixed "
+            "number of workers that cannot be cancelled, so when every "
+            "worker is busy (including abandoned timed-out ones) new calls "
+            "are rejected with HTTP 503 instead of queueing. Override with "
             "ARYX_CPQ_POST_LOOP_TIMEOUT_S."
         ),
     )

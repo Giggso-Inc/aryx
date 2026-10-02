@@ -288,6 +288,18 @@ def _scan_all_tables(
     )
     if cache is not None:
         cache[(workspace_id, catalog_prefix)] = result
+    if not (constraint_rows or sequence_rows or hierarchy_rows
+            or series_mapping_rows or region_rule_rows):
+        # An all-empty scan is indistinguishable from a swallowed DB error or
+        # timeout (the rdb methods return empty on failure). Keep it only in
+        # the per-turn cache above; do NOT store it in the 300 s module cache,
+        # or every Data Table lookup would find nothing for five minutes.
+        logger.warning(
+            "cpq: _load_all_tables scan returned no rows ws=%s prefix=%r -- "
+            "not stored in the module cache (possible DB error or timeout)",
+            workspace_id, catalog_prefix,
+        )
+        return result
     _cache_write_if_marker_unchanged(_TABLES_CACHE, _mod_key, (time.monotonic(), result), _marker_at_read)
     return result
 

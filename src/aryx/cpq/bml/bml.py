@@ -354,11 +354,15 @@ class BmlEvaluator:
         }[kind](script, dict(variables))
         logger.info(
             "bml_tier2: result kind=%s run_id=%s workspace_id=%s elapsed_s=%.3f "
-            "prompt_tokens=%d completion_tokens=%d result=%.500r",
+            "prompt_tokens=%d completion_tokens=%d result_type=%s",
             kind, self._run_id, self._workspace_id, time.monotonic() - _t0,
             self.stats.get("prompt_tokens", 0) - _before_pt,
-            self.stats.get("completion_tokens", 0) - _before_ct, result,
+            self.stats.get("completion_tokens", 0) - _before_ct, type(result).__name__,
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            # The result and the substituted script can carry customer-entered
+            # values, so their text is DEBUG only, never INFO.
+            logger.debug("bml_tier2: result text run_id=%s %.500r", self._run_id, result)
         self._durable_put(durable_key, kind, result)
         return result
 

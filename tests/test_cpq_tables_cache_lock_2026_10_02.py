@@ -32,7 +32,9 @@ class _FakeRdb:
     def fetch_all_entities_grouped_by_type(self, workspace_id):
         self.calls += 1
         time.sleep(self.delay)
-        return {}
+        # one constraint-shaped row so the scan is non-empty (an all-empty scan
+        # is deliberately not stored in the module cache)
+        return {"Whitelist": [(1, {"CPQModel": "M", "BaseModel": "B", "attr1": "a", "val1": "v"})]}
 
 
 def _run_concurrently(n: int, key=(1, "p")):
