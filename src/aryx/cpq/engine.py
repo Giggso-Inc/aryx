@@ -596,6 +596,7 @@ from aryx.cpq import catalog_hints
 from aryx.cpq import mandatory_input
 from aryx.cpq.auto_fill import auto_fill_postpass
 from aryx.cpq.auto_fill import auto_fill_resolve
+from aryx.cpq.auto_fill_stages import fill_log as _fill_log
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
 
@@ -1236,7 +1237,11 @@ class CpqEngine:
                     "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
                     workspace_id, catalog_prefix,
                 )
+                _fill_log.log_load("value_rules_cache", result="hit", workspace_id=workspace_id,
+                                   catalog_prefix=catalog_prefix)
                 return _cache_result
+        _fill_log.log_load("value_rules_cache", result="miss" if _cache_hit is None else "expired",
+                           workspace_id=workspace_id, catalog_prefix=catalog_prefix)
 
         _t0 = time.monotonic()
         logger.info(
@@ -1253,7 +1258,9 @@ class CpqEngine:
             existing_questions = {
                 q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
             }
-        except Exception:
+        except Exception as exc:
+            _fill_log.log_load_failed("ingest_question_store", exc, "INGEST_QUESTION_STORE_UNAVAILABLE",
+                                      workspace_id=workspace_id)
             ingest_store = None
             existing_questions = {}
         _result = value_rules_load.load_value_rules(

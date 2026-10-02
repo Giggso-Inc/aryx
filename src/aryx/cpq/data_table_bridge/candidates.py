@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 
 from aryx.config import get_settings
+from aryx.cpq.auto_fill_stages import fill_log
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
@@ -18,6 +20,23 @@ from aryx.cpq.data_table.data_table_resolver import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
+_TIERS = ["tier1_text_match", "tier2_model_resolution", "tier3_base_model", "static_fallback"]
+
+
+def _log_candidates(tier: str, result: tuple, product_name: str, workspace_id: int | None,
+                    base_extra: int = 0) -> None:
+    """G3 -- ask.model.candidates (DEBUG) per call; WARN once per turn per result for the static pair."""
+    static = tier == "static_fallback"
+    ctxd = {
+        "selected_option": list(result), "available_options": _TIERS,
+        "reason_code": tier.upper() if not static else "NO_TIER_RESULT", "policy_version": "cpq_model_candidates_v1",
+        "product_name": product_name, "tier": tier, "static_fallback_used": static,
+        "workspace_id": workspace_id, "base_model_extra_count": base_extra}
+    if static and fill_log.fallback_static_first_in_turn(result):
+        raven_log("WARN", "P3", "ask.model.fallback_static used the fixed APXNEXT pair",
+                  error_code="ARYX_ASK_MODEL_FALLBACK_STATIC", context={**ctxd, "first_in_turn": True})
+    elif would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.model.candidates tier answered", context=ctxd)
 
 
 def _cpq_model_candidates(
@@ -53,6 +72,7 @@ def _cpq_model_candidates(
     before this parameter existed.
     """
     primary = None
+    tier = "tier1_text_match"
     if workspace_id is not None:
         from_rows = dt_resolve_product_cpq_models_from_rows(
             product_name, workspace_id, catalog_prefix, cache,
@@ -65,6 +85,7 @@ def _cpq_model_candidates(
         )
         if family:
             primary = (family, f"{family}_BOM")
+            tier = "tier2_model_resolution"
     if primary is None:
         if get_settings().data_table_candidates_empty_on_no_match_enabled:
             logger.warning(
@@ -75,12 +96,20 @@ def _cpq_model_candidates(
                 product_name, workspace_id, catalog_prefix,
             )
             primary = ()
+            tier = "empty_no_match"
+            raven_log("WARN", "P3", "ask.model.candidates_empty no CPQModel candidate and static fallback disabled",
+                      error_code="ARYX_ASK_MODEL_CANDIDATES_EMPTY", context={
+                          "product_name": product_name, "workspace_id": workspace_id,
+                          "reason_code": "NO_MATCH_EMPTY_ON_NO_MATCH", "tier": tier})
         else:
             primary = _DEFAULT_CPQ_MODEL_CANDIDATES
+            tier = "static_fallback"
     if not (base_model and workspace_id is not None):
+        _log_candidates(tier, primary, product_name, workspace_id)
         return primary
     discovered = dt_discover_cpq_models_for_base_model(
         base_model, workspace_id, catalog_prefix, cache,
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
+    _log_candidates(tier, primary + extra, product_name, workspace_id, len(extra))
     return primary + extra if extra else primary

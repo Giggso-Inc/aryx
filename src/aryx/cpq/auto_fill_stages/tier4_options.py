@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages import tier5_governed_entry
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import _valid
 
@@ -114,5 +115,8 @@ def stage_options(
             # customer the one remaining valid option.
             state.value = state.valid_opts[0].item_value
             state.display = state.valid_opts[0].display_name
+            fill_log.log_decision(state.vn, "stage_options", "picked", "SINGLE_REMAINING_OPTION", valid_opt_count=1)
         else:
+            fill_log.log_decision(state.vn, "stage_options", "to_governed_entry", "MULTIPLE_OR_DECISION", valid_opt_count=len(state.valid_opts), constrained=state.allowed_for_attr is not None)
+
             tier5_governed_entry.governed_entry(engine, attr, ctx, scope, state)

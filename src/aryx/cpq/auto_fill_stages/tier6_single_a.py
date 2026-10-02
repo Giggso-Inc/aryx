@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _NEVER_GUESS_SCRIPT_GOVERNED,
@@ -46,6 +47,7 @@ def single_chain_head(
     if rec_match:
         state.value, state.display, state.fired_rule_name = rec_match
         state.source = "rule"
+        fill_log.log_decision(state.vn, "single_chain_head", "picked", "SATISFIED_RECOMMENDATION")
     elif (
         dt_match := engine._resolve_via_data_tables(
             state.vn, ctx.filled, state.valid_opts, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
@@ -68,6 +70,7 @@ def single_chain_head(
         state.value = dt_match.item_value
         state.display = dt_match.display_name
         state.source = "data_table"
+        fill_log.log_decision(state.vn, "single_chain_head", "picked", "DATA_TABLE_SINGLE_MATCH")
     elif state.vn in _NEVER_GUESS_SCRIPT_GOVERNED:
         # This attr's only governing rule is script-based
         # and just failed to resolve to a value above —
@@ -75,6 +78,7 @@ def single_chain_head(
         # recommendation applies" for this specific attr,
         # not "unknown, guess anyway". Falls through to
         # pending/ungoverned handling instead of guessing.
+        fill_log.log_decision(state.vn, "single_chain_head", "left_open", "NEVER_GUESS_SCRIPT_GOVERNED")
         pass
     elif (
         scope.display_order is not None
@@ -111,6 +115,10 @@ def single_chain_head(
             state.value = match.item_value
             state.display = match.display_name
             state.source = "default"
+            fill_log.log_decision(state.vn, "single_chain_head", "picked", "CONSTRAINT_CONFIRMED_DEFAULT")
+        else:
+            fill_log.log_decision(state.vn, "single_chain_head", "left_open", "DEFAULT_NOT_IN_LEGAL_SET")
     else:
+        fill_log.log_decision(state.vn, "single_chain_head", "fell_through", "NO_HEAD_BRANCH_MATCHED")
         return False
     return True

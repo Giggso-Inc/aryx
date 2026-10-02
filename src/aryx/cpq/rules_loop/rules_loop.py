@@ -11,7 +11,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
 from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
@@ -118,11 +120,30 @@ def evaluate_rules_loop(
     # after the loop, which is only safe today because _MAX_LOOPS is a
     # positive constant guaranteeing at least one iteration.
     pass_num = -1
+    should_break = False
+    fill_log.bind_sources(sources)
     for pass_num in range(_MAX_LOOPS):
+        fill_log.set_pass(pass_num)
         run_early_pass(engine, pass_num, state, scope)
         should_break = run_late_pass(engine, pass_num, state, scope)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.rules_loop.pass pass finished", context={
+                "pass": pass_num, "filled_count": len(state.filled), "visible_attr_count": len(state.attrs),
+                "multi_count": len(state.multi), "constrained_attr_count": len(state.constrained_opts or {}),
+                "resynced_count": len(getattr(state, "resynced", None) or {}),
+                "inconsistent_count": len(state.inconsistent_vns),
+                "oscillating_count": len(state.oscillating_vns), "stable": should_break,
+                "rules_hiding": len(scope.hiding_rules), "rules_rec": len(scope.rec_rules),
+                "rules_con": len(scope.con_rules)})
         if should_break:
             break
+    fill_log.set_pass(None)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.rules_loop.stopped loop exit", context={
+            "selected_option": "converged" if should_break else "max_passes",
+            "available_options": ["converged", "max_passes"],
+            "reason_code": "STATE_STABLE" if should_break else "MAX_PASSES_REACHED",
+            "policy_version": "rules_loop_v1", "passes": pass_num + 1, "max_passes": _MAX_LOOPS})
 
     logger.info(
         "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",

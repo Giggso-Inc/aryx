@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
 from aryx.cpq.hiding_rules.type11 import _load_type11_hiding_rules
 from aryx.cpq.state import HidingRule
@@ -64,12 +65,16 @@ def load_hiding_rules(
     try:
         _rec, _con, _val, extra_hiding = engine._load_value_rules(
             workspace_id, catalog_prefix)
-    except Exception:
+    except Exception as exc:
         logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
+        fill_log.log_load_failed("hiding_rules_valueless", exc, "VALUELESS_HIDING_LOAD_FAILED",
+                                 workspace_id=workspace_id, catalog_prefix=catalog_prefix)
         extra_hiding = []
     if extra_hiding:
         logger.info("cpq: loaded %d additional value-less-action hiding rules",
                     len(extra_hiding))
+    fill_log.log_load("hiding_rules", workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+                      type11_count=len(rules), valueless_count=len(extra_hiding), empty=not (rules or extra_hiding))
     logger.info(
         "cpq_step: load_hiding_rules done elapsed_s=%.3f total_rules=%d",
         time.monotonic() - _t0, len(rules) + len(extra_hiding),

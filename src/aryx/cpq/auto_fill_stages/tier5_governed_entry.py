@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from aryx.cpq.auto_fill_stages import tier5_governed_multi
 from aryx.cpq.auto_fill_stages import tier6_single_a
 from aryx.cpq.auto_fill_stages import tier6_single_b
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ def governed_entry(
             # pick a competing value for what's very likely the
             # same hardware/accessory slot (§ surveillance-package
             # double-fill). Ask instead of guessing which one wins.
+            fill_log.log_decision(state.vn, "governed_entry", "left_open", "OPTIONAL_DATA_TABLE_CONFLICT")
             pass
         elif state.vn in (scope.negated_vns or ()):
             # The customer explicitly negated this attr's concept
@@ -68,7 +70,10 @@ def governed_entry(
             # specific option that means — first-by-order has no
             # way to know either, and confirmed live it picked
             # the literal opposite ("MULTIKEY"). Ask instead.
+            fill_log.log_decision(state.vn, "governed_entry", "left_open", "NEGATED_BY_CUSTOMER")
             pass
         else:
             if not tier6_single_a.single_chain_head(engine, attr, ctx, scope, state):
                 tier6_single_b.single_chain_tail(engine, attr, ctx, scope, state)
+    else:
+        fill_log.log_decision(state.vn, "governed_entry", "not_governed_path", "NOT_GOVERNED_OR_DECISION_OR_NO_OPTIONS", is_governed=state.is_governed, valid_opt_count=len(state.valid_opts))

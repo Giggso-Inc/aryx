@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import _valid
 
@@ -41,8 +42,12 @@ def try_noise_default(
             valid_opts[0] if valid_opts else None,
         )
         if fallback:
+            fill_log.log_write(ctx, attr, state.vn, fallback.item_value, fallback.display_name,
+                               "default", "noise_var_default")
             ctx.filled[state.vn] = fallback.item_value
             ctx.display_filled[state.vn] = fallback.display_name
             ctx.sources.setdefault(state.vn, "default")
+        else:
+            fill_log.log_pruned(state.vn, "NOISE_VAR_NO_VALID_OPTION", "try_noise_default")
         return True
     return False

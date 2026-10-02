@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.rule_trace import rule_trace
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -36,6 +37,10 @@ def commit_value(
     # for it (confirmed live: this is exactly what happened to
     # two attrs that got their value via hint-matching rather
     # than the dedicated multi/constrained-options branch).
+    fill_log.log_write(
+        ctx, attr, state.vn, [state.value] if attr.select_type == "multi" else state.value,
+        state.display, state.source, "commit_value", multi=attr.select_type == "multi",
+    )
     if attr.select_type == "multi":
         ctx.filled_multi[state.vn] = [state.value]
     else:

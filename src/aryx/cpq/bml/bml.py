@@ -72,6 +72,7 @@ from aryx.cpq.bml.bml_tier1 import (
     evaluate_tier1,
 )
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log, submit_ctx, would_log
 
 __all__ = [
     "ArrayIterationShape",
@@ -454,7 +455,12 @@ class BmlEvaluator:
             self._store(key, result)
 
         with ThreadPoolExecutor(max_workers=min(16, len(pending))) as pool:
-            list(pool.map(_run, pending.items()))
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ask.bml.tier2_batch tier-2 prefetch batch", context={
+                    "pending_count": len(pending), "max_workers": min(16, len(pending))})
+            # submit_ctx so each worker keeps the turn's trace_id (ordered .result() == pool.map semantics)
+            for _fut in [submit_ctx(pool, _run, _it) for _it in pending.items()]:
+                _fut.result()
 
     def allowed_values(
         self, function_id: int, variables: dict[str, str],

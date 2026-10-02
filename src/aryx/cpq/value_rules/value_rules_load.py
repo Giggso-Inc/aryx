@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
 from aryx.cpq.value_rules.value_rules_row import process_value_rule_row
 from aryx.cpq.value_rules.value_rules_state import RuleLoadState
@@ -35,8 +36,10 @@ def load_value_rules(
             acts = actions.get(key, [])
             process_value_rule_row(
                 engine, state, eid, rule_name, fn_id, inp_list, acts, scripts)
-    except Exception:
+    except Exception as exc:
         logger.debug("cpq: value-rule load failed", exc_info=True)
+        fill_log.log_load_failed("value_rules", exc, "VALUE_RULE_LOAD_FAILED", workspace_id=workspace_id,
+                                 catalog_prefix=catalog_prefix)
 
     logger.info(
         "cpq: loaded %d recommendation rules, %d constraint rules, "
@@ -61,6 +64,10 @@ def load_value_rules(
         "(%d skipped: same-attribute operator collision, "
         "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
         len(state.validation_rules), state.validation_collisions_skipped)
+    fill_log.log_load("value_rules", workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+                      rec=len(state.rec_rules), con=len(state.con_rules), validation=len(state.validation_rules),
+                      extra_hiding=len(state.hiding_rules),
+                      empty=not (state.rec_rules or state.con_rules or state.validation_rules or state.hiding_rules))
     logger.info(
         "cpq_step: _load_value_rules done elapsed_s=%.3f rec=%d con=%d "
         "validation=%d extra_hiding=%d",

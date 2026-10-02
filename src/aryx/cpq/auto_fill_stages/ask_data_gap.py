@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _KNOWN_MISSING_DATA_TABLES,
@@ -64,6 +65,7 @@ def try_missing_data_skip(
             "(%s); will never resolve until that data is "
             "ingested", state.vn, ", ".join(_KNOWN_MISSING_DATA_TABLES),
         )
+        fill_log.log_pruned(state.vn, "MISSING_DATA_TABLE_HIDING_RULE", "try_missing_data_skip")
         return True
     return False
 
@@ -106,10 +108,14 @@ def try_dt_governed_blind(
         ]
         if _blind_opts:
             _blind_first = _blind_opts[0]
+            fill_log.log_write(ctx, attr, state.vn, _blind_first.item_value, _blind_first.display_name,
+                               "blind_pick_governed", "blind_pick_governed")
             ctx.filled[state.vn] = _blind_first.item_value
             ctx.display_filled[state.vn] = _blind_first.display_name
             ctx.sources.setdefault(state.vn, "blind_pick_governed")
         else:
             ctx.pending.append(attr)
+            fill_log.log_decision(state.vn, "try_dt_governed_blind", "pending", "NO_LEGAL_OPTION",
+                                  allowed_is_none=_blind_allowed is None)
         return True
     return False

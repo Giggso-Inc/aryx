@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import _DECISION_REQUIRED_KEYS
 
@@ -136,3 +137,6 @@ def stage_governance_flags(
     state.is_governed = attr.entity_id in scope.governed
     state.governed_source = "rule" if attr.entity_id in scope.rule_governed else "optional"
     state.filled_multi_now = False
+    fill_log.log_decision(state.vn, "stage_governance_flags", "computed", "GOVERNANCE_FLAGS",
+                          is_decision_attr=state.is_decision_attr, is_governed=state.is_governed,
+                          governed_source=state.governed_source)

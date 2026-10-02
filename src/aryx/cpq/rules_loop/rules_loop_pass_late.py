@@ -10,7 +10,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
 
 
@@ -51,6 +53,10 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         by_vn_for_type = {a.variable_name: a for a in state.attrs}
         for k, (iv, d) in new_fills.items():
             tgt = by_vn_for_type.get(k)
+            fill_log.log_write_dicts(
+                state.filled, state.multi, state.sources, tgt, k,
+                [iv] if tgt is not None and tgt.select_type == "multi" else iv, d, "rule",
+                "apply_recommendation_rules", multi=tgt is not None and tgt.select_type == "multi", force=True)
             if tgt is not None and tgt.select_type == "multi":
                 state.multi[k] = [iv]
             else:
@@ -93,6 +99,8 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
     state.last_resync_vns = _frozen_resynced
     if resynced:
         for k, (iv, d) in resynced.items():
+            fill_log.log_write_dicts(state.filled, state.multi, state.sources, None, k, iv, d, "rule",
+                                     "resync_stale_recommendations", force=True)
             state.filled[k] = iv
             state.display_filled[k] = d
             state.sources[k] = "rule"
@@ -138,9 +146,19 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         - state.oscillating_vns
     )
     non_oscillating_inconsistent = frozenset(state.inconsistent_vns) - state.oscillating_vns
-    return bool(
+    _keys_same = set(state.filled.keys()) == state.prev_filled_keys
+    _vis_same = {a.entity_id for a in state.attrs} == state.prev_visible_ids
+    _stable = bool(
         not non_oscillating_resynced
         and not non_oscillating_inconsistent
-        and set(state.filled.keys()) == state.prev_filled_keys
-        and {a.entity_id for a in state.attrs} == state.prev_visible_ids
+        and _keys_same
+        and _vis_same
     )
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.rules_loop.break_check stability check", context={
+            "selected_option": "stop" if _stable else "continue", "available_options": ["stop", "continue"],
+            "reason_code": "STABLE" if _stable else "STATE_CHANGED", "policy_version": "rules_loop_v1",
+            "pass": pass_num, "resynced_non_oscillating": len(non_oscillating_resynced),
+            "inconsistent_non_oscillating": len(non_oscillating_inconsistent),
+            "filled_keys_unchanged": _keys_same, "visible_unchanged": _vis_same})
+    return _stable
