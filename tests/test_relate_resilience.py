@@ -327,17 +327,22 @@ def test_relate_isolated_stops_mid_drain_when_job_is_cancelled(monkeypatch):
 
     def fake_infer(left, right, broker):
         if left.get("_ontology_type") == "Slow":
-            time.sleep(0.5)
+            time.sleep(2)
         return "related_to", 0.9
 
     # Time-based, not a call counter: _infer_type now also checks should_stop
     # internally (between its own sample/anchor combinations), so a counter
     # keyed purely on "how many times has this been called" no longer lines
-    # up with "has Fast's future completed yet" -- wall-clock does.
+    # up with "has Fast's future completed yet" -- wall-clock does. A wide
+    # 1s margin on both sides (Fast + the drain loop processing it must
+    # finish well under the 1s threshold; Slow's 2s sleep must clear it by a
+    # full second) keeps this from flaking on a loaded/slow CI runner --
+    # review feedback on an earlier 0.5s/0.2s version that left ~0.3s of
+    # margin, tight enough for "Fast" to occasionally get abandoned too.
     start = time.monotonic()
 
     def fake_should_stop() -> bool:
-        return time.monotonic() - start > 0.2
+        return time.monotonic() - start > 1
 
     with patch("aryx.pipeline.enrich.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock(), should_stop=fake_should_stop)
