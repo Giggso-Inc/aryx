@@ -19,6 +19,13 @@ const TABS = [
   { id: "rest"     as Tab, label: "REST API",  icon: <Globe size={14} /> },
 ];
 
+// Rows this banner shows: anything not yet confirmed, and not a confirm
+// already in flight (that has its own job-progress UI once you switch to
+// the Documents tab). Shared so the initial fetch and the dismiss-failure
+// refetch can't drift apart on what counts as "still pending".
+const isPendingDiscovery = (item: DiscoveryHistoryItem) =>
+  item.status !== "confirmed" && item.status !== "confirming";
+
 export default function IngestPage() {
   const { workspaceId, setWorkspaceId } = useWorkspace();
   const [tab, setTab] = useState<Tab>("database");
@@ -28,7 +35,7 @@ export default function IngestPage() {
 
   useEffect(() => {
     api.listDiscoveries(workspaceId)
-      .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed" && i.status !== "confirming")))
+      .then((items) => setPendingItems(items.filter(isPendingDiscovery)))
       .catch(() => {});
   }, [workspaceId]);
 
@@ -41,13 +48,18 @@ export default function IngestPage() {
 
   const handleDismiss = (id: string) => {
     if (!window.confirm("Dismiss this discovery? This can't be undone.")) return;
-    // Optimistic removal -- a dismiss failing (e.g. a confirm job started
-    // for it moments ago, in another tab) is rare enough that re-fetching
-    // the list on error is simpler than reconciling a partial rollback.
+    // Optimistic removal -- a dismiss failing (e.g. its read job is still
+    // running, or a confirm job started for it moments ago in another tab)
+    // is rare enough that re-fetching the list on error is simpler than
+    // reconciling a partial rollback.
     setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
-    api.dismissDiscovery(id, workspaceId).catch(() => {
+    api.dismissDiscovery(id, workspaceId).catch((e) => {
+      // Without this the row just silently reappears on refetch with no
+      // explanation -- surface the backend's actual reason (e.g. "cannot
+      // dismiss a discovery while its read job is still running").
+      window.alert(e instanceof Error ? e.message : "Dismiss failed");
       api.listDiscoveries(workspaceId)
-        .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed" && i.status !== "confirming")))
+        .then((items) => setPendingItems(items.filter(isPendingDiscovery)))
         .catch(() => {});
     });
   };

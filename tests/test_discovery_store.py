@@ -154,6 +154,36 @@ def test_get_status_unknown_id_returns_none() -> None:
     assert store.get_status("nonexistent", _WS) is None
 
 
+def test_drop_if_pending_deletes_and_returns_true_when_a_row_matched() -> None:
+    store, mock_pool = _make_store()
+    cur = _cursor_returning(None)
+    cur.rowcount = 1
+    conn = _conn_with_cursor(cur)
+    mock_pool.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
+
+    assert store.drop_if_pending(_DID, _WS) is True
+    cur.execute.assert_called_once()
+    args = cur.execute.call_args[0]
+    assert args[1] == (_DID, _WS)
+
+
+def test_drop_if_pending_returns_false_when_no_row_matched() -> None:
+    """Covers both the TOCTOU-race case (status flipped away from 'pending'
+    between a caller's own check and this call) and the plain
+    unknown-discovery case -- either way, rowcount=0 means nothing was
+    deleted and the caller must look elsewhere (get_status) to tell them
+    apart for its own error response."""
+    store, mock_pool = _make_store()
+    cur = _cursor_returning(None)
+    cur.rowcount = 0
+    conn = _conn_with_cursor(cur)
+    mock_pool.connection.return_value.__enter__ = MagicMock(return_value=conn)
+    mock_pool.connection.return_value.__exit__ = MagicMock(return_value=False)
+
+    assert store.drop_if_pending(_DID, _WS) is False
+
+
 def test_put_upsert_is_idempotent() -> None:
     """put() must call execute exactly once — upsert handles conflict in DB."""
     store, mock_pool = _make_store()

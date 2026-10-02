@@ -66,6 +66,17 @@ def get_status(discovery_id: str, workspace_id: int = 1) -> str | None:
         store.close()
 
 
+def drop_if_pending(discovery_id: str, workspace_id: int = 1) -> bool:
+    """Delete a discovery result iff it's still 'pending', scoped to the
+    calling workspace. Returns True iff a row was actually deleted."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.effective_dsn())
+    try:
+        return store.drop_if_pending(discovery_id, workspace_id)
+    finally:
+        store.close()
+
+
 def drop(discovery_id: str) -> None:
     """Delete a discovery result."""
     settings = get_settings()

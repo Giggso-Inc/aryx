@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 # sharing it.
 _MAX_FILE = 500 * 1024 * 1024
 
+# Job statuses that mean "this job will never write to the discovery row
+# again" -- see dismiss()'s still-running-read-job check below.
+_JOB_TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
+
 
 class ConfirmRequest(BaseModel):
     discovery_id: str
@@ -90,24 +94,45 @@ def doc_discover_router() -> APIRouter:
 
     @router.post("/{did}/dismiss")
     def dismiss(did: str, workspace_id: int = 1) -> dict[str, Any]:
-        # get_status (not get_summary) is the cheap existence + workspace-
-        # ownership check here since it also gives us the branch below for
-        # free — no need for a second DB round trip to decide confirming/
-        # partial vs. pending.
+        # The read job (POST /admin/docs/read, above) uses `did` as its own
+        # job_id. While it's still running, _build_read_progress's on_progress
+        # callback keeps calling discoveries.put() after every chunk, which
+        # upserts the row back with status='pending' (put()'s ON CONFLICT
+        # never touches status -- a fresh INSERT after a delete always lands
+        # 'pending'). Dismissing mid-read would just get silently undone by
+        # the next progress write (or the final one): the row reappears in
+        # the banner moments later. 409 here instead of letting that race
+        # play out live (confirmed: this exact sequence reproduces it).
+        jobs = JobStore(get_settings().effective_dsn())
+        try:
+            job = jobs.get(did)
+        finally:
+            jobs.close()
+        if (job is not None and job.get("workspace_id") == workspace_id
+                and job.get("status") not in _JOB_TERMINAL_STATUSES):
+            raise HTTPException(409, "cannot dismiss a discovery while its read job is still running")
+
+        # Folds the "is it still pending" check into the DELETE itself
+        # (status='pending' in the WHERE clause) instead of a separate
+        # get_status()-then-drop(): a plain check-then-delete has a TOCTOU
+        # race where /confirm flips the row to 'confirming' in the window
+        # between the two calls, and an unconditional drop() deletes it
+        # anyway -- orphaning the confirm job the status check was meant to
+        # prevent. This also means only 'pending' rows are ever eligible (a
+        # 'confirmed' row, deleting which would destroy real ingest history,
+        # is simply never matched) with no separate blocklist to keep in
+        # sync with every status this table can have.
+        if discoveries.drop_if_pending(did, workspace_id):
+            logger.info("doc discovery dismissed did=%s workspace_id=%d", did, workspace_id)
+            return {"status": "dismissed"}
+
+        # The delete didn't match any row -- find out why, for the error
+        # response only (never for the delete decision itself above).
         status = discoveries.get_status(did, workspace_id)
         if status is None:
             logger.warning("doc dismiss rejected discovery_id=%s: unknown or expired", did)
             raise HTTPException(404, "unknown discovery or workspace mismatch")
-        if status in ("confirming", "partial"):
-            # A confirm job already exists for this discovery (see /confirm
-            # above) -- dropping the discovery row here would orphan that
-            # job with no way to look up what it was confirming. Cancelling
-            # an in-progress confirm is a job-cancellation concern (see
-            # POST /admin/jobs/{job_id}/cancel), not a discovery-dismiss one.
-            raise HTTPException(409, f"cannot dismiss a discovery with status={status}")
-        discoveries.drop(did)
-        logger.info("doc discovery dismissed did=%s workspace_id=%d", did, workspace_id)
-        return {"status": "dismissed"}
+        raise HTTPException(409, f"cannot dismiss a discovery with status={status}")
 
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
