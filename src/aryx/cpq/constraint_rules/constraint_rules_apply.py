@@ -35,6 +35,10 @@ def apply_rules(
     """Evaluate every rule in `rules`, intersecting each firing rule's
     allowed values into `constrained`/`contributions` in place.
     """
+    # A throwaway stats object when the caller passes none, so the timed call
+    # below is the only code path.
+    _script_stats = script_stats if script_stats is not None else ScriptEvalStats()
+    _condition_stats = condition_stats if condition_stats is not None else ScriptEvalStats()
     for rule in rules:
         target = by_rule_id.get(rule.target_attr_id)
         if target is None:
@@ -61,11 +65,8 @@ def apply_rules(
             _script = _substitute_util_get_constraint_vals(
                 rule.script, filled, workspace_id, catalog_prefix, dt_cache,
             )
-            if script_stats is not None:
-                allowed = script_stats.timed(
-                    bml_eval.allowed_values_for_script, _script, filled)
-            else:
-                allowed = bml_eval.allowed_values_for_script(_script, filled)
+            allowed = _script_stats.timed(
+                bml_eval.allowed_values_for_script, _script, filled)
             if allowed:
                 intersect(
                     constrained, contributions, target, allowed,
@@ -80,11 +81,8 @@ def apply_rules(
         if rule.condition_script is not None:
             if bml_eval is None:
                 continue
-            if condition_stats is not None:
-                fires = condition_stats.timed(
-                    bml_eval.condition_holds, rule.condition_script, filled)
-            else:
-                fires = bml_eval.condition_holds(rule.condition_script, filled)
+            fires = _condition_stats.timed(
+                bml_eval.condition_holds, rule.condition_script, filled)
             if fires is True:
                 intersect(
                     constrained, contributions, target, rule.allowed_values,

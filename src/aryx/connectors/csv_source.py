@@ -10,12 +10,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from aryx.connectors.base import Connector
-from aryx.csv_field_limit import raise_csv_field_size_limit
+import aryx.csv_field_limit  # noqa: F401  -- raises the csv field size limit at import (#345)
 from aryx.models import RawRecord, SourceRef
 
 logger = logging.getLogger(__name__)
 
-raise_csv_field_size_limit()  # #345: 50 MiB cap, see aryx/csv_field_limit.py
 
 _META_START = "_start meta data"
 _META_END = "_end meta data"

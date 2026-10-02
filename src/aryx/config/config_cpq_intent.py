@@ -510,7 +510,12 @@ class CpqIntentSettingsMixin(BaseSettings):
             "excludes rule-governed hidden attrs (ConfigAttr."
             "is_value_rule_target) from its name-substring 'Quantity' "
             "candidate guess, so they are never surfaced as unanswerable "
-            "'Please provide a value' questions. Off by default. Override "
+            "'Please provide a value' questions. Side effect: the wider "
+            "rule_target_ids also changes which attrs build_config_attrs "
+            "keeps -- hidden, no-default attrs that are marked-attr-only "
+            "targets used to be dropped and are now retained (Amendment 13 "
+            "rationale); confirm no other consumer surfaces them during "
+            "rollout. Off by default. Override "
             "with ARYX_CPQ_RULE_GOVERNED_HIDDEN_ATTR_GUARD_ENABLED=true."
         ),
     )
