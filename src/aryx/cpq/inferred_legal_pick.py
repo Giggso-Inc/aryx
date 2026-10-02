@@ -44,6 +44,7 @@ def inferred_first_available(
         ):
             inferred = infer_implied_legal_values(
                 vn, cpq_model, workspace_id, catalog_prefix, cache, base_model=base_model,
+                filled=filled,
             )
             if inferred is None:
                 continue

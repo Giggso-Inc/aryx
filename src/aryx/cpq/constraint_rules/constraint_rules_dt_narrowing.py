@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
+from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect, normalize
 
 
 def apply_data_table_narrowing(
@@ -37,6 +37,13 @@ def apply_data_table_narrowing(
             target.variable_name, filled, workspace_id, catalog_prefix, dt_cache,
         )
         if narrowed and len(narrowed) >= 2:
+            # Runs after resolve_empty_intersections, so an intersection that
+            # narrowing itself would empty is never repaired. Narrowing is
+            # advisory: when it would contradict an existing rule-derived set,
+            # skip it and keep the rule's set.
+            existing = constrained.get(target.entity_id)
+            if existing is not None and not set(existing) & set(normalize(target, narrowed)):
+                continue
             intersect(
                 constrained, contributions, target, narrowed,
                 frozenset({"data_table_narrowing"}), "data_table_narrowing",

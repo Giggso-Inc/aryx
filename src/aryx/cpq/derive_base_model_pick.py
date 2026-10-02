@@ -15,6 +15,9 @@ from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
 from aryx.cpq.state import MenuOption
 
+# Source tags of values that were guessed, not known (never derivation evidence).
+_BLIND_SOURCE_PREFIXES = ("blind_pick", "default_first_available")
+
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
@@ -23,18 +26,26 @@ def derived_base_model_option(
     options: list[MenuOption], filled: dict[str, str],
     workspace_id: int | None, catalog_prefix: str,
     cache: dict[tuple[int, str], tuple] | None,
+    sources: dict[str, str] | None = None,
 ) -> MenuOption | None:
     """The Base Model option derived from `filled`, or None (flag off / no
-    workspace / no options / not narrowed to one real option). Never raises."""
+    workspace / no options / not narrowed to one real option). Never raises. When `sources` (the
+    per-turn source tags) is given, blind-filled values (source tag starting
+    ``blind_pick`` or ``default_first_available``) are not used as evidence."""
     if workspace_id is None or not options:
         return None
     if not get_settings().cpq_derive_base_model_enabled:
         return None
     try:
         product = filled.get("productSelectionProduct_all", "")
+        ignore = frozenset(
+            vn for vn, src in (sources or {}).items()
+            if str(src).startswith(_BLIND_SOURCE_PREFIXES)
+        )
         for cpq_model in resolved_model_first_candidates(product, workspace_id, catalog_prefix, cache):
             derived = derive_base_model_from_known_attrs(
                 cpq_model, filled, workspace_id, catalog_prefix, cache,
+                ignore_attrs=ignore,
             )
             if derived is None:
                 continue
