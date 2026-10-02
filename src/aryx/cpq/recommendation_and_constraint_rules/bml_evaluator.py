@@ -19,7 +19,9 @@ from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import logger
 
 
-def build_bml_evaluator(workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
+def build_bml_evaluator(
+    workspace_id: int, catalog_prefix: str = "", run_id: str = "",
+) -> BmlEvaluator:
     """BML evaluator over this workspace's BmFunction scripts.
 
     catalog_prefix — scopes to one ingested catalog when the workspace
@@ -49,5 +51,5 @@ def build_bml_evaluator(workspace_id: int, catalog_prefix: str = "") -> BmlEvalu
     )
     return BmlEvaluator(
         scripts, use_llm=get_settings().bml_use_llm,
-        workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix, run_id=run_id,
     )

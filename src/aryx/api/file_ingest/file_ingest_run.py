@@ -10,8 +10,6 @@ import csv as _csv
 import io
 import itertools
 import logging
-import time
-from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -24,12 +22,13 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge, store_layout_file
 from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten
 from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active, cpq_layout_upload_active
+from aryx.csv_bml_ingestion.config import csv_bml_enabled
 from aryx.pipeline.doc_discovery.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
-from aryx.store.job_store import JobStore
+from aryx.store.job_store import JobStore, make_should_stop
 from aryx.source.source_catalog import (
     restore_generic_source_entry,
     upsert_xlsx_catalog_entry,
@@ -70,36 +69,6 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
         writer.writerows(batch)
         chunks.append(buf.getvalue().encode("utf-8"))
     return chunks or [data]
-
-
-def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
-    """Cheap, throttled cancellation check for a running job's worker thread.
-
-    POST /admin/jobs/{job_id}/cancel only ever updated the job-store row
-    (see jobs_api.py) -- nothing in the pipeline ever read it back, so a
-    "cancelled" job kept running to completion regardless, consuming a
-    worker-pool slot the whole time (confirmed live: 20+ minutes of entity
-    creation after cancellation). This closure is polled from inside the
-    pipeline's hottest loops (dimension_link.py) and at each stage boundary
-    (orchestrate.py) -- real DB reads are throttled to at most once per
-    `min_interval_s` regardless of how often the caller checks, so callers
-    can poll every iteration without hammering Postgres.
-    """
-    state = {"last_check": 0.0, "cancelled": False}
-
-    def should_stop() -> bool:
-        if state["cancelled"]:
-            return True
-        now = time.monotonic()
-        if now - state["last_check"] < min_interval_s:
-            return False
-        state["last_check"] = now
-        row = jobs.get(job_id)
-        if row is not None and row.get("status") == "cancelled":
-            state["cancelled"] = True
-        return state["cancelled"]
-
-    return should_stop
 
 
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
@@ -166,7 +135,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             except Exception as ds_exc:
                 logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
-        should_stop = _make_should_stop(jobs, job_id)
+        should_stop = make_should_stop(jobs, job_id)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
@@ -248,6 +217,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         else:
             xlsx_auto_fk = []
 
+        csv_bml_problems: list[str] = []
+        bml_session = None
+        if csv_bml_enabled():
+            # XML first, so its knowledge graph exists before any CSV in the same upload looks for it
+            data_files = sorted(data_files, key=lambda f: Path(f[1]).suffix.lower() != ".xml")
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
@@ -335,6 +309,18 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     assets=asset_rows,
                 )
                 continue
+            elif suffix == ".csv" and csv_bml_enabled():
+                # CSV -> table named after the file, only if a query for that table exists in the
+                # XML knowledge graph already ingested into this workspace (csv_bml_ingestion).
+                from aryx.csv_bml_ingestion.upload_hook import CsvBmlUploadSession
+
+                bml_session = bml_session or CsvBmlUploadSession(workspace_id, job_id)
+                jobs.update_stage(job_id, "Ingest", 20, f"Processing {name} (csv_bml_ingestion)")
+                bml_res = bml_session.ingest(data, name)
+                jobs.update_stage(job_id, "Ingest", 20,
+                                  f"{name}: {bml_res.status} rows={bml_res.rows_loaded} {bml_res.error_code}".strip())
+                if bml_res.status != "loaded":
+                    csv_bml_problems.append(f"{name}: {bml_res.status} {bml_res.error_code} {bml_res.message}"[:300])
             elif suffix == ".xlsx":
                 # Sheets + FK links (column-name AND dynamic value+LLM) were
                 # already computed ONCE across ALL xlsx files in this batch,
@@ -438,7 +424,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
-        jobs.finish(job_id, run_id=None, status="complete")
+        if csv_bml_problems:
+            jobs.finish(job_id, run_id=None, status="failed", error="; ".join(csv_bml_problems)[:2000])
+        else:
+            jobs.finish(job_id, run_id=None, status="complete")
     except PipelineCancelled:
         # The job row is already "cancelled" (that's what should_stop() just
         # read to get here) -- leave it alone, don't overwrite it with

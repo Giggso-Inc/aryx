@@ -16,11 +16,17 @@ the original inline block.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from aryx.api.ask_llm.ask_llm_extract_multi_attr_hints import _llm_extract_multi_attr_hints
 from aryx.api.ask_catalog.ask_relevant_intent_candidates import _relevant_intent_candidates
 from aryx.api.ask_turn_steps.ask_step10_recompute_pending import _step10_recompute_pending
+from aryx.cpq.logging_context import install_run_id_logging
+
+logger = logging.getLogger(__name__)
+install_run_id_logging(__name__)
 
 
 
@@ -57,15 +63,26 @@ def _step10_enforce_siblings_and_multi_hint(
         _multi_candidates = _relevant_intent_candidates(
             req.question, pending, fallback_to_full=False)
         if len(_multi_candidates) >= 2:
+            _mh_t0 = time.monotonic()
+            logger.info("cpq_step: multi_attr_hints LLM start candidates=%d", len(_multi_candidates))
             _extra_hints = _llm_extract_multi_attr_hints(
                 req.question, _multi_candidates, req.workspace_id)
+            logger.info(
+                "cpq_perf: multi_attr_hints LLM took %.3fs hints=%d",
+                time.monotonic() - _mh_t0, len(_extra_hints or {}),
+            )
             if _extra_hints:
                 for _vn, _iv in _extra_hints.items():
                     hints.setdefault(_vn, _iv)
+                _rp_t0 = time.monotonic()
                 visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids = (
                     _step10_recompute_pending(
                         hints, attrs, session, hiding_rules, rec_rules, con_rules,
                         bml_eval, dropped_multi, negated_vns, skip_always_ask,
                         validation_rules, req, catalog_prefix,
                     ))
+                logger.info(
+                    "cpq_perf: multi_attr_hints second recompute_pending took %.3fs",
+                    time.monotonic() - _rp_t0,
+                )
     return visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids

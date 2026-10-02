@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
-from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb
+from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb, _warn_if_timeout
+from aryx.store.db_timeouts import oracle_call_timeout
 
 if TYPE_CHECKING:
     from aryx.store.oracle_pool import OracleConnectionWrapper
@@ -29,7 +31,18 @@ class OracleCpqRdb(PostgresCpqRdb):
     def _connection(self) -> Iterator["OracleConnectionWrapper"]:
         from aryx.store.oracle_pool import get_oracle_pool
         settings = get_settings()
-        return get_oracle_pool(settings.oci_adb_dsn).connection()
+        pool_cm = get_oracle_pool(settings.oci_adb_dsn).connection()
+        if not settings.cpq_rdb_call_timeout_enabled:
+            return pool_cm
+        return self._bounded_oracle_connection(pool_cm, int(settings.cpq_rdb_call_timeout_ms))
+
+    @staticmethod
+    @contextmanager
+    def _bounded_oracle_connection(pool_cm: Any, timeout_ms: int) -> Iterator["OracleConnectionWrapper"]:
+        """Borrow a pooled connection with conn.call_timeout set; restore on exit."""
+        with pool_cm as conn:
+            with oracle_call_timeout(conn, timeout_ms):
+                yield conn
 
     def fetch_entity_attributes(
         self, entity_ids: list[int], workspace_id: int,
@@ -48,7 +61,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         result[int(eid)] = _as_attrs(attrs)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): attribute fetch failed", exc_info=True)
         return result
 
@@ -71,7 +85,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): type fetch failed", exc_info=True)
         return rows
 
@@ -89,7 +104,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): exact type fetch failed", exc_info=True)
         return rows
 
@@ -113,7 +129,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                         if not otype:
                             continue
                         result.setdefault(otype, []).append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): fetch_all_entities_grouped_by_type failed", exc_info=True)
         return result
 
@@ -128,19 +145,23 @@ class OracleCpqRdb(PostgresCpqRdb):
                         (workspace_id,),
                     )
                     types = [row[0] for row in cur.fetchall() if row[0]]
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): ontology type listing failed", exc_info=True)
         return types
 
     def fetch_rules(
         self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, int]]:
-        rows: list[tuple[int, int | None, str, int]] = []
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
+        """See the Postgres dialect; with_ref_id appends ref_id ("" if none)."""
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = (
             " AND JSON_VALUE(attributes, '$.status') = '1'" if active_only else ""
         )
+        ref_col = (", JSON_VALUE(attributes, '$.ref_id')"
+                   if with_ref_id else "")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -149,7 +170,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                         SELECT id,
                                JSON_VALUE(attributes, '$.id'),
                                JSON_VALUE(attributes, '$.name'),
-                               JSON_VALUE(attributes, '$.condition_function_id')
+                               JSON_VALUE(attributes, '$.condition_function_id')""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :3
@@ -157,22 +178,28 @@ class OracleCpqRdb(PostgresCpqRdb):
                         """ + status_clause,
                         (workspace_id, rule_type, type_pattern),
                     )
-                    for eid, src_id, name, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     _as_int(fn_id) or -1))
-        except Exception:
+                    for row in cur.fetchall():
+                        eid, src_id, name, fn_id = row[:4]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[4] or ""),) if with_ref_id else out)
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule fetch failed", exc_info=True)
         return rows
 
     def fetch_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, str, int]]:
-        rows: list[tuple[int, int | None, str, str, int]] = []
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
+        """See the Postgres dialect; with_ref_id appends ref_id ("" if none)."""
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = (
             " AND JSON_VALUE(attributes, '$.status') = '1'" if active_only else ""
         )
+        ref_col = (", JSON_VALUE(attributes, '$.ref_id')"
+                   if with_ref_id else "")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -182,7 +209,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.id'),
                                JSON_VALUE(attributes, '$.name'),
                                JSON_VALUE(attributes, '$.rule_type'),
-                               JSON_VALUE(attributes, '$.condition_function_id')
+                               JSON_VALUE(attributes, '$.condition_function_id')""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
@@ -191,10 +218,13 @@ class OracleCpqRdb(PostgresCpqRdb):
                         """ + status_clause,
                         (workspace_id, type_pattern),
                     )
-                    for eid, src_id, name, rule_type, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     rule_type or "", _as_int(fn_id) or -1))
-        except Exception:
+                    for row in cur.fetchall():
+                        eid, src_id, name, rule_type, fn_id = row[:5]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               rule_type or "", _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[5] or ""),) if with_ref_id else out)
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): value-rule fetch failed", exc_info=True)
         return rows
 
@@ -225,7 +255,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, val or "", (op or "").strip()))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-input fetch failed", exc_info=True)
         return rows
 
@@ -260,7 +291,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                                          val or "", _as_int(fn) or -1,
                                          _as_int(st) if _as_int(st) is not None else 0,
                                          comments or ""))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-action fetch failed", exc_info=True)
         return rows
 
@@ -287,7 +319,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): marked-attr fetch failed", exc_info=True)
         return rows
 
@@ -314,7 +347,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, cid_i = _as_int(rid), _as_int(cid)
                         if rid_i and cid_i:
                             rows.append((rid_i, cid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-chain fetch failed", exc_info=True)
         return rows
 
@@ -341,6 +375,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i, lmid_i = _as_int(rid), _as_int(aid), _as_int(lmid)
                         if aid_i and lmid_i:
                             rows.append((rid_i or 0, aid_i, lmid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): layout-attr-assoc fetch failed", exc_info=True)
         return rows

@@ -22,6 +22,9 @@ def append_pending_grid_quantities(
     filled_source: dict[str, str] | None = None,
     constrained_opts: dict[int, list[str]] | None = None,
     selector_vns: set[str] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> list[ConfigAttr]:
     """Add `resolve_pending_grid_quantities`'s output to `pending`
     (mutated in place, also returned for call-site convenience),
@@ -93,6 +96,7 @@ def append_pending_grid_quantities(
     seen = {a.variable_name for a in pending}
     for qty_attr in resolve_pending_grid_quantities(
         attrs, filled, filled_multi, constrained_opts, selector_vns=selector_vns,
+        workspace_id=workspace_id, catalog_prefix=catalog_prefix, dt_cache=dt_cache,
     ):
         if qty_attr.variable_name in seen:
             continue

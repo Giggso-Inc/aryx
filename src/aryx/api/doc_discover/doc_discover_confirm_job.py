@@ -12,6 +12,7 @@ from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
+from aryx.pipeline.orchestrate import PipelineCancelled
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 
@@ -47,6 +48,17 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
                          workspace_id, confirm_state=confirm_state, discovery_id=did)
         jobs.finish(job_id, run_id=None, status="complete")
         discoveries.mark_confirmed(did, job_id)
+    except PipelineCancelled:
+        # The job row is already "cancelled" (that's what should_stop() just
+        # read to get here, via ingest_confirmed's should_stop) -- leave it
+        # alone, don't overwrite it with "failed" (mirrors file_ingest_run.py's
+        # identical handling for the /admin/ingest/file path). Still reset the
+        # discovery to "partial" so it isn't stuck at "confirming" forever --
+        # any plans already completed before the cancel are preserved via
+        # confirm_state, so a later resume/dismiss both work the same as any
+        # other partial confirm.
+        logger.info("doc confirm cancelled job=%s did=%s", job_id, did)
+        _reset_discovery_status(did)
     except Exception as exc:  # noqa: BLE001
         logger.warning("doc confirm failed job=%s: %s", job_id, exc, exc_info=True)
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))

@@ -10,6 +10,7 @@ two former ``self.`` helpers are the plain functions in
 
 from __future__ import annotations
 
+from aryx.cpq.base_model_placeholder import is_base_model_placeholder
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator
 from aryx.cpq.engine import _valid, logger
@@ -100,6 +101,13 @@ def apply_recommendation_rules(
             recommended_value,
         )
         if not _valid(recommended_value):
+            continue
+        if is_base_model_placeholder(target.variable_name, recommended_value):
+            logger.info(
+                "cpq: rejecting rule-written base-model placeholder vn=%r "
+                "value=%r rule=%r", target.variable_name, recommended_value,
+                rule.rule_name,
+            )
             continue
         allowed_for_target = (
             constrained_opts.get(target.entity_id) if constrained_opts else None

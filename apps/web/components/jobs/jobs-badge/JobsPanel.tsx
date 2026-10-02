@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { FolderDown, X } from "lucide-react";
 import { JobCard } from "./JobCard";
+import { useCsvIssueCounts } from "./useCsvIssueCounts";
 import type { JobRow } from "./types";
 
 interface PanelProps {
@@ -13,6 +14,9 @@ interface PanelProps {
 
 /** Docked side panel. No backdrop — page stays interactive. */
 export function JobsPanel({ open, jobs, workspaceId, onClose, onRefresh }: PanelProps) {
+  // Re-fetch only when a job really changed (the jobs poll hands over a new array every time).
+  const jobsSignature = jobs.map((j) => `${j.job_id}:${j.status}`).join("|");
+  const issueCounts = useCsvIssueCounts(workspaceId, open, jobsSignature);
   return (
     <AnimatePresence>
       {open && (
@@ -53,7 +57,8 @@ export function JobsPanel({ open, jobs, workspaceId, onClose, onRefresh }: Panel
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <ul className="space-y-2">
               {jobs.map((j) => (
-                <JobCard key={j.job_id} job={j} workspaceId={workspaceId} onChanged={onRefresh} />
+                <JobCard key={j.job_id} job={j} workspaceId={workspaceId} onChanged={onRefresh}
+                         issueCount={issueCounts[j.job_id] ?? 0} />
               ))}
             </ul>
           </div>

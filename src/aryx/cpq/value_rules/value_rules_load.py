@@ -27,14 +27,27 @@ def load_value_rules(
         rdb, inputs, actions, _marked, _chain = engine._load_rule_join_data(
             workspace_id, catalog_prefix)
         scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
-        for eid, src_id, rule_name, _rule_type, fn_id in rdb.fetch_value_rules(
-            workspace_id, catalog_prefix, active_only=True,
+        from aryx.cpq import rule_scope  # noqa: PLC0415
+        _scope = rule_scope.rule_scope_enabled()
+        _rkw = {"with_ref_id": True} if _scope else {}
+        _lists = (state.rec_rules, state.con_rules, state.validation_rules,
+                  state.hiding_rules)
+        _marks: tuple[list, list, list, list] = ([], [], [], [])
+        for row in rdb.fetch_value_rules(
+            workspace_id, catalog_prefix, active_only=True, **_rkw,
         ):
+            eid, src_id, rule_name, _rule_type, fn_id = row[:5]
+            _ref = str(row[5] or "") if _scope else ""
+            for _lst, _mk in zip(_lists, _marks):
+                _mk.append((len(_lst), _ref))
             key = engine._rule_key(eid, src_id, inputs, actions)
             inp_list = inputs.get(key)
             acts = actions.get(key, [])
             process_value_rule_row(
                 engine, state, eid, rule_name, fn_id, inp_list, acts, scripts)
+        if _scope:
+            for _lst, _mk in zip(_lists, _marks):
+                rule_scope.tag_ref_ids(_lst, _mk)
     except Exception:
         logger.debug("cpq: value-rule load failed", exc_info=True)
 

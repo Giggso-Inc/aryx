@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.product_match_exact_first import match_option_name
 
 
 def resolve_product_hint(
@@ -28,7 +29,9 @@ def resolve_product_hint(
     genuinely present as BmCatalog entities and productSelectionProduct_all
     options inside the Sl3500EConfig ingestion).
 
-    Two passes, in priority order — NOT merged into one combined check:
+    Two passes, in priority order (three when
+    `cpq_basemodel_display_name_resolution_enabled` is on: that flag adds
+    a new FIRST pass, 0, described below) — NOT merged into one combined check:
       1. BmPrdFamily/BmCatalog entity names (_match_family_name), across
          ALL catalogs. This is genuinely catalog-specific data (an
          internal BOM export code), so a unique match here is trusted
@@ -45,6 +48,13 @@ def resolve_product_hint(
          matched the same shared list entry in a second, unrelated
          catalog — confirmed live this exact false ambiguity happened
          before this two-pass ordering was added.
+
+    Pass 0 (flag only): Basemodeltoconfig displayModel names
+    (`_match_basemodel_to_config_name`: graph, then the RDB). It names
+    specific devices ("APX 900") that the family and option-list passes
+    cannot separate. Exactly one catalog match is returned; matches in 2+
+    catalogs return None without falling through; zero matches fall to
+    passes 1 and 2 unchanged.
 
     Returns None if neither pass uniquely resolves to exactly one
     catalog — callers must ask rather than guess (D2), same principle
@@ -67,6 +77,27 @@ def resolve_product_hint(
     if not prefixes:
         return None
 
+    from aryx.config import get_settings
+
+    if get_settings().cpq_basemodel_display_name_resolution_enabled:
+        # One dict per call: the RDB fallback ignores `prefix`, so its rows
+        # are fetched once rather than once per catalog prefix.
+        rdb_cache: dict = {}
+        basemodel_matches: dict[str, str] = {}
+        for prefix in prefixes:
+            bname = engine._match_basemodel_to_config_name(
+                reader, workspace_id, prefix, hint_norm, rdb_cache)
+            if bname:
+                basemodel_matches[prefix] = bname
+        if len(basemodel_matches) == 1:
+            prefix, name = next(iter(basemodel_matches.items()))
+            return prefix, name
+        if basemodel_matches and not rdb_cache.get("prefix_agnostic"):
+            return None  # ambiguous at the most specific signal -- never fall through
+        # prefix-agnostic source (bare type / RDB): the same rows were matched
+        # for every prefix, so the match cannot pick a catalog -- let the
+        # family/option passes decide instead of refusing.
+
     family_matches: dict[str, str] = {}
     for prefix in prefixes:
         fname = engine._match_family_name(reader, workspace_id, prefix, hint_norm)
@@ -80,23 +111,13 @@ def resolve_product_hint(
 
     option_matches: dict[str, str] = {}
     for prefix in prefixes:
-        for item_value, display_name in engine._fetch_product_option_list(
-            reader, workspace_id, prefix,
-        ):
-            for text in (item_value, display_name):
-                stripped = text.strip()
-                is_code = any(c.isdigit() for c in stripped) or "/" in stripped
-                if len(stripped.split()) < 2 and not is_code:
-                    continue  # same single-word guard as extract_catalog_hints
-                norm = _engine_module._normalize_for_hint(text)
-                if (
-                    min(len(norm), len(hint_norm)) >= _engine_module._HINT_MIN_PHRASE_LEN
-                    and (norm in hint_norm or hint_norm in norm)
-                ):
-                    option_matches[prefix] = display_name or item_value
-                    break
-            if prefix in option_matches:
-                break
+        matched_name = match_option_name(
+            list(engine._fetch_product_option_list(reader, workspace_id, prefix)),
+            hint_norm, _engine_module._HINT_MIN_PHRASE_LEN,
+            _engine_module._normalize_for_hint,
+        )
+        if matched_name is not None:
+            option_matches[prefix] = matched_name
 
     if len(option_matches) == 1:
         prefix, name = next(iter(option_matches.items()))

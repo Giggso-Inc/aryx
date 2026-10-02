@@ -23,7 +23,8 @@ from pydantic import BaseModel
 
 from aryx import discoveries
 from aryx.api.doc_discover.doc_discover_confirm_job import _confirm_job
-from aryx.api.doc_discover.doc_discover_read_job import _read_job
+from aryx.api.doc_discover.doc_discover_read_job import JOB_TERMINAL_STATUSES, _read_job
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
@@ -87,6 +88,54 @@ def doc_discover_router() -> APIRouter:
             return store.list_recent(workspace_id)
         finally:
             store.close()
+
+    @router.post("/{did}/dismiss")
+    def dismiss(did: str, workspace_id: int | None = None) -> dict[str, Any]:
+        # T9/T11 warn-mode convention (PR #391/#401) for mutating routes --
+        # this is a destructive endpoint, same class of concern as jobs_api's
+        # cancel/resume.
+        workspace_id = resolve_workspace_id_warn(workspace_id, "POST /admin/docs/{did}/dismiss")
+
+        # The read job (POST /admin/docs/read, above) uses `did` as its own
+        # job_id. A still-running read job's on_progress callback (see
+        # doc_discover_read_job.py) keeps writing to the discovery row;
+        # cancelling it only flips this job row to 'cancelled' without
+        # actually stopping the worker thread (nothing in read_files()/
+        # extract_mentions() checks should_stop), so 'cancelled' counting as
+        # terminal here is safe only because _build_read_progress and
+        # _read_job's own final write both now check this same job row and
+        # suppress their write once it's terminal -- see that module's
+        # _is_job_terminal for the other half of this fix.
+        jobs = JobStore(get_settings().effective_dsn())
+        try:
+            job = jobs.get(did)
+        finally:
+            jobs.close()
+        if (job is not None and job.get("workspace_id") == workspace_id
+                and job.get("status") not in JOB_TERMINAL_STATUSES):
+            raise HTTPException(409, "cannot dismiss a discovery while its read job is still running")
+
+        # Folds the "is it still pending" check into the DELETE itself
+        # (status='pending' in the WHERE clause) instead of a separate
+        # get_status()-then-drop(): a plain check-then-delete has a TOCTOU
+        # race where /confirm flips the row to 'confirming' in the window
+        # between the two calls, and an unconditional drop() deletes it
+        # anyway -- orphaning the confirm job the status check was meant to
+        # prevent. This also means only 'pending' rows are ever eligible (a
+        # 'confirmed' row, deleting which would destroy real ingest history,
+        # is simply never matched) with no separate blocklist to keep in
+        # sync with every status this table can have.
+        if discoveries.drop_if_pending(did, workspace_id):
+            logger.info("doc discovery dismissed did=%s workspace_id=%d", did, workspace_id)
+            return {"status": "dismissed"}
+
+        # The delete didn't match any row -- find out why, for the error
+        # response only (never for the delete decision itself above).
+        status = discoveries.get_status(did, workspace_id)
+        if status is None:
+            logger.warning("doc dismiss rejected discovery_id=%s: unknown or expired", did)
+            raise HTTPException(404, "unknown discovery or workspace mismatch")
+        raise HTTPException(409, f"cannot dismiss a discovery with status={status}")
 
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:

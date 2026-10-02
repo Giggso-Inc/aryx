@@ -7,13 +7,17 @@ shared locals now live on ``AttrResolution``.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.base_model_placeholder import is_base_model_placeholder
 from aryx.cpq.engine import (
     _DECISION_ANCHOR_VNS,
     _valid,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -86,6 +90,11 @@ def stage_satisfied_recommendation(
             and (_allowed_for_rec is None or o.item_value in _allowed_for_rec)
         ]
         rec_match = scope.satisfied_recommendation(attr, _rec_candidate_opts)
-        if rec_match:
+        if rec_match and is_base_model_placeholder(state.vn, rec_match[0]):
+            logger.info(
+                "cpq: rejecting rule-written base-model placeholder vn=%r "
+                "value=%r rule=%r", state.vn, rec_match[0], rec_match[2],
+            )
+        elif rec_match:
             state.value, state.display, state.fired_rule_name = rec_match
             state.source = "rule"

@@ -10,7 +10,9 @@ import csv
 import io
 from pathlib import Path
 
+import aryx.csv_field_limit  # noqa: F401  -- raises the csv field size limit at import (#345)
 from aryx.pipeline.ingest_validation.ingest_validation_types import DatasetTruth, FkTruth, GroundTruth
+
 
 _ID_COLUMNS = ("id", "guid", "uuid")
 

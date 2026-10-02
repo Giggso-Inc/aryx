@@ -22,6 +22,18 @@ from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 
+# Statuses that mean "this job will never write to its discovery row
+# again" -- shared with doc_discover_api.py's dismiss() route, which relies
+# on it to decide when a discovery is safe to delete. Defined here (not
+# there) since this module is where the status actually gets checked
+# against the surviving read-job thread's own writes.
+JOB_TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
+
+
+def _is_job_terminal(jobs: JobStore, job_id: str) -> bool:
+    row = jobs.get(job_id)
+    return row is not None and row.get("status") in JOB_TERMINAL_STATUSES
+
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
     tmp = NamedTemporaryFile(suffix=suffix, delete=False)
@@ -46,11 +58,24 @@ def _build_read_progress(jobs: JobStore, did: str, workspace_id: int) -> Callabl
 
     Thread safety: with ARYX_DOC_WORKERS > 1, multiple documents' extraction
     threads can call this concurrently — guarded by a lock.
+
+    Cancellation: POST /admin/jobs/{job_id}/cancel only ever flips this job's
+    own row to 'cancelled' -- nothing in read_files()/extract_mentions()
+    checks should_stop, so the worker thread keeps running and this callback
+    keeps firing after a cancel. Each call now checks the job row first and
+    skips its write entirely once terminal: without this, dismiss()'s own
+    409-while-running guard was pointless -- a cancelled-but-still-running
+    read job counts as "terminal" there (safe to dismiss), but the very next
+    flush from this still-running thread would silently re-insert the
+    'pending' row the user just deleted (put()'s ON CONFLICT never touches
+    status, so a fresh INSERT after a delete always lands 'pending' again).
     """
     lock = threading.Lock()
     accumulated: list = []
 
     def _on_progress(completed: int, total: int, new_records: list) -> None:
+        if _is_job_terminal(jobs, did):
+            return
         with lock:
             accumulated.extend(new_records)
             pct = 30 + int(min(completed / max(total, 1), 1.0) * 60)
@@ -93,6 +118,16 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         result = read_files(doc_paths, tabular, _local_broker(), context, did=did,
                             on_progress=on_progress, workspace_id=workspace_id,
                             layout_items=layout_items)
+        if _is_job_terminal(jobs, did):
+            # Cancelled (or otherwise finished) while read_files() was still
+            # running -- its own on_progress callback already stopped
+            # writing (see _build_read_progress), and this final put() must
+            # skip too, or it just re-inserts the 'pending' row dismiss()
+            # may have already deleted. Don't overwrite the real terminal
+            # status (e.g. 'cancelled') with 'complete' either.
+            logger.info("doc read did=%s finished after job was already terminal -- discarding result",
+                        did)
+            return
         result["workspace_id"] = workspace_id
         discoveries.put(did, result, workspace_id)
         logger.info("doc read complete did=%s mentions=%d tabular_files=%d types=%d",

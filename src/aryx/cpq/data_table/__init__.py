@@ -33,6 +33,9 @@ _EXPORTS = {
     "resolve_product_cpq_model_family": "data_table_product",
     "resolve_product_cpq_models_from_rows": "data_table_product",
     "resolve_region_allow_value": "data_table_product",
+    "derive_base_model_from_known_attrs": "data_table_derive_base_model",
+    "infer_implied_legal_values": "data_table_inference",
+    "resolve_defaultinattr_value": "data_table_defaultinattr",
     "resolve_whitelist_values": "data_table_whitelist",
 }
 

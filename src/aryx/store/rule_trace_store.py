@@ -13,13 +13,40 @@ depends on the other completing.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.queries import load
+from aryx.store.db_timeouts import log_if_timeout, oracle_call_timeout
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+# Circuit breaker state (module-level: RuleTraceStore is re-created per call).
+_breaker_lock = threading.Lock()
+_MAX_TRACKED_RUNS = 1000  # cap so runs that never seal cannot grow memory without bound
+_fail_counts: dict[str, int] = {}
+_open_runs: dict[str, None] = {}  # insertion-ordered set; oldest evicted past the cap
+
+
+def _evict_oldest(store: dict) -> None:
+    """Drop oldest entries (dicts keep insertion order) beyond the cap."""
+    while len(store) > _MAX_TRACKED_RUNS:
+        store.pop(next(iter(store)))
+
+
+@contextmanager
+def _bounded(conn, cur, timeout_ms: int):
+    """Bound the write: Postgres SET LOCAL (int literal) / Oracle call_timeout."""
+    if get_settings().effective_db_backend() == "oci":
+        with oracle_call_timeout(conn, timeout_ms):
+            yield
+    else:
+        cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        yield
 
 
 class RuleTraceStore:
@@ -32,12 +59,20 @@ class RuleTraceStore:
         self, run_id: str, workspace_id: int, catalog_prefix: str, file_key: str,
     ) -> None:
         """Create the session row if one doesn't already exist for this run_id."""
+        settings = get_settings()
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    load("insert_rule_trace_session"),
-                    (run_id, int(workspace_id), catalog_prefix, file_key),
-                )
+                if settings.cpq_rule_trace_write_timeout_enabled:
+                    with _bounded(conn, cur, int(settings.cpq_rule_trace_write_timeout_ms)):
+                        cur.execute(
+                            load("insert_rule_trace_session"),
+                            (run_id, int(workspace_id), catalog_prefix, file_key),
+                        )
+                else:
+                    cur.execute(
+                        load("insert_rule_trace_session"),
+                        (run_id, int(workspace_id), catalog_prefix, file_key),
+                    )
         logger.info(
             "rule_trace_store.open_session run_id=%s catalog_prefix=%s file_key=%s",
             run_id, catalog_prefix, file_key,
@@ -55,11 +90,45 @@ class RuleTraceStore:
         bml_tier: str | None = None,
     ) -> None:
         """Insert one fired-rule row. Called once per rule fire, never buffered."""
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    load("insert_rule_trace_entry"),
-                    (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
+        settings = get_settings()
+        if not settings.cpq_rule_trace_write_timeout_enabled:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        load("insert_rule_trace_entry"),
+                        (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
+                    )
+            return
+        if run_id in _open_runs:
+            return  # breaker open: local .jsonl still written by the caller
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    with _bounded(conn, cur, int(settings.cpq_rule_trace_write_timeout_ms)):
+                        cur.execute(
+                            load("insert_rule_trace_entry"),
+                            (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
+                        )
+        except Exception as exc:
+            log_if_timeout(exc, "rule_trace_store.append_entry")
+            self._record_failure(run_id, int(settings.cpq_rule_trace_breaker_threshold))
+            raise
+        with _breaker_lock:
+            _fail_counts.pop(run_id, None)
+
+    @staticmethod
+    def _record_failure(run_id: str, threshold: int) -> None:
+        """Count a consecutive failure; open the breaker for the run at threshold."""
+        with _breaker_lock:
+            n = _fail_counts.get(run_id, 0) + 1
+            _fail_counts[run_id] = n
+            _evict_oldest(_fail_counts)
+            if n >= threshold and run_id not in _open_runs:
+                _open_runs[run_id] = None
+                _evict_oldest(_open_runs)
+                logger.error(
+                    "rule_trace_store: circuit breaker open run_id=%s after %d consecutive "
+                    "append failures; DB writes stopped for this run", run_id, n,
                 )
 
     def seal_session(self, run_id: str, status: str = "post_approval") -> bool:
@@ -68,6 +137,9 @@ class RuleTraceStore:
             with conn.cursor() as cur:
                 cur.execute(load("seal_rule_trace_session"), (status, run_id))
                 sealed = cur.rowcount > 0
+        with _breaker_lock:
+            _fail_counts.pop(run_id, None)
+            _open_runs.pop(run_id, None)
         if sealed:
             logger.info("rule_trace_store.seal_session run_id=%s status=%s", run_id, status)
         return sealed
