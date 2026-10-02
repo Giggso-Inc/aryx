@@ -103,6 +103,38 @@ class DiscoveryStore:
             return None
         return json.loads(row[0] or "{}")
 
+    def get_status(self, discovery_id: str, workspace_id: int) -> str | None:
+        """Return just the status column, scoped to the calling workspace.
+
+        Cheap existence + workspace-ownership check for actions (like dismiss)
+        that need to branch on status without paying for the full get()'s
+        data_json deserialization or even get_summary()'s JSON parse.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_discovery_status"), (discovery_id, workspace_id))
+                row = cur.fetchone()
+        return row[0] if row else None
+
+    def drop_if_pending(self, discovery_id: str, workspace_id: int) -> bool:
+        """Delete a discovery row only if it's still 'pending', scoped to
+        the calling workspace. Returns True iff a row was actually deleted.
+
+        A plain get_status()-then-drop() has a TOCTOU race: /confirm (or a
+        second concurrent dismiss) can flip the row to 'confirming' in the
+        window between the two calls, and an unconditional drop() deletes it
+        anyway -- orphaning the confirm job the status check was meant to
+        protect. Folding the status check into the DELETE's WHERE clause
+        makes "is it still pending" and "delete it" atomic, and also means
+        only 'pending' rows are ever eligible -- a 'confirmed' row (deleting
+        that would destroy real ingest history) or any other status is
+        simply never matched, with no separate blocklist to keep in sync.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("delete_pending_discovery"), (discovery_id, workspace_id))
+                return cur.rowcount > 0
+
     def drop(self, discovery_id: str) -> None:
         """Delete a discovery row (no workspace guard — internal cleanup only)."""
         with self._pool.connection() as conn:
