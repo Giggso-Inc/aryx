@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
+
 
 
 def _step10_recompute_pending(
@@ -70,5 +72,6 @@ def _step10_recompute_pending(
                 v_attrs, hiding_rules, rec_rules, con_rules)
         ]
     p = _cpq_engine.append_pending_grid_quantities(
-        p, v_attrs, f, session.filled_multi, session.filled_source, c_opts)
+        p, v_attrs, f, session.filled_multi, session.filled_source, c_opts,
+        **grid_narrow_kwargs(req.workspace_id, catalog_prefix))
     return v_attrs, f, d_filled, p, c_opts, r_ids

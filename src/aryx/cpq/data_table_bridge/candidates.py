@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from aryx.config import get_settings
+from aryx.cpq import model_resolution as _model_resolution
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
@@ -18,6 +19,36 @@ from aryx.cpq.data_table.data_table_resolver import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
+
+
+def _prepend_resolved_model(
+    primary: tuple[str, ...], product_name: str, base_model: str,
+) -> tuple[str, ...]:
+    """Port of aryxent PR 3: when `cpq_model_scope_lookups_enabled` is on and
+    this turn's resolver knows which model the customer wants, make sure its
+    cpqModel is a candidate -- prepended if missing, never replacing or
+    removing what tiers 1-3 found. Flag off / no bound turn: `primary`
+    returned unchanged.
+    """
+    if not get_settings().cpq_model_scope_lookups_enabled:
+        return primary
+    try:
+        ctx = _model_resolution.get_turn()
+        if ctx is None or not ctx.resolution.resolved or ctx.resolution.chosen is None:
+            return primary
+        resolved = ctx.resolution.chosen.cpq_model
+        if resolved in primary:
+            return primary
+        if ctx.first_time(("prepend_cpq_model", resolved)):  # ~300 calls/turn
+            logger.info(
+                "cpq: model_scope prepended_cpq_model product_name=%r "
+                "base_model=%r was=%r -> (%r, *was)",
+                product_name, base_model, primary, resolved,
+            )
+        return (resolved, *primary)
+    except Exception:  # noqa: BLE001 -- never break candidate resolution
+        logger.exception("cpq: model_scope candidate prepend failed product_name=%r", product_name)
+        return primary
 
 
 def _cpq_model_candidates(
@@ -77,10 +108,24 @@ def _cpq_model_candidates(
             primary = ()
         else:
             primary = _DEFAULT_CPQ_MODEL_CANDIDATES
+    original = primary
+    primary = _prepend_resolved_model(primary, product_name, base_model)
     if not (base_model and workspace_id is not None):
         return primary
     discovered = dt_discover_cpq_models_for_base_model(
         base_model, workspace_id, catalog_prefix, cache,
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
+    if (
+        extra and original == _DEFAULT_CPQ_MODEL_CANDIDATES
+        and get_settings().cpq_candidates_real_models_first_enabled
+    ):
+        # Partial port of aryxent PR 3/10: real models discovered for the
+        # known base model go BEFORE the generic APXNEXT fallback, so a
+        # caller that stops at the first single value no longer answers
+        # for APX NEXT. Off by default.
+        # The resolved-model prepend (if any) stays in front: resolved model,
+        # then real discovered models, then the generic fallback.
+        head = primary[: len(primary) - len(original)]
+        return head + extra + original
     return primary + extra if extra else primary

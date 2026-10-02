@@ -166,9 +166,13 @@ class PostgresCpqRdb:
 
     def fetch_rules(
         self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, int]]:
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
         """All BmConfigRule entities of one rule_type.
+
+        with_ref_id — when True each tuple gets the rule's BmCatalog node
+        ref_id (str, "" if none) APPENDED as a final element (aryxent PR 6
+        plumbing). Default False keeps the SQL and tuple shape unchanged.
 
         Returns (entity_id, source_rule_id, rule_name, condition_function_id).
         source_rule_id is the BM-native rule id from the entity's own attrs —
@@ -189,9 +193,10 @@ class PostgresCpqRdb:
         (status=3) alongside the live one, and without this filter a
         disabled flow is indistinguishable from an active one.
         """
-        rows: list[tuple[int, int | None, str, int]] = []
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = " AND (attributes->>'status') = '1'" if active_only else ""
+        ref_col = ", attributes->>'ref_id'" if with_ref_id else ""
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -200,7 +205,7 @@ class PostgresCpqRdb:
                         SELECT id,
                                attributes->>'id',
                                attributes->>'name',
-                               attributes->>'condition_function_id'
+                               attributes->>'condition_function_id'""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = %s
                           AND replace(lower(ontology_type), '_', '') LIKE %s
@@ -208,18 +213,23 @@ class PostgresCpqRdb:
                         """ + status_clause,
                         (workspace_id, type_pattern, rule_type),
                     )
-                    for eid, src_id, name, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     _as_int(fn_id) or -1))
+                    for row in cur.fetchall():
+                        eid, src_id, name, fn_id = row[:4]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[4] or ""),) if with_ref_id else out)
         except Exception:
             logger.debug("cpq rdb: rule fetch failed", exc_info=True)
         return rows
 
     def fetch_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-        active_only: bool = False,
-    ) -> list[tuple[int, int | None, str, str, int]]:
+        active_only: bool = False, with_ref_id: bool = False,
+    ) -> list[tuple]:
         """All BmConfigRule entities EXCEPT hiding rules (rule_type=11).
+
+        with_ref_id — see fetch_rules(): appends the rule's ref_id ("" if
+        none) as a final tuple element; default False is unchanged.
 
         Returns (entity_id, source_rule_id, rule_name, rule_type,
         condition_function_id). Recommendation/constraint rules can't be
@@ -241,9 +251,10 @@ class PostgresCpqRdb:
         PLAN_2026-08-14.md). Defaults to False so any other caller is
         byte-for-byte unaffected.
         """
-        rows: list[tuple[int, int | None, str, str, int]] = []
+        rows: list[tuple] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         status_clause = " AND (attributes->>'status') = '1'" if active_only else ""
+        ref_col = ", attributes->>'ref_id'" if with_ref_id else ""
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -253,7 +264,7 @@ class PostgresCpqRdb:
                                attributes->>'id',
                                attributes->>'name',
                                attributes->>'rule_type',
-                               attributes->>'condition_function_id'
+                               attributes->>'condition_function_id'""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = %s
                           AND replace(lower(ontology_type), '_', '') LIKE %s
@@ -261,9 +272,11 @@ class PostgresCpqRdb:
                         """ + status_clause,
                         (workspace_id, type_pattern),
                     )
-                    for eid, src_id, name, rule_type, fn_id in cur.fetchall():
-                        rows.append((int(eid), _as_int(src_id), name or "",
-                                     rule_type or "", _as_int(fn_id) or -1))
+                    for row in cur.fetchall():
+                        eid, src_id, name, rule_type, fn_id = row[:5]
+                        out = (int(eid), _as_int(src_id), name or "",
+                               rule_type or "", _as_int(fn_id) or -1)
+                        rows.append(out + (str(row[5] or ""),) if with_ref_id else out)
         except Exception:
             logger.debug("cpq rdb: value-rule fetch failed", exc_info=True)
         return rows

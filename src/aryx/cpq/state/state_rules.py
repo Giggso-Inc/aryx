@@ -84,6 +84,7 @@ class HidingRule:
     confirmed follow the "hide when no legal value is available right now"
     semantics via live evidence, the same discipline _CONFIRMED_DEAD_ATTRS
     and similar named carve-outs elsewhere in engine.py already use."""
+    ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 
 
 @dataclass
@@ -124,6 +125,7 @@ class RecommendationRule:
     conditions: list[tuple[int, str, str]] | None = None
     condition_script: str | None = None
     condition_operator: str = "4"
+    ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 
 
 @dataclass
@@ -152,6 +154,7 @@ class ConstraintRule:
     conditions: list[tuple[int, str, str]] | None = None  # see HidingRule.conditions
     condition_script: str | None = None
     condition_operator: str = "4"
+    ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 
 
 @dataclass
@@ -202,3 +205,4 @@ class ValidationRule:
     condition_value: str = ""
     condition_operator: str = "4"
     conditions: list[tuple[int, str, str]] | None = None
+    ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py

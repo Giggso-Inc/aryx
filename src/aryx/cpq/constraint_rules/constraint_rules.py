@@ -18,6 +18,7 @@ from typing import Any
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.constraint_rules.constraint_rules_apply import apply_rules
+from aryx.cpq.constraint_rules.constraint_rules_dt_narrowing import apply_data_table_narrowing
 from aryx.cpq.constraint_rules.constraint_rules_fallback import resolve_empty_intersections
 from aryx.cpq.constraint_rules.constraint_rules_narrowing import apply_narrowing_rec_rules
 from aryx.cpq.engine import logger
@@ -36,6 +37,7 @@ def apply_constraint_rules(
     _constraint_cache: dict[str, tuple] | None = None,
     _signature_exclude_vns: frozenset[str] | None = None,
     narrowing_rec_rules: list[Any] | None = None,
+    narrow_from_data_tables: bool = False,
 ) -> dict[int, list[str]]:
     """Return {attr_entity_id: [allowed_item_values]} for attrs with
     active constraints. Multiple rules for the same target are
@@ -69,7 +71,7 @@ def apply_constraint_rules(
     signature above, so a permanently flip-flopping attribute never
     defeats this cache. `None` (the default) includes everything.
     """
-    if not rules and not narrowing_rec_rules:
+    if not rules and not narrowing_rec_rules and not narrow_from_data_tables:
         return {}
     _cur_sig = None
     if _constraint_cache is not None:
@@ -111,6 +113,11 @@ def apply_constraint_rules(
         apply_narrowing_rec_rules(
             narrowing_rec_rules, by_rule_id, filled, bml_eval, workspace_id,
             catalog_prefix, _dt_cache, constrained, contributions,
+        )
+    if narrow_from_data_tables:
+        apply_data_table_narrowing(
+            attrs, filled, workspace_id, catalog_prefix, _dt_cache,
+            constrained, contributions,
         )
 
     if constrained:
