@@ -10,8 +10,18 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.engine import logger
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+
+
+def _whitelist_narrow_kwargs() -> dict[str, bool]:
+    """``narrow_from_data_tables=True`` only when
+    cpq_whitelist_narrow_questions_enabled is on; otherwise no extra kwarg
+    (the call is then byte-identical to before)."""
+    if get_settings().cpq_whitelist_narrow_questions_enabled:
+        return {"narrow_from_data_tables": True}
+    return {}
 
 
 def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope) -> bool:
@@ -105,6 +115,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         _constraint_cache=state.constraint_cache,
         _signature_exclude_vns=frozenset(state.oscillating_vns),
         narrowing_rec_rules=scope.rec_rules,
+        **_whitelist_narrow_kwargs(),
     )
     logger.info(
         "cpq_perf: apply_constraint_rules (in-loop) took %.3fs pass=%d",

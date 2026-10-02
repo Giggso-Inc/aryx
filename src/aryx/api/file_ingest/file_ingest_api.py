@@ -82,6 +82,18 @@ def file_ingest_router() -> APIRouter:
         match_keys: str = Form(...),
         fk_links: str = Form("[]"),
         workspace_id: int = Form(1),
+        catalog_prefix: str | None = Form(
+            None,
+            description=(
+                "CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: "
+                "explicit catalog_prefix for any .txt/.json layout-export "
+                "file(s) in this batch (only takes effect when "
+                "ARYX_INGEST_PIPELINE and ARYX_CPQ_LAYOUT_SOURCE are both "
+                "set). Omitted -> falls back to the filename-derived stem, "
+                "as before. Applied to every layout file in the batch if "
+                "more than one is uploaded in the same request."
+            ),
+        ),
     ) -> dict[str, Any]:
         if len(files) > _MAX_FILES:
             raise HTTPException(400, f"Max {_MAX_FILES} files per upload")
@@ -143,7 +155,10 @@ def file_ingest_router() -> APIRouter:
                 if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
                     raise HTTPException(400,
                         f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
-            future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+            future = _get_executor().submit(
+                _run_files, items, ontology_type, keys, links, job_id, workspace_id,
+                catalog_prefix,
+            )
             future.add_done_callback(
                 lambda f: (exc := f.exception()) and logger.error(
                     "ingest job=%s raised unhandled exception: %s", job_id, exc

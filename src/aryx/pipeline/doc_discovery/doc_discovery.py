@@ -84,13 +84,27 @@ DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                broker: Broker, context: str, did: str | None = None,
-               on_progress: Callable[[int, int, list], None] | None = None) -> dict[str, Any]:
+               on_progress: Callable[[int, int, list], None] | None = None,
+               workspace_id: int = 1,
+               layout_items: list[tuple[bytes, str]] | None = None) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing.
 
     on_progress: optional callback forwarded to extract_mentions() for each
     document — see doc_router.DocumentRouterConnector / ontology.extract for
     the (completed, total, new_records) signature. Lets the caller persist
     partial progress on long-running (1000+ page) documents.
+
+    workspace_id: forwarded to the cpq_ingestion raw-graph writer for XML
+    files when that pipeline is active (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_
+    PIPELINE) — see the XML branch below. Unused otherwise; defaults to 1
+    to match every other call site's pre-existing default.
+
+    layout_items: CPQ layout-export files (see cpq_layout_upload_active())
+    already pulled out of the caller's doc/tabular split. Surfaced here as
+    plain-passthrough plans (kind="cpq_layout") in the SAME "tabular"/
+    "files" summary the normal tabular flow uses, so they go through this
+    screen's existing read-then-confirm UX -- nothing is written to
+    aryx_cpq_layout_file until ingest_confirmed() actually approves one.
     """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
@@ -111,7 +125,20 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for d, n in tabular:
         suffix = Path(n).suffix.lower()
         if suffix == ".xml":
-            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
+            # Lazy import: aryx.cpq_ingestion.pipeline itself imports
+            # _xml_to_csvs from this module, so a top-level import here
+            # would be circular.
+            from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten  # noqa: PLC0415
+            from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
+
+            if cpq_ingestion_pipeline_active(n):
+                xml_csvs = project_raw_graph_and_flatten(
+                    d, Path(n).stem, workspace_id=workspace_id,
+                    dsn=settings.effective_dsn(), graph_url=settings.graph_url, log_id=did,
+                )
+            else:
+                xml_csvs = _xml_to_csvs(d, Path(n).stem, log_id=did)
+            for csv_bytes, csv_name in xml_csvs:
                 converted_tabular.append((csv_bytes, csv_name, n, d))
         elif suffix == ".xlsx":
             for csv_bytes, csv_name in _xlsx_to_csvs(d, Path(n).stem, log_id=did):
@@ -132,14 +159,38 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                 headers = []
             if "_text" in headers:
                 plan["match_keys"] = ["_text"]
+        elif Path(filename).suffix.lower() == ".csv":
+            # A plain (not XML/XLSX-derived) CSV upload has no "parent
+            # workbook" to fan back in to -- one file is already one plan --
+            # so it's flagged directly here rather than routed through
+            # source_filename/source_bytes, which _persist_tabular_sources()
+            # (below) treats as "an XML/XLSX parent to catalog", not
+            # something a plain CSV upload has.
+            from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
+            if cpq_ingestion_pipeline_active(filename):
+                plan["cpq_csv_direct"] = True
         tab_plans.append(plan)
+
+    for layout_data, layout_name in (layout_items or []):
+        tab_plans.append({
+            "filename": layout_name, "data": layout_data,
+            "ontology_type": "CPQ Layout File", "kind": "cpq_layout",
+        })
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
         by_type.setdefault(m.payload["type"], []).append(m.payload["name"])
     types = [{"type": t, "count": len(v), "examples": list(dict.fromkeys(v))[:5]}
              for t, v in sorted(by_type.items(), key=lambda kv: -len(kv[1]))]
-    files = [{"filename": p["filename"], "ontology_type": p["ontology_type"]} for p in tab_plans]
+    files = [
+        {
+            "filename": p["filename"],
+            "ontology_type": p["ontology_type"],
+            "source_filename": p["source_filename"],
+        } if p.get("source_filename") else
+        {"filename": p["filename"], "ontology_type": p["ontology_type"]}
+        for p in tab_plans
+    ]
     logger.info("read_files done did=%s mentions=%d tabular_plans=%d types=%d files=%d",
                 did, len(mentions), len(tab_plans), len(types), len(files))
     return {"mentions": mentions, "tabular": tab_plans,
@@ -229,7 +280,111 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
+
+    # CPQ layout plans (kind="cpq_layout", see read_files()) are stored
+    # verbatim via store_layout_file() here, on confirm -- never through
+    # _persist_tabular_sources/FK-detection/_run_one_plan below, all of
+    # which assume CSV/JSON tabular data. Removed from valid_plans up front
+    # so nothing downstream ever sees one. Best-effort per file, matching
+    # file_ingest_run.py's _run_files: one bad/oversized layout file is
+    # logged and skipped, not allowed to fail the rest of the confirm.
+    layout_plans = [p for p in valid_plans if p.get("kind") == "cpq_layout"]
+    valid_plans = [p for p in valid_plans if p.get("kind") != "cpq_layout"]
+    if layout_plans:
+        # Lazy import: aryx.cpq_ingestion.__init__ imports pipeline.py,
+        # which imports _xml_to_csvs from THIS module -- a top-level import
+        # here would be circular (same reasoning as the XML branch above).
+        from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge, store_layout_file  # noqa: PLC0415
+    for lp in layout_plans:
+        try:
+            prefix = store_layout_file(
+                lp["data"], lp["filename"],
+                workspace_id=workspace_id, dsn=settings.effective_dsn(),
+            )
+            logger.info(
+                "cpq_ingestion: stored layout file via doc-discovery confirm "
+                "workspace_id=%d catalog_prefix=%r filename=%r",
+                workspace_id, prefix, lp["filename"],
+            )
+        except CpqLayoutFileTooLarge:
+            logger.warning(
+                "cpq_ingestion: layout file %s too large, skipped",
+                lp["filename"], exc_info=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "cpq_ingestion: failed to store layout file %s",
+                lp["filename"], exc_info=True,
+            )
+
+    # cpq_ingestion: a plain CSV upload whose plan is active for this
+    # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
+    # cpq_ingestion) lands directly in Postgres (aryx_landed_record) and
+    # stops there -- no resolve, no relate, no graph entity/relationship,
+    # no graph projection. Excluded from `valid_plans` before
+    # _persist_tabular_sources (a plain CSV upload has no "parent workbook"
+    # for that function to catalog anyway -- see the cpq_csv_direct comment
+    # in read_files()) and before FK detection/_run_one_plan below, for the
+    # same double-resolve reasoning as the XML branch just below this one.
+    from aryx.cpq_ingestion.routing import partition_cpq_ingestion_csv_plans  # noqa: PLC0415
+    cpq_ingestion_csv_plans, valid_plans = partition_cpq_ingestion_csv_plans(valid_plans)
+
+    if cpq_ingestion_csv_plans:
+        from aryx.cpq_ingestion.csv_land import land_csv_directly  # noqa: PLC0415
+
+    for plan in cpq_ingestion_csv_plans:
+        filename = plan["filename"]
+        stem = Path(filename).stem
+        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+                          f"Landing {filename} directly in Postgres…")
+        logger.info("confirm job=%s cpq_ingestion csv_direct start filename=%s", job_id, filename)
+        try:
+            result = land_csv_directly(
+                plan["data"], stem, workspace_id=workspace_id,
+                dsn=settings.effective_dsn(), log_id=job_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "confirm job=%s cpq_ingestion csv_direct failed filename=%s",
+                job_id, filename, exc_info=True,
+            )
+            continue
+        logger.info("confirm job=%s cpq_ingestion csv_direct done filename=%s result=%s",
+                    job_id, filename, result)
+
     _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
+
+    # cpq_ingestion: an XML file whose plans are still active for this
+    # pipeline (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_PIPELINE) gets resolved and
+    # related directly from its raw graph instead of through the generic CSV
+    # pipeline below -- see partition_cpq_ingestion_plans()'s docstring for
+    # why this groups by source_filename rather than iterating plans
+    # directly. Excluded from `valid_plans` before FK detection and
+    # `_run_one_plan` below for the same reason: these records already went
+    # through containment-based relate, not FK-guessing, so re-running them
+    # through the CSV path would both double-resolve them and pollute FK
+    # detection with columns (`_text`, entity tag names) that were never
+    # meant to be joined on.
+    from aryx.cpq_ingestion.routing import partition_cpq_ingestion_plans  # noqa: PLC0415
+    cpq_ingestion_source_files, valid_plans = partition_cpq_ingestion_plans(valid_plans)
+
+    for source_filename, plan in cpq_ingestion_source_files.items():
+        from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
+        from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
+
+        stem = Path(source_filename).stem
+        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+                          f"Resolving {source_filename} directly from its raw graph…")
+        logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
+                    job_id, source_filename)
+        projection = project_xml_to_raw_graph(plan["source_bytes"])
+        result = resolve_and_relate_raw_graph(
+            projection, workspace_id=workspace_id, source_key=stem,
+            dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+            broker=broker, log_id=job_id,
+        )
+        logger.info("confirm job=%s cpq_ingestion resolve/relate done source_filename=%s result=%s",
+                    job_id, source_filename, result)
 
     def _report_fk_stage(pct: int, detail: str) -> None:
         # A transient job-store failure while reporting progress must never

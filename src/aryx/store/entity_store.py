@@ -119,6 +119,24 @@ class EntityStore:
             ))
         return records
 
+    def entity_ids_by_run(self, run_id: int) -> dict[str, int]:
+        """Map each landed record's original ``source_record_id`` to the
+        resolved entity id it ended up a member of, for one run.
+
+        Built for cpq_ingestion's raw-graph resolve/relate bridge: ``save()``
+        only returns a count, not per-record entity ids, so this is the
+        supported way to recover "which entity did record X resolve into"
+        after the fact -- a plain join through ``aryx_entity_member``, scoped
+        to one run so it stays cheap even in a workspace with a long
+        ingestion history. Records that were dropped during resolution
+        (e.g. rejected below ``er_review``) simply have no entry here.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_entity_ids_by_run"), (run_id, self._ws))
+                rows = cur.fetchall()
+        return {source_record_id: entity_id for source_record_id, entity_id in rows}
+
     def save(self, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
         """Persist resolved entities and their provenance members.
 

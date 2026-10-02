@@ -1,13 +1,11 @@
-"""Entry point wired into the existing XML upload path.
+"""Pass 1: entry point wired into the existing XML upload path.
 
-Scope (see README.md for the full write-up): this module adds the raw-graph
-projection (Pass 1) as a real, working capability, and leaves the existing,
-already-Oracle-Graph-aware Resolve -> Relate -> curated-graph pipeline
-(``aryx.pipeline.orchestrate.run_pipeline``) completely untouched downstream
-of it. It does NOT implement Resolve/Relate reading directly from the raw
-graph in place of CSV rows — that deeper rewire was never prototyped even in
-the reference testing this module is based on, and is called out explicitly
-as a follow-up extension point in the README rather than attempted here.
+Scope (see README.md for the full write-up): ``project_raw_graph_and_flatten``
+adds the raw-graph projection as a real, working capability alongside the
+existing CSV flow, used at discovery/read time. Pass 2 (the resolve/relate
+bridge that reads this same raw graph back and lands it in the curated
+graph) lives in ``raw_graph/resolve_relate.py`` — a separate module since it
+runs at a different call site (confirm time, not read time).
 """
 from __future__ import annotations
 

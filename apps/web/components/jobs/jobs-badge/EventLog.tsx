@@ -2,16 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { POLL_MS } from "./types";
 
-export function EventLog({ jobId, live }: { jobId: string; live: boolean }) {
+export function EventLog(
+  { jobId, workspaceId, live }: { jobId: string; workspaceId: number; live: boolean },
+) {
   const [events, setEvents] = useState<{
     stage: string; pct: number; detail: string; ts: string;
   }[]>([]);
   const [loading, setLoading] = useState(true);
   const refresh = useCallback(async () => {
-    try { setEvents(await api.getJobEvents(jobId)); }
+    try { setEvents(await api.getJobEvents(jobId, workspaceId)); }
     catch { setEvents([]); }
     finally { setLoading(false); }
-  }, [jobId]);
+  }, [jobId, workspaceId]);
   useEffect(() => {
     refresh();
     if (!live) return;

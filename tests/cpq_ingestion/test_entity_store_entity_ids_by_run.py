@@ -1,0 +1,57 @@
+"""EntityStore.entity_ids_by_run -- the one DB-touching lookup the raw-graph
+resolve/relate bridge needs: recovering "which entity did this landed
+record resolve into" after resolve/save has already run, since save()
+itself only returns a count. Lives in entity_store.py (not cpq_ingestion)
+because it reads generic aryx_landed_record/aryx_entity_member tables, not
+anything cpq_ingestion-specific -- covered here since it exists for this
+feature.
+"""
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from aryx.store.entity_store import EntityStore
+
+
+def _store_with_rows(rows: list[tuple[str, int]]) -> EntityStore:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = rows
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        return EntityStore("dsn://irrelevant", workspace_id=7)
+
+
+def test_entity_ids_by_run_returns_source_record_id_to_entity_id_mapping():
+    store = _store_with_rows([("accounts:0", 100), ("accounts:1", 101)])
+
+    result = store.entity_ids_by_run(42)
+
+    assert result == {"accounts:0": 100, "accounts:1": 101}
+
+
+def test_entity_ids_by_run_empty_result_returns_empty_dict():
+    store = _store_with_rows([])
+
+    assert store.entity_ids_by_run(42) == {}
+
+
+def test_entity_ids_by_run_passes_run_id_and_workspace_id_to_query():
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        store.entity_ids_by_run(42)
+
+    args, _ = mock_cursor.execute.call_args
+    assert args[1] == (42, 7)

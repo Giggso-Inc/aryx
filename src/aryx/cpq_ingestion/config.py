@@ -22,9 +22,15 @@ class CpqIngestionSettings(BaseSettings):
     ingest_file_type: str = Field(
         default="",
         description=(
-            "File type this run should treat as CPQ input, e.g. 'xml'. "
-            "Compared case-insensitively against the uploaded file's extension. "
-            "Empty disables file-type gating (the pipeline never activates)."
+            "Comma-separated file type(s) this run should treat as CPQ "
+            "input, e.g. 'xml' or 'xml,csv'. Compared case-insensitively "
+            "against the uploaded file's extension, leading dot ignored on "
+            "both sides. XML routes through the raw-graph resolve/relate "
+            "bridge (see raw_graph/); CSV routes through direct-to-Postgres "
+            "landing with no graph involved (see csv_land.py) -- the two "
+            "file types can be listed together since they take different, "
+            "independent code paths. Empty disables file-type gating (the "
+            "pipeline never activates)."
         ),
     )
     ingest_pipeline: str = Field(
@@ -33,6 +39,20 @@ class CpqIngestionSettings(BaseSettings):
             "Which ingestion pipeline to route matching files through. "
             "Set to 'cpq_ingestion' to activate this package; any other "
             "value (including empty) leaves the existing XML->CSV path unchanged."
+        ),
+    )
+    cpq_layout_source: str = Field(
+        default="",
+        description=(
+            "CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: gates "
+            "whether an uploaded .txt/.json layout-export file is stored "
+            "in aryx_cpq_layout_file instead of run through normal "
+            "ingestion. Must be set together with ingest_pipeline == "
+            "'cpq_ingestion' for cpq_layout_upload_active() to activate -- "
+            "ingest_pipeline alone is NOT enough, unlike the XML raw-graph "
+            "path. Set to 'oracle' to activate (the only real value once "
+            "the read side no longer has a local-directory alternative to "
+            "distinguish this from). Env var: ARYX_CPQ_LAYOUT_SOURCE."
         ),
     )
     cpq_raw_graph_enabled: bool = Field(

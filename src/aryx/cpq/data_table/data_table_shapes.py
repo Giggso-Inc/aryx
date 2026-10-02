@@ -92,6 +92,19 @@ def _is_region_rule_shaped(keys: set[str]) -> bool:
     return {"model", "value", "region", "ruleType", "attribute"} <= keys
 
 
+def _is_defaultinattr_shaped(keys: set[str]) -> bool:
+    # e.g. Defaultinattr.csv -- BaseModel + attrN/valN default pairs with NO
+    # CPQModel column. Deliberately NOT in _SHAPE_DETECTORS (consumed by its
+    # own standalone loader, _load_defaultinattr_rows, so _load_all_tables'
+    # 5 fixed buckets are untouched). Disjoint from "constraint" (needs
+    # CPQModel) and from series_mapping (childCPQModel).
+    return (
+        "BaseModel" in keys and "attr1" in keys and "val1" in keys
+        and "CPQModel" not in keys and "childCPQModel" not in keys
+        and "AttrName" not in keys and "Product" not in keys
+    )
+
+
 # Ordered so a more specific shape (sequence) is checked before a more
 # general one, in case a future table's keys could satisfy both.
 _SHAPE_DETECTORS: tuple[tuple[str, "callable"], ...] = (

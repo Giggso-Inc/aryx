@@ -64,7 +64,9 @@ export function DocsSummaryStep({ summary, approved, onToggle, confirming, onCon
               <div key={f.filename}
                 className="mb-1.5 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
                 <FileText size={12} className="shrink-0 text-emerald-600" />
-                <span className="flex-1 truncate text-[12px] font-medium text-navy-800">{f.filename}</span>
+                <span className="flex-1 truncate text-[12px] font-medium text-navy-800">
+                  {f.source_filename ?? f.filename}
+                </span>
                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
                   {f.ontology_type}
                 </span>

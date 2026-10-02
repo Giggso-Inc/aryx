@@ -21,7 +21,9 @@ helper -> database_sync.py (builds its own independent Engine, shares no
 state with the async engine here).
 """
 
+import logging
 from typing import AsyncGenerator
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -29,6 +31,32 @@ from app.core.config import settings
 from app.core.database_url import _ensure_async_postgres_driver, _extract_oracle_dsn, _normalize_postgres_url
 from app.core.database_optimizations import _oracle_repair_partial_unique_indexes, create_postgresql_optimizations
 from app.core.database_sync import get_sync_engine  # noqa: F401 — re-exported for external callers
+
+logger = logging.getLogger(__name__)
+
+
+def _set_oracle_call_timeout(dbapi_connection, _connection_record) -> None:
+    """SQLAlchemy pool "connect" event: cap how long a single Oracle call
+    may block before failing, so a stuck query releases its pool slot
+    instead of holding it forever.
+
+    docs/oci-oracle/SHAY_API_ORACLE_POOL_EXHAUSTION_PLAN_2026-09-14.md /
+    SHAY_API_ORACLE_POOL_EXHAUSTION_INCIDENT_2026-09-30.md: without this,
+    a query blocked server-side (a lock wait, a stuck session) holds its
+    pool connection forever -- that's how the pool silently drains to
+    zero over days. Mirrors the call_timeout pattern already used by
+    Aryx's own Oracle pool (aryx/store/oracle_connection_pool.py). Fires
+    on every new physical connection, not per-call, so it applies
+    uniformly regardless of which route acquired the connection.
+    """
+    try:
+        dbapi_connection.call_timeout = settings.DATABASE_ORACLE_CALL_TIMEOUT_MS
+    except AttributeError:
+        logger.warning(
+            "database: oracledb connection has no call_timeout attribute "
+            "-- skipping (driver version mismatch?)"
+        )
+
 
 __all__ = [
     "Base",
@@ -42,6 +70,7 @@ __all__ = [
     "_ensure_async_postgres_driver",
     "_normalize_postgres_url",
     "_oracle_repair_partial_unique_indexes",
+    "_set_oracle_call_timeout",
 ]
 
 _raw_database_url = settings.DATABASE_URL or ""
@@ -70,10 +99,12 @@ elif _database_url.strip().lower().startswith("oracle"):
         "pool_size": settings.DATABASE_POOL_SIZE,
         "max_overflow": settings.DATABASE_MAX_OVERFLOW,
         "pool_pre_ping": True,
+        "pool_recycle": settings.DATABASE_POOL_RECYCLE_SECONDS,
     }
     if oracle_dsn:
         engine_kw["connect_args"] = {"dsn": oracle_dsn}
     engine = create_async_engine(oracle_url, **engine_kw)
+    event.listens_for(engine.sync_engine, "connect")(_set_oracle_call_timeout)
 else:
     # PostgreSQL configuration with optimizations (use normalized URL for special chars in password)
     engine = create_async_engine(
@@ -82,6 +113,7 @@ else:
         pool_size=settings.DATABASE_POOL_SIZE,
         max_overflow=settings.DATABASE_MAX_OVERFLOW,
         pool_pre_ping=True,
+        pool_recycle=settings.DATABASE_POOL_RECYCLE_SECONDS,
         connect_args={
             "server_settings": {
                 "jit": "off",

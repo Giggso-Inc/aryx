@@ -92,8 +92,8 @@ export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps
     setPhase("done");
   }, []);
 
-  const readPoller = useJobPoller(phase === "reading" ? readJobId : null, onReadDone);
-  const confirmPoller = useJobPoller(phase === "confirming" ? confirmJobId : null, onConfirmDone);
+  const readPoller = useJobPoller(phase === "reading" ? readJobId : null, onReadDone, workspaceId);
+  const confirmPoller = useJobPoller(phase === "confirming" ? confirmJobId : null, onConfirmDone, workspaceId);
 
   const start = async () => {
     if (!files.length) return;

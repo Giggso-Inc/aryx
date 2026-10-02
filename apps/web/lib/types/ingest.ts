@@ -48,8 +48,14 @@ export interface Datasource {
 
 export interface DiscoverySummary {
   types: Array<{ type: string; count: number; examples: string[] }>;
-  /** Tabular (CSV/JSON) files the read step identified. */
-  files: Array<{ filename: string; ontology_type: string }>;
+  /**
+   * Tabular (CSV/JSON) files the read step identified. `filename` is the
+   * internal per-entity-type plan name (e.g. an XML upload is split into
+   * one synthetic "<stem>_<Tag>.csv" plan per discovered element type) --
+   * `source_filename` is the file the user actually uploaded (e.g.
+   * "order.xml") and should be preferred for display when present.
+   */
+  files: Array<{ filename: string; ontology_type: string; source_filename?: string }>;
 }
 
 export interface DiscoveryHistoryItem {

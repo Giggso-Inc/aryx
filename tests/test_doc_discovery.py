@@ -273,3 +273,108 @@ def test_ingest_confirmed_cache_invalidation_failure_never_fails_the_ingest():
             approved_types=[], approved_files=[], broker=MagicMock(),
             jobs=MagicMock(), job_id="test-job", workspace_id=1,
         )
+
+
+# ── CPQ layout files surfaced through the Documents read/confirm flow ──────
+# CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md: .txt/.json layout
+# exports are neither DOC_EXTS nor DATA_EXTS, so doc_discover_read_job.py
+# pulls them out up front (see cpq_layout_upload_active()) and passes them
+# to read_files() as layout_items -- surfaced here as ordinary "tabular"
+# plans (kind="cpq_layout") so this screen's existing read-then-confirm UX
+# applies to them unchanged, with the actual DB write deferred to confirm.
+
+def test_read_files_surfaces_layout_items_as_cpq_layout_plans():
+    from aryx.pipeline.doc_discovery.doc_discovery import read_files
+
+    mock_settings = MagicMock()
+    mock_settings.chunk_size = 500
+    mock_settings.chunk_overlap = 50
+    mock_settings.embed_dim = 1536
+
+    layout_data = b'{"status": "Active"}'
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings", return_value=mock_settings):
+        result = read_files(
+            doc_paths=[], tabular=[], broker=MagicMock(), context="",
+            layout_items=[(layout_data, "Config Layout APX Next.txt")],
+        )
+
+    assert len(result["tabular"]) == 1
+    plan = result["tabular"][0]
+    assert plan["filename"] == "Config Layout APX Next.txt"
+    assert plan["data"] == layout_data
+    assert plan["kind"] == "cpq_layout"
+    assert plan["ontology_type"] == "CPQ Layout File"
+    assert result["summary"]["files"] == [
+        {"filename": "Config Layout APX Next.txt", "ontology_type": "CPQ Layout File"},
+    ]
+
+
+class _FakeSettingsWithDsn(_FakeSettings):
+    """_FakeSettings lacks effective_dsn() (a pre-existing gap unrelated to
+    this test -- see the 4 already-failing test_ingest_confirmed_* tests
+    above); the new cpq_layout store_layout_file() call needs it, so this
+    subclass adds it without touching the shared fixture."""
+    def effective_dsn(self) -> str:
+        return "postgresql://fake"
+
+
+def test_ingest_confirmed_stores_approved_layout_plan_via_store_layout_file():
+    layout_data = b'{"status": "Active"}'
+    data = {
+        "mentions": [],
+        "tabular": [{
+            "filename": "Config Layout APX Next.txt", "data": layout_data,
+            "ontology_type": "CPQ Layout File", "kind": "cpq_layout",
+        }],
+    }
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources") as mock_persist, \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.layout_store.store_layout_file",
+               return_value="Config Layout APX Next") as mock_store, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["Config Layout APX Next.txt"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="layout-confirm-job",
+            workspace_id=7,
+        )
+
+    mock_store.assert_called_once()
+    _args, kwargs = mock_store.call_args
+    assert _args[0] == layout_data
+    assert _args[1] == "Config Layout APX Next.txt"
+    assert kwargs["workspace_id"] == 7
+    # The layout plan must never reach _persist_tabular_sources -- it isn't
+    # CSV/JSON tabular data, and that function assumes source_filename/
+    # source_bytes fields a layout plan doesn't have.
+    mock_persist.assert_called_once_with([], 7, "postgresql://fake")
+
+
+def test_ingest_confirmed_skips_layout_file_too_large_without_failing():
+    from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge
+
+    data = {
+        "mentions": [],
+        "tabular": [{
+            "filename": "big.txt", "data": b"x",
+            "ontology_type": "CPQ Layout File", "kind": "cpq_layout",
+        }],
+    }
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.layout_store.store_layout_file",
+               side_effect=CpqLayoutFileTooLarge("too big")), \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        # Must not raise despite the oversized layout file.
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["big.txt"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="test-job",
+            workspace_id=1,
+        )

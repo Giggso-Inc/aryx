@@ -53,7 +53,7 @@ def _build_catalog_attribute_listing_text(
     asked is path-dependent (it depends on choices not yet made) with
     ONE exception the scope helper (`ask_catalog_listing_scope.py`) leans
     on: the real native-UI layout export (`CpqEngine.
-    load_layout_display_order`, config_layouts/*.txt) is BigMachines' own
+    load_layout_display_order`, aryx_cpq_layout_file) is BigMachines' own
     curated "what the real screen actually shows" set -- the same source
     `build_payload`'s own `display_order` param already uses for exactly
     this "real UI visible set" purpose.

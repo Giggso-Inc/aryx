@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
+from aryx.cpq.layout_source import LayoutFileSource, OracleLayoutFileSource
 
 # Process-wide, keyed by (workspace_id, catalog_prefix) — see
 # CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
@@ -38,7 +38,34 @@ _LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
 _LAYOUT_COMPONENTS_CACHE: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
 _LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 _LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
-_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = LocalDirLayoutFileSource()
+
+
+def _resolve_layout_file_source() -> LayoutFileSource:
+    """CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md Phase 5:
+    Oracle ADB / Postgres is now the only backend -- the local-directory
+    fallback and its env-var toggle are gone. `OracleLayoutFileSource`
+    itself defers opening a connection pool to its first real `.get()`
+    call (see its own docstring), so constructing it here at module-
+    import time is safe even in environments with no live database."""
+    from aryx.config import get_settings  # noqa: PLC0415
+    return OracleLayoutFileSource(dsn=get_settings().effective_dsn())
+
+
+_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = _resolve_layout_file_source()
+
+
+def invalidate_layout_cache(workspace_id: int, catalog_prefix: str) -> None:
+    """Drop the process-lifetime layout caches for one (workspace_id,
+    catalog_prefix) pair. Called by `cpq_ingestion.layout_store.
+    store_layout_file()` right after a successful upsert -- without this,
+    an uploaded layout replacing an already-queried pair would keep
+    serving the OLD (or None) cached value for the rest of this process's
+    lifetime, since these caches have no TTL and no other invalidation
+    path (see CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md)."""
+    key = (workspace_id, catalog_prefix)
+    _LAYOUT_COMPONENTS_CACHE.pop(key, None)
+    _LAYOUT_DISPLAY_ORDER_CACHE.pop(key, None)
+    _LAYOUT_FULL_ORDER_CACHE.pop(key, None)
 
 # docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
 # level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by

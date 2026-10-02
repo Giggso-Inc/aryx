@@ -77,7 +77,8 @@ export default function IngestPage() {
                   <div key={item.discovery_id} className="flex items-center gap-3 text-[12px]">
                     <Clock size={11} className="text-amber-600 shrink-0" />
                     <span className="flex-1 truncate text-amber-900">
-                      {item.summary?.files?.map((f) => f.filename).join(", ") || `${item.file_count} file(s)`}
+                      {Array.from(new Set(item.summary?.files?.map((f) => f.source_filename ?? f.filename)))
+                        .join(", ") || `${item.file_count} file(s)`}
                     </span>
                     <span className="text-amber-700 whitespace-nowrap shrink-0">
                       {item.status === "partial" ? "partially confirmed" : "pending"}

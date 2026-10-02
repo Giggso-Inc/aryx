@@ -6,12 +6,13 @@ import type { JobRow } from "./types";
 interface PanelProps {
   open: boolean;
   jobs: JobRow[];
+  workspaceId: number;
   onClose: () => void;
   onRefresh: () => void;
 }
 
 /** Docked side panel. No backdrop — page stays interactive. */
-export function JobsPanel({ open, jobs, onClose, onRefresh }: PanelProps) {
+export function JobsPanel({ open, jobs, workspaceId, onClose, onRefresh }: PanelProps) {
   return (
     <AnimatePresence>
       {open && (
@@ -52,7 +53,7 @@ export function JobsPanel({ open, jobs, onClose, onRefresh }: PanelProps) {
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <ul className="space-y-2">
               {jobs.map((j) => (
-                <JobCard key={j.job_id} job={j} onChanged={onRefresh} />
+                <JobCard key={j.job_id} job={j} workspaceId={workspaceId} onChanged={onRefresh} />
               ))}
             </ul>
           </div>

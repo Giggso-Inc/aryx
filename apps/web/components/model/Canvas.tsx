@@ -74,12 +74,12 @@ function CanvasInner() {
     const label = (edge.label as string) || "this relationship";
     if (!window.confirm(`Delete relationship "${label}"?`)) return;
     try {
-      await api.deleteRelationshipType(relId);
+      await api.deleteRelationshipType(relId, workspaceId);
       await load();
     } catch (e) {
       console.error("Failed to delete relationship", e);
     }
-  }, [load]);
+  }, [load, workspaceId]);
 
   const onConnect: OnConnect = useCallback(
     async (c) => {

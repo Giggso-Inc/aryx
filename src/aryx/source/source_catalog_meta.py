@@ -145,10 +145,19 @@ def source_actions(view: bool, download: bool, delete: bool) -> dict[str, bool]:
 
 
 def _display_kind(system: str, dataset: str) -> str:
+    # Checked before the generic ".csv" suffix branch below: a directly-
+    # landed CSV's registered datasource `name` also ends in ".csv" (see
+    # cpq_ingestion/csv_land.py), so it would otherwise be mislabeled
+    # "Structured CSV" like any other csv upload, losing the distinction
+    # that these rows never went through resolve/relate/graph projection.
+    if system == "cpq_ingestion_csv_direct":
+        return "Landed CSV (Direct)"
     if system == "csv" or dataset.endswith(".csv"):
         return "Structured CSV"
     if system in {"rest", "api"}:
         return "REST API"
     if system == "document" or dataset.endswith((".pdf", ".docx", ".xml")):
         return "Document"
+    if system == "cpq_layout":
+        return "CPQ Layout File"
     return system.replace("_", " ").title()

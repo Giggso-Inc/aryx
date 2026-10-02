@@ -37,7 +37,7 @@ export function Running({ workspaceId, jobId, onDone, onSkip }: Props) {
     let cancelled = false;
     const tick = async () => {
       try {
-        const j = await api.getJob(jobId);
+        const j = await api.getJob(jobId, workspaceId);
         if (cancelled) return;
         setStage(j.stage);
         setPct(j.pct ?? 0);
@@ -52,7 +52,7 @@ export function Running({ workspaceId, jobId, onDone, onSkip }: Props) {
     };
     tick();
     return () => { cancelled = true; };
-  }, [jobId]);
+  }, [jobId, workspaceId]);
 
   // Poll HITL queue independently.
   const refreshQuestions = useCallback(async () => {

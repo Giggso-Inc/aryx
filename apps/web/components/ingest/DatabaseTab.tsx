@@ -29,7 +29,7 @@ export function DatabaseTab() {
     if (!ok) { setPhase("error"); setError("Ingest job failed"); return; }
     setPhase("done");
   }, []);
-  useJobPoller(phase === "ingesting" ? ingestJobId : null, onIngestDone);
+  useJobPoller(phase === "ingesting" ? ingestJobId : null, onIngestDone, workspaceId);
 
   const connect = async () => {
     setPhase("connecting"); setError(null);

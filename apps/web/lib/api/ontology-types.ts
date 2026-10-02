@@ -29,9 +29,15 @@ export const ontologyTypesApi = {
       { method: "DELETE" },
     ),
 
-  deleteRelationshipType: (relId: number) =>
+  // workspaceId: DELETE /ontology/relationships/{id} scopes its delete
+  // query to WHERE id=... AND workspace_id=... (relationship_type_store.py),
+  // defaulting server-side to workspace 1 when omitted -- omitting it here
+  // made a delete from any other workspace a silent no-op (0 rows matched,
+  // no error, but the UI reports success and the row is never actually
+  // removed). Same root cause as PR #401's job-polling fix.
+  deleteRelationshipType: (relId: number, workspaceId: number) =>
     fetchJSON<{ status: string }>(
-      `/ontology/relationships/${relId}`,
+      `/ontology/relationships/${relId}?workspace_id=${workspaceId}`,
       { method: "DELETE" },
     ),
 

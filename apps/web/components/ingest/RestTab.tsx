@@ -40,7 +40,7 @@ export function RestTab() {
     if (!ok) { setPhase("error"); setError("Ingest job failed"); return; }
     setPhase("done");
   }, []);
-  useJobPoller(phase === "ingesting" ? ingestJobId : null, onIngestDone);
+  useJobPoller(phase === "ingesting" ? ingestJobId : null, onIngestDone, workspaceId);
 
   const ingest = async () => {
     setPhase("ingesting"); setError(null);

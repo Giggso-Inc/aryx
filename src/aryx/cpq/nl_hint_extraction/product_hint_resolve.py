@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.product_match_exact_first import match_option_name
 
 
 def resolve_product_hint(
@@ -80,23 +81,13 @@ def resolve_product_hint(
 
     option_matches: dict[str, str] = {}
     for prefix in prefixes:
-        for item_value, display_name in engine._fetch_product_option_list(
-            reader, workspace_id, prefix,
-        ):
-            for text in (item_value, display_name):
-                stripped = text.strip()
-                is_code = any(c.isdigit() for c in stripped) or "/" in stripped
-                if len(stripped.split()) < 2 and not is_code:
-                    continue  # same single-word guard as extract_catalog_hints
-                norm = _engine_module._normalize_for_hint(text)
-                if (
-                    min(len(norm), len(hint_norm)) >= _engine_module._HINT_MIN_PHRASE_LEN
-                    and (norm in hint_norm or hint_norm in norm)
-                ):
-                    option_matches[prefix] = display_name or item_value
-                    break
-            if prefix in option_matches:
-                break
+        matched_name = match_option_name(
+            list(engine._fetch_product_option_list(reader, workspace_id, prefix)),
+            hint_norm, _engine_module._HINT_MIN_PHRASE_LEN,
+            _engine_module._normalize_for_hint,
+        )
+        if matched_name is not None:
+            option_matches[prefix] = matched_name
 
     if len(option_matches) == 1:
         prefix, name = next(iter(option_matches.items()))
