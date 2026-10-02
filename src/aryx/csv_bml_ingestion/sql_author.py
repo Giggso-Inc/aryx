@@ -113,8 +113,8 @@ def _save(directory: Path, table: str, schema: str, indexes: str, lookup: BmlLoo
     directory.mkdir(parents=True, exist_ok=True)
     (directory / C.SCHEMA_FILE).write_text(note + schema + "\n", encoding="utf-8")
     (directory / C.INDEXES_FILE).write_text(note + indexes + "\n", encoding="utf-8")
-    lines = [f"# {table} - BML source reference", "", f"Authored at run time on {stamp}; matching BML scripts:", ""]
+    lines = [f"# {table} - BML source reference", "", f"Authored at run time on {stamp}; locations whose queries read it:", ""]
     for m in lookup.matches:
-        lines += [f"- script `{m.script_id}` guid `{m.script_guid}` class `{m.java_class_name}`"]
+        lines += [f"- `{m.label}` ({'/'.join(m.path)}/{m.node_tag}.{m.prop}) identity `{m.identity}`"]
         lines += [f"  - `{q.sql}`" for q in m.queries]
     (directory / C.BML_SOURCE_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")

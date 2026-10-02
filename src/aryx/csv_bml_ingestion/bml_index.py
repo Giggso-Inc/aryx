@@ -1,40 +1,48 @@
-"""Step 2 — build the XML graph and index BML scripts by the tables they query.
+"""Step 2 — index the XML graph by the tables its embedded queries read.
 
-The XML is projected with the existing ``cpq_ingestion`` raw-graph projector
-(one node per element, nesting as CONTAINS edges). Each ``script_text`` node
-is a BML script; its parent element (``bm_function``) carries the script's
-``id`` / ``guid`` / ``java_class_name`` as sibling leaf nodes. The index is
-built once per XML and queried once per CSV, so ingesting many CSVs against
-one XML re-parses nothing.
+Fully structure-agnostic: no element or attribute name is assumed. Every graph
+node's string values are scanned for ``SELECT ... FROM`` queries (``query_extract``), so
+any XML whose graph carries query text works — whatever the vendor's tags are
+called. A match records *where* the query lives (node id, tag, property, the
+chain of ancestor tags) and *who it belongs to*: the short leaf values sitting
+next to it in the same parent element (typically an id / guid / name), kept as
+a generic ``identity`` dict rather than fixed fields.
 
-Matching rule: the table named in a BMQL query and the target table name are
-both lowercased before comparison (exact match — ``attrToPart_pcrDev`` is a
-different table from ``attrToPart``; such near-misses are only reported).
+The graph is projected on demand from any XML (``graph_source``) with the same
+projector the XML ingestion uses, or passed in as an existing projection. The
+index is built once per graph and reused for every CSV.
+
+Matching rule: the table in a query and the target table are both lowercased
+before comparison (exact match — ``attrToPart_pcrDev`` is a different table from
+``attrToPart``; such near-misses are only reported).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection
-from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
-from aryx.csv_bml_ingestion.bmql import BmqlQuery, extract_queries
-from aryx.csv_bml_ingestion.errors import XmlSourceError
+from aryx.csv_bml_ingestion.query_extract import SqlQuery, extract_queries
+from aryx.csv_bml_ingestion.graph_source import projection_from_xml
 
-SCRIPT_TAG = "script_text"
-_IDENTITY_TAGS = ("id", "guid", "java_class_name")
+MIN_QUERY_TEXT = 15           # shortest string worth scanning
+MAX_IDENTITY_VALUES = 8       # sibling leaf values kept per match
+MAX_IDENTITY_CHARS = 120      # longer sibling values are not identity (they are content)
+PATH_DEPTH = 4                # ancestor tags recorded
+LABEL_HINTS = ("id", "guid", "name", "key")   # display only: which identity value names a match
 
 
 @dataclass(frozen=True, slots=True)
 class BmlMatch:
-    """One BML script that queries the target table."""
+    """One place in the graph whose query text reads the target table."""
 
     table: str
-    script_node_id: int
-    script_id: str
-    script_guid: str
-    java_class_name: str
-    queries: tuple[BmqlQuery, ...]  # only the queries that read ``table``
+    node_id: int
+    node_tag: str
+    prop: str                      # the node property holding the query text
+    path: tuple[str, ...]          # ancestor tags, outermost first
+    identity: dict[str, str]       # sibling leaf values, e.g. {"id": "...", "guid": "..."}
+    label: str                     # short display name derived from identity
+    queries: tuple[SqlQuery, ...]  # only the queries that read ``table``
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,16 +55,16 @@ class BmlLookup:
 
 
 class BmlIndex:
-    """``lowercase table -> BML scripts that query it`` for one XML document."""
+    """``lowercase table -> graph locations that query it`` for one XML graph."""
 
     def __init__(self) -> None:
         self._by_table: dict[str, list[BmlMatch]] = {}
         self.node_count = 0
-        self.script_count = 0
+        self.script_count = 0   # nodes that contained at least one query
 
     @classmethod
     def from_projection(cls, projection: RawGraphProjection) -> "BmlIndex":
-        """Index every ``script_text`` node of an already-projected XML graph."""
+        """Index every node of an already-projected XML graph."""
         index = cls()
         index.node_count = len(projection.nodes)
         parent_of = {e.target_id: e.source_id for e in projection.edges}
@@ -65,60 +73,75 @@ class BmlIndex:
             children.setdefault(parent, []).append(child)
         by_id = {n.id: n for n in projection.nodes}
         for node in projection.nodes:
-            if node.tag != SCRIPT_TAG:
-                continue
-            index.script_count += 1
-            text = str(node.properties.get("text", ""))
-            queries = extract_queries(text)
-            if not queries:
-                continue
-            ident = _identity(by_id, children.get(parent_of.get(node.id, -1), ()))
-            by_table: dict[str, list[BmqlQuery]] = {}
-            for q in queries:
-                for table in {t.lower() for t in q.tables}:
-                    by_table.setdefault(table, []).append(q)
-            for table, qs in by_table.items():
-                index._by_table.setdefault(table, []).append(BmlMatch(
-                    table=table, script_node_id=node.id, script_id=ident["id"],
-                    script_guid=ident["guid"], java_class_name=ident["java_class_name"],
-                    queries=tuple(qs),
-                ))
+            for prop, value in node.properties.items():
+                if not isinstance(value, str) or len(value) < MIN_QUERY_TEXT:
+                    continue
+                queries = extract_queries(value)
+                if not queries:
+                    continue
+                index.script_count += 1
+                index._add(node, prop, queries, by_id, parent_of, children)
         return index
 
     @classmethod
     def from_xml_bytes(cls, data: bytes) -> "BmlIndex":
-        """Project ``data`` to the raw XML graph and index it."""
-        try:
-            return cls.from_projection(project_xml_to_raw_graph(data))
-        except Exception as exc:  # noqa: BLE001 -- defusedxml/ET raise a variety of parse errors
-            raise XmlSourceError(f"could not parse XML into a graph: {exc}") from exc
+        """Project any XML (bytes) into the raw graph and index it."""
+        return cls.from_projection(projection_from_xml(data))
 
     @classmethod
-    def from_xml_file(cls, path: str | Path) -> "BmlIndex":
-        """Read ``path`` and index it."""
-        try:
-            data = Path(path).read_bytes()
-        except OSError as exc:
-            raise XmlSourceError(f"could not read XML file {path}: {exc}") from exc
-        return cls.from_xml_bytes(data)
+    def from_xml_file(cls, path) -> "BmlIndex":
+        """Project any XML file into the raw graph and index it."""
+        return cls.from_projection(projection_from_xml(path))
+
+    def _add(self, node, prop: str, queries: list[SqlQuery], by_id: dict, parent_of: dict,
+             children: dict) -> None:
+        identity = _identity(node.id, by_id, parent_of, children)
+        by_table: dict[str, list[SqlQuery]] = {}
+        for q in queries:
+            for table in {t.lower() for t in q.tables}:
+                by_table.setdefault(table, []).append(q)
+        for table, qs in by_table.items():
+            self._by_table.setdefault(table, []).append(BmlMatch(
+                table=table, node_id=node.id, node_tag=node.tag, prop=prop,
+                path=_path(node.id, by_id, parent_of), identity=identity,
+                label=_label(identity, node.tag, node.id), queries=tuple(qs),
+            ))
 
     def lookup(self, table: str) -> BmlLookup:
-        """Find the BML scripts that query ``table`` (compared in lowercase)."""
+        """Find the graph locations that query ``table`` (compared in lowercase)."""
         key = table.lower()
         near = tuple(sorted(t for t in self._by_table if t != key and t.startswith(key)))
         return BmlLookup(table=key, matches=tuple(self._by_table.get(key, ())), near_misses=near)
 
     @property
     def tables(self) -> list[str]:
-        """Every (lowercased) table name any BML script queries."""
+        """Every (lowercased) table name any query reads."""
         return sorted(self._by_table)
 
 
-def _identity(by_id: dict, sibling_ids: object) -> dict[str, str]:
-    """Pull id/guid/java_class_name from the leaf siblings of a script_text node."""
-    ident = {tag: "" for tag in _IDENTITY_TAGS}
-    for sid in sibling_ids:  # type: ignore[attr-defined]
-        sib = by_id[sid]
-        if sib.tag in ident:
-            ident[sib.tag] = str(sib.properties.get("text", ""))
-    return ident
+def _identity(node_id: int, by_id: dict, parent_of: dict, children: dict) -> dict[str, str]:
+    """Short leaf values next to ``node_id`` in its parent element (generic: any tag names)."""
+    out: dict[str, str] = {}
+    for sid in children.get(parent_of.get(node_id, -1), ()):
+        if sid == node_id or len(out) >= MAX_IDENTITY_VALUES:
+            continue
+        text = by_id[sid].properties.get("text")
+        if isinstance(text, str) and 0 < len(text) <= MAX_IDENTITY_CHARS:
+            out.setdefault(by_id[sid].tag, text)
+    return out
+
+
+def _path(node_id: int, by_id: dict, parent_of: dict) -> tuple[str, ...]:
+    tags: list[str] = []
+    cur = parent_of.get(node_id)
+    while cur is not None and len(tags) < PATH_DEPTH:
+        tags.append(by_id[cur].tag)
+        cur = parent_of.get(cur)
+    return tuple(reversed(tags))
+
+
+def _label(identity: dict[str, str], tag: str, node_id: int) -> str:
+    for hint in LABEL_HINTS:
+        if hint in identity:
+            return f"{hint}={identity[hint]}"
+    return f"{tag}#{node_id}"

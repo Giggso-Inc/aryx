@@ -104,7 +104,7 @@ def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIn
                      table: str) -> BmlLookup | None:
     """Step 2 — both sides lowercase; returns None (run skipped) when no BML query reads the table."""
     lookup = bml_index.lookup(table)
-    result.bml_scripts = [m.script_id for m in lookup.matches]
+    result.bml_scripts = [m.label for m in lookup.matches]
     if lookup.matches:
         _log_matches(tracker, lookup)
         return lookup
@@ -118,8 +118,8 @@ def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIn
 
 def _log_matches(tracker: RunTracker, lookup: BmlLookup) -> None:
     tracker.info(
-        C.STEP_BML_LOOKUP, f"found {len(lookup.matches)} BML script(s) querying {lookup.table}",
-        table=lookup.table, scripts=[m.script_id for m in lookup.matches],
+        C.STEP_BML_LOOKUP, f"found {len(lookup.matches)} query location(s) reading {lookup.table}",
+        table=lookup.table, scripts=[m.label for m in lookup.matches],
         queries=[q.sql[:200] for m in lookup.matches for q in m.queries][:6],
     )
 

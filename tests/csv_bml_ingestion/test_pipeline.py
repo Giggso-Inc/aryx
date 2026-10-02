@@ -26,7 +26,7 @@ def test_happy_path_mixed_case_filename(bml_index, tmp_path):
     db = FakeDb()
     r = ingest_csv(_seq_csv(tmp_path, "AttrSequence.csv"), bml_index, db)
     assert (r.status, r.table, r.rows_loaded, r.rows_bad, r.error_code) == ("loaded", "attrsequence", 3, 0, "")
-    assert r.bml_scripts == ["111"]
+    assert r.bml_scripts == ["id=111"]
     ddl = [e[1] for e in db.statements("execute")]
     assert ddl[0].startswith("DELETE") is False  # DDL runs first, in its own connection
     assert any(s.startswith("CREATE TABLE IF NOT EXISTS attrsequence") for s in ddl)

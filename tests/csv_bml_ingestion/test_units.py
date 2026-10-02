@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from aryx.csv_bml_ingestion.bmql import extract_queries, strip_comments
+from aryx.csv_bml_ingestion.query_extract import extract_queries, strip_comments
 from aryx.csv_bml_ingestion.constants import default_sql_root
 from aryx.csv_bml_ingestion.sql_validate import ColumnSpec, validate_indexes, validate_schema
 from aryx.csv_bml_ingestion.csv_reader import CsvStats, iter_rows, read_layout, to_column_name
@@ -67,7 +67,8 @@ def test_index_matches_case_insensitively(bml_index):
         r = bml_index.lookup(name)
         assert len(r.matches) == 1
         m = r.matches[0]
-        assert (m.script_id, m.script_guid, m.java_class_name) == ("111", "guid-111", "com.bm.Action_111")
+        assert m.identity == {"id": "111", "guid": "guid-111", "java_class_name": "com.bm.Action_111"}
+        assert (m.label, m.node_tag, m.prop) == ("id=111", "script_text", "text")
         assert "ORDER BY Seq" in m.queries[0].sql
 
 
@@ -150,3 +151,28 @@ def test_sql_root_default_and_env_override(monkeypatch, tmp_path):
     assert default_sql_root().name == "sql" and default_sql_root().parent.name == "csv_bml_ingestion"
     monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(tmp_path))
     assert default_sql_root() == tmp_path
+
+
+# --- step 2 is structure- and language-agnostic ---------------------------------
+OTHER_XML = b"""<export><rules>
+  <rule name="R1" kind="pricing"><title>Discount rule</title><code>result = db.run("SELECT rate FROM Discounts d JOIN Tiers t ON d.t=t.id WHERE k=1")</code></rule>
+  <rule><title>No ids here</title><note attr="SELECT a FROM  Hidden_Table  WHERE x=1">n</note></rule>
+  <rule><title>Not SQL</title><code>print("selecting from the menu")</code></rule>
+</rules></export>"""
+
+
+def test_any_tag_names_any_call_syntax_and_attribute_text():
+    idx = BmlIndex.from_xml_bytes(OTHER_XML)
+    assert idx.tables == ["discounts", "hidden_table", "tiers"]
+    m = idx.lookup("Discounts").matches[0]
+    assert (m.node_tag, m.prop, m.path[-2:]) == ("code", "text", ("rules", "rule"))
+    assert m.identity == {"title": "Discount rule"} and m.label.startswith("code#")   # no id/guid/name -> tag#node
+    hidden = idx.lookup("hidden_table").matches[0]
+    assert (hidden.node_tag, hidden.prop) == ("note", "attr")      # found in an attribute, not element text
+    assert idx.lookup("menu").matches == ()                           # prose containing 'select' is not a query
+
+
+def test_existing_projection_can_be_indexed_without_reparsing():
+    from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
+    idx = BmlIndex.from_projection(project_xml_to_raw_graph(OTHER_XML))
+    assert idx.tables == ["discounts", "hidden_table", "tiers"]

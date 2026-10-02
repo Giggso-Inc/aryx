@@ -1,7 +1,7 @@
 """CLI: ``python -m aryx.csv_bml_ingestion``.
 
     ingest  --xml CONFIG.xml  CSV [CSV ...]   run the full pipeline per CSV
-    inspect --xml CONFIG.xml  CSV [CSV ...]   steps 1-2 only: show the BML query
+    inspect --xml CONFIG.xml  CSV [CSV ...]   steps 1-2 only: show the query
                                               each CSV's table maps to (no DB needed)
 
 Exit status: 0 when every CSV loaded, 1 when any CSV failed or was skipped.
@@ -70,12 +70,12 @@ def _inspect(index: BmlIndex, csvs: list[Path]) -> int:
         lookup = index.lookup(table)
         if not lookup.matches:
             hint = f" (near misses: {', '.join(lookup.near_misses)})" if lookup.near_misses else ""
-            print(f"{table}: NO BML QUERY{hint}")
+            print(f"{table}: NO QUERY READS THIS TABLE{hint}")
             bad += 1
             continue
-        print(f"{table}: {len(lookup.matches)} script(s)")
+        print(f"{table}: {len(lookup.matches)} location(s)")
         for m in lookup.matches:
-            print(f"  script {m.script_id} {m.script_guid}")
+            print(f"  {m.label}  at {'/'.join(m.path)}/{m.node_tag}.{m.prop}")
             for q in m.queries:
                 print(f"    {q.sql}")
     return 1 if bad else 0
