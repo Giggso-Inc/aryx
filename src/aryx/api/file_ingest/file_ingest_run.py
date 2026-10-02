@@ -10,9 +10,7 @@ import csv as _csv
 import io
 import itertools
 import logging
-import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -30,7 +28,7 @@ from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
-from aryx.store.job_store import JobStore
+from aryx.store.job_store import JobStore, _make_should_stop
 from aryx.source.source_catalog import (
     restore_generic_source_entry,
     upsert_xlsx_catalog_entry,
@@ -71,53 +69,6 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
         writer.writerows(batch)
         chunks.append(buf.getvalue().encode("utf-8"))
     return chunks or [data]
-
-
-def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
-    """Cheap, throttled cancellation check for a running job's worker thread.
-
-    POST /admin/jobs/{job_id}/cancel only ever updated the job-store row
-    (see jobs_api.py) -- nothing in the pipeline ever read it back, so a
-    "cancelled" job kept running to completion regardless, consuming a
-    worker-pool slot the whole time (confirmed live: 20+ minutes of entity
-    creation after cancellation). This closure is polled from inside the
-    pipeline's hottest loops (dimension_link.py) and at each stage boundary
-    (orchestrate.py) -- real DB reads are throttled to at most once per
-    `min_interval_s` regardless of how often the caller checks, so callers
-    can poll every iteration without hammering Postgres.
-
-    Thread-safe: _relate_isolated's ThreadPoolExecutor (relate_workers
-    concurrent threads) is the first caller to invoke the returned closure
-    from more than one thread at a time -- every prior caller (dimension_link,
-    orchestrate.py's stage boundaries) only ever called it from a single
-    thread. Without the lock below, concurrent callers could all pass the
-    `now - last_check < min_interval_s` check before any of them updated
-    last_check, each issuing its own jobs.get(job_id) -- up to
-    relate_workers DB reads in the same instant instead of the promised one.
-    The lock only guards the cheap last_check decision, never the DB call
-    itself, so a thread blocked on jobs.get() can't stall another thread's
-    cheap "no, not yet" return.
-    """
-    state = {"last_check": 0.0, "cancelled": False}
-    lock = threading.Lock()
-
-    def should_stop() -> bool:
-        if state["cancelled"]:
-            return True
-        now = time.monotonic()
-        with lock:
-            if state["cancelled"]:
-                return True
-            if now - state["last_check"] < min_interval_s:
-                return False
-            state["last_check"] = now
-        row = jobs.get(job_id)
-        if row is not None and row.get("status") == "cancelled":
-            with lock:
-                state["cancelled"] = True
-        return state["cancelled"]
-
-    return should_stop
 
 
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,

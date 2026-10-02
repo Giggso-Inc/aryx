@@ -53,6 +53,7 @@ from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
+from aryx.store.job_store import _make_should_stop
 from aryx.store.ontology_store import OntologyStore
 from aryx.source.source_catalog import restore_generic_source_entry
 
@@ -218,9 +219,22 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     confirm_state enables crash-safe resume: completed plans are skipped and
     progress is persisted to DB after each plan so a restart picks up where
     it left off.
+
+    PR #416 review: this (the Documents-tab confirm path) built no
+    should_stop at all, unlike the /admin/ingest/file path -- a job
+    cancelled here while "Connecting remaining isolated entities" or any
+    other run_pipeline() stage kept running server-side regardless, never
+    reaching the cancellation support added to _relate_isolated/
+    dimension_link. Built once and passed to every run_pipeline() call
+    below (both the per-mention-type loop and _run_one_plan's per-file
+    loop) so both loops observe the same cancellation state. Caller
+    (_confirm_job) must catch PipelineCancelled separately -- it propagates
+    out of run_pipeline() at the next stage boundary after should_stop()
+    starts returning True.
     """
     settings = get_settings()
     datasource_store = DatasourceStore(settings.effective_dsn())
+    should_stop = _make_should_stop(jobs, job_id)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
@@ -259,12 +273,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 logger.info("confirm job=%s otype=%s stage=%s pct=%d %s",
                             job_id, _otype, stage, pct, detail)
 
-            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.effective_dsn(),
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id, relate=is_last, skip_graph=not is_last,
-                         on_progress=_progress_otype)
+                         on_progress=_progress_otype, should_stop=should_stop)
         else:
             logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
                         job_id, step, total, otype)
@@ -536,7 +549,6 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
             # it calls estore.list_entities() which covers ALL workspace entities.
-            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=conn, dsn=settings.effective_dsn(),
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=otype, match_keys=plan["match_keys"],
@@ -544,7 +556,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          fk_links=auto_fk if is_last else None,
                          relate=is_last and settings.ingest_relate,
                          skip_graph=not is_last,
-                         on_progress=_progress_plan)
+                         on_progress=_progress_plan, should_stop=should_stop)
             suffix = Path(fname).suffix.lower()
             if suffix in {".csv", ".json"}:
                 restore_generic_source_entry(
