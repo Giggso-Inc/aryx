@@ -32,6 +32,11 @@ export function useJobPoller(
         setPct(j.pct);
         if (j.status === "complete") { onDoneRef.current(true); return; }
         if (j.status === "failed") { onDoneRef.current(false); return; }
+        // "cancelled" (POST /admin/jobs/{job_id}/cancel) is a third terminal
+        // state -- without this branch the poller never recognizes it,
+        // onDone() never fires, and the UI keeps polling + showing
+        // "Ingesting..." forever for a job that will never change state again.
+        if (j.status === "cancelled") { onDoneRef.current(false); return; }
       } catch (err) {
         // A 404 means the job is permanently gone (never existed, or aged
         // out of aryx_job's 30-day retention) — retrying forever here would

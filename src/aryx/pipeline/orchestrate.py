@@ -273,7 +273,7 @@ def run_pipeline(
             # strictly wasted work, not additional coverage.
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
-                relationships += _relate_isolated(estore, broker)
+                relationships += _relate_isolated(estore, broker, should_stop=should_stop)
         _check_cancelled(should_stop, "dimension_link")
         if not skip_graph and not runner.skip("dimension_link"):
             # Tier-2 deterministic linking: connect entity types that share a

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from aryx.broker import Broker
@@ -21,7 +22,9 @@ from aryx.store.entity_store import EntityStore
 logger = logging.getLogger(__name__)
 
 
-def _relate_isolated(store: EntityStore, broker: Broker) -> int:
+def _relate_isolated(
+    store: EntityStore, broker: Broker, should_stop: Callable[[], bool] | None = None,
+) -> int:
     """Connect isolated entity types via a few LLM calls per type, not per entity.
 
     Runs after _relate, schema_fk, and link_by_attribute. Operates type-aware:
@@ -35,6 +38,19 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
     For the small-file CSV case (a handful of unreferenced supplier rows), the
     cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
     calls are made regardless of how many individual entities are isolated.
+
+    should_stop — optional, checked while draining the per-type inference
+    futures below. Previously absent entirely: a cancelled job still ran
+    every submitted type's LLM inference to completion (or its individual
+    relate_pair_timeout) before this function returned, since nothing
+    inside it ever read the job's cancellation state back — the same class
+    of bug already fixed for the sibling dimension_link stage (see
+    detect_and_link_dimensions's own should_stop docstring). Checked once
+    per completed future, not per LLM call inside _infer_type, since a
+    single in-flight infer_relationship call can't be interrupted mid-call
+    anyway (same documented limitation as dimension_link's fix) — this
+    stops picking up NEW results and lets already-running futures finish
+    or hit their own timeout, rather than waiting for every type.
     """
     cfg = get_settings()
 
@@ -152,7 +168,15 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
         # stage), so it must be at least as resilient as _relate() itself: one
         # flaky/stuck type must not stop the rest of the isolated types from
         # being connected, or block the run indefinitely.
+        types_processed = 0
         for fut, iso_type in _drain_with_timeout(futures, cfg.relate_pair_timeout, "_relate_isolated"):
+            if should_stop is not None and should_stop():
+                logger.warning(
+                    "_relate_isolated: job cancelled — stopping after %d/%d type(s), "
+                    "%d edge(s) linked so far", types_processed, len(futures), len(rels),
+                )
+                break
+            types_processed += 1
             try:
                 iso_type, anchor_id, name, conf = fut.result()
             except Exception as exc:  # noqa: BLE001

@@ -305,7 +305,112 @@ def test_relate_isolated_is_noop_when_nothing_is_isolated():
     assert _relate_isolated(store, broker=MagicMock()) == 0
 
 
+def test_relate_isolated_stops_mid_drain_when_job_is_cancelled(monkeypatch):
+    """Previously _relate_isolated() had no should_stop parameter at all --
+    a cancelled job still ran every submitted type's inference to completion
+    before this function returned, the same class of bug already fixed for
+    the sibling dimension_link stage. "Fast" completes first (should_stop
+    still False), gets linked normally; by the time "Slow" would complete,
+    should_stop flips True and it must be abandoned, not processed."""
+    monkeypatch.setenv("ARYX_RELATE_PAIR_TIMEOUT", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [
+        (1, "Fast", {"name": "a"}), (2, "Slow", {"name": "b"}),
+    ]
+    store.list_entities_typed_sample.return_value = [
+        (1, "Fast", {"name": "a"}), (2, "Slow", {"name": "b"}),
+        (3, "Anchor", {"name": "c"}),
+    ]
+
+    def fake_infer(left, right, broker):
+        if left.get("_ontology_type") == "Slow":
+            time.sleep(0.5)
+        return "related_to", 0.9
+
+    should_stop_calls = {"n": 0}
+
+    def fake_should_stop() -> bool:
+        should_stop_calls["n"] += 1
+        return should_stop_calls["n"] > 1  # False on the first check, True after
+
+    with patch("aryx.pipeline.enrich.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock(), should_stop=fake_should_stop)
+
+    assert count == 1  # only "Fast" got linked; "Slow" was abandoned after cancellation
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_ignores_should_stop_when_not_cancelled(monkeypatch):
+    """should_stop defaults to None and existing callers pass nothing --
+    confirms the new parameter never changes behavior for a job that isn't
+    cancelled (False is checked but never blocks completion)."""
+    monkeypatch.setenv("ARYX_RELATE_PAIR_TIMEOUT", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(1, "Invoice", {"num": "INV-1"})]
+    store.list_entities_typed_sample.return_value = [
+        (1, "Invoice", {"num": "INV-1"}), (2, "Customer", {"name": "Acme"}),
+    ]
+
+    with patch("aryx.pipeline.enrich.enrich_relate_isolated.infer_relationship",
+               return_value=("billed_to", 0.9)):
+        count = _relate_isolated(store, broker=MagicMock(), should_stop=lambda: False)
+
+    assert count == 1
+    get_settings.cache_clear()
+
+
 # ── orchestrate.run_pipeline: the safety net must fire even when relate=False ──
+
+def test_relate_isolated_receives_should_stop_from_run_pipeline():
+    """Wiring check: run_pipeline() must forward its own should_stop callable
+    into _relate_isolated()'s call -- previously this call site passed none
+    at all, so a cancelled job's should_stop() was never read inside this
+    stage (see the dimension_link call three lines below it, which already
+    threaded should_stop in, for the pattern this now matches)."""
+    mock_runner = MagicMock()
+    mock_runner.skip.return_value = False
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.rules_db_warn_threshold = 20
+    mock_cfg.max_relate_pairs = 5
+
+    sentinel_should_stop = lambda: False  # noqa: E731 — identity-compared below
+
+    with patch("aryx.pipeline.orchestrate.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.orchestrate._relate") as mock_relate, \
+         patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0) as mock_relate_isolated, \
+         patch("aryx.pipeline.orchestrate.discover", return_value=1), \
+         patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
+         patch("aryx.pipeline.orchestrate.project_auto", return_value={}), \
+         patch("aryx.pipeline.orchestrate.ProjectionStore"), \
+         patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
+         patch("aryx.pipeline.orchestrate.StageTracker"), \
+         patch("aryx.pipeline.orchestrate.PostgresStore"), \
+         patch("aryx.pipeline.orchestrate.EntityStore"), \
+         patch("aryx.pipeline.orchestrate.FalkorStore"), \
+         patch("aryx.pipeline.orchestrate.OntologyStore"), \
+         patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
+         patch("aryx.workspaces.ws_graph", return_value="ws_1"):
+        from aryx.pipeline.orchestrate import run_pipeline
+        run_pipeline(
+            connector=MagicMock(), dsn="postgresql://x",
+            system="sys", dataset="ds", ontology_type="T",
+            match_keys=["name"], graph_url="redis://x",
+            broker=MagicMock(), relate=False, should_stop=sentinel_should_stop,
+        )
+
+    mock_relate.assert_not_called()
+    mock_relate_isolated.assert_called_once()
+    _args, kwargs = mock_relate_isolated.call_args
+    assert kwargs.get("should_stop") is sentinel_should_stop
+
 
 def test_relate_isolated_runs_even_when_relate_flag_is_false():
     """The actual regression: previously `if relate and not runner.skip(...)`
