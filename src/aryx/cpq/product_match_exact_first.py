@@ -9,8 +9,8 @@ Two pieces, both inert with the flag off:
 * ``match_option_name`` -- the Product-option pass of
   ``resolve_product_hint``. Flag off it is the original first-hit
   bidirectional-substring scan. Flag on, an option whose normalized text
-  EQUALS the hint wins first; otherwise among substring hits the one
-  closest in length wins, so ``APX4000XH`` is not swallowed by the longer
+  EQUALS the hint (item_value or display_name) wins first; otherwise among
+  substring hits the one closest in length to the hint wins, so ``APX4000XH`` is not swallowed by the longer
   ``APX4000XHFLASHPORT``.
 """
 from __future__ import annotations
@@ -62,8 +62,13 @@ def match_option_name(
             if norm in hint_norm or hint_norm in norm:
                 if not exact_first:
                     return display_name or item_value
+                # No `break`: the other text (display_name) must still get its
+                # exact check above before the loose pick is settled.
                 loose.append((len(norm), display_name or item_value))
-                break
     if not loose:
         return None
-    return min(loose, key=lambda pair: pair[0])[1]
+    # Closest in length to the hint, not shortest: `hint_norm` is usually the
+    # whole question, so an option INSIDE it is best when it is the longest
+    # (most specific) one; ties go to the shorter text.
+    target = len(hint_norm)
+    return min(loose, key=lambda pair: (abs(pair[0] - target), pair[0]))[1]

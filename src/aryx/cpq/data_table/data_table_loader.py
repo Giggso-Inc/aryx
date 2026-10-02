@@ -45,11 +45,52 @@ _TABLES_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
 _TABLES_CACHE_TTL_SECONDS = 300.0
 
 
+# Module-level TTL caches for the two standalone shape scans below (same
+# problem/TTL/invalidation as _TABLES_CACHE: one /ask builds ~8 per-call
+# `cache` dicts, each of which would otherwise repeat the full grouped scan).
+_DEFAULTINATTR_CACHE: dict[tuple[int, str], tuple[float, list[dict[str, Any]]]] = {}
+_DEFAULTINATTR_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_SHAPE_SCAN_CACHE_TTL_SECONDS = _TABLES_CACHE_TTL_SECONDS
+# Every extra shape-scan cache; other modules (data_table_inference) append
+# theirs so `_clear_tables_cache` is the one test-isolation hook.
+_SHAPE_SCAN_CACHES: list[dict] = [_DEFAULTINATTR_CACHE]
+
+
+def _cached_shape_scan(
+    cache_store: dict[tuple[int, str], tuple[float, list[dict[str, Any]]]],
+    last_seen_marker: list[float | None],
+    workspace_id: int, catalog_prefix: str, shape_pred: Any, label: str,
+) -> list[dict[str, Any]]:
+    """Rows of every entity whose attr keys satisfy `shape_pred`, from a
+    module-level TTL cache keyed (workspace_id, catalog_prefix); one grouped
+    fetch on a miss. Cross-worker invalidation via the shared marker."""
+    marker_at_read = _invalidate_on_marker_change(cache_store, last_seen_marker)
+    key = (workspace_id, catalog_prefix)
+    hit = cache_store.get(key)
+    if hit is not None and time.monotonic() - hit[0] < _SHAPE_SCAN_CACHE_TTL_SECONDS:
+        logger.info("cpq_perf: %s CACHE HIT (module) ws=%s prefix=%r", label, workspace_id, catalog_prefix)
+        return hit[1]
+    t0 = time.monotonic()
+    rows: list[dict[str, Any]] = []
+    for entities in get_cpq_rdb().fetch_all_entities_grouped_by_type(workspace_id).values():
+        for _eid, attrs in entities:
+            if shape_pred(set(attrs.keys())):
+                rows.append(attrs)
+    logger.info(
+        "cpq_perf: %s MISS (fresh scan) took %.3fs ws=%s prefix=%r rows=%d",
+        label, time.monotonic() - t0, workspace_id, catalog_prefix, len(rows),
+    )
+    _cache_write_if_marker_unchanged(cache_store, key, (time.monotonic(), rows), marker_at_read)
+    return rows
+
+
 def _clear_tables_cache() -> None:
     """Test-isolation hook -- call from an autouse fixture to prevent this
     process-lifetime cache from leaking fake/monkeypatched rows between
     tests that reuse the same (workspace_id, catalog_prefix) key."""
     _TABLES_CACHE.clear()
+    for _store in _SHAPE_SCAN_CACHES:
+        _store.clear()
 
 
 def _load_all_tables(
@@ -182,17 +223,16 @@ def _load_defaultinattr_rows(
 ) -> list[dict[str, Any]]:
     """Standalone scan for Defaultinattr-shaped rows (BaseModel + attrN/valN,
     no CPQModel). Kept out of _load_all_tables' fixed 5-tuple (every caller
-    unpacks it by position). Memoized in the caller's per-turn `cache`
-    under a distinct key; no module-level cache (callers only reach this
-    behind cpq_defaultinattr_shape_enabled)."""
+    unpacks it by position). memoized in the caller's per-turn `cache`
+    under a distinct key AND in a module-level TTL cache
+    (`_DEFAULTINATTR_CACHE`) so separate per-call caches share one scan."""
     key = (workspace_id, catalog_prefix, "defaultinattr")
     if cache is not None and key in cache:
         return cache[key]
-    rows: list[dict[str, Any]] = []
-    for entities in get_cpq_rdb().fetch_all_entities_grouped_by_type(workspace_id).values():
-        for _eid, attrs in entities:
-            if _is_defaultinattr_shaped(set(attrs.keys())):
-                rows.append(attrs)
+    rows = _cached_shape_scan(
+        _DEFAULTINATTR_CACHE, _DEFAULTINATTR_CACHE_LAST_SEEN_MARKER,
+        workspace_id, catalog_prefix, _is_defaultinattr_shaped, "_load_defaultinattr_rows",
+    )
     if cache is not None:
         cache[key] = rows
     return rows

@@ -14,12 +14,20 @@ from typing import Any
 from aryx.config import get_settings
 
 
-def grid_narrow_kwargs(workspace_id: int | None, catalog_prefix: str = "") -> dict[str, Any]:
+def grid_narrow_kwargs(
+    workspace_id: int | None, catalog_prefix: str = "",
+    dt_cache: dict[tuple, Any] | None = None,
+) -> dict[str, Any]:
     """Extra kwargs for ``append_pending_grid_quantities`` call sites: the
-    workspace/catalog when the flag is on, else ``{}`` (call unchanged)."""
+    workspace/catalog (and the caller's per-turn `dt_cache`, so the Whitelist
+    index is built once, not per selector/candidate) when the flag is on,
+    else ``{}`` (call unchanged)."""
     if workspace_id is None or not get_settings().cpq_whitelist_narrow_questions_enabled:
         return {}
-    return {"workspace_id": workspace_id, "catalog_prefix": catalog_prefix}
+    kwargs: dict[str, Any] = {"workspace_id": workspace_id, "catalog_prefix": catalog_prefix}
+    if dt_cache is not None:
+        kwargs["dt_cache"] = dt_cache
+    return kwargs
 
 
 def whitelist_narrowed_selector_options(

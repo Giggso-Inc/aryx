@@ -252,10 +252,16 @@ def _split_pipe_caret_values(values: list[str]) -> list[str]:
     for v in values:
         parts = v.split("|^|") if "|^|" in v else [v]
         for part in parts:
-            if split_tilde and "~" in part:
+            if split_tilde and "~" in part.replace("\\~", ""):
                 # `~` is the catalog's other multi-value packing convention
                 # (aryxent PR 12), e.g. "A~B~C" -- gated, off by default.
-                out.extend(sub.strip() for sub in part.split("~") if sub.strip())
+                # A literal tilde is written `\~` and never splits.
+                out.extend(
+                    sub.replace("\\~", "~").strip()
+                    for sub in re.split(r"(?<!\\)~", part) if sub.strip()
+                )
+            elif split_tilde and "\\~" in part:
+                out.append(part.replace("\\~", "~").strip())
             elif "|^|" in v:
                 if part.strip():
                     out.append(part.strip())

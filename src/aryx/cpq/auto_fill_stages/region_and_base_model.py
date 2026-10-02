@@ -59,6 +59,7 @@ def stage_region_and_base_model(
     if not state.value and "basemodel" in state.vn_flat and attr.options:
         derived = derived_base_model_option(
             attr.options, ctx.filled, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+            sources=ctx.sources,
         )
         if derived is not None:
             state.value = derived.item_value

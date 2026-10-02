@@ -63,6 +63,8 @@ def resolve_pending_grid_quantities(
     linked multi-select can have an unrelated selector's quantity
     attr returned here instead (Raven review, PR #283).
     """
+    if dt_cache is None and workspace_id is not None:
+        dt_cache = {}  # share one Whitelist index across selectors in this call
     links = resolve_array_grid_links(attrs)
     if selector_vns is not None:
         links = {vn: m for vn, m in links.items() if vn in selector_vns}
@@ -87,10 +89,15 @@ def resolve_pending_grid_quantities(
                     allowed = whitelist_narrowed_selector_options(
                         selector_vn, filled, workspace_id, catalog_prefix, dt_cache,
                     )
+                # Case-insensitive ("700/800 MHz" vs "700/800 MHZ"), like
+                # constraint_rules_intersect.normalize.
+                allowed_lower = (
+                    None if allowed is None else {a.strip().lower() for a in allowed}
+                )
                 selected = [
                     o.item_value for o in selector_attr.options
                     if o.item_value.strip().lower() in item_map
-                    and (allowed is None or o.item_value in allowed)
+                    and (allowed_lower is None or o.item_value.strip().lower() in allowed_lower)
                 ]
         for item_value in selected:
             qty_vn = item_map.get(item_value.strip().lower())
