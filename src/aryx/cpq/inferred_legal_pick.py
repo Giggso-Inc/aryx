@@ -31,10 +31,9 @@ def inferred_first_available(
     or None (flag off / no workspace / no candidates / no evidence / no real
     option in the set). Never raises.
 
-    Strict by design: with a known base model only that base model's own rows
-    count (``allow_wider_tiers`` is never passed), so a base model with no rows
-    for the attribute yields no inference rather than a guess pooled from
-    sibling base models."""
+    With a known base model its own rows win; a base model that has rows for
+    the attribute but no match (conflict) infers nothing, while a base model
+    with no rows at all (sparse data) falls back to the model tier."""
     if workspace_id is None or not valid_opts:
         return None
     if not get_settings().cpq_infer_legal_values_enabled:

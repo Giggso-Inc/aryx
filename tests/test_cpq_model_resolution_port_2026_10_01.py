@@ -56,9 +56,11 @@ def _rdb() -> FakeRdb:
 @pytest.fixture(autouse=True)
 def _clean():
     mrc._cache.clear()
+    mrc._empty.clear()
     mr.bind_turn(None)
     yield
     mrc._cache.clear()
+    mrc._empty.clear()
     mr.bind_turn(None)
 
 

@@ -40,6 +40,11 @@ class CatalogData:
 
 
 _cache: dict[tuple[int, str], CatalogData] = {}
+# Empty results (DB error OR a catalog that is genuinely not ingested) are
+# remembered only briefly: long enough not to re-scan on every call, short
+# enough that a transient error recovers quickly.
+_EMPTY_TTL_S = 30.0
+_empty: dict[tuple[int, str], CatalogData] = {}
 _cache_lock = threading.Lock()
 
 
@@ -85,6 +90,9 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
         hit = _cache.get(key)
         if hit is not None and now - hit.loaded_at < _CACHE_TTL_S:
             return hit
+        miss = _empty.get(key)
+        if miss is not None and now - miss.loaded_at < _EMPTY_TTL_S:
+            return miss
     if rdb is None:
         from aryx.cpq.rdb import get_cpq_rdb
         rdb = get_cpq_rdb()
@@ -128,9 +136,11 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
         # cache it (it would leave the workspace unresolved for the full TTL).
         logger.warning(
             "cpq: model_resolution catalog empty ws=%s prefix=%r nodes=%d models=%d "
-            "-- not caching (possible DB error or catalog not ingested)",
-            workspace_id, catalog_prefix, len(nodes_by_id), len(models),
+            "-- short-lived empty cache (%.0fs; possible DB error or catalog not ingested)",
+            workspace_id, catalog_prefix, len(nodes_by_id), len(models), _EMPTY_TTL_S,
         )
+        with _cache_lock:
+            _empty[key] = data
         return data
     with _cache_lock:
         _cache[key] = data
@@ -140,8 +150,9 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
 def invalidate(workspace_id: int | None = None) -> None:
     """Drop cached catalogs (one workspace, or all). Call after a re-ingest."""
     with _cache_lock:
-        for k in [k for k in _cache if workspace_id is None or k[0] == int(workspace_id)]:
-            del _cache[k]
+        for store in (_cache, _empty):
+            for k in [k for k in store if workspace_id is None or k[0] == int(workspace_id)]:
+                del store[k]
 
 
 def catalog_node_count(workspace_id: int, catalog_prefix: str) -> int:

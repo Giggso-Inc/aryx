@@ -56,9 +56,11 @@ def _rdb():
 @pytest.fixture(autouse=True)
 def _clean():
     mrc._cache.clear()
+    mrc._empty.clear()
     mr.bind_turn(None)
     yield
     mrc._cache.clear()
+    mrc._empty.clear()
     mr.bind_turn(None)
 
 
@@ -119,10 +121,29 @@ def test_empty_catalog_not_cached_and_warns(caplog):
     with caplog.at_level(logging.WARNING, logger=mrc.logger.name):
         data = mrc.load_catalog(5, "X", empty)
     assert not data.models and mrc.cached(5, "X") is None
-    assert any("not caching" in r.getMessage() for r in caplog.records)
-    # next call with a healthy DB loads for real (no 10-minute poisoning)
-    assert mrc.load_catalog(5, "X", _rdb()).models
+    assert any("empty cache" in r.getMessage() for r in caplog.records)
+    # an expired short negative cache lets a healthy DB load for real (no 10-minute poisoning)
+    with patch.object(mrc, "_EMPTY_TTL_S", 0.0):
+        assert mrc.load_catalog(5, "X", _rdb()).models
     assert mrc.cached(5, "X") is not None
+
+
+def test_empty_catalog_short_negative_cache_avoids_rescan():
+    class CountingRdb(FakeRdb):
+        calls = 0
+
+        def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
+            CountingRdb.calls += 1
+            return super().fetch_entities_by_exact_type(workspace_id, ontology_type)
+
+    empty = CountingRdb({})
+    mrc.load_catalog(6, "X", empty)
+    first = CountingRdb.calls
+    mrc.load_catalog(6, "X", empty)
+    assert CountingRdb.calls == first          # second call served from the negative cache
+    mrc.invalidate(6)
+    mrc.load_catalog(6, "X", empty)
+    assert CountingRdb.calls > first           # invalidate clears the negative cache too
 
 
 def test_invalidate_drops_cache():

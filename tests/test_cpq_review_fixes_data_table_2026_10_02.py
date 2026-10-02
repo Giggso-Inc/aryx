@@ -274,8 +274,8 @@ def test_inference_scoped_to_base_model_tier_unless_allowed():
     with patch.object(inf, "_load_all_tables", return_value=tables), \
             patch.object(inf, "_load_basemodel_to_config_rows", return_value=[]):
         assert inf.infer_implied_legal_values("keypad", "M1", 1, base_model="B1") == (["FULL"], "model_basemodel")
-        # B3 has no rows: previously fell back to the pooled model tier
-        assert inf.infer_implied_legal_values("keypad", "M1", 1, base_model="B3") is None
+        # B3 has no rows at all (sparse data): falls back to the model tier
+        assert inf.infer_implied_legal_values("keypad", "M1", 1, base_model="B3") == (["FULL", "LIMITED"], "model")
         assert inf.infer_implied_legal_values(
             "keypad", "M1", 1, base_model="B3", allow_wider_tiers=True,
         ) == (["FULL", "LIMITED"], "model")

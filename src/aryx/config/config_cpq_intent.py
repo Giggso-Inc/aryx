@@ -460,10 +460,10 @@ class CpqIntentSettingsMixin(BaseSettings):
             "picks (tier6_single_b, ask_data_gap, ask_rule_governed_blind) "
             "that found no Whitelist-scoped option infer a legal set from "
             "the Whitelist condition columns (cpq/inferred_legal_pick.py) before "
-            "falling back to raw catalog order. Strict: with a known base "
-            "model only that base model's own rows count, so a base model "
-            "with no rows for the attribute infers nothing (no pooling from "
-            "sibling base models). Off by default. Override "
+            "falling back to raw catalog order. With a known base model its "
+            "own rows win; if it has rows but none match the filled "
+            "conditions nothing is inferred, and if it has no rows at all "
+            "(sparse data) the model tier is used. Off by default. Override "
             "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
         ),
     )

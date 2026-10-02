@@ -116,9 +116,11 @@ def infer_implied_legal_values(
 
     Tiers: ``model_basemodel`` (cpq_model AND base_model), ``model``, then
     ``family`` (same productLine) only when both are empty. With a
-    `base_model` the inference is restricted to the ``model_basemodel`` tier
-    (the wider tiers pool values across sibling base models and could
-    blind-fill a value only valid for another one) unless
+    `base_model` the inference stays in the ``model_basemodel`` tier whenever
+    that base model has rows for the attribute (the wider tiers pool values
+    across sibling base models and could blind-fill a value only valid for
+    another one); it falls through to the wider tiers only when the base
+    model has NO rows at all for the attribute (sparse data), or always when
     `allow_wider_tiers=True`. `filled` additionally drops rows whose other
     conditions contradict already-filled attrs. Returns
     ``(sorted values, tier)`` or None -- never fabricates."""
@@ -134,7 +136,14 @@ def infer_implied_legal_values(
         if scoped:
             return sorted(scoped), "model_basemodel"
         if not allow_wider_tiers:
-            return None
+            # Sparse vs conflicting: if this base model HAS rows for the attr
+            # but their other conditions contradict `filled`, that is a real
+            # conflict -> infer nothing. If it has no rows at all (sparse
+            # data), fall through to the wider tiers instead of giving up.
+            if _scan_condition_column_values(
+                constraint_rows, attr_var_name, {norm_model}, base_model=base_model,
+            ):
+                return None
     model_values = _scan_condition_column_values(
         constraint_rows, attr_var_name, {norm_model}, filled=filled,
     )

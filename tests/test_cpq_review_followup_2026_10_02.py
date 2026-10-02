@@ -70,9 +70,23 @@ def test_real_caller_infers_for_base_model_with_rows():
     assert got is not None and got.item_value == "FULL"
 
 
-def test_real_caller_infers_nothing_for_base_model_without_rows():
-    # strict by design: no pooling from sibling base models B1/B2
-    assert _first("B3") is None
+def test_real_caller_falls_back_to_model_tier_for_sparse_base_model():
+    # B3 has no rows at all (sparse data): the model tier is used
+    got = _first("B3")
+    assert got is not None and got.item_value == "FULL"
+
+
+def test_real_caller_infers_nothing_when_base_model_rows_conflict_with_filled():
+    # B1 HAS rows for keypad, but the filled condition contradicts them: a real
+    # conflict, so no pooling from sibling base models
+    opts = [MenuOption(item_value="FULL", display_name="FULL", order=1)]
+    rows = [{"CPQModel": "M1", "BaseModel": "B1", "attr1": "a", "val1": "x",
+             "attr2": "keypad", "val2": "FULL", "attr3": "band", "val3": "UHF"},
+            {"CPQModel": "M1", "BaseModel": "B2", "attr1": "a", "val1": "y",
+             "attr2": "keypad", "val2": "LIMITED", "attr3": "band", "val3": "VHF"}]
+    with patch.object(ilp, "get_settings", _settings(cpq_infer_legal_values_enabled=True)),             patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="bm"),             patch.object(ilp, "resolved_model_first_candidates", return_value=("M1",)),             patch.object(inf, "_load_all_tables", return_value=(rows, [], [], [], [])),             patch.object(inf, "_load_basemodel_to_config_rows", return_value=[]):
+        got = ilp.inferred_first_available("keypad", opts, {"bm": "B1", "band": "VHF"}, 1, "", {})
+    assert got is None
 
 
 # ---- catalog invalidate-all ----
