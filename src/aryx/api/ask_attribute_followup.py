@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from aryx.api.ask_attribute_search import _budget_s, decide
+from aryx.log_safe import text_ref
 from aryx.api.ask_request_models import AskRequest
 from aryx.cpq.attribute_search.budget import run_with_budget
 from aryx.cpq.attribute_search.lookup import find_products_by_attribute
@@ -43,7 +44,7 @@ def _route_attribute_followup(req: AskRequest, reader: Any) -> dict[str, Any] | 
             return None
         match = resolve_against_scope(req.question, list(offered.offered_values))
         if not match.matched:
-            logger.info("attribute_search: follow-up %r is not a %r value", req.question, label)
+            logger.info("attribute_search: follow-up %s is not a %r value", text_ref(req.question), label)
             return None
         return match, find_products_by_attribute(label, match.matched, reader=reader,
                                                  workspace_id=req.workspace_id, engine=engine)

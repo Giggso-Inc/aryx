@@ -16,6 +16,7 @@ from typing import Any
 
 from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_classify_switch_reply
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.log_safe import text_ref
 from aryx.api.ask_turn_switch.ask_turn_confirm_switch_decline import _handle_confirm_switch_decline
 from aryx.api.ask_turn_country_available_for import _country_available_for
 from aryx.api.ask_turn_switch.ask_turn_product_switch_complete import _complete_product_switch
@@ -78,9 +79,9 @@ def _handle_confirm_switch_anchor(
         "current_product": getattr(session, "product_name", "") or "",
         "pending_switch_product": getattr(session, "pending_switch_product", "") or ""})
     _ask_api_module.logger.info(
-        "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%r decision=%s",
+        "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%s decision=%s",
         session.turn, session.product_name, session.pending_switch_product,
-        req.question, "switch" if affirmative else "stay",
+        text_ref(req.question), "switch" if affirmative else "stay",
     )
     if affirmative:
         new_product = session.pending_switch_product

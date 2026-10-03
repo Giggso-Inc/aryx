@@ -1,0 +1,67 @@
+"""Helpers that keep personal data out of log lines.
+
+A log line carries shapes, not values: a length and a short hash for text a
+customer typed (enough to tell whether two lines refer to the same message,
+not enough to recover it), counts and type names for SQL bind parameters, and a
+masked form of cloud identifiers. Use these instead of ``%r`` of the raw value.
+
+Truncating a value is not redaction: the first characters of a message are
+usually the part that holds a name, address or phone number.
+"""
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Mapping
+from typing import Any
+
+_MAX_TYPES = 6
+
+
+def text_ref(text: Any) -> str:
+    """Return ``len=<n> sha=<8 hex>`` for a text, or ``-`` when it is empty (never the text)."""
+    if text is None:
+        return "-"
+    value = text if isinstance(text, str) else str(text)
+    if not value:
+        return "-"
+    digest = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"len={len(value)} sha={digest}"
+
+
+def mask_ocid(value: Any) -> str:
+    """Mask an OCI identifier, keeping its type prefix and last four characters."""
+    text = "" if value is None else str(value)
+    if not text:
+        return "-"
+    head, sep, tail = text.partition("..")
+    if sep and tail:
+        return f"{head}..***{tail[-4:]}"
+    return "***" + text[-4:] if len(text) > 8 else "***"
+
+
+def _type_names(values: Any) -> str:
+    names = sorted({type(v).__name__ for v in values})
+    more = "" if len(names) <= _MAX_TYPES else f",+{len(names) - _MAX_TYPES}"
+    return ",".join(names[:_MAX_TYPES]) + more
+
+
+def params_shape(params: Any) -> str:
+    """Describe SQL bind parameters as counts and type names, never their values."""
+    if params is None:
+        return "none"
+    if isinstance(params, Mapping):
+        return f"named n={len(params)} keys={sorted(map(str, params))[:12]} types={_type_names(params.values())}"
+    if isinstance(params, (list, tuple)):
+        return f"{type(params).__name__} n={len(params)} types={_type_names(params)}"
+    return f"{type(params).__name__}"
+
+
+def rows_shape(rows: Any) -> str:
+    """Describe a batch of rows (or one row) as counts and type names, never their values."""
+    if rows is None:
+        return "none"
+    if isinstance(rows, Mapping):
+        return params_shape(rows)
+    if isinstance(rows, (list, tuple)) and rows and isinstance(rows[0], (list, tuple, Mapping)):
+        return f"rows={len(rows)} first_row: {params_shape(rows[0])}"
+    return params_shape(rows)

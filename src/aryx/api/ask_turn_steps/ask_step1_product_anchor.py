@@ -24,6 +24,7 @@ from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_turn_steps.ask_step1_product_family_prompt import _build_product_family_prompt_or_resolve
 from aryx.cpq.attribute_search.seeds import apply_pending_seeds
 from aryx.cpq.pending_scope.pending_scope import clear_pending_scope, resolve_against_scope
+from aryx.log_safe import text_ref
 from aryx.raven_log import raven_log
 
 
@@ -57,9 +58,9 @@ def _step1_resolve_product_anchor(
         and _cpq_engine.detect_qa_question(req.question, None, strict=True)
     ):
         _ask_api_module.logger.info(
-            "cpq_intent_gate: question-shaped message %r intercepted "
+            "cpq_intent_gate: question-shaped message %s intercepted "
             "before product-anchor detection (turn=%s) -> routing to Q&A",
-            req.question, session.turn,
+            text_ref(req.question), session.turn,
         )
         raven_log("DEBUG", "P4", "ask.anchor.resolved question-shaped reply routed to qa", context={
             "selected_option": "qa", "available_options": ["qa", "anchor"],

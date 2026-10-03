@@ -44,6 +44,7 @@ from typing import Any, Literal
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
+from aryx.log_safe import text_ref
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import intent_gateway_attr_route as _attr_route
 from aryx.cpq.intent_gateway.intent_gateway_agreement import (
@@ -974,13 +975,13 @@ def classify_ask_route(
     # N10: hard off-topic veto before any LLM call (saves latency; no misroute).
     if hard_off_topic(question):
         logger.info(
-            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%r", run_id, question[:80],
+            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%s", run_id, text_ref(question),
         )
         if settings.cpq_off_topic_veto_shadow_enabled:
             logger.info(
-                "cpq_off_topic_veto_shadow: run_id=%s q=%r term_strength=%s "
+                "cpq_off_topic_veto_shadow: run_id=%s q=%s term_strength=%s "
                 "site=pre_llm (no LLM verdict available -- veto skipped the "
-                "call)", run_id, question[:80],
+                "call)", run_id, text_ref(question),
                 _off_topic_shadow_term_strength(question),
             )
         return AskRouteDecision(

@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_shadow_classify_and_confirm_intent import _shadow_classify_cpq_turn
+from aryx.log_safe import text_ref
 from aryx.raven_log import raven_log
 
 
@@ -50,13 +51,13 @@ def _log_turn_intent_diagnostics(req: "Any", session: Any, attrs: list) -> None:
             "question_len": len(getattr(req, "question", "") or "")})
         if len(_intent_hits) >= 2:
             _ask_api_module.logger.info(
-                "cpq_intent_count: message %r matched %d distinct intents: %s "
+                "cpq_intent_count: message %s matched %d distinct intents: %s "
                 "-- only the first will actually be addressed today",
-                req.question, len(_intent_hits), _intent_hits,
+                text_ref(req.question), len(_intent_hits), _intent_hits,
             )
         elif _intent_hits:
             _ask_api_module.logger.debug(
-                "cpq_intent_count: message %r matched: %s", req.question, _intent_hits,
+                "cpq_intent_count: message %s matched: %s", text_ref(req.question), _intent_hits,
             )
     except Exception as exc:  # noqa: BLE001 — diagnostic only, must never break the turn
         _ask_api_module.logger.debug("cpq_intent_count: diagnostic failed", exc_info=True)

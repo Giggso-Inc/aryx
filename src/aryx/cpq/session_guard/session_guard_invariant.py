@@ -9,6 +9,7 @@ import logging
 import re
 from typing import Any
 
+from aryx.log_safe import text_ref
 from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def assert_conversational_invariant(
     )
     violations.append(msg)
     if log:
-        logger.warning("%s | answer_tail=%r", msg, (answer or "")[-180:])
+        logger.warning("%s | answer=%s", msg, text_ref(answer))
         raven_log(
             "WARN", "P3", "ask.invariant.orphan_question config question without pending state",
             error_code="ARYX_ASK_ORPHAN_QUESTION",

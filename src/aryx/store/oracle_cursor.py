@@ -12,6 +12,7 @@ import re
 import time
 from typing import Any, Iterator
 
+from aryx.log_safe import params_shape, rows_shape
 from aryx.raven_log import raven_log, would_log
 
 from aryx.store.oracle_clob import _coerce_clob, _hint_clob_many
@@ -156,7 +157,8 @@ class OracleCursorWrapper:
             if _m:
                 _on_excl = frozenset(_BIND_NAME_RE.findall(_m.group(1)))
         oracle_params = _coerce_clob(oracle_params, self._cur, oracledb, force=_is_merge, exclude=_on_excl)
-        logger.debug("execute sql=%s params=%s", oracle_sql[:120], oracle_params)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("execute sql=%s params=%s", oracle_sql[:120], params_shape(oracle_params))
         _op, _t0 = _sql_op(oracle_sql), time.monotonic()
         try:
             self._cur.execute(oracle_sql, oracle_params)
@@ -169,7 +171,7 @@ class OracleCursorWrapper:
             _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         except Exception as exc:
-            logger.error("execute failed sql=%r params=%r error=%s", oracle_sql, oracle_params, exc)
+            logger.error("execute failed sql=%r params=%s error=%s", oracle_sql, params_shape(oracle_params), exc)
             _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         else:
@@ -207,12 +209,13 @@ class OracleCursorWrapper:
                                    "rows": len(oracle_seq)})
                 return
             _log_stmt_failed(_op, "executemany", exc, _t0)
-            logger.warning("executemany IntegrityError (not swallowed) sql=%r conflict_ignore=%s exc=%s args=%r",
-                           oracle_sql[:120], self._conflict_ignore, exc, exc.args)
+            logger.warning("executemany IntegrityError (not swallowed) sql=%r conflict_ignore=%s exc=%s args=%s",
+                           oracle_sql[:120], self._conflict_ignore, exc,
+                           [type(a).__name__ for a in exc.args])
             raise
         except Exception as exc:
             sample = oracle_seq[0] if oracle_seq else None
-            logger.error("executemany failed sql=%r row0=%r error=%s", oracle_sql, sample, exc)
+            logger.error("executemany failed sql=%r row0=%s error=%s", oracle_sql, rows_shape(sample), exc)
             _log_stmt_failed(_op, "executemany", exc, _t0)
             raise
         else:
@@ -261,8 +264,8 @@ class OracleCursorWrapper:
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except Exception as exc:
-            logger.error("executemany_returning failed sql=%r row0=%r error=%s",
-                         oracle_sql, oracle_seq[0], exc)
+            logger.error("executemany_returning failed sql=%r row0=%s error=%s",
+                         oracle_sql, rows_shape(oracle_seq[0]), exc)
             _log_stmt_failed(_op, "executemany_returning", exc, _t0)
             raise
         else:

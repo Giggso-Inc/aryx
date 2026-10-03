@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.log_safe import text_ref
 from aryx.raven_log import raven_log
 
 
@@ -65,10 +66,10 @@ def _step9_match_pending_answer(
                     pending_attr, hint_val_for_attr, pending_constrained)
         if not result:
             logger.info(
-                "cpq_apply_answer_miss attr=%s reply=%r hint=%r "
+                "cpq_apply_answer_miss attr=%s reply=%s hint=%s "
                 "n_options=%d run_id=%s",
-                pending_attr.variable_name, req.question,
-                hint_val_for_attr, len(pending_attr.options or []),
+                pending_attr.variable_name, text_ref(req.question),
+                text_ref(hint_val_for_attr), len(pending_attr.options or []),
                 session.run_id or "-",
             )
     raven_log("DEBUG", "P4", "ask.reply.match deterministic match tier result", context={
