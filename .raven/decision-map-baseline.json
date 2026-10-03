@@ -63,12 +63,12 @@
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      102,
+      64,
       "<try>"
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      108,
+      70,
       "pending"
     ],
     [
@@ -10388,22 +10388,22 @@
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_read_job.py",
-      80,
+      84,
       "_on_progress"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_read_job.py",
-      104,
+      108,
       "_build_read_progress"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_read_job.py",
-      107,
+      111,
       "_read_job"
     ],
     [
       "src/aryx/api/doc_discover/doc_discover_read_job.py",
-      113,
+      117,
       "<try>"
     ],
     [
@@ -14073,13 +14073,18 @@
     ],
     [
       "src/aryx/graph/falkor_write_entities.py",
-      22,
+      25,
       "add_entity"
     ],
     [
       "src/aryx/graph/oracle_graph_store_batch.py",
-      227,
+      331,
       "<if>"
+    ],
+    [
+      "src/aryx/graph/oracle_graph_store_batch.py",
+      347,
+      "add_relationships_batch"
     ],
     [
       "src/aryx/llm/llm_providers_anthropic.py",
@@ -14463,22 +14468,22 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      149,
+      160,
       "<if>"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      174,
+      186,
       "<try>"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      229,
+      241,
       "read_files"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      656,
+      668,
       "<if>"
     ],
     [

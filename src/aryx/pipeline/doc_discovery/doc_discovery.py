@@ -89,7 +89,8 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                broker: Broker, context: str, did: str | None = None,
                on_progress: Callable[[int, int, list], None] | None = None,
                workspace_id: int = 1,
-               layout_items: list[tuple[bytes, str]] | None = None) -> dict[str, Any]:
+               layout_items: list[tuple[bytes, str]] | None = None,
+               should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing.
 
     on_progress: optional callback forwarded to extract_mentions() for each
@@ -108,6 +109,16 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     "files" summary the normal tabular flow uses, so they go through this
     screen's existing read-then-confirm UX -- nothing is written to
     aryx_cpq_layout_file until ingest_confirmed() actually approves one.
+
+    should_stop: forwarded to the XML branch's cpq_ingestion raw-graph
+    write (project_raw_graph_and_flatten -> write_raw_graph's per-chunk
+    Oracle executemany loop) -- the one part of a read that can run for
+    tens of minutes on a large file and, until this parameter existed, had
+    no way to be interrupted by a cancel at all. NOT checked anywhere else
+    in this function yet (the document-extraction path via
+    DocumentRouterConnector/extract_mentions() still has no should_stop
+    support — a separate, still-open gap, see doc_discover_read_job.py's
+    module docstring).
     """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
@@ -150,6 +161,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                 xml_csvs = project_raw_graph_and_flatten(
                     d, Path(n).stem, workspace_id=workspace_id,
                     dsn=settings.effective_dsn(), graph_url=settings.graph_url, log_id=did,
+                    should_stop=should_stop,
                 )
             else:
                 xml_csvs = _xml_to_csvs(d, Path(n).stem, log_id=did)
