@@ -4,7 +4,7 @@
 >
 > - **Purpose**: Tells the next person continuing the Raven structured-logging work what is done, what is pending and how to carry on. Read this first.
 > - **Status**: LIVING
-> - **Last updated**: 2026-10-02, second session (macOS). Merged `dev_oci` into the branch and instrumented the retrieval deep trail (area C).
+> - **Last updated**: 2026-10-03, third session (Windows). Closed the remaining ingestion logging gaps, passed `ref_id` to `ask.rule.fired`, ran the full suite on the final tip (section 7). Earlier: 2026-10-02, second session (macOS): merged `dev_oci` and instrumented the retrieval deep trail (area C).
 > - **Supersedes**: the first-session hand-off `aryx-oci_todo_raven_logging_handoff.md`, which lives outside the repo on the first developer's machine. Section 6 lists where that document is now out of date. The plan and spec (`aryx-oci_todo_raven_logging.md`, event catalogue, level rules, env contract) also live there and are not in the repo.
 > - **Formatting**: no markdown tables.
 
@@ -102,16 +102,16 @@
    # ARYX_RAVEN_LOG_S3_BATCH_MAX=500
    # ARYX_RAVEN_LOG_S3_QUEUE_MAX=20000
    ```
-3. **Ingestion and engine gaps**:
+3. **Ingestion and engine gaps** (done in the 2026-10-03 session except where section 7 says otherwise):
    - Not yet logged: `pipeline/profile.py`, `tag.py`, `schema_agent.py`, `embed.py`, `pii.py`, `ingest_validation/*`, the Falkor writers and other graph readers, the empty-text skips in exact resolve, and the bad `ARYX_PROJECT_DIRTY_MAX` branch in `project_auto`.
    - The Postgres RDB fetches have no per-call failure record (local only; their timeouts are logged).
-4. **`ref_id` in `ask.rule.fired`**. Rules now carry `ref_id` when `cpq_rule_scope_filter_enabled` is on, but about 10 `record_fire` call sites do not pass it. Passing it also changes what the durable rule-trace table stores, so it needs the developer's OK.
+4. **`ref_id` in `ask.rule.fired`** (done on 2026-10-03 with the developer's OK; see section 7). Rules now carry `ref_id` when `cpq_rule_scope_filter_enabled` is on, but about 10 `record_fire` call sites do not pass it. Passing it also changes what the durable rule-trace table stores, so it needs the developer's OK.
 5. **Small items**:
    - `input_ref` / `output_ref` on LLM records are null, because the call-row insert returns no id.
    - The per-page and per-chunk records in `extract_mentions` and the REST connector build their context before the level check.
    - `boto3` is not in the OCI Function image, so the S3 sink cannot work there.
    - The health route writes a record every 15 seconds.
-6. **Separate PR (needs a yes)**: personal data in existing log lines. The Oracle error lines print bind values and the first row; the OCI user id is printed in full; `cpq_apply_answer_miss` and the attribute-search follow-up line log the raw reply.
+6. **Personal data in existing log lines** (done in this PR on 2026-10-03, commit `917be39`, see section 7; the original description follows). The Oracle error lines print bind values and the first row; the OCI user id is printed in full; `cpq_apply_answer_miss` and the attribute-search follow-up line log the raw reply.
 7. When all of the above is done, drop "WIP" from the PR title.
 
 ## 5. How to run the checks (macOS notes from this session)
@@ -132,3 +132,36 @@
 - **5.2 compare against a clean base**: done, for the merge and for the area C related tests.
 - **5.5 "rules carry only rule_name"**: no longer true after the merge (`ref_id` exists). See section 4, item 4.
 - **Sections 0 to 3 of that document**: done for this round. The branch is up to date with `dev_oci` as of `6567b4f` (PR #423). If `dev_oci` moves again, repeat its section 0 (merge, not rebase, so PR #422 stays valid).
+
+## 7. Third session (2026-10-03, Windows machine)
+
+- **Sync**: fast-forwarded to the second session's tip (`5b63f8b2`). `dev_oci` had not moved (its tip `6567b4f`, PR #423, was already in the branch), so no new merge was needed.
+- **Two new commits** (on top of `5b63f8b2`):
+  - `504c9a5` `ref_id` plumbing: the 10 rule-based `record_fire` call sites (hiding, recommendation, constraint) now pass the rule's `ref_id` as `getattr(rule, "ref_id", None) or None`. Finding that changes the earlier caution: `ref_id` is only used by the `ask.rule.fired` log record (`_log_fired`); `append_entry` and the local trace file do not take it, so **the durable rule-trace table is unchanged**. The three sites that only know a rule name (`commit_value`, `tier5_governed_multi`, `multi_fallback`) still pass none.
+  - `9af7b4c` remaining ingestion gaps, with 18 tests (`tests/test_raven_log_gaps_2026_10_03.py`):
+    - `pipeline/tag.py`: `ingest.tag.skipped`, `ingest.tag.completed`, `ingest.tag.incomplete` (WARN, fewer tags than fields), `ingest.tag.failed` (ERROR, re-raised). Sample values are never logged.
+    - `pipeline/embed.py`: `ingest.embed.skipped`, `.batch` (DEBUG), `.completed` (INFO), and ERROR records for no model, empty vectors and dimension mismatch before the existing `RuntimeError`.
+    - `pipeline/pii.py`: engine-load failure is logged (ERROR, still fail-closed) and a summary with counts of PII entity types and actions; no text is logged.
+    - `pipeline/profile.py`: WARN once per field when the distinct-count cap is reached, plus a DEBUG result.
+    - `pipeline/schema_agent.py`: WARN when the LLM mapping fails and the heuristic is used, plus DEBUG records.
+    - `resolution/run_exact.py`: WARN when records with blank match text are kept separate, DEBUG otherwise.
+    - `project/__init__.py`: the bad `ARYX_PROJECT_DIRTY_MAX` branch (was `pass`) now logs WARN `ARYX_ING_PROJECT_DIRTY_MAX_INVALID` and keeps the default.
+    - `graph/falkor_store.py`, `graph/falkor_write_entities.py` (the non-OCI backend): index-creation failures (WARN), graph clear when no graph existed, per-batch and summary DEBUG records.
+    - `cpq/rdb/rdb_postgres.py`: the 12 swallowed fetch failures now call a `_read_failed` helper (ERROR `ARYX_ASK_RDB_READ_FAILED`), mirroring the Oracle one.
+- **Checked, no change needed**: the per-chunk records in `extract_mentions` and the per-page records in the REST connector are already guarded or fire once per page. `ingest_validation/*`, `pipeline/profile.py` etc. have no further decision points the scanner can find. `oracle_graph_reader_*` and the other graph readers are read-only paths with no swallowed failures.
+- **Gate check**: the offline decision-map check over every source file this branch changed versus `dev_oci` found 23 files with "new" findings, all in the CPQ engine area, where stage code calls the shared `fill_log` helper (and the scanner treats calls into another project module as unlogged dependencies). This is the known own-module false positive; the helper writes the records. This round's own 14 files: 0 findings.
+- **Personal-data fixes in existing log lines** (commit `917be39`, decision D8: per-line fixes plus one helper, in this same PR; truncation was rejected as redaction because the first characters of a message are where names and phone numbers are):
+  - New `src/aryx/log_safe.py`: `text_ref` (length plus 8-character hash, never the text), `mask_ocid`, `params_shape` and `rows_shape` (counts and type names).
+  - `store/oracle_cursor.py`: the DEBUG and ERROR lines no longer print bind values or the first row of a failed batch (they print counts and types); the IntegrityError line prints argument types. The DEBUG shape is only computed when DEBUG is on.
+  - `oci_client.py`: the user OCID is masked (type prefix and last four characters).
+  - Customer text replaced by `text_ref` in 12 lines: intent gateway (`HARD_OFF_TOPIC`, veto shadow), pending scope (`retained`, `lost`), country alias, shadow intent (message, clarifying question, rationale), QA scope, answer miss (reply and hint), product-switch confirm reply, intent count, attribute-search follow-up, the product-anchor question gate, and the orphan-question answer tail. Every line keeps its prefix and other fields.
+  - `tests/test_log_personal_data_2026_10_03.py` (9 tests): a sentinel string is fed through the Oracle, OCI and CPQ paths and must be absent from the captured log; a repo-wide AST lint fails if any `logger.*` call is given `req.question`, `user_answer`, `user_text` or `utterance` directly.
+  - Sweep note: other stdlib lines that mention a question or answer by word were checked and are not customer text (ids, variable names, counts). The Raven records already carried lengths only.
+- **Developer decisions this session**: `ref_id` plumbing yes; LLM `input_ref` / `output_ref` left null (not done); personal-data fixes first planned as a separate PR, then moved into this PR (above); copying the plan and spec into `docs/` not done; the health-route record and `boto3` in the Function image left as they are.
+- **Full test suite, run on the exact tip `917be39` and on a clean `dev_oci` (`6567b4f`)** (`pytest-xdist` 4 workers, 180 s per-test timeout, junit xml compared by test id, 53 to 55 minutes each on this machine):
+  - Clean `dev_oci`: 3,622 passed, 167 failed, 51 skipped. Branch tip: 3,883 passed, 183 failed, 51 skipped. 164 failures are the same on both (no Postgres or Oracle here, `oracledb` not installed, an LLM endpoint that does not exist, xdist workers killed at the per-test timeout).
+  - 19 tests failed only on the branch and 20 baseline tests never ran on the branch (workers killed at the timeout). Every one of these 39 was re-run **alone in its own process** on both trees: 37 behave identically (31 pass, 6 time out on both); the other 2 are explained, not regressions: `test_raven_log_requires_error_code_on_error` was renamed on purpose to `..._fails_open` (the wrapper no longer raises, plan F1), and `test_extract_mentions_all_failed_is_error_and_trace_crosses_pool` is a new test that does not exist on `dev_oci`. The branch-only failures were test interference (stand-in `oracledb` modules, 15 `test_oracle_pool` tests) and killed workers, not code changes.
+  - All 191 Raven-log and personal-data tests pass together (13 files).
+  - App check: the FastAPI app imports on both trees, `/health` returns 200, and all 250 changed modules import (no live database or startup hooks were available here).
+  - Trap for the next person: on Windows `pytest-timeout` kills the **whole process** when one test passes its timeout, so a single-process run of a slow test file produces no summary at all. Use xdist workers, or run suspect tests one per process. Timings are kept in the hub's `claude-instructions/test-suite-timings.md`, not in the repo.
+- **Still pending**: a real run on dev (needs deploy access); the two `.env.example` blocks (section 4, item 2); dropping "WIP" from PR #422 once the developer agrees. Not done and not planned here: LLM `input_ref` / `output_ref`, the health-route record, `boto3` in the Function image, copying the plan and spec into `docs/`.
