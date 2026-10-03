@@ -19,6 +19,7 @@ from aryx.api.admin_api import _local_broker
 from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.connectors.schema_inspect import introspect, test_connection
 from aryx.connectors.sql_source import SqlConnector
@@ -123,7 +124,7 @@ def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
                   context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()

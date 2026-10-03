@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from aryx.raven_log import bind_run_id, raven_log
+from aryx.log_safe import ora_code
 from aryx.worker.fn_handler_dispatch import _dispatch
 from aryx.worker.job_partial import pop_hidden
 
@@ -126,7 +127,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
                   context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": "dispatch",
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
         return fdk_response.Response(
             ctx,

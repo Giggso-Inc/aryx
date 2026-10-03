@@ -12,7 +12,7 @@ import re
 import time
 from typing import Any, Iterator
 
-from aryx.log_safe import params_shape, rows_shape
+from aryx.log_safe import ora_code, params_shape, rows_shape
 from aryx.raven_log import raven_log, would_log
 
 from aryx.store.oracle_clob import _coerce_clob, _hint_clob_many
@@ -171,7 +171,7 @@ class OracleCursorWrapper:
             _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         except Exception as exc:
-            logger.error("execute failed sql=%r params=%s error=%s", oracle_sql, params_shape(oracle_params), exc)
+            logger.error("execute failed sql=%r params=%s error=%s %s", oracle_sql, params_shape(oracle_params), type(exc).__name__, ora_code(exc))
             _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         else:
@@ -215,7 +215,7 @@ class OracleCursorWrapper:
             raise
         except Exception as exc:
             sample = oracle_seq[0] if oracle_seq else None
-            logger.error("executemany failed sql=%r row0=%s error=%s", oracle_sql, rows_shape(sample), exc)
+            logger.error("executemany failed sql=%r row0=%s error=%s %s", oracle_sql, rows_shape(sample), type(exc).__name__, ora_code(exc))
             _log_stmt_failed(_op, "executemany", exc, _t0)
             raise
         else:
@@ -264,8 +264,8 @@ class OracleCursorWrapper:
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except Exception as exc:
-            logger.error("executemany_returning failed sql=%r row0=%s error=%s",
-                         oracle_sql, rows_shape(oracle_seq[0]), exc)
+            logger.error("executemany_returning failed sql=%r row0=%s error=%s %s",
+                         oracle_sql, rows_shape(oracle_seq[0]), type(exc).__name__, ora_code(exc))
             _log_stmt_failed(_op, "executemany_returning", exc, _t0)
             raise
         else:

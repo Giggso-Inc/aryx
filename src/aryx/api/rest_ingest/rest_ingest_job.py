@@ -13,6 +13,7 @@ import time
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.connectors.rest_api import RestApiConnector
 from aryx.pipeline.orchestrate import run_pipeline
@@ -83,7 +84,7 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
                   context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         if jobs is not None:
             jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:

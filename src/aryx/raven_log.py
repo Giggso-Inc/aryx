@@ -347,10 +347,10 @@ def _get_sinks() -> list[Callable[[dict], None]]:
     global _SINKS
     if _SINKS is not None:
         return _SINKS
+    cfg = _cfg()  # before taking _lock: _cfg() takes it too and the lock is not reentrant
     with _lock:
         if _SINKS is not None:
             return _SINKS
-        cfg = _cfg()
         sinks: list[Callable[[dict], None]] = []
         if cfg.sink in ("stdout", "both"):
             sinks.append(_stdout_sink)
@@ -497,17 +497,21 @@ def raven_log(
     ``trace_id`` defaults to the id bound with ``bind_run_id`` (job id / CPQ run
     id), else a fresh one.
     """
-    lv = _LEVEL_ALIASES.get(str(level).upper(), str(level).upper())
-    cfg = _cfg()
-    if not cfg.enabled or _RANK.get(lv, 100) < cfg.min_rank:
+    try:
+        lv = _LEVEL_ALIASES.get(str(level).upper(), str(level).upper())
+        cfg = _cfg()
+        if not cfg.enabled or _RANK.get(lv, 100) < cfg.min_rank:
+            return {}
+        kwargs: dict[str, Any] = dict(
+            error_code=error_code, service=service, env=env or _env(),
+            principal=principal, project=project,
+            trace_id=trace_id or current_run_id() or None, span_id=span_id,
+            context=_scrub(context) if context else context, sample_payload=sample_payload,
+        )
+        return _emit_record(lv, criticality, message, kwargs)
+    except Exception as exc:  # never let logging break the caller
+        _warn_once(f"raven_log failed ({type(exc).__name__}: {exc})")
         return {}
-    kwargs: dict[str, Any] = dict(
-        error_code=error_code, service=service, env=env or _env(),
-        principal=principal, project=project,
-        trace_id=trace_id or current_run_id() or None, span_id=span_id,
-        context=_scrub(context) if context else context, sample_payload=sample_payload,
-    )
-    return _emit_record(lv, criticality, message, kwargs)
 
 
 def _emit_record(lv: str, criticality: str, message: str, kwargs: dict[str, Any]) -> dict[str, Any]:

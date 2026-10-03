@@ -18,6 +18,7 @@ from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.cpq_ingestion.routing import cpq_layout_upload_active
 from aryx.pipeline.doc_discovery.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
@@ -166,7 +167,7 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
                   context={"task_id": did, "job_id": did, "final_status": "failed", "stage": "Reading",
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         jobs.finish(did, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()

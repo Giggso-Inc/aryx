@@ -11,6 +11,7 @@ usually the part that holds a name, address or phone number.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -65,3 +66,9 @@ def rows_shape(rows: Any) -> str:
     if isinstance(rows, (list, tuple)) and rows and isinstance(rows[0], (list, tuple, Mapping)):
         return f"rows={len(rows)} first_row: {params_shape(rows[0])}"
     return params_shape(rows)
+
+
+def ora_code(exc: BaseException) -> str:
+    """ORA-/DPY- code from an exception message ('' when none); never the message."""
+    m = re.search(r"\b(?:ORA|DPY)-\d{4,5}\b", str(exc))
+    return m.group(0) if m else ""

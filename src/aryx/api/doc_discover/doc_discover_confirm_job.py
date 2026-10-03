@@ -13,6 +13,7 @@ from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
 from aryx.pipeline.orchestrate import PipelineCancelled
@@ -100,7 +101,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
                   context={"task_id": job_id, "job_id": job_id, "discovery_id": did, "final_status": "failed",
                            "stage": "confirm", "duration_ms": int((time.monotonic() - t0) * 1000),
                            "result": "error", "reason_code": type(exc).__name__,
-                           "error_class": type(exc).__name__, "error": str(exc)[:300]})
+                           "error_class": type(exc).__name__, "ora_code": ora_code(exc)})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
         _reset_discovery_status(did)
     finally:

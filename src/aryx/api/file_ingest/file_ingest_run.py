@@ -18,6 +18,7 @@ from aryx.api.admin_api import _local_broker
 from aryx.api.file_ingest.file_ingest_limits import _DATA_EXTS, _DOC_EXTS
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import note_hidden, pop_hidden
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
@@ -552,7 +553,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                   context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         if jobs is not None:
             jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:

@@ -23,6 +23,7 @@ from aryx.api.admin_broker import _local_broker
 from aryx.api.admin_models import EntityCreateRequest, EntityUpdateRequest, FkLink, IngestDbRequest
 from aryx.config import get_settings
 from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.connectors.postgres import PostgresConnector
 from aryx.graph import FalkorStore
@@ -86,7 +87,7 @@ def _run_db(req: IngestDbRequest, job_id: str) -> None:
                   context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
                            "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                            "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
-                           "error": str(exc)[:300]})
+                           "ora_code": ora_code(exc)})
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()

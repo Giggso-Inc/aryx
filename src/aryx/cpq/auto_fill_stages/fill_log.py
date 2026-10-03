@@ -26,9 +26,19 @@ from aryx.raven_log import current_run_id, raven_log, value_fields, would_log
 _PASS: contextvars.ContextVar[int | None] = contextvars.ContextVar("ask_fill_pass", default=None)
 _PLACEHOLDERS = frozenset({"*", "", "tbd", "any", "all", "n/a", "na", "none", "null", "unknown"})
 _SOURCES: contextvars.ContextVar[Any] = contextvars.ContextVar("ask_fill_sources", default=None)
-_FIRES = {"run": None, "n": 0}
+_RUNS_KEPT = 256  # per-turn state kept for this many recent runs, oldest dropped first
+_FIRES: dict[Any, int] = {}
 _SEEN_LOCK = threading.Lock()
-_SEEN: dict[str, Any] = {"run": None, "keys": set()}
+_SEEN: dict[Any, set] = {}
+
+
+def _per_run(store: dict, run: Any, factory: Any) -> Any:
+    """Per-turn state keyed by run id, so concurrent turns never reset each other. Caller holds _SEEN_LOCK."""
+    if run not in store:
+        store[run] = factory()
+    while len(store) > _RUNS_KEPT:
+        store.pop(next(iter(store)))
+    return store[run]
 
 
 def set_pass(n: int | None) -> None:
@@ -54,10 +64,9 @@ def count_rule_fire() -> int:
     """Rules fired so far in the current turn (run id)."""
     run = current_run_id()
     with _SEEN_LOCK:
-        if _FIRES["run"] != run:
-            _FIRES["run"], _FIRES["n"] = run, 0
-        _FIRES["n"] += 1
-        return _FIRES["n"]
+        _FIRES[run] = _FIRES.get(run, 0) + 1
+        _per_run(_FIRES, run, int)
+        return _FIRES[run]
 
 
 def is_free_text(attr: Any) -> bool:
@@ -228,11 +237,10 @@ def fallback_static_first_in_turn(result: tuple) -> bool:
     run = current_run_id()
     key = tuple(result)
     with _SEEN_LOCK:
-        if _SEEN["run"] != run:
-            _SEEN["run"], _SEEN["keys"] = run, set()
-        if key in _SEEN["keys"]:
+        keys = _per_run(_SEEN, run, set)
+        if key in keys:
             return False
-        _SEEN["keys"].add(key)
+        keys.add(key)
         return True
 
 
