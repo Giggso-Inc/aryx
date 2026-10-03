@@ -35,6 +35,7 @@ from aryx.csv_bml_ingestion.issue_store import STATE_OPEN, IssueStore
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.rejects import csv_safe_cell
 from aryx.csv_bml_ingestion.rerun import rerun_rejects
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 _MAX_CSV_ROWS = 10_000
@@ -124,6 +125,11 @@ def csv_bml_router() -> APIRouter:
             raise HTTPException(status_code=status, detail=f"[{exc.code}] {exc}") from exc
         except Exception as exc:  # noqa: BLE001 -- e.g. a database error on insert; the transaction was rolled back
             logger.warning("csv re-run of %s failed: %r", run_id, exc)
+            raven_log("WARN", "P3", "ingest.csv_bml.rerun_rows_failed re-run rolled back, 409 returned",
+                      error_code="ARYX_ING_CSV_BML_RERUN_FAILED",
+                      context={"workspace_id": ws, "csv_run_id": run_id, "policy": policy,
+                               "final_status": "failed", "result": "rolled_back",
+                               "reason_code": type(exc).__name__, "duration_ms": None, "http_status": 409})
             raise HTTPException(status_code=409, detail=f"re-run failed ({type(exc).__name__}); nothing was changed") from exc
 
     @router.post("/runs/{run_id}/rerun-file")
@@ -158,15 +164,43 @@ def csv_bml_router() -> APIRouter:
             finally:
                 jobs.close()
             future = _get_executor().submit(_run_files, [(data, name)], "csv", ["name"], [], job_id, ws, None)
-            future.add_done_callback(lambda f: (exc := f.exception()) and logger.error(
-                "csv re-run job=%s raised unhandled exception: %s", job_id, exc))
+            future.add_done_callback(lambda f: _rerun_done(f, job_id))
+            raven_log("INFO", "P4", "ingest.job.queued csv re-run accepted",
+                      context={"job_id": job_id, "workspace_id": ws, "road": "csv_bml_rerun",
+                               "csv_run_id": run_id, "file_count": 1, "total_bytes": len(data),
+                               "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                               "duration_ms": None, "worker_backend": "local"})
         except Exception as exc:  # noqa: BLE001 -- could not queue: give the run back so the issue stays actionable
             try:
                 store.set_run_state(ws, run_id, STATE_OPEN)
-            except Exception:  # noqa: BLE001 -- keep the original failure as the answer
+            except Exception as give_back_exc:  # noqa: BLE001 -- keep the original failure as the answer
                 logger.error("csv re-run of %s: could not give the run back after a queueing failure", run_id, exc_info=True)
+                raven_log("ERROR", "P2", "ingest.csv_bml.run_not_given_back run left claimed after a queue failure",
+                          error_code="ARYX_ING_CSV_BML_RUN_STUCK",
+                          context={"object_id": run_id, "workspace_id": ws, "previous_state": "claimed",
+                                   "requested_state": STATE_OPEN, "final_state": "claimed",
+                                   "trigger": "queue_failure", "result": "error",
+                                   "reason_code": type(give_back_exc).__name__})
             logger.warning("csv re-run of %s could not be queued: %r", run_id, exc)
+            raven_log("ERROR", "P2", "ingest.dispatch.failed csv re-run could not be queued, 503 returned",
+                      error_code="ARYX_ING_DISPATCH_FAILED",
+                      context={"job_id": job_id, "workspace_id": ws, "csv_run_id": run_id,
+                               "dependency_name": "local_executor", "operation": "submit", "duration_ms": None,
+                               "result": "error", "error_class": type(exc).__name__, "attempt": 1})
             raise HTTPException(status_code=503, detail="could not queue the re-run; try again") from exc
         return {"status": "queued", "job_id": job_id, "file": name}
 
     return router
+
+
+def _rerun_done(future: Any, job_id: str) -> None:
+    """Done-callback for a csv re-run job: report an exception the worker itself did not catch."""
+    exc = future.exception()
+    if exc is None:
+        return
+    logger.error("csv re-run job=%s raised unhandled exception: %s", job_id, exc)
+    raven_log("ERROR", "P1", "ingest.job.unhandled csv re-run worker raised past its own catch",
+              error_code="ARYX_ING_UNHANDLED",
+              context={"job_id": job_id, "final_status": "unknown", "result": "error",
+                       "reason_code": type(exc).__name__, "duration_ms": None},
+              trace_id=job_id)

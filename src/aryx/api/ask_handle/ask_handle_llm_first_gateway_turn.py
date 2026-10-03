@@ -23,6 +23,7 @@ from aryx.api.ask_pending_clarify.ask_pending_clarify_apply import _clear_pendin
 from aryx.cpq.intent_gateway.intent_gateway import classify_intent as gateway_classify_intent
 from aryx.cpq.intent_schema.intent_schema import IntentCategory
 from aryx.cpq.session_guard.session_guard import clear_clarify
+from aryx.raven_log import raven_log
 
 
 def _llm_first_gateway_turn(
@@ -65,6 +66,15 @@ def _llm_first_gateway_turn(
         and not _ask_api_module.top_level_route_used()
         and not _defer_gateway_to_pending_answer
     ):
+        raven_log("DEBUG", "P4", "ask.intent.gateway_turn gateway not run", context={
+            "selected_option": "skip", "available_options": ["run", "skip"],
+            "reason_code": (
+                "LLM_FIRST_DISABLED" if not _ask_api_module.get_settings().cpq_llm_first_enabled
+                else "GUIDED_MODE" if session.guided_mode
+                else "TOP_LEVEL_ROUTE_USED" if _ask_api_module.top_level_route_used()
+                else "DEFER_TO_PENDING_ANSWER"),
+            "guided_mode": bool(session.guided_mode), "turn": getattr(session, "turn", None),
+            "ran_and_did_nothing": False})
         return None
 
     _gw = gateway_classify_intent(
@@ -118,4 +128,8 @@ def _llm_first_gateway_turn(
             )
     # action=fallback (or dispatch that couldn't map) → caller's own
     # deterministic path.
+    raven_log("DEBUG", "P4", "ask.intent.gateway_turn gateway ran and did nothing", context={
+        "selected_option": "fall_through", "reason_code": _gw.reason or f"ACTION_{_gw.action.upper()}",
+        "gateway_action": _gw.action, "turn": getattr(session, "turn", None), "ran_and_did_nothing": True,
+        "category": _gw.result.intent_category.value if _gw.result else None})
     return None

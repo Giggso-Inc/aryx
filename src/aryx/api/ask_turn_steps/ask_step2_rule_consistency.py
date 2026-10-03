@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log, would_log
 
 
 def _step2_log_rule_consistency_and_array_grid(
@@ -46,6 +47,18 @@ def _step2_log_rule_consistency_and_array_grid(
             "cpq: rule-consistency check found %d issue(s): %s",
             len(_rule_issues), _rule_issues,
         )
+    if would_log("DEBUG"):
+        _issue_list = list(_rule_issues or [])
+        raven_log("DEBUG", "P4", "ask.preamble.rule_consistency check result", context={
+            "selected_option": "issues_found" if _issue_list else "consistent",
+            "available_options": ["issues_found", "consistent"],
+            "reason_code": "RULE_INCONSISTENCIES" if _issue_list else "RULES_CONSISTENT",
+            "issue_count": len(_issue_list),
+            "issue_attrs": [i.get("attr") for i in _issue_list if isinstance(i, dict)],
+            "issue_rule_types": sorted({str(i.get("rule_type")) for i in _issue_list if isinstance(i, dict)}),
+            "hidden_for_payload_count": len(_hidden_for_payload or ()),
+            "model_leaf_resolved": bool(getattr(session, "model_leaf_resolved", False)),
+            "catalog_prefix": catalog_prefix, "turn": getattr(session, "turn", None)})
 
     _array_grid_vns = _cpq_engine.array_grid_controls_in_play(attrs)
     if _array_grid_vns:
@@ -54,3 +67,6 @@ def _step2_log_rule_consistency_and_array_grid(
             "(no rule data links row selection to quantity attrs): %s",
             _array_grid_vns,
         )
+        raven_log("DEBUG", "P4", "ask.preamble.array_grid controls flagged, not auto-populated", context={
+            "array_grid_vns": list(_array_grid_vns), "array_grid_count": len(_array_grid_vns),
+            "reason_code": "ARRAY_GRID_NOT_AUTO_POPULATED", "turn": getattr(session, "turn", None)})

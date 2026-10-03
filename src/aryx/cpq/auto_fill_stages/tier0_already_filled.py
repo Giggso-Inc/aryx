@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
@@ -64,6 +65,7 @@ def stage_already_filled(
             and ctx.sources.get(state.vn) == "user"
         ):
             ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
+            fill_log.log_decision(state.vn, "stage_already_filled", "kept", "USER_CHOSE_EMPTY_OPTIONAL")
             state.done = True
             return
         if (
@@ -87,6 +89,7 @@ def stage_already_filled(
             # the same pattern the stale/dropped and
             # default_first_available branches below already use for a
             # value that can't be honored as-is.
+            fill_log.log_pruned(state.vn, "REQUIRED_USER_EMPTY_REOPENED", "stage_already_filled", state="reopened")
             ctx.filled.pop(state.vn, None)
             ctx.display_filled.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)
@@ -102,6 +105,7 @@ def stage_already_filled(
         )
         if allowed_single is not None and ctx.filled[state.vn] not in allowed_single:
             stale_display = ctx.display_filled.get(state.vn, ctx.filled[state.vn])
+            fill_log.log_pruned(state.vn, "NOT_IN_CONSTRAINED_SET", "stage_already_filled", state="dropped")
             ctx.dropped[state.vn] = [stale_display]
             if ctx.sources.get(state.vn) == "user":
                 ctx.user_answered_dropped_ids.add(attr.entity_id)
@@ -157,9 +161,11 @@ def stage_already_filled(
                         ctx.filled[state.vn],
                     )
                     ctx.display_filled[state.vn] = matched_display
+                    fill_log.log_decision(state.vn, "stage_already_filled", "kept", "FILL_SIGNATURE_UNCHANGED")
                     state.done = True
                     return
                 ctx.default_fill_signatures[state.vn] = _cur_sig
+            fill_log.log_pruned(state.vn, "DEFAULT_FIRST_AVAILABLE_REDERIVE", "stage_already_filled", state="reopened")
             ctx.filled.pop(state.vn, None)
             ctx.display_filled.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)
@@ -170,5 +176,6 @@ def stage_already_filled(
                 ctx.filled[state.vn],
             )
             ctx.display_filled[state.vn] = matched_display
+            fill_log.log_decision(state.vn, "stage_already_filled", "kept", "ALREADY_FILLED_STILL_VALID")
             state.done = True
             return

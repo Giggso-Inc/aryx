@@ -33,6 +33,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.cpq import model_resolution as _model_resolution
 from aryx.cpq.model_resolution_catalog import cached as _cached_catalog
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +98,25 @@ def scope_rules_by_ancestry(
                 "kept=%d model=%r",
                 list_name, len(rules), len(kept), ctx.resolution.chosen.cpq_model,
             )
+            raven_log("INFO", "P4", "ask.rule_scope.filtered rules kept for the resolved model",
+                      context={"actor": "rule_scope", "requested_action": "load_rules", "resource": list_name,
+                               "required_permission": "ref_id_in_model_scope", "decision": "filtered",
+                               "reason_code": "MODEL_SCOPE", "policy_version": "rule_scope_v1",
+                               "cpq_model": ctx.resolution.chosen.cpq_model, "rules_total": len(rules),
+                               "rules_in_scope_for_model": len(kept), "rules_excluded": len(rules) - len(kept),
+                               "scope_nodes": len(scope)})
         return kept
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "cpq_diag: model_scope rule_scope_filter failed list=%r "
             "(falling back to unfiltered rules)", list_name,
         )
+        raven_log("WARN", "P3", "ask.rule_scope.failed falling back to unfiltered rules",
+                  error_code="ARYX_ASK_RULE_SCOPE_FAILED",
+                  context={"resource": list_name, "triggering_error": type(exc).__name__, "attempt": 1,
+                           "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "unfiltered_rules",
+                           "fallback_target": "all_rules", "exit_condition": "degraded", "result": "degraded",
+                           "rules_total": len(rules)})
         return rules
 
 

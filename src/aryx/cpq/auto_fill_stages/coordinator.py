@@ -40,7 +40,9 @@ from aryx.cpq.auto_fill_stages import (
     tier3_default_value,
     tier4_options,
 )
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.raven_log import would_log
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -79,7 +81,18 @@ def resolve_one_attr(
     # instead of a generic tag -- also an `AttrResolution` default (None).
     vn = attr.variable_name
     state = AttrResolution(vn=vn, vn_flat=vn.lower().replace("_", ""))
+    trace = would_log("DEBUG")
+    trail: list = []
+    prev_src = ctx.sources.get(vn)
+    had = vn in ctx.filled or vn in ctx.filled_multi
+    before_value = ctx.filled_multi.get(vn) if vn in ctx.filled_multi else ctx.filled.get(vn)
     for stage in _STAGES:
+        snap = fill_log.stage_snapshot(ctx, state) if trace else None
         stage(engine, attr, ctx, scope, state)
+        if trace:
+            trail.append([stage.__module__.rsplit(".", 1)[-1],
+                          fill_log.stage_outcome(snap, fill_log.stage_snapshot(ctx, state))])
         if state.done:
-            return
+            break
+    if trace:
+        fill_log.log_stage_trail(ctx, state, trail, prev_src, had, before_value, attr)

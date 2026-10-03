@@ -24,6 +24,7 @@ from typing import Any
 
 from aryx.broker.specs import ModelSpec
 from aryx.config import get_settings
+from aryx.raven_log import raven_log, would_log
 from aryx.llm.llm_providers_anthropic import anthropic_json
 from aryx.llm.llm_providers_oci import _oci_chat_raw, oci_genai_json, oci_genai_text
 
@@ -55,13 +56,44 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str],
     req = urllib.request.Request(url, data=data, headers={**headers,
                                  "Content-Type": "application/json"})
     delay = 2.0
+    _model = str(body.get("model", "")) if isinstance(body, dict) else ""
+    _t0 = time.monotonic()
+
+    def _retry_ctx(attempt: int, err: str, backoff_s: float) -> dict[str, Any]:
+        return {"triggering_error": err, "attempt": attempt + 1, "max_attempts": 5,
+                "backoff_ms": int(backoff_s * 1000), "recovery_selected": "sleep_and_retry",
+                "fallback_target": "", "exit_condition": "success_or_attempts_exhausted",
+                "result": "retry_scheduled", "model": _model, "provider": "http_json",
+                "role": "pipeline", "dependency_name": "llm_http"}
+
+    def _failed(exc: BaseException, attempt: int, exhausted: bool) -> None:
+        raven_log("ERROR", "P2",
+                  ("llm.retry.exhausted llm retries exhausted" if exhausted
+                   else "llm.call.failed llm call failed (not retryable)"),
+                  error_code="ARYX_LLM_FAILED",
+                  context={"dependency_name": "llm_http", "operation": "post_json",
+                           "model": _model, "provider": "http_json", "role": "pipeline",
+                           "attempt": attempt + 1, "max_attempts": 5, "result": "error",
+                           "error_class": type(exc).__name__, "http_status": getattr(exc, "code", None),
+                           "duration_ms": int((time.monotonic() - _t0) * 1000),
+                           "exit_condition": "attempts_exhausted" if exhausted else "non_retryable"})
+
     for attempt in range(5):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                return json.loads(resp.read().decode("utf-8"))
+                out = json.loads(resp.read().decode("utf-8"))
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "llm.call.http llm http call ok",
+                              context={"model": _model, "provider": "http_json", "role": "pipeline",
+                                       "retry_count": attempt,
+                                       "latency_ms": int((time.monotonic() - _t0) * 1000)})
+                return out
         except urllib.error.HTTPError as exc:
             if exc.code != 429 or attempt == 4:
+                _failed(exc, attempt, exhausted=(exc.code == 429))
                 raise
+            raven_log("WARN", "P3", "llm.retry.scheduled llm 429 throttled, retry scheduled",
+                      error_code="ARYX_LLM_RETRY", context=_retry_ctx(attempt, "HTTP_429", delay))
             logger.warning("429 throttled — sleep %.1fs then retry (%d/5)",
                            delay, attempt + 2)
             time.sleep(delay)
@@ -70,7 +102,11 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str],
             # Transient network errors (DNS blip, connection reset, ECONNREFUSED).
             # Docker's embedded DNS occasionally fails under concurrent thread load.
             if attempt == 4:
+                _failed(exc, attempt, exhausted=True)
                 raise
+            raven_log("WARN", "P3", "llm.retry.scheduled llm network error, retry scheduled",
+                      error_code="ARYX_LLM_RETRY",
+                      context=_retry_ctx(attempt, type(exc).__name__, delay))
             logger.warning("network error — sleep %.1fs then retry (%d/5): %s",
                            delay, attempt + 2, exc)
             time.sleep(delay)

@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.broker import Broker
 from aryx.llm import complete_json
+from aryx.raven_log import raven_log
 
 _FK_INFER_SYSTEM = (
     "You are a data-schema analyst. Given a list of entity types and their "
@@ -94,14 +95,27 @@ def infer_relationship(
     user = json.dumps({"a": left, "b": right})
     result = complete_json(broker, "frontier", _SYSTEM, user, _SCHEMA)
     if not result.get("related"):
+        raven_log("DEBUG", "P4", "ingest.relate.verdict model says unrelated",
+                  context={"stage": "relate", "selected_option": "unrelated",
+                           "available_options": ["related", "unrelated"], "reason_code": "MODEL_RELATED_FALSE"})
         return None, 0.0
     name_raw = (result.get("name") or result.get("relationship") or
                 result.get("label") or result.get("title"))
     if not name_raw:
         logger.warning("relationship LLM returned related=true but no name field: %s", result)
+        raven_log("WARN", "P3", "ingest.relate.verdict model said related but gave no name",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "relate", "selected_option": "unrelated",
+                           "available_options": ["related", "unrelated"], "reason_code": "RELATED_TRUE_NO_NAME",
+                           "triggering_error": "MISSING_NAME", "attempt": 1, "max_attempts": 1,
+                           "recovery_selected": "treat_as_unrelated", "result": "degraded"})
         return None, 0.0
     name = str(name_raw)
     confidence = float(result.get("confidence", 0.0))
+    raven_log("DEBUG", "P4", "ingest.relate.verdict model says related",
+              context={"stage": "relate", "selected_option": "related",
+                       "available_options": ["related", "unrelated"], "reason_code": "MODEL_RELATED_TRUE",
+                       "relationship_name": name, "confidence": confidence})
     logger.info("relationship inferred name=%s conf=%.2f", name, confidence)
     return name, confidence
 
@@ -122,8 +136,13 @@ def infer_fk_links(
     user = json.dumps({"types": type_schemas})
     try:
         result = complete_json(broker, "frontier", _FK_INFER_SYSTEM, user, _FK_SCHEMA)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("FK schema inference failed — returning empty list")
+        raven_log("WARN", "P3", "ingest.relate.summary fk schema inference failed, empty list returned",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "schema_fk", "triggering_error": type(exc).__name__, "attempt": 1,
+                           "max_attempts": 1, "recovery_selected": "return_empty", "result": "degraded",
+                           "exit_condition": "exception_swallowed", "types": len(type_schemas)})
         return []
     links = result.get("links") or []
     logger.info("FK schema inference found %d link(s): %s", len(links), links)

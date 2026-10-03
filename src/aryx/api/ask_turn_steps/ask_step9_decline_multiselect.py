@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
+from aryx.raven_log import raven_log
 
 
 def _step9_decline_optional_multiselect(
@@ -54,6 +55,17 @@ def _step9_decline_optional_multiselect(
         session.filled_multi[pending_var] = []
         session.display_filled[pending_var] = NONE_DISPLAY_PLACEHOLDER
     session.filled_source[pending_var] = "user"
+    _keep_picks = bool(_existing_picks and _is_grid_selector)
+    raven_log("DEBUG", "P4", "ask.reply.decline optional multi-select declined", context={
+        "selected_option": "keep_grid_picks" if _keep_picks else "clear_to_empty",
+        "available_options": ["keep_grid_picks", "clear_to_empty"],
+        "reason_code": "GRID_DECLINE_AFTER_PICKS" if _keep_picks else "FIRST_DECLINE",
+        "pending_field": pending_var, "match_tier": "explicit_decline",
+        "is_grid_selector": bool(_is_grid_selector),
+        "prior_pick_count": len(_existing_picks or []),
+        "kept_pick_count": len((getattr(session, "filled_multi", None) or {}).get(pending_var) or []),
+        "constrained_count": None if pending_constrained is None else len(pending_constrained),
+        "turn": getattr(session, "turn", None)})
     logger.info(
         "cpq: optional multi-select %r explicitly declined turn=%s",
         pending_var, session.turn,

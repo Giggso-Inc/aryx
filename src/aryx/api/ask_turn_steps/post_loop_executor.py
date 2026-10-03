@@ -19,6 +19,7 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -74,6 +75,13 @@ def run_post_loop_bounded(fn: Callable[[], Any], timeout_s: float) -> Any:
             "cpq_perf: post_loop pool saturated (%d in flight, incl. abandoned "
             "workers) -- rejecting with 503", _POST_LOOP_MAX_WORKERS,
         )
+        raven_log("ERROR", "P2", "ask.post_loop.saturated pool full, turn rejected with 503",
+                  error_code="ARYX_ASK_POST_LOOP_SATURATED",
+                  context={"actor": "cpq_post_loop", "requested_action": "run_post_loop_auto_fill",
+                           "resource": "cpq-post-loop pool", "required_permission": "free_worker",
+                           "decision": "deny", "reason_code": "POOL_SATURATED",
+                           "policy_version": "post_loop_bounded_v1",
+                           "max_workers": _POST_LOOP_MAX_WORKERS, "http_status": 503})
         raise HTTPException(
             status_code=503,
             detail="The server is busy processing other configurations. Please try again shortly.",
@@ -95,6 +103,12 @@ def run_post_loop_bounded(fn: Callable[[], Any], timeout_s: float) -> Any:
             "cpq_perf: post_loop_auto_fill TIMED OUT after %.1fs -- returning 504 "
             "(the worker thread keeps running; its result is discarded)", timeout_s,
         )
+        raven_log("ERROR", "P2", "ask.post_loop.timed_out post-loop auto_fill exceeded its budget, 504 returned",
+                  error_code="ARYX_ASK_POST_LOOP_TIMEOUT",
+                  context={"dependency_name": "cpq_post_loop_auto_fill", "operation": "auto_fill",
+                           "duration_ms": int(timeout_s * 1000), "result": "timeout",
+                           "error_class": "FutureTimeoutError", "attempt": 1,
+                           "timeout_s": timeout_s, "http_status": 504, "worker_abandoned": True})
         raise HTTPException(
             status_code=504,
             detail=(

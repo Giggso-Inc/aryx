@@ -20,6 +20,9 @@ from aryx.api.ask_label_collision.ask_decline_reply_and_label_collision_llm impo
 from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.raven_log import raven_log
+
+_PCNV_OPTIONS = ["attr_not_found", "topic_switch", "decline", "cascade"]
 
 
 def _resolve_pending_change_no_value(
@@ -38,7 +41,9 @@ def _resolve_pending_change_no_value(
     _pcnv_attr = next(
         (a for a in attrs if a.variable_name == session.pending_change_no_value_vn), None,
     )
+    _pcnv_vn = session.pending_change_no_value_vn
     session.pending_change_no_value_vn = ""
+    _pcnv_found = _pcnv_attr is not None
     # Same topic-switch gap as STEP 5's pending-answer lock (docs/
     # CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md), but on this earlier,
     # separate "which value?" pending mechanism — confirmed live
@@ -57,6 +62,12 @@ def _resolve_pending_change_no_value(
     ):
         _pcnv_attr = None
     if not _pcnv_attr:
+        _pcnv_why = "topic_switch" if _pcnv_found else "attr_not_found"
+        raven_log("DEBUG", "P4", "ask.change.pending_no_value released, normal routing", context={
+            "selected_option": _pcnv_why, "available_options": _PCNV_OPTIONS,
+            "reason_code": "PENDING_REPLY_TOPIC_SWITCH" if _pcnv_found else "PENDING_ATTR_NOT_IN_CATALOG",
+            "variable_name": _pcnv_vn, "turn": getattr(session, "turn", None),
+            "reply_len": len(getattr(req, "question", "") or "")})
         return None
     # QA issue #3: re-derive constrained set for scoped match/retry.
     # §15: try/except so pure declines never crash on rule engine.
@@ -70,6 +81,12 @@ def _resolve_pending_change_no_value(
             "value on %r, proceeding unconstrained: %r",
             _pcnv_attr.variable_name, exc,
         )
+        raven_log("WARN", "P3", "ask.change.pending_no_value constraint recompute failed, unconstrained", context={
+            "variable_name": _pcnv_vn, "turn": getattr(session, "turn", None),
+            "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+            "backoff_ms": 0, "recovery_selected": "proceed_unconstrained",
+            "fallback_target": "unconstrained_options", "exit_condition": "single_attempt",
+            "result": "degraded"}, error_code="ARYX_ASK_PCNV_CONSTRAINT_FAILED")
         _pcnv_constrained = None
     # PROMPT 6: extract wanted (+ rejected); exclude rejected option.
     _pcnv_wanted, _pcnv_rejected = _extract_replacement_clause(req.question)
@@ -102,6 +119,10 @@ def _resolve_pending_change_no_value(
             f"as it is"
             + (f" (**{_pcnv_current}**)." if _pcnv_current else ".")
         )
+        raven_log("INFO", "P4", "ask.change.pending_no_value declined, value kept", context={
+            "selected_option": "decline", "available_options": _PCNV_OPTIONS,
+            "reason_code": "CHANGE_VALUE_DECLINED", "variable_name": _pcnv_vn,
+            "has_current_value": bool(_pcnv_current), "turn": getattr(session, "turn", None)})
         _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_change_declined()"],
@@ -114,6 +135,13 @@ def _resolve_pending_change_no_value(
     # convergence point every change-request entry point reaches, so
     # re-queuing pending_multi_intent_vn there covers this caller too
     # without needing its own copy here.
+    raven_log("DEBUG", "P4", "ask.change.pending_no_value reply routed to cascade", context={
+        "selected_option": "cascade", "available_options": _PCNV_OPTIONS,
+        "reason_code": "VALUE_MATCHED" if _pcnv_matched else "NO_MATCH_NOT_DECLINE",
+        "variable_name": _pcnv_vn, "select_type": getattr(_pcnv_attr, "select_type", None),
+        "matched": bool(_pcnv_matched), "has_rejected_clause": bool(_pcnv_rejected),
+        "constrained_count": len(_pcnv_constrained) if isinstance(_pcnv_constrained, (list, set, tuple, dict)) else None,
+        "turn": getattr(session, "turn", None)})
     return _ask_handle_cascade_module._handle_cascade(
         req, session, attrs, _pcnv_attr, _pcnv_match_text,
         hiding_rules, rec_rules, con_rules,

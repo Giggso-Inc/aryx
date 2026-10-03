@@ -11,6 +11,7 @@ import logging
 
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.raven_log import raven_log
 from aryx.pipeline.value_normalize import normalize_value
 from aryx.store.entity_store import EntityStore
 
@@ -109,9 +110,29 @@ def link_by_attribute(
             source_type, source_attr, target_type, target_attr, name,
             max_rels, source_type, source_attr,
         )
+        raven_log("WARN", "P3", "ingest.fk.aborted fk spec aborted: join attribute not selective",
+                  error_code="ARYX_ING_FK_ABORTED",
+                  context={"actor": "pipeline", "requested_action": "link_fk",
+                           "resource": f"{source_type}.{source_attr}->{target_type}.{target_attr}",
+                           "required_permission": "max_relationships_per_fk_spec", "decision": "deny",
+                           "reason_code": "NOT_SELECTIVE", "policy_version": max_rels,
+                           "relationship_name": name, "targets_indexed": len(targets)})
         return 0
     if rels:
+        raven_log("DEBUG", "P4", "ingest.fk.linked fk spec linked entities",
+                  context={"actor": "pipeline", "requested_action": "link_fk",
+                           "resource": f"{source_type}.{source_attr}->{target_type}.{target_attr}",
+                           "decision": "allow", "reason_code": "UNDER_CAP", "policy_version": max_rels,
+                           "relationship_name": name, "edges": len(rels), "targets_indexed": len(targets),
+                           "target_entities": len(target_ids)})
         estore.save_relationships(rels)
+    else:
+        raven_log("DEBUG", "P4", "ingest.fk.no_matches fk spec produced no edges",
+                  context={"actor": "pipeline", "requested_action": "link_fk",
+                           "resource": f"{source_type}.{source_attr}->{target_type}.{target_attr}",
+                           "decision": "allow", "reason_code": "NO_MATCHING_VALUES", "policy_version": max_rels,
+                           "relationship_name": name, "edges": 0, "targets_indexed": len(targets),
+                           "target_entities": len(target_ids)})
     logger.info("fk-edges %s.%s -> %s.%s name=%s saved=%d",
                 source_type, source_attr, target_type, target_attr, name, len(rels))
     return len(rels)

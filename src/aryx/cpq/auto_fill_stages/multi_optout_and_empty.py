@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.engine import (
@@ -57,11 +58,14 @@ def try_multi_opt_out(
         # the single-select branch above, just for multi-select's
         # separate fallback (valid_opts isn't reliably in scope
         # here -- see the sibling elif's own comment on that).
+        fill_log.log_write(ctx, attr, state.vn, [opt_out_match.item_value], opt_out_match.display_name,
+                           "opt_out_default", "multi_opt_out", multi=True)
         ctx.filled_multi[state.vn] = [opt_out_match.item_value]
         ctx.display_filled[state.vn] = opt_out_match.display_name
         ctx.sources.setdefault(state.vn, "opt_out_default")
         state.filled_multi_now = True
         return True
+    fill_log.log_decision(state.vn, "multi_opt_out", "not_matched", "NO_SOLE_OPT_OUT_OPTION")
     return False
 
 
@@ -103,9 +107,12 @@ def try_multi_optional_empty(
         # in this allowlist (confirmed live: without this guard,
         # this branch wrongly intercepted promoApplicationServices_
         # astro's own constrained-and-ambiguous regression test).
+        fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, "optional_empty",
+                           "multi_optional_empty", multi=True)
         ctx.filled_multi[state.vn] = []
         ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "optional_empty")
         state.filled_multi_now = True
         return True
+    fill_log.log_decision(state.vn, "multi_optional_empty", "not_matched", "NOT_CONFIRMED_OPTIONAL_OR_CONSTRAINED")
     return False

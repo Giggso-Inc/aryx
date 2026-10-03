@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Any
 
+from aryx.log_safe import mask_ocid
+
 logger = logging.getLogger(__name__)
 
 _doc_client: Any = None
@@ -59,7 +61,7 @@ def _get_auth() -> Any:
             "region": os.environ.get("OCI_REGION", os.environ.get("ARYX_OCI_REGION", "us-chicago-1")),
         }
         oci.config.validate_config(config)
-        logger.info("oci_client: using env-var auth user=%s", os.environ["ARYX_OCI_USER_OCID"])
+        logger.info("oci_client: using env-var auth user=%s", mask_ocid(os.environ["ARYX_OCI_USER_OCID"]))
         _signer = config
     else:
         try:

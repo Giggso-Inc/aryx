@@ -53,4 +53,4 @@ openpyxl~=3.1
 httpx~=0.27
 # Raven application logging SDK — structured raven-log contract (stdout JSON).
 # Install extras if shipping to Kafka/S3: pip install "raven-logger[kafka,s3]"
-raven-logger~=1.0
+raven-logger~=1.0.10

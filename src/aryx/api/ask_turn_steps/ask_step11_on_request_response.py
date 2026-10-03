@@ -24,6 +24,17 @@ from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _label_collision_for
 from aryx.api.ask_label_collision.ask_label_collision_prompt_and_narrow import _label_collision_prompt
+from aryx.raven_log import raven_log
+
+_ON_REQUEST_OPTIONS = ["json_preview", "batch_list", "grid_batch", "label_collision", "format_a"]
+
+
+def _log_on_request(session: Any, selected: str, reason: str, pending: list, **extra: Any) -> None:
+    """DEBUG record for the on-request / FORMAT A presentation chosen."""
+    raven_log("DEBUG", "P4", "ask.response.on_request presentation chosen", context={
+        "selected_option": selected, "available_options": _ON_REQUEST_OPTIONS,
+        "reason_code": reason, "pending_count": len(pending or []),
+        "turn": getattr(session, "turn", None), **extra})
 
 
 def _step11_on_request_response(
@@ -56,6 +67,8 @@ def _step11_on_request_response(
             product_anchor_hint=session.product_anchor_question,
         )
         still_need = ", ".join(a.display_label for a in pending)
+        _log_on_request(session, "json_preview", "MODE_JSON", pending,
+                        hidden_count=len(_hidden_now or ()), summary_len=len(summary or ""))
         return (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
             + (f"{summary}\n\n" if summary else "")
@@ -72,6 +85,7 @@ def _step11_on_request_response(
             blocks.append(_cpq_engine.next_question_prompt(
                 a, ctx, constrained_opts.get(a.entity_id),
                 validation_rules=validation_rules, attrs=visible_attrs))
+        _log_on_request(session, "batch_list", "MODE_BATCH", pending, block_count=len(blocks))
         return (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
             + f"Here's everything still needed ({len(pending)} item(s)):\n\n"
@@ -88,6 +102,7 @@ def _step11_on_request_response(
         constrained_opts, validation_rules, dropped_note,
     )
     if _grid_batch is not None:
+        _log_on_request(session, "grid_batch", "ONE_GRID_QUANTITIES", pending)
         return _grid_batch
 
     # ── STEP 4: FORMAT A — context sentence + numbered options only ──
@@ -95,6 +110,9 @@ def _step11_on_request_response(
     _pending_collision = _label_collision_for(next_attr, visible_attrs, session, pending)
     if _pending_collision:
         session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
+        _log_on_request(session, "label_collision", "NEXT_ATTR_LABEL_COLLISION", pending,
+                        next_field=getattr(next_attr, "variable_name", None),
+                        candidate_fields=list(getattr(session, "pending_label_collision_vns", None) or [])[:25])
         return dropped_note + _label_collision_prompt(
             _pending_collision, session, req.question, req.workspace_id)
     context_sentence = dropped_note + _cpq_engine.build_context_sentence(
@@ -109,4 +127,7 @@ def _step11_on_request_response(
     _remember_attr_scope(
         session, next_attr, constrained_vals, req.question,
     )
+    _log_on_request(session, "format_a", "ONE_AT_A_TIME", pending,
+                    next_field=getattr(next_attr, "variable_name", None),
+                    constrained_count=None if constrained_vals is None else len(constrained_vals))
     return answer

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +30,10 @@ async def _stale_job_sweep() -> None:
             JobStore(get_settings().effective_dsn()).sweep_stale(timeout_min)
         except Exception as exc:  # noqa: BLE001
             logger.warning("stale-job sweep error: %s", exc)
+            raven_log("WARN", "P2", "ingest.sweep.failed stale-job sweep errored",
+                      error_code="ARYX_ING_SWEEP_FAILED",
+                      context={"dependency_name": "job_store", "operation": "sweep_stale", "result": "error",
+                               "error_class": type(exc).__name__, "attempt": 1, "reason_code": "SWEEP_ERROR"})
 
 
 @asynccontextmanager

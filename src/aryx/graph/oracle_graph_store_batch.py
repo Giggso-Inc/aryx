@@ -8,12 +8,14 @@ via grep.
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from aryx.config import get_settings
 from aryx.graph.oracle_graph_store_helpers import _display_name, _iter_chunks, _safe_attrs_json
 from aryx.queries import load
+from aryx.raven_log import raven_log, submit_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +48,23 @@ class _OracleGraphBatchMixin:
         sql = load(query_name)
         workers = max(1, get_settings().oracle_graph_batch_workers)
         written = 0
-        if len(chunks) <= 1 or workers <= 1:
+        _t0 = time.monotonic()
+        _sequential = len(chunks) <= 1 or workers <= 1
+        raven_log("DEBUG", "P4", "ingest.project.write_chunks graph chunk write mode",
+                  context={"stage": "project", "query": query_name, "chunks": len(chunks), "workers": workers,
+                           "selected_option": "sequential" if _sequential else "concurrent",
+                           "available_options": ["sequential", "concurrent"],
+                           "reason_code": "ONE_CHUNK_OR_ONE_WORKER" if _sequential else "MULTI_CHUNK_MULTI_WORKER",
+                           "backend": "oci_graph"})
+        if _sequential:
             with self._pool.connection() as conn:
                 with conn.cursor() as cur:
                     for chunk in chunks:
+                        _tc = time.monotonic()
                         cur.executemany(sql, chunk)
+                        raven_log("DEBUG", "P4", "ingest.project.chunk_written graph chunk written",
+                                  context={"stage": "project", "query": query_name, "rows": len(chunk),
+                                           "duration_ms": int((time.monotonic() - _tc) * 1000)})
                         written += len(chunk)
                         logger.info("graph %s chunk rows=%d done", query_name, len(chunk))
                         if on_batch is not None:
@@ -64,10 +78,13 @@ class _OracleGraphBatchMixin:
             return len(chunk)
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_write_one, chunk) for chunk in chunks]
+            futures = [submit_ctx(pool, _write_one, chunk) for chunk in chunks]
             for future in as_completed(futures):
                 n = future.result()
                 written += n
+                raven_log("DEBUG", "P4", "ingest.project.chunk_written graph chunk written",
+                          context={"stage": "project", "query": query_name, "rows": n, "written_total": written,
+                                   "elapsed_ms": int((time.monotonic() - _t0) * 1000)})
                 logger.info("graph %s chunk rows=%d done", query_name, n)
                 if on_batch is not None:
                     on_batch(written)

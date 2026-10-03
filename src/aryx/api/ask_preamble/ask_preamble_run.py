@@ -22,6 +22,7 @@ from aryx.api.ask_preamble.ask_preamble_quantity_background import (
     _preamble_quantity_no_quote_gate,
 )
 from aryx.api.ask_preamble.ask_preamble_quantity_gate import _preamble_dedicated_quantity_gate
+from aryx.raven_log import raven_log
 from aryx.api.ask_preamble.ask_preamble_session_and_shortcuts import (
     _preamble_init_session,
     _preamble_shortcut_gates,
@@ -50,14 +51,23 @@ def _preamble_run(
     _qty_hint = _preamble_capture_quantity_background(req, session, route_meta)
 
     _no_quote_response = _preamble_quantity_no_quote_gate(req, session, reader, _qty_hint)
+    raven_log("DEBUG", "P4", "ask.preamble.gate quantity-no-quote gate", context={
+        "gate": "quantity_no_quote", "handled_turn": _no_quote_response is not None,
+        "quantity_hint_found": bool(_qty_hint), "turn": getattr(session, "turn", None)})
     if _no_quote_response is not None:
         return _no_quote_response, session, {}, False, _incoming_pending_anchor
 
     _qty_gate_response = _preamble_dedicated_quantity_gate(req, session, reader)
+    raven_log("DEBUG", "P4", "ask.preamble.gate dedicated quantity gate", context={
+        "gate": "dedicated_quantity", "handled_turn": _qty_gate_response is not None,
+        "turn": getattr(session, "turn", None)})
     if _qty_gate_response is not None:
         return _qty_gate_response, session, {}, False, _incoming_pending_anchor
 
     _country_change_response = _preamble_country_change_gate(req, session, reader)
+    raven_log("DEBUG", "P4", "ask.preamble.gate country change gate", context={
+        "gate": "country_change", "handled_turn": _country_change_response is not None,
+        "turn": getattr(session, "turn", None)})
     if _country_change_response is not None:
         return _country_change_response, session, {}, False, _incoming_pending_anchor
 

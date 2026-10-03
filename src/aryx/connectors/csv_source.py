@@ -12,6 +12,7 @@ from pathlib import Path
 from aryx.connectors.base import Connector
 import aryx.csv_field_limit  # noqa: F401  -- raises the csv field size limit at import (#345)
 from aryx.models import RawRecord, SourceRef
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ def _strip_oracle_cpq_meta_block(text: str) -> str:
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != _META_START:
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.csv.meta_block not an Oracle CPQ export",
+                      context={"selected_option": "keep_as_is", "available_options": ["strip_meta", "keep_as_is"],
+                               "reason_code": "NO_META_START", "lines": len(lines)})
         return text
     end_idx = None
     for i in range(1, min(len(lines), _META_SCAN_LIMIT)):
@@ -51,9 +56,16 @@ def _strip_oracle_cpq_meta_block(text: str) -> str:
         # No matching _end meta data found nearby, or nothing between the
         # markers to have been a real header -- not this shape, leave as-is
         # rather than guess.
+        raven_log("DEBUG", "P4", "ingest.csv.meta_block start marker without usable end marker",
+                  context={"selected_option": "keep_as_is", "available_options": ["strip_meta", "keep_as_is"],
+                           "reason_code": "NO_END_MARKER", "end_idx": end_idx})
         return text
     real_header = lines[1]
     data_rows = lines[end_idx + 1:]
+    raven_log("DEBUG", "P4", "ingest.csv.meta_block Oracle CPQ metadata stripped",
+              context={"selected_option": "strip_meta", "available_options": ["strip_meta", "keep_as_is"],
+                       "reason_code": "META_BLOCK_FOUND", "meta_lines_removed": end_idx + 1 - 1,
+                       "data_rows": len(data_rows)})
     return "\n".join([real_header, *data_rows])
 
 
@@ -73,12 +85,20 @@ class CsvConnector(Connector):
             text = self._source.open(encoding="utf-8").read()
         reader = csv.DictReader(io.StringIO(_strip_oracle_cpq_meta_block(text)))
         count = 0
+        extra_cols_rows = 0
+        raven_log("DEBUG", "P4", "ingest.csv.read source decoded",
+                  context={"dataset": self._dataset, "encoding": "utf-8",
+                           "source_kind": "bytes" if isinstance(self._source, bytes) else "path",
+                           "chars": len(text), "delimiter": ",", "header_columns": list(reader.fieldnames or [])[:100],
+                           "header_column_count": len(reader.fieldnames or [])})
         for row in reader:
             # DictReader stores extra-column values under the None key when a row
             # has more fields than the header (restkey=None default). Drop those
             # extra values: they are positionally meaningless and cause
             # json.dumps(sort_keys=True) to crash with NoneType < str.
             clean_row = {k: v for k, v in row.items() if k is not None}
+            if len(clean_row) != len(row):
+                extra_cols_rows += 1
             record_id = hashlib.sha256(
                 json.dumps(clean_row, sort_keys=True).encode()
             ).hexdigest()[:16]
@@ -89,3 +109,6 @@ class CsvConnector(Connector):
             )
             count += 1
         logger.info("csv extracted dataset=%s records=%d", self._dataset, count)
+        raven_log("DEBUG", "P4", "ingest.csv.read finished",
+                  context={"dataset": self._dataset, "records": count, "zero_records": count == 0,
+                           "rows_with_extra_columns_dropped": extra_cols_rows})

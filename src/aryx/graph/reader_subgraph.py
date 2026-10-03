@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from aryx.graph.reader_entity import _entity
+from aryx.raven_log import submit_ctx
 
 # Module-level TTL cache for subgraph results.
 # Each GET /graph fires N+1 FalkorDB queries (1 DISTINCT + 1 per type).
@@ -150,7 +151,7 @@ def _build_subgraph(
         if rel_types:
             max_workers = min(_MAX_RTYPE_WORKERS, len(rel_types))
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = [pool.submit(_fetch_rtype, rname) for rname in rel_types]
+                futures = [submit_ctx(pool, _fetch_rtype, rname) for rname in rel_types]
                 for future in as_completed(futures):
                     rname, rows = future.result()
                     for row in rows:

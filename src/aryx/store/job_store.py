@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from aryx.queries import load
+from aryx.raven_log import raven_log, would_log
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
@@ -39,8 +40,17 @@ class JobStore:
             with conn.cursor() as cur:
                 cur.execute(load("lock_workspace_for_mutation"), (workspace_id,))
                 if cur.fetchone() is None:
+                    raven_log("WARN", "P3", "ingest.jobstore.create workspace missing",
+                              error_code="ARYX_ING_JOB_CREATE_REFUSED", trace_id=job_id,
+                              context={"job_id": job_id, "workspace_id": workspace_id, "decision": "refuse",
+                                       "reason_code": "WORKSPACE_NOT_FOUND"})
                     raise ValueError(f"workspace {workspace_id} not found")
                 cur.execute(load("insert_job"), (workspace_id, job_id, system, dataset))
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.jobstore.create job row inserted", trace_id=job_id,
+                      context={"object_id": job_id, "previous_state": None, "requested_state": "queued",
+                               "final_state": "queued", "trigger": "create", "result": "ok",
+                               "reason_code": "JOB_CREATED", "workspace_id": workspace_id, "system": system})
 
     def update_stage(self, job_id: str, stage: str, pct: int, detail: str) -> None:
         """Record the current stage and append it to the event log."""
@@ -48,6 +58,9 @@ class JobStore:
             with conn.cursor() as cur:
                 cur.execute(load("update_job_stage"), (stage, pct, detail, job_id))
                 cur.execute(load("insert_job_event"), (job_id, stage, pct, detail))
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.jobstore.update_stage stage recorded", trace_id=job_id,
+                      context={"job_id": job_id, "stage": stage, "pct": pct})
 
     def finish(self, job_id: str, run_id: int | None, status: str,
                error: str | None = None) -> None:
@@ -55,6 +68,11 @@ class JobStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("finish_job"), (status, run_id, error, job_id))
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.jobstore.finish status changed", trace_id=job_id,
+                      context={"object_id": job_id, "requested_state": status, "final_state": status,
+                               "trigger": "finish", "result": "ok", "reason_code": "JOB_FINISHED",
+                               "run_id": run_id, "has_error": bool(error)})
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         """Return one job's current state, or None."""
@@ -101,6 +119,11 @@ class JobStore:
                 count = cur.rowcount
         if count:
             logger.warning("swept %d stale jobs (timeout=%d min)", count, timeout_minutes)
+            raven_log("WARN", "P2", "ingest.job.swept_stale stale jobs marked failed",
+                      error_code="ARYX_ING_JOB_STALE",
+                      context={"object_id": "jobs", "previous_state": "running|queued", "final_state": "failed",
+                               "trigger": "stale_sweep", "result": "swept", "reason_code": "TIMEOUT",
+                               "count": count, "timeout_min": timeout_minutes})
         return count
 
     def close(self) -> None:

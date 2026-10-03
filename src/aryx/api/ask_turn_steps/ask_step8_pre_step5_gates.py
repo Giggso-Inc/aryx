@@ -17,7 +17,18 @@ from typing import Any
 from aryx.api.ask_turn_steps.ask_step8_label_and_query import _step8_label_collision_and_query
 from aryx.api.ask_turn_steps.ask_step8_mid_config_change import _step8_mid_config_change
 from aryx.api.ask_turn_steps.ask_step8_qa_and_collision import _step8_qa_and_pending_collision
+from aryx.raven_log import raven_log
 
+_GATE_OPTIONS = ["label_collision_or_query", "qa_or_pending_collision", "mid_config_change", "continue"]
+
+
+def _log_gate_handled(session: Any, gate: str, mode_request: str | None, result: dict) -> None:
+    """INFO milestone: one pre-STEP-5 gate handled the whole turn."""
+    raven_log("INFO", "P4", "ask.preamble.gate pre-step5 gate handled the turn", context={
+        "selected_option": gate, "available_options": _GATE_OPTIONS,
+        "reason_code": "GATE_HANDLED", "mode_request": mode_request,
+        "tools_called": list((result or {}).get("tools_called") or [])[:5],
+        "turn": getattr(session, "turn", None)})
 
 
 def _step8_run_pre_step5_gates(
@@ -33,11 +44,16 @@ def _step8_run_pre_step5_gates(
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     mode_request = _cpq_engine.detect_response_mode_request(req.question)
+    raven_log("DEBUG", "P4", "ask.preamble.mode_request response mode detected", context={
+        "selected_option": mode_request or "none", "available_options": ["json", "batch", "none"],
+        "reason_code": "MODE_REQUESTED" if mode_request else "NO_MODE_REQUEST",
+        "turn": getattr(session, "turn", None)})
 
     result = _step8_label_collision_and_query(
         req, session, attrs, validation_rules, con_rules, bml_eval, mode_request,
     )
     if result is not None:
+        _log_gate_handled(session, "label_collision_or_query", mode_request, result)
         return result, mode_request
 
     result = _step8_qa_and_pending_collision(
@@ -45,6 +61,7 @@ def _step8_run_pre_step5_gates(
         catalog_prefix, mode_request,
     )
     if result is not None:
+        _log_gate_handled(session, "qa_or_pending_collision", mode_request, result)
         return result, mode_request
 
     result = _step8_mid_config_change(
@@ -52,6 +69,11 @@ def _step8_run_pre_step5_gates(
         catalog_prefix, mode_request,
     )
     if result is not None:
+        _log_gate_handled(session, "mid_config_change", mode_request, result)
         return result, mode_request
 
+    raven_log("DEBUG", "P4", "ask.preamble.gate no pre-step5 gate handled the turn", context={
+        "selected_option": "continue", "available_options": _GATE_OPTIONS,
+        "reason_code": "NO_GATE_MATCHED", "mode_request": mode_request,
+        "turn": getattr(session, "turn", None)})
     return None, mode_request

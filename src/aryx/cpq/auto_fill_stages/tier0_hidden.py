@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import _valid
 
@@ -35,6 +36,8 @@ def stage_hidden(
         # Pointer-defaults are NOT literals — resolved (or left
         # unfilled) by the post-pass below, never written verbatim.
         if _valid(attr.default_value) and not scope.is_pointer_default(attr):
+            fill_log.log_write(ctx, attr, state.vn, attr.default_value, attr.default_value,
+                               "default", "tier0_hidden")
             ctx.filled[state.vn] = attr.default_value
             ctx.display_filled[state.vn] = next(
                 (o.display_name for o in attr.options
@@ -42,5 +45,7 @@ def stage_hidden(
                 attr.default_value,
             )
             ctx.sources.setdefault(state.vn, "default")
+        else:
+            fill_log.log_pruned(state.vn, "HIDDEN_NO_LITERAL_DEFAULT", "stage_hidden", state="hidden")
         state.done = True
         return

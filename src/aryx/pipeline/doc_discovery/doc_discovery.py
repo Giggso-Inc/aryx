@@ -51,6 +51,8 @@ from aryx.pipeline.doc_discovery.doc_discovery_xlsx import _sheet_slug, _xlsx_to
 from aryx.pipeline.doc_discovery.doc_discovery_xml import _xml_to_csvs
 from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
+from aryx.raven_log import raven_log, submit_ctx, would_log
+from aryx.worker.job_partial import note_hidden
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import make_should_stop
@@ -111,6 +113,13 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
                 did, len(doc_paths), len(tabular), context)
     mentions = []
+    raven_log("DEBUG", "P4", "ingest.read.start read_files inputs",
+              context={"discovery_id": did, "doc_files": len(doc_paths), "tabular_files": len(tabular),
+                       "layout_files": len(layout_items or []), "has_context": bool(context),
+                       "selected_option": "documents+tabular" if doc_paths and tabular else
+                       ("documents" if doc_paths else "tabular"),
+                       "available_options": ["documents", "tabular", "documents+tabular"],
+                       "reason_code": "INPUT_MIX"})
     if doc_paths:
         connector = DocumentRouterConnector(
             paths=doc_paths, system="document", broker=broker,
@@ -125,6 +134,11 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     converted_tabular = []
     for d, n in tabular:
         suffix = Path(n).suffix.lower()
+        raven_log("DEBUG", "P4", "ingest.read.route tabular file road chosen",
+                  context={"discovery_id": did, "filename": n, "bytes": len(d),
+                           "selected_option": {".xml": "xml_flatten", ".xlsx": "xlsx_flatten"}.get(suffix, "csv_consolidate"),
+                           "available_options": ["xml_flatten", "xlsx_flatten", "csv_consolidate"],
+                           "reason_code": "EXTENSION", "suffix": suffix})
         if suffix == ".xml":
             # Lazy import: aryx.cpq_ingestion.pipeline itself imports
             # _xml_to_csvs from this module, so a top-level import here
@@ -151,6 +165,9 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for data, filename, source_filename, source_bytes in converted_tabular:
         inferred = _infer_type(data[:800].decode("utf-8", "ignore"), filename, context, did=did)
         plan = {"filename": filename, "data": data, **inferred}
+        raven_log("DEBUG", "P4", "ingest.read.plan type and match keys inferred",
+                  context={"discovery_id": did, "filename": filename, "ontology_type": inferred.get("ontology_type"),
+                           "match_keys": inferred.get("match_keys"), "bytes": len(data)})
         if source_filename is not None and source_bytes is not None:
             plan["source_filename"] = source_filename
             plan["source_bytes"] = source_bytes
@@ -160,6 +177,12 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                 headers = []
             if "_text" in headers:
                 plan["match_keys"] = ["_text"]
+            raven_log("DEBUG", "P4", "ingest.read.plan derived from parent workbook or xml",
+                      context={"discovery_id": did, "filename": filename, "source_filename": source_filename,
+                               "selected_option": "text_match_key" if "_text" in headers else "inferred_match_keys",
+                               "available_options": ["text_match_key", "inferred_match_keys"],
+                               "reason_code": "TEXT_COLUMN_PRESENT" if "_text" in headers else "NO_TEXT_COLUMN",
+                               "header_column_count": len(headers)})
         elif Path(filename).suffix.lower() == ".csv":
             # A plain (not XML/XLSX-derived) CSV upload has no "parent
             # workbook" to fan back in to -- one file is already one plan --
@@ -170,6 +193,11 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
             if cpq_ingestion_pipeline_active(filename):
                 plan["cpq_csv_direct"] = True
+            raven_log("DEBUG", "P4", "ingest.read.plan csv direct-landing flag decided",
+                      context={"discovery_id": did, "filename": filename,
+                               "selected_option": "csv_direct" if plan.get("cpq_csv_direct") else "entity_pipeline",
+                               "available_options": ["csv_direct", "entity_pipeline"],
+                               "reason_code": "CPQ_INGESTION_PIPELINE_ACTIVE" if plan.get("cpq_csv_direct") else "PIPELINE_INACTIVE"})
         tab_plans.append(plan)
 
     for layout_data, layout_name in (layout_items or []):
@@ -194,6 +222,10 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     ]
     logger.info("read_files done did=%s mentions=%d tabular_plans=%d types=%d files=%d",
                 did, len(mentions), len(tab_plans), len(types), len(files))
+    raven_log("INFO", "P4", "ingest.read.done discovery read finished",
+              context={"discovery_id": did, "mentions": len(mentions), "tabular_plans": len(tab_plans),
+                       "types": len(types), "files": len(files),
+                       "layout_plans": len(layout_items or []), "zero_mentions": len(mentions) == 0})
     return {"mentions": mentions, "tabular": tab_plans,
             "summary": {"types": types, "files": files}}
 
@@ -237,6 +269,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     should_stop = make_should_stop(jobs, job_id)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
+    raven_log("INFO", "P4", "ingest.confirm.start confirm plans received",
+              context={"job_id": job_id, "discovery_id": discovery_id, "workspace_id": workspace_id,
+                       "approved_types": len(approved_types), "approved_files": len(approved_files),
+                       "resuming": bool(confirm_state), "completed_plans": len((confirm_state or {}).get("completed_plans", []))})
 
     state = confirm_state or {}
     completed_plans: set[str] = set(state.get("completed_plans", []))
@@ -265,6 +301,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             is_last = otype == last_type_with_recs
             logger.info("confirm job=%s step=%d/%d otype=%s records=%d is_last=%s",
                         job_id, step, total, otype, len(recs), is_last)
+            raven_log("DEBUG", "P4", "ingest.confirm.type run chosen",
+                      context={"job_id": job_id, "otype": otype, "records": len(recs), "step": step,
+                               "selected_option": "relate_and_project" if is_last else "resolve_only",
+                               "available_options": ["relate_and_project", "resolve_only"],
+                               "reason_code": "LAST_TYPE_WITH_RECORDS" if is_last else "NOT_LAST_TYPE"})
 
             def _progress_otype(stage: str, pct: int, detail: str, _otype: str = otype,
                                  _step: int = step) -> None:
@@ -281,6 +322,9 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         else:
             logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
                         job_id, step, total, otype)
+            raven_log("DEBUG", "P4", "ingest.confirm.type skipped no mentions",
+                      context={"job_id": job_id, "otype": otype, "step": step, "decision": "skip",
+                               "reason_code": "NO_MATCHING_MENTIONS"})
 
     # Collect valid plans in approval order so FK detection sees the full picture.
     # Filter out already-completed plans when resuming.
@@ -289,6 +333,12 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                         for fn in approved_files)
                        if p is not None]
     valid_plans = [p for p in all_valid_plans if p["filename"] not in completed_plans]
+    raven_log("DEBUG", "P4", "ingest.confirm.plans plan lists built",
+              context={"job_id": job_id, "approved_files": len(approved_files), "plans_found": len(all_valid_plans),
+                       "unknown_files": len(approved_files) - len(all_valid_plans),
+                       "resume_skipped": len(all_valid_plans) - len(valid_plans),
+                       "selected_option": "resume" if len(valid_plans) < len(all_valid_plans) else "fresh",
+                       "available_options": ["resume", "fresh"], "reason_code": "COMPLETED_PLANS_IN_STATE"})
     if len(valid_plans) < len(all_valid_plans):
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
@@ -303,6 +353,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # logged and skipped, not allowed to fail the rest of the confirm.
     layout_plans = [p for p in valid_plans if p.get("kind") == "cpq_layout"]
     valid_plans = [p for p in valid_plans if p.get("kind") != "cpq_layout"]
+    raven_log("DEBUG", "P4", "ingest.confirm.split layout plans separated",
+              context={"job_id": job_id, "layout_plans": len(layout_plans), "remaining": len(valid_plans),
+                       "selected_option": "store_layout" if layout_plans else "none",
+                       "reason_code": "KIND_CPQ_LAYOUT"})
     if layout_plans:
         # Lazy import: aryx.cpq_ingestion.__init__ imports pipeline.py,
         # which imports _xml_to_csvs from THIS module -- a top-level import
@@ -319,16 +373,30 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 "workspace_id=%d catalog_prefix=%r filename=%r",
                 workspace_id, prefix, lp["filename"],
             )
-        except CpqLayoutFileTooLarge:
+        except CpqLayoutFileTooLarge as lay_exc:
             logger.warning(
                 "cpq_ingestion: layout file %s too large, skipped",
                 lp["filename"], exc_info=True,
             )
-        except Exception:  # noqa: BLE001
+            note_hidden(job_id)
+            raven_log("WARN", "P3", "ingest.layout.skipped layout file too large",
+                      error_code="ARYX_ING_LAYOUT_SKIPPED",
+                      context={"job_id": job_id, "filename": lp["filename"], "triggering_error": type(lay_exc).__name__,
+                               "reason_code": "TOO_LARGE", "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                               "recovery_selected": "skip_file", "fallback_target": None,
+                               "exit_condition": "skipped", "result": "skipped"})
+        except Exception as lay_exc:  # noqa: BLE001
             logger.warning(
                 "cpq_ingestion: failed to store layout file %s",
                 lp["filename"], exc_info=True,
             )
+            note_hidden(job_id)
+            raven_log("WARN", "P3", "ingest.layout.skipped layout file store failed",
+                      error_code="ARYX_ING_LAYOUT_SKIPPED",
+                      context={"job_id": job_id, "filename": lp["filename"], "triggering_error": type(lay_exc).__name__,
+                               "reason_code": "STORE_FAILED", "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                               "recovery_selected": "skip_file", "fallback_target": None,
+                               "exit_condition": "skipped", "result": "skipped"})
 
     # cpq_ingestion: a plain CSV upload whose plan is active for this
     # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
@@ -341,6 +409,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # same double-resolve reasoning as the XML branch just below this one.
     from aryx.cpq_ingestion.routing import partition_cpq_ingestion_csv_plans  # noqa: PLC0415
     cpq_ingestion_csv_plans, valid_plans = partition_cpq_ingestion_csv_plans(valid_plans)
+    raven_log("DEBUG", "P4", "ingest.confirm.split csv direct plans separated",
+              context={"job_id": job_id, "csv_direct": len(cpq_ingestion_csv_plans), "remaining": len(valid_plans),
+                       "selected_option": "csv_direct" if cpq_ingestion_csv_plans else "none",
+                       "reason_code": "CPQ_CSV_DIRECT_FLAG"})
 
     if cpq_ingestion_csv_plans:
         from aryx.cpq_ingestion.csv_land import land_csv_directly  # noqa: PLC0415
@@ -356,14 +428,24 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 plan["data"], stem, workspace_id=workspace_id,
                 dsn=settings.effective_dsn(), log_id=job_id,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as csv_exc:  # noqa: BLE001
             logger.warning(
                 "confirm job=%s cpq_ingestion csv_direct failed filename=%s",
                 job_id, filename, exc_info=True,
             )
+            note_hidden(job_id)
+            raven_log("WARN", "P2", "ingest.csv_direct.failed direct CSV landing failed, file skipped",
+                      error_code="ARYX_ING_CSV_DIRECT_FAILED",
+                      context={"job_id": job_id, "filename": filename, "triggering_error": type(csv_exc).__name__,
+                               "attempt": 1, "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "skip_file",
+                               "fallback_target": None, "exit_condition": "skipped", "result": "skipped",
+                               "failed_files": [filename]})
             continue
         logger.info("confirm job=%s cpq_ingestion csv_direct done filename=%s result=%s",
                     job_id, filename, result)
+        raven_log("DEBUG", "P4", "ingest.confirm.csv_direct landed",
+                  context={"job_id": job_id, "filename": filename, "rows_landed": result.get("rows_landed"),
+                           "run_id": result.get("run_id")})
 
     _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
 
@@ -380,6 +462,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # meant to be joined on.
     from aryx.cpq_ingestion.routing import partition_cpq_ingestion_plans  # noqa: PLC0415
     cpq_ingestion_source_files, valid_plans = partition_cpq_ingestion_plans(valid_plans)
+    raven_log("DEBUG", "P4", "ingest.confirm.split xml raw-graph plans separated",
+              context={"job_id": job_id, "xml_source_files": len(cpq_ingestion_source_files),
+                       "remaining": len(valid_plans),
+                       "selected_option": "raw_graph_resolve" if cpq_ingestion_source_files else "none",
+                       "reason_code": "CPQ_XML_ACTIVE"})
 
     for source_filename, plan in cpq_ingestion_source_files.items():
         from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
@@ -405,8 +492,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         # own on_progress guard (judge_candidates_with_llm).
         try:
             jobs.update_stage(job_id, "FK Detection", pct, detail)
-        except Exception:  # noqa: BLE001
+        except Exception as stage_exc:  # noqa: BLE001
             logger.warning("confirm job=%s FK-detection stage report failed", job_id, exc_info=True)
+            raven_log("DEBUG", "P4", "ingest.confirm.fk_stage progress report failed, detection continues",
+                      context={"job_id": job_id, "pct": pct, "error_class": type(stage_exc).__name__,
+                               "recovery_selected": "continue", "result": "degraded"})
 
     # docs/falkordb_high_cpu_2026-07-29.md follow-up — this whole FK-detection
     # block (column-name passes + the dynamic value-overlap/LLM-judge pass
@@ -422,6 +512,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
                     job_id, len(auto_fk), auto_fk)
+    raven_log("DEBUG", "P4", "ingest.confirm.fk column-name pass finished",
+              context={"job_id": job_id, "plans": len(valid_plans), "fk_links": len(auto_fk),
+                       "selected_option": "links_found" if auto_fk else "no_links",
+                       "reason_code": "COLUMN_NAME_FK"})
 
     # Array-iteration BML idiom recognition (Approach B, docs/
     # CPQ_BML_ARRAY_ITERATION_TIER_PLAN.md) — additive, alongside the
@@ -435,6 +529,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         auto_fk.extend(script_flow_links)
         logger.info("confirm job=%s array-iteration script analysis: %d link spec(s): %s",
                     job_id, len(script_flow_links), script_flow_links)
+        raven_log("DEBUG", "P4", "ingest.confirm.fk script data-flow links added",
+                  context={"job_id": job_id, "links": len(script_flow_links)})
 
     # Detect FK links from the last plan to types already in the workspace.
     # Fires for single-file jobs where _detect_fk_links returns [].
@@ -450,12 +546,21 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             logger.warning("confirm job=%s OntologyStore lookup failed, skipping workspace FK "
                            "detection: %s", job_id, exc, exc_info=True)
             known_types = []
+            raven_log("WARN", "P3", "ingest.confirm.workspace_fk skipped, ontology lookup failed",
+                      error_code="ARYX_ING_WORKSPACE_FK_SKIPPED",
+                      context={"job_id": job_id, "triggering_error": type(exc).__name__, "attempt": 1,
+                               "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "skip_workspace_fk",
+                               "fallback_target": None, "exit_condition": "skipped", "result": "degraded"})
         existing_pairs: set[tuple[str, str]] = {
             (lk["source_type"], lk["target_type"]) for lk in auto_fk
         }
         workspace_fk = _detect_fk_links_workspace(
             valid_plans[-1], known_types, seen=existing_pairs, job_id=job_id
         )
+        raven_log("DEBUG", "P4", "ingest.confirm.fk workspace pass finished",
+                  context={"job_id": job_id, "known_types": len(known_types), "workspace_links": len(workspace_fk),
+                           "selected_option": "links_found" if workspace_fk else "no_links",
+                           "reason_code": "WORKSPACE_LEVEL_FK"})
         if workspace_fk:
             auto_fk.extend(workspace_fk)
             logger.info("confirm job=%s workspace FK links detected count=%d specs=%s",
@@ -509,6 +614,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             valid_plans, broker, already_linked=already_linked, log_id=job_id,
             on_progress=_dynamic_fk_progress,
         )
+        raven_log("DEBUG", "P4", "ingest.confirm.fk dynamic pass finished",
+                  context={"job_id": job_id, "dynamic_links": len(dynamic_fk), "already_linked_pairs": len(already_linked),
+                           "selected_option": "links_found" if dynamic_fk else "no_links",
+                           "reason_code": "VALUE_OVERLAP_LLM_JUDGE"})
         if dynamic_fk:
             auto_fk.extend(dynamic_fk)
             logger.info("confirm job=%s dynamic (value+LLM) fk-link spec(s): %d: %s",
@@ -532,6 +641,15 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         otype = plan["ontology_type"]
         logger.info("confirm job=%s step=%d/%d file=%s otype=%s is_last=%s",
                     job_id, plan_step, total, fname, otype, is_last)
+        plan_t0 = time.perf_counter()
+        raven_log("DEBUG", "P4", "ingest.confirm.plan start",
+                  context={"job_id": job_id, "filename": fname, "otype": otype, "plan_step": plan_step,
+                           "bytes": len(plan["data"]), "match_keys": plan.get("match_keys"),
+                           "selected_option": "relate_and_project" if is_last else "resolve_only",
+                           "available_options": ["relate_and_project", "resolve_only"],
+                           "reason_code": "LAST_PLAN" if is_last else "NOT_LAST_PLAN",
+                           "relate": is_last and settings.ingest_relate, "skip_graph": not is_last,
+                           "fk_links": len(auto_fk) if is_last else 0})
         jobs.update_stage(job_id, f"{plan_step}/{total} · Discover",
                           int(plan_step * 90 / total), f"Starting {fname}")
         tmp_path: Path | None = None
@@ -578,6 +696,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                     source_dataset=Path(fname).stem,
                 )
             logger.info("confirm job=%s file=%s done", job_id, fname)
+            raven_log("DEBUG", "P4", "ingest.confirm.plan done",
+                      context={"job_id": job_id, "filename": fname,
+                               "duration_ms": int((time.perf_counter() - plan_t0) * 1000),
+                               "persist_state": bool(discovery_id)})
             # Persist progress after each plan so a restart can resume here.
             if discovery_id:
                 completed_plans.add(fname)
@@ -604,8 +726,12 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 job_id, [p["filename"] for p in valid_plans], len(auto_fk))
 
     if non_last:
+        raven_log("DEBUG", "P4", "ingest.confirm.parallel non-last plans run in parallel",
+                  context={"job_id": job_id, "non_last_plans": len(non_last), "workers": settings.ingest_workers,
+                           "selected_option": "parallel_then_last", "available_options": ["parallel_then_last", "last_only"],
+                           "reason_code": "NON_LAST_PLANS_PRESENT"})
         with ThreadPoolExecutor(max_workers=settings.ingest_workers) as pool:
-            futs = {pool.submit(_run_one_plan, p, False, plan_steps[p["filename"]]): p["filename"]
+            futs = {submit_ctx(pool, _run_one_plan, p, False, plan_steps[p["filename"]]): p["filename"]
                     for p in non_last}
             failed: list[str] = []
             for fut in as_completed(futs):
@@ -627,18 +753,40 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                     # way the serial "last" plan's cancellation already did.
                     logger.info("confirm job=%s plan cancelled file=%s — abandoning queued plans",
                                job_id, fname_done)
+                    raven_log("INFO", "P3", "ingest.confirm.plan_cancelled queued plans abandoned",
+                              context={"job_id": job_id, "object_id": job_id, "filename": fname_done,
+                                       "previous_state": "running", "requested_state": "cancelled",
+                                       "final_state": "cancelled", "trigger": "should_stop",
+                                       "result": "abandoned_queued", "reason_code": "USER_CANCEL",
+                                       "plans_total": len(valid_plans)})
                     pool.shutdown(wait=False, cancel_futures=True)
                     raise
-                except Exception:
+                except Exception as plan_exc:
                     logger.warning("confirm job=%s plan failed file=%s",
                                    job_id, fname_done, exc_info=True)
                     failed.append(fname_done)
+                    raven_log("DEBUG", "P4", "ingest.confirm.plan failed",
+                              context={"job_id": job_id, "filename": fname_done,
+                                       "error_class": type(plan_exc).__name__})
             if failed:
                 logger.warning(
                     "confirm job=%s skipping %d failed plan(s): %s — continuing with remaining",
                     job_id, len(failed), failed,
                 )
+                note_hidden(job_id)
+                raven_log("WARN", "P2", "ingest.confirm.plans_failed some plans failed, job continues",
+                          error_code="ARYX_ING_PLAN_FAILED",
+                          context={"job_id": job_id, "triggering_error": "plan_exception", "attempt": 1,
+                                   "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "skip_failed_plans",
+                                   "fallback_target": None, "exit_condition": "continue_with_remaining",
+                                   "result": "partial", "failed_count": len(failed), "failed_files": failed[:20],
+                                   "plans_total": len(valid_plans)})
 
+    raven_log("DEBUG", "P4", "ingest.confirm.last_plan decision",
+              context={"job_id": job_id, "selected_option": "run_last" if last else "no_last_plan",
+                       "available_options": ["run_last", "no_last_plan"],
+                       "reason_code": "VALID_PLANS_PRESENT" if last else "NO_VALID_PLANS",
+                       "valid_plans": len(valid_plans)})
     if last:
         last_step = plan_steps[last["filename"]]
         jobs.update_stage(job_id, f"{last_step}/{total} · FK links",
@@ -657,11 +805,34 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                                         settings.graph_url)
             logger.info("confirm job=%s validation passed=%s %s",
                         job_id, report.passed, report.summary_line())
-            for line in report.failures():
+            failure_lines = list(report.failures())
+            for line in failure_lines:
                 logger.warning("confirm job=%s validation FAIL %s", job_id, line)
+            if failure_lines or not report.passed:
+                note_hidden(job_id)
+                raven_log("WARN", "P2", "ingest.validation.failed zero-loss validation found problems",
+                          error_code="ARYX_ING_VALIDATION_FAILED",
+                          context={"job_id": job_id, "final_status": "complete", "stage": "validation",
+                                   "result": "failed", "reason_code": "CHECKS_FAILED",
+                                   "checks_failed": len(failure_lines), "passed": bool(report.passed),
+                                   "impact_scope": {"plans": len(valid_plans)}})
+            else:
+                raven_log("DEBUG", "P4", "ingest.validation.passed zero-loss validation clean",
+                          context={"job_id": job_id, "stage": "validation", "result": "ok", "passed": True,
+                                   "plans": len(valid_plans)})
         except Exception as exc:  # noqa: BLE001 — never fail the ingest over validation
             logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
                            exc_info=True)
+            note_hidden(job_id)
+            raven_log("WARN", "P2", "ingest.validation.failed validation crashed",
+                      error_code="ARYX_ING_VALIDATION_FAILED",
+                      context={"job_id": job_id, "final_status": "complete", "stage": "validation",
+                               "result": "error", "reason_code": "VALIDATION_CRASHED",
+                               "error_class": type(exc).__name__})
+    else:
+        raven_log("DEBUG", "P4", "ingest.validation.skipped no plans to validate",
+                  context={"job_id": job_id, "selected_option": "skip", "available_options": ["run", "skip"],
+                           "reason_code": "NO_VALID_PLANS"})
 
     # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md — the CPQ rule/
     # table caches (data_table_resolver._TABLES_CACHE, engine._VALUE_RULES_
@@ -697,9 +868,17 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         _clear_data_table_forced_vns_cache()
         _clear_substitute_util_get_constraint_vals_cache()
         logger.info("confirm job=%s cleared CPQ rule/table caches after ingest", job_id)
+        raven_log("DEBUG", "P4", "ingest.cache_invalidate in-process CPQ caches cleared",
+                  context={"job_id": job_id, "caches_cleared": 6, "result": "ok"})
     except Exception as exc:  # noqa: BLE001 — never fail the ingest over cache invalidation
         logger.warning("confirm job=%s CPQ cache invalidation failed: %s", job_id, exc,
                        exc_info=True)
+        note_hidden(job_id)
+        raven_log("WARN", "P2", "ingest.cache_invalidate.failed in-process CPQ cache clear failed",
+                  error_code="ARYX_ING_CACHE_INVALIDATE_FAILED",
+                  context={"job_id": job_id, "dependency_name": "cpq_cache", "operation": "clear_in_process",
+                           "result": "error", "error_class": type(exc).__name__, "attempt": 1,
+                           "stale_risk_ttl_s": 300})
 
     # 2026-08-29 (PR #287 review, Section 12): the clears above only reach
     # THIS process' in-memory copy of each cache. Under multiple api
@@ -729,9 +908,17 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 (job_id,),
             )
         logger.info("confirm job=%s wrote cross-process cache invalidation marker", job_id)
+        raven_log("DEBUG", "P4", "ingest.cache_invalidate marker written",
+                  context={"job_id": job_id, "dependency_name": "adb", "operation": "write_marker", "result": "ok"})
     except Exception as exc:  # noqa: BLE001 — never fail the ingest over marker write
         logger.warning(
             "confirm job=%s cross-process cache invalidation marker write failed "
             "(other worker processes may serve stale CPQ data for up to the cache "
             "TTL): %s", job_id, exc, exc_info=True,
         )
+        note_hidden(job_id)
+        raven_log("WARN", "P2", "ingest.cache_invalidate.failed cross-process marker write failed",
+                  error_code="ARYX_ING_CACHE_INVALIDATE_FAILED",
+                  context={"job_id": job_id, "dependency_name": "adb", "operation": "write_marker",
+                           "result": "error", "error_class": type(exc).__name__, "attempt": 1,
+                           "stale_risk_ttl_s": 300})

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _no_real_fill_justification,
@@ -69,6 +70,7 @@ def single_chain_tail(
         state.value = opt_out_match.item_value
         state.display = opt_out_match.display_name
         state.source = "opt_out_default"
+        fill_log.log_decision(state.vn, "single_chain_tail", "picked", "SOLE_OPT_OUT_OPTION")
     elif (
         scope.display_order is not None and state.vn in scope.display_order
         and not (
@@ -111,6 +113,7 @@ def single_chain_tail(
         state.value = _first.item_value
         state.display = _first.display_name
         state.source = "default_first_available"
+        fill_log.log_decision(state.vn, "single_chain_tail", "picked", "LAYOUT_VISIBLE_FIRST_BY_ORDER", valid_opt_count=len(state.valid_opts))
     elif scope.display_order is not None:
         # Layout map loaded, but this attr isn't in its
         # visible set -- the layout explicitly says never
@@ -119,6 +122,7 @@ def single_chain_tail(
         # (the final ask/skip decision below correctly
         # skips it, since it's neither a decision attr
         # nor a grid selector).
+        fill_log.log_decision(state.vn, "single_chain_tail", "left_open", "LAYOUT_HIDDEN_OR_NO_JUSTIFICATION")
         pass
     elif not (
         _no_real_fill_justification(attr, scope.rec_by_target)
@@ -132,6 +136,7 @@ def single_chain_tail(
         state.value = _first.item_value
         state.display = _first.display_name
         state.source = state.governed_source
+        fill_log.log_decision(state.vn, "single_chain_tail", "picked", "FIRST_BY_ORDER_GOVERNED", valid_opt_count=len(state.valid_opts))
     # else: nothing above (rec/data-table/confirmed-
     # default) justified a value for this specific,
     # confirmed-no-real-basis attr -- leave unset

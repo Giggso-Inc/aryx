@@ -29,6 +29,7 @@ from aryx.api.ask_request_models import AskRequest
 from aryx.config import get_settings
 from aryx.cpq.attribute_search.budget import BudgetExceeded, run_with_budget
 from aryx.cpq.attribute_search.lookup import AttributeSearchResult, find_products_by_attribute
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,13 @@ def _names_a_product(engine: Any, req: AskRequest, reader: Any) -> bool:
         if engine.detect_product_mention(req.question, {}, reader, req.workspace_id):
             return True
         return bool(engine.resolve_product_hint(reader, req.workspace_id, req.question))
-    except Exception:  # noqa: BLE001 -- a failed check must not block the search
+    except Exception as exc:  # noqa: BLE001 -- a failed check must not block the search
         logger.warning("attribute_search: product-mention check failed", exc_info=True)
+        raven_log("WARN", "P3", "ask.attr_search.product_check_failed treated as no product named",
+                  error_code="ARYX_ASK_ATTR_SEARCH_PRODUCT_CHECK_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "continue_search", "fallback_target": None,
+                           "exit_condition": "exception", "result": "degraded"})
         return False
 
 
@@ -125,22 +131,44 @@ def _route_attribute_search(req: AskRequest, reader: Any, route_meta: Any) -> di
     engine = _ask_api_module._cpq_engine
     if _names_a_product(engine, req, reader):
         logger.info("attribute_search: message names a product → quote path")
+        raven_log("DEBUG", "P4", "ask.attr_search.skipped message names a product, quote path", context={
+            "selected_option": "quote", "available_options": ["attribute_search", "quote"],
+            "reason_code": "PRODUCT_NAMED", "attribute_label": route_meta.attribute_label})
         return None
+    _budget = _budget_s()
     try:
         res = run_with_budget(lambda: find_products_by_attribute(
             route_meta.attribute_label or "", route_meta.attribute_value,
             workspace_id=req.workspace_id, reader=reader, engine=engine,
-        ), budget_s=_budget_s())
-    except BudgetExceeded:
+        ), budget_s=_budget)
+    except BudgetExceeded as exc:
         logger.warning("attribute_search: cold catalog cache, over budget → quote path "
                        "(the lookup keeps warming the cache)")
+        raven_log("WARN", "P3", "ask.attr_search.over_budget lookup over budget or busy, quote path",
+                  error_code="ARYX_ASK_ATTR_SEARCH_OVER_BUDGET",
+                  context={"dependency_name": "attribute_search_lookup", "operation": "find_products_by_attribute",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "fallback_quote",
+                           "error_class": type(exc).__name__, "attempt": 1, "budget_s": _budget,
+                           "attribute_label": route_meta.attribute_label})
         return None
     except Exception as exc:  # noqa: BLE001 -- never let a search error break the turn
         logger.warning(
             "attribute_search: lookup failed label=%r value=%r: %s",
             route_meta.attribute_label, route_meta.attribute_value, exc, exc_info=True,
         )
+        raven_log("ERROR", "P2", "ask.attr_search.lookup_failed search failed, quote path used instead",
+                  error_code="ARYX_ASK_ATTR_SEARCH_FAILED",
+                  context={"dependency_name": "attribute_search_lookup", "operation": "find_products_by_attribute",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "fallback_quote",
+                           "error_class": type(exc).__name__, "attempt": 1,
+                           "attribute_label": route_meta.attribute_label})
         return None
+    raven_log("DEBUG", "P4", "ask.attr_search.lookup done", context={
+        "selected_option": "decide" if res is not None else "quote",
+        "available_options": ["decide", "quote"],
+        "reason_code": "RESULT_FOUND" if res is not None else "NOT_GROUNDED",
+        "attribute_label": route_meta.attribute_label,
+        "duration_ms": int((time.monotonic() - t0) * 1000)})
     if res is None:
         return None
     return decide(req, reader, route_meta, res, t0=t0)

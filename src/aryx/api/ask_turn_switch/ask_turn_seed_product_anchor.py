@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.session_guard.session_guard import push_snapshot
+from aryx.raven_log import raven_log
 
 
 def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:
@@ -43,11 +44,19 @@ def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:
         _hw_ready
         and "productSelectionProduct_all" not in session.filled
     ):
+        raven_log("DEBUG", "P4", "ask.switch.seed_skip product seed from anchor skipped", context={
+            "selected_option": "skip", "available_options": ["seed", "skip"],
+            "reason_code": "HARDWARE_NOT_READY" if not _hw_ready else "PRODUCT_ALREADY_FILLED",
+            "hardware_attr_count": len(_hw_attrs), "turn": getattr(session, "turn", None)})
         return
     _product_attr = next(
         (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
     )
     if _product_attr is None:
+        raven_log("DEBUG", "P4", "ask.switch.seed_skip product attribute absent from catalog", context={
+            "selected_option": "skip", "available_options": ["seed", "skip"],
+            "reason_code": "NO_PRODUCT_SELECTION_ATTR", "attr_count": len(attrs or []),
+            "turn": getattr(session, "turn", None)})
         return
     _seed_candidates = [
         c for c in (
@@ -76,4 +85,20 @@ def _seed_product_select_from_anchor(session: Any, attrs: list) -> None:
                 "turn=%s — skips a redundant re-ask",
                 _item_value, _candidate_text, session.turn,
             )
+            raven_log("DEBUG", "P4", "ask.switch.seeded product selection seeded from anchor text", context={
+                "selected_option": "seed", "available_options": ["seed", "skip"],
+                "reason_code": "ANCHOR_TEXT_MATCHED_OPTION",
+                "seed_source": (
+                    "pending_switch_question"
+                    if _candidate_text == getattr(session, "pending_switch_question", None)
+                    else "product_anchor_question"
+                    if _candidate_text == getattr(session, "product_anchor_question", None)
+                    else "product_name"),
+                "variable_name": "productSelectionProduct_all", "item_value": _item_value,
+                "candidate_count": len(_seed_candidates), "turn": getattr(session, "turn", None)})
             break
+    else:
+        raven_log("DEBUG", "P4", "ask.switch.seed_skip no anchor text matched a product option", context={
+            "selected_option": "skip", "available_options": ["seed", "skip"],
+            "reason_code": "NO_ANCHOR_MATCH" if _seed_candidates else "NO_SEED_CANDIDATES",
+            "candidate_count": len(_seed_candidates), "turn": getattr(session, "turn", None)})

@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.raven_log import raven_log
 
 
 def _batch_fetch(
@@ -110,8 +111,13 @@ def _match_basemodel_to_config_name(
             rows = reader.find_entities(
                 ontology_type="Basemodeltoconfig", limit=2000)
             prefix_agnostic = bool(rows)
-    except Exception:
+    except Exception as exc:
         rows = []
+        raven_log("WARN", "P3", "ask.product_hint.graph_read_failed Basemodeltoconfig graph read failed, trying RDB",
+                  error_code="ARYX_ASK_BASEMODEL_GRAPH_READ_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "rdb_fallback", "fallback_target": "rdb",
+                           "exit_condition": "fallback", "result": "degraded", "workspace_id": workspace_id})
     if rows:
         row_pg = engine._batch_fetch([e["id"] for e in rows], workspace_id)
     else:
@@ -123,7 +129,12 @@ def _match_basemodel_to_config_name(
             try:
                 pg_rows = _engine_module.get_cpq_rdb().fetch_entities_by_exact_type(
                     workspace_id, "Basemodeltoconfig")
-            except Exception:
+            except Exception as exc:
+                raven_log("WARN", "P3", "ask.product_hint.rdb_read_failed Basemodeltoconfig unavailable, no device match",
+                          error_code="ARYX_ASK_BASEMODEL_RDB_READ_FAILED",
+                          context={"dependency_name": "oracle_adb", "operation": "fetch_entities_by_exact_type",
+                                   "duration_ms": None, "result": "none_returned",
+                                   "error_class": type(exc).__name__, "attempt": 1, "workspace_id": workspace_id})
                 return None
             row_pg = {eid: attrs for eid, attrs in (pg_rows or [])}
             if rdb_cache is not None:

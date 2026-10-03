@@ -10,6 +10,8 @@ import io
 import logging
 import re
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,8 @@ def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
         text = data.decode("utf-8", "ignore")
         reader = csv.DictReader(io.StringIO(text))
         if reader.fieldnames is None:
+            raven_log("DEBUG", "P4", "ingest.csv.consolidate empty file, unchanged",
+                      context={"discovery_id": did, "selected_option": "unchanged", "reason_code": "NO_HEADER"})
             return data
         headers = list(reader.fieldnames)
 
@@ -39,6 +43,9 @@ def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
                     base_names.setdefault(base, []).append(h)
 
         if not base_names:
+            raven_log("DEBUG", "P4", "ingest.csv.consolidate no multi-part name columns",
+                      context={"discovery_id": did, "columns": len(headers), "selected_option": "unchanged",
+                               "available_options": ["merge", "unchanged"], "reason_code": "NO_NAME_GROUPS"})
             return data
 
         rows = list(reader)
@@ -69,8 +76,16 @@ def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
             writer.writerow(row)
         logger.info("consolidate_csv_names did=%s merged_groups=%d columns=%s rows=%d",
                     did, len(base_names), list(base_names.keys()), len(rows))
+        raven_log("DEBUG", "P4", "ingest.csv.consolidate multi-part name columns merged",
+                  context={"discovery_id": did, "merged_groups": len(base_names), "group_columns": list(base_names.keys()),
+                           "rows": len(rows), "selected_option": "merge", "available_options": ["merge", "unchanged"],
+                           "reason_code": "NAME_GROUPS_FOUND"})
         return buf.getvalue().encode("utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.warning("consolidate_csv_names did=%s failed, returning original data unmodified: %s",
                         did, exc)
+        raven_log("WARN", "P3", "ingest.csv.consolidate failed, original data kept",
+                  error_code="ARYX_ING_CSV_CONSOLIDATE_FAILED",
+                  context={"discovery_id": did, "triggering_error": type(exc).__name__,
+                           "recovery_selected": "return_original", "exit_condition": "degraded", "result": "degraded"})
         return data

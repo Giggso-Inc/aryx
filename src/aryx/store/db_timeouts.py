@@ -11,6 +11,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_MARKERS = ("ora-03156", "dpy-4024", "statement timeout", "querycanceled")
@@ -26,6 +28,20 @@ def log_if_timeout(exc: BaseException, where: str) -> None:
     """Emit a WARNING when a swallowed DB error is a timeout (vs. 'no rows')."""
     if looks_like_timeout(exc):
         logger.warning("db call timed out in %s: %s", where, exc)
+        raven_log("WARN", "P2", "db.call.timed_out swallowed DB error was a call timeout, not 'no rows'",
+                  error_code="ARYX_DB_CALL_TIMEOUT",
+                  context={"dependency_name": "oracle_adb" if "oracle" in where else "postgres",
+                           "operation": where, "duration_ms": None, "result": "timeout",
+                           "error_class": type(exc).__name__, "attempt": 1})
+
+
+def _call_timeout_failed(step: str, exc: BaseException) -> None:
+    raven_log("WARN", "P3", f"db.call_timeout.{step}_failed oracle call_timeout not applied",
+              error_code="ARYX_DB_CALL_TIMEOUT_CONFIG_FAILED",
+              context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                       "backoff_ms": 0, "recovery_selected": "continue_unbounded" if step != "restore" else
+                       "keep_bounded_value", "fallback_target": None, "exit_condition": "degraded",
+                       "result": "degraded", "step": step})
 
 
 @contextmanager
@@ -36,17 +52,20 @@ def oracle_call_timeout(conn: Any, timeout_ms: int) -> Iterator[None]:
     try:
         previous = conn.call_timeout
         have_previous = True
-    except Exception:
+    except Exception as exc:
         logger.warning("oracle call_timeout: could not read previous value", exc_info=True)
+        _call_timeout_failed("read", exc)
     try:
         conn.call_timeout = int(timeout_ms)
-    except Exception:
+    except Exception as exc:
         logger.warning("oracle call_timeout: could not set value", exc_info=True)
+        _call_timeout_failed("set", exc)
     try:
         yield
     finally:
         if have_previous:
             try:
                 conn.call_timeout = previous
-            except Exception:
+            except Exception as exc:
                 logger.warning("oracle call_timeout: could not restore previous value", exc_info=True)
+                _call_timeout_failed("restore", exc)

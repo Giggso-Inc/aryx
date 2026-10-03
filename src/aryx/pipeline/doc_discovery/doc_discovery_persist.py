@@ -17,6 +17,7 @@ from aryx.source.source_catalog import (
     xlsx_asset_record,
     xml_asset_record,
 )
+from aryx.raven_log import raven_log
 from aryx.store.datasource_store import DatasourceStore
 
 
@@ -49,7 +50,13 @@ def _persist_tabular_sources(valid_plans: list[dict[str, Any]], workspace_id: in
             content_bytes=plan["data"],
         ))
     if not grouped:
+        raven_log("DEBUG", "P4", "ingest.persist.sources nothing to catalog",
+                  context={"workspace_id": workspace_id, "plans": len(valid_plans), "selected_option": "skip",
+                           "reason_code": "NO_PARENT_WORKBOOK_PLANS"})
         return
+    raven_log("DEBUG", "P4", "ingest.persist.sources cataloging parent workbooks",
+              context={"workspace_id": workspace_id, "plans": len(valid_plans), "parents": len(grouped),
+                       "selected_option": "upsert_catalog", "reason_code": "PARENT_WORKBOOK_PLANS_PRESENT"})
     store = DatasourceStore(dsn)
     for source_filename, payload in grouped.items():
         if Path(source_filename).suffix.lower() == ".xlsx":

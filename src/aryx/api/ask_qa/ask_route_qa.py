@@ -17,6 +17,7 @@ from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_response_building.ask_finish_cpq_result import _finish_cpq_result
 from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 from aryx.cpq.state import CpqSession
+from aryx.raven_log import raven_log
 
 
 def _route_qa(
@@ -56,6 +57,10 @@ def _route_qa(
                 )
         except Exception:  # noqa: BLE001
             _ask_api_module.logger.debug("route_qa: detect_product_mention failed", exc_info=True)
+    raven_log("DEBUG", "P4", "ask.qa.route_qa product context resolved", context={
+        "selected_option": "qa", "reason_code": "ROUTE_QA", "product_context": product_for_attrs or "",
+        "session_has_product": bool(session.product_name), "run_id": session.run_id,
+        "llm_route": getattr(meta, "route", None), "confidence": getattr(meta, "confidence", None)})
     if product_for_attrs:
         try:
             attrs, _ = _cpq_engine.load_product_config(

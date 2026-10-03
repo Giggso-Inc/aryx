@@ -24,6 +24,7 @@ from aryx.api.ask_llm.ask_llm_extract_multi_attr_hints import _llm_extract_multi
 from aryx.api.ask_catalog.ask_relevant_intent_candidates import _relevant_intent_candidates
 from aryx.api.ask_turn_steps.ask_step10_recompute_pending import _step10_recompute_pending
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -51,6 +52,7 @@ def _step10_enforce_siblings_and_multi_hint(
             filled, req.workspace_id, catalog_prefix, filled_multi=session.filled_multi,
         )
     )
+    _pending_before_siblings = len(pending or [])
     pending = _cpq_engine.enforce_exclusive_sibling_families(
         visible_attrs, filled, session.filled_multi, session.filled_source,
         display_filled, pending, all_attrs=attrs,
@@ -58,10 +60,27 @@ def _step10_enforce_siblings_and_multi_hint(
         product_name=session.product_name, workspace_id=req.workspace_id,
         catalog_prefix=catalog_prefix,
     )
+    raven_log("DEBUG", "P4", "ask.recompute.siblings exclusive sibling families enforced", context={
+        "selected_option": "multi_hint_check" if len(pending or []) >= 2 else "no_multi_hint",
+        "available_options": ["multi_hint_check", "no_multi_hint"],
+        "reason_code": "TWO_PLUS_PENDING" if len(pending or []) >= 2 else "UNDER_TWO_PENDING",
+        "catalog_confirmed_count": len(_sibling_catalog_confirmed_vns or ()),
+        "pending_before": _pending_before_siblings, "pending_after": len(pending or []),
+        "turn": getattr(session, "turn", None)})
 
     if len(pending) >= 2:
         _multi_candidates = _relevant_intent_candidates(
             req.question, pending, fallback_to_full=False)
+        raven_log("DEBUG", "P4", "ask.recompute.multi_hint candidate overlap checked", context={
+            "selected_option": "llm_multi_hint" if len(_multi_candidates or []) >= 2 else "skip",
+            "available_options": ["llm_multi_hint", "skip"],
+            "reason_code": (
+                "MULTI_MENTION" if len(_multi_candidates or []) >= 2 else "UNDER_TWO_CANDIDATES"),
+            "candidate_count": len(_multi_candidates or []),
+            "candidate_fields": [getattr(a, "variable_name", None) for a in (_multi_candidates or [])][:25],
+            "pending_count": len(pending or []),
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         if len(_multi_candidates) >= 2:
             _mh_t0 = time.monotonic()
             logger.info("cpq_step: multi_attr_hints LLM start candidates=%d", len(_multi_candidates))
@@ -71,6 +90,14 @@ def _step10_enforce_siblings_and_multi_hint(
                 "cpq_perf: multi_attr_hints LLM took %.3fs hints=%d",
                 time.monotonic() - _mh_t0, len(_extra_hints or {}),
             )
+            raven_log("DEBUG", "P4", "ask.recompute.multi_hint second recompute decision", context={
+                "selected_option": "second_recompute" if _extra_hints else "keep_first_pass",
+                "available_options": ["second_recompute", "keep_first_pass"],
+                "reason_code": "LLM_HINTS_FOUND" if _extra_hints else "NO_LLM_HINTS",
+                "hint_fields": list(_extra_hints or {})[:25],
+                "new_hint_count": len([k for k in (_extra_hints or {}) if k not in hints]),
+                "llm_ms": int((time.monotonic() - _mh_t0) * 1000),
+                "turn": getattr(session, "turn", None)})
             if _extra_hints:
                 for _vn, _iv in _extra_hints.items():
                     hints.setdefault(_vn, _iv)

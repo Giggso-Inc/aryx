@@ -28,6 +28,17 @@ from aryx.api.ask_turn_steps.ask_step2_rule_consistency import _step2_log_rule_c
 from aryx.api.ask_pending_clarify.ask_pending_clarify_turn import _handle_pending_clarify_turn
 
 from aryx.api.ask_handle.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
+from aryx.raven_log import raven_log
+
+_STAGES = ["anchor_gates", "model_leaf", "pending_change_no_value", "pending_clarify",
+           "llm_first_universal", "continue"]
+
+
+def _log_stage_handled(session: Any, stage: str, reason_code: str, **extra: Any) -> None:
+    """One record for the STEP 2 stage that fully handled this turn."""
+    raven_log("INFO", "P4", "ask.preamble.step2 stage handled the turn", context={
+        "selected_option": stage, "available_options": _STAGES, "reason_code": reason_code,
+        "turn": getattr(session, "turn", None), **extra})
 
 
 def _step2_resolve_and_load(
@@ -49,16 +60,24 @@ def _step2_resolve_and_load(
         req, session, reader, hints, product_was_anchored, country_llm_call_failed,
     )
     if early_response is not None:
+        # ask.preamble.gate records in ask_step2_anchor_gates cover this exit.
         return early_response, [], "", [], [], [], [], None, set()
 
     catalog_prefix, negated_vns = _step2_catalog_hints_and_negation(
         req, session, attrs, hints, switch_trigger_question,
     )
+    raven_log("DEBUG", "P4", "ask.preamble.catalog_prefix chosen", context={
+        "catalog_prefix": catalog_prefix, "attr_count": len(attrs or []),
+        "product": getattr(session, "product_name", None),
+        "negated_count": len(negated_vns or ()), "hint_count": len(hints or {}),
+        "turn": getattr(session, "turn", None)})
 
     _model_leaf_response = _resolve_model_leaf(
         req, session, reader, hints, catalog_prefix, switch_trigger_question,
     )
     if _model_leaf_response is not None:
+        _log_stage_handled(session, "model_leaf", "MODEL_LEAF_RESPONSE",
+                           catalog_prefix=catalog_prefix)
         return _model_leaf_response, [], "", [], [], [], [], None, set()
 
     _rule_load_t0 = time.monotonic()
@@ -73,25 +92,36 @@ def _step2_resolve_and_load(
         "cpq_step: load_all_rule_sets done run_id=%s elapsed_s=%.3f",
         session.run_id, time.monotonic() - _rule_load_t0,
     )
+    raven_log("DEBUG", "P4", "ask.preamble.rule_sets loaded", context={
+        "catalog_prefix": catalog_prefix, "hiding_rule_count": len(hiding_rules or []),
+        "rec_rule_count": len(rec_rules or []), "con_rule_count": len(con_rules or []),
+        "validation_rule_count": len(validation_rules or []),
+        "has_bml_evaluator": bml_eval is not None,
+        "duration_ms": int((time.monotonic() - _rule_load_t0) * 1000),
+        "turn": getattr(session, "turn", None)})
 
     _pcnv_response = _resolve_pending_change_no_value(
         req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
     )
     if _pcnv_response is not None:
+        # ask.change.pending_no_value records cover this exit.
         return _pcnv_response, [], "", [], [], [], [], None, set()
 
     _pending_clarify_resp = _handle_pending_clarify_turn(
         req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
     )
     if _pending_clarify_resp is not None:
+        _log_stage_handled(session, "pending_clarify", "PENDING_CLARIFY_RESOLVED",
+                           catalog_prefix=catalog_prefix)
         return _pending_clarify_resp, [], "", [], [], [], [], None, set()
 
     _step2_log_rule_consistency_and_array_grid(
         req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
     )
 
+    _universal_enabled = _ask_api_module.get_settings().cpq_llm_first_universal_enabled
     if (
-        _ask_api_module.get_settings().cpq_llm_first_universal_enabled
+        _universal_enabled
         and session.status not in ("awaiting_approval", "post_approval")
         and not incoming_pending_anchor
     ):
@@ -100,6 +130,21 @@ def _step2_resolve_and_load(
             hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         )
         if _llm_first_universal_result is not None:
+            _log_stage_handled(session, "llm_first_universal", "LLM_FIRST_UNIVERSAL_HANDLED",
+                               catalog_prefix=catalog_prefix)
             return _llm_first_universal_result, [], "", [], [], [], [], None, set()
+        _universal_skip = "GATEWAY_RETURNED_NONE"
+    elif not _universal_enabled:
+        _universal_skip = "UNIVERSAL_DISABLED"
+    elif incoming_pending_anchor:
+        _universal_skip = "INCOMING_PENDING_ANCHOR"
+    else:
+        _universal_skip = "REVIEW_STATUS_OWNS_GATEWAY"
 
+    raven_log("DEBUG", "P4", "ask.preamble.step2 done, continuing turn", context={
+        "selected_option": "continue", "available_options": _STAGES,
+        "reason_code": _universal_skip, "catalog_prefix": catalog_prefix,
+        "status": getattr(session, "status", None),
+        "incoming_pending_anchor": incoming_pending_anchor or "",
+        "attr_count": len(attrs or []), "turn": getattr(session, "turn", None)})
     return None, attrs, catalog_prefix, hiding_rules, rec_rules, con_rules, validation_rules, bml_eval, negated_vns

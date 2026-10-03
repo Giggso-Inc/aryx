@@ -28,6 +28,7 @@ from aryx.cpq.intent_queue.intent_queue_ops import (
     pop_intent_queue_head,
 )
 from aryx.cpq.state import INTENT_QUEUE_CAP, CpqSession
+from aryx.raven_log import raven_log
 
 # Re-export for `from aryx.cpq.intent_queue.intent_queue import INTENT_QUEUE_CAP`
 __all__ = [
@@ -141,4 +142,17 @@ def audit_intent_conservation(
         )
         if log:
             logger.error("%s", result.message)
+            raven_log(
+                "WARN", "P3", "ask.intent.dropped detected target neither handled nor queued",
+                error_code="ARYX_ASK_INTENT_DROPPED",
+                context={"final_status": "dropped", "result": "dropped",
+                         "reason_code": "UNACCOUNTED_TARGET", "turn": turn_n, "run_id": rid,
+                         "dropped_fields": dropped[:20], "detected_count": len(detected),
+                         "handled_count": len(handled), "queued_count": len(queued)},
+            )
+    if not dropped:
+        raven_log("DEBUG", "P4", "ask.intent.conserved every detected target accounted for", context={
+            "result": "ok", "turn": turn_n, "run_id": rid, "detected_count": len(detected),
+            "handled_count": len(handled), "queued_count": len(queued),
+            "clarified_count": len(clarified), "overflow_count": len(overflow)})
     return result

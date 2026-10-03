@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from aryx.raven_log import raven_log
 from aryx.store.ask_thread_store import AryxAskThreadStore
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,12 @@ class AskThreadMessageRequest(BaseModel):
 
 def _is_replayable_response(response: dict[str, Any] | None) -> bool:
     """Return whether a cached response represents a completed Ask run."""
-    return bool(response) and not bool(response.get("error"))
+    replayable = bool(response) and not bool(response.get("error"))
+    raven_log("DEBUG", "P4", "ask.replay.checked cached response checked", context={
+        "cached_found": bool(response), "replayable": replayable,
+        "has_error": bool(response and response.get("error")),
+    })
+    return replayable
 
 
 def _release_failed_request_after_persist_error(
@@ -43,6 +49,13 @@ def _release_failed_request_after_persist_error(
         store.mark_request_retryable(thread_id, request_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ask request retry release failed: %s", exc)
+        raven_log(
+            "WARN", "P2", "ask.persist.failed retry release failed",
+            error_code="ARYX_ASK_PERSIST_FAILED",
+            context={"dependency_name": "adb", "operation": "release",
+                     "result": "error", "error_class": type(exc).__name__,
+                     "attempt": 1, "thread_id": thread_id, "request_id": request_id},
+        )
         return str(exc)
     return ""
 
@@ -57,5 +70,12 @@ def _complete_request_after_success(
         store.mark_request_completed(thread_id, request_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ask request completion persist failed: %s", exc)
+        raven_log(
+            "WARN", "P2", "ask.persist.failed request completion failed",
+            error_code="ARYX_ASK_PERSIST_FAILED",
+            context={"dependency_name": "adb", "operation": "complete",
+                     "result": "error", "error_class": type(exc).__name__,
+                     "attempt": 1, "thread_id": thread_id, "request_id": request_id},
+        )
         return str(exc)
     return ""

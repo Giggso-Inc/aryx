@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.model_policy import resolve_select_all_narrowed_legal_multi_membership
@@ -93,12 +94,14 @@ def blind_pick_narrowed(
             # auto-checking every legal carrier), so
             # defaulting to "select all" here for every
             # attr would be a regression, not a fix.
+            fill_log.log_write(ctx, attr, state.vn, [o.item_value for o in _narrowed_opts], None, "default_first_available", "blind_pick_narrowed_all", multi=True)
             ctx.filled_multi[state.vn] = [o.item_value for o in _narrowed_opts]
             ctx.display_filled[state.vn] = ", ".join(
                 o.display_name for o in _narrowed_opts)
             ctx.sources.setdefault(state.vn, "default_first_available")
         else:
             first_opt = _narrowed_opts[0]
+            fill_log.log_write(ctx, attr, state.vn, [first_opt.item_value], first_opt.display_name, "default_first_available", "blind_pick_narrowed_first", multi=True)
             ctx.filled_multi[state.vn] = [first_opt.item_value]
             ctx.display_filled[state.vn] = first_opt.display_name
             ctx.sources.setdefault(state.vn, "default_first_available")
@@ -110,6 +113,7 @@ def blind_pick_narrowed(
         # `else` below, reached here instead since
         # `is_unconstrained and candidate_opts` already
         # matched on the raw (pre-whitelist) option list.
+        fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, "default", "blind_pick_narrowed_empty", multi=True)
         ctx.filled_multi[state.vn] = []
         ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
         ctx.sources.setdefault(state.vn, "default")

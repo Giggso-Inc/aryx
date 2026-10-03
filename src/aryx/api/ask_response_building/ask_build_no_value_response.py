@@ -16,6 +16,7 @@ from typing import Any
 from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _apply_intent_conservation, _queue_followup_note, _scan_and_enqueue_remaining_targets
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.session_guard.session_guard import clear_queue_vn
+from aryx.raven_log import raven_log
 
 
 def _build_no_value_response(
@@ -94,5 +95,13 @@ def _build_no_value_response(
         session=session, attrs=attrs,
         clarified_vns={target_attr.variable_name},
     )
+    raven_log("INFO", "P4", "ask.response.no_value asked which value for change target", context={
+        "selected_option": "ask_which_value", "reason_code": "CHANGE_TARGET_WITHOUT_VALUE",
+        "turn": getattr(session, "turn", None), "run_id": getattr(session, "run_id", None),
+        "target_vn": getattr(target_attr, "variable_name", None), "tool_name": tool_name,
+        "has_current_value": bool(current_val), "enqueued_count": len(enqueued or []),
+        "overflow_count": len(_overflow or []), "detected_count": len(detected),
+        "queue_len": len(getattr(session, "pending_intent_queue", None) or []),
+        "answer_len": len(str(result.get("answer") or "")) if isinstance(result, dict) else None})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, result["answer"])
     return result

@@ -76,6 +76,7 @@ def apply_rules(
                     rule_type="constraint", rule_id=rule.rule_name,
                     attr=target.variable_name, outcome=f"allowed={allowed}",
                     bml_tier="script",
+                    ref_id=getattr(rule, "ref_id", None) or None,
                 )
             continue
         if rule.condition_script is not None:
@@ -92,6 +93,7 @@ def apply_rules(
                     rule_type="constraint", rule_id=rule.rule_name,
                     attr=target.variable_name,
                     outcome=f"allowed={rule.allowed_values}", bml_tier="condition_script",
+                    ref_id=getattr(rule, "ref_id", None) or None,
                 )
             continue  # False or unknown — never guess, no constraint applied
         if rule.conditions:
@@ -116,4 +118,5 @@ def apply_rules(
         rule_trace.record_fire(
             rule_type="constraint", rule_id=rule.rule_name,
             attr=target.variable_name, outcome=f"allowed={rule.allowed_values}",
+            ref_id=getattr(rule, "ref_id", None) or None,
         )

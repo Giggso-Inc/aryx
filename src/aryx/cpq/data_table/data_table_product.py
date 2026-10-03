@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
@@ -395,6 +396,7 @@ def _load_attr_var_mapping_rows(
     """
     key = (workspace_id, catalog_prefix, "attr_var_mapping")
     if cache is not None and key in cache:
+        fill_log.log_load("attr_var_mapping_rows", cache="call_local", result="hit", workspace_id=workspace_id)
         return cache[key]
 
     _marker_at_read = _invalidate_on_marker_change(
@@ -408,6 +410,8 @@ def _load_attr_var_mapping_rows(
                 "cpq_perf: _load_attr_var_mapping_rows CACHE HIT (module) ws=%s prefix=%r",
                 workspace_id, catalog_prefix,
             )
+            fill_log.log_load("attr_var_mapping_rows", cache="module", result="hit", workspace_id=workspace_id,
+                              row_count=len(_mod_rows))
             if cache is not None:
                 cache[key] = _mod_rows
             return _mod_rows

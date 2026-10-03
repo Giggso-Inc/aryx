@@ -15,6 +15,7 @@ from typing import Any
 from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.cpq.intent_schema.intent_schema import Confidence, IntentCategory
+from aryx.raven_log import raven_log
 
 
 def _qa_graph_search(
@@ -107,6 +108,12 @@ def _qa_graph_search(
                     _qa_ambiguity_answer = _qa_intent.clarifying_question
             except Exception:  # noqa: BLE001 — must never break the Q&A turn
                 _ask_api_module.logger.debug("cpq_qa_ambiguity: check failed", exc_info=True)
+        raven_log("DEBUG", "P4", "ask.qa.graph_search searched", context={
+            "term_count": len(terms), "graph_hit_count": len(entities),
+            "catalog_scope_applied": bool(catalog_prefix), "attr_count": len(attrs),
+            "session_value_lines": len(_session_value_lines),
+            "ambiguity_check_enabled": bool(_ask_api_module.get_settings().cpq_qa_ambiguity_check_enabled),
+            "ambiguity_clarification": _qa_ambiguity_answer is not None, "road": "qa"})
         if _qa_ambiguity_answer is not None:
             qa_answer = _qa_ambiguity_answer
             # p_in/p_out/p_ms already reflect the real _extract_terms
@@ -123,4 +130,12 @@ def _qa_graph_search(
         return qa_answer, (p_in, p_out, p_ms, s_in, s_out, s_ms)
     except Exception as exc:  # noqa: BLE001
         _ask_api_module.logger.warning("cpq_qa synthesis failed: %s", exc)
+        raven_log(
+            "ERROR", "P2", "ask.answer.degraded cpq qa graph search returned an error answer",
+            error_code="ARYX_ASK_ANSWER_DEGRADED",
+            context={"dependency_name": "graph", "operation": "qa_graph_search",
+                     "result": "error_answer_returned", "error_class": type(exc).__name__,
+                     "attempt": 1, "workspace_id": req.workspace_id,
+                     "run_id": getattr(session, "run_id", "")},
+        )
         return f"Couldn't reach the graph: {exc}", (0, 0, 0, 0, 0, 0)

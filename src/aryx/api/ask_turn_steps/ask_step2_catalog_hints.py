@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.rule_trace import rule_trace
+from aryx.raven_log import raven_log, would_log
 
 
 
@@ -33,15 +34,26 @@ def _step2_catalog_hints_and_negation(
     _cpq_engine = _ask_api_module._cpq_engine
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     rule_trace.bind_context(req.workspace_id, catalog_prefix)
+    _hint_keys_before = set(hints) if would_log("DEBUG") else set()
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
     for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
-    for vn, iv in _cpq_engine.extract_flag_hints(
+    _flag_hints = _cpq_engine.extract_flag_hints(
         req.question, attrs, req.workspace_id, catalog_prefix,
-    ).items():
+    )
+    for vn, iv in _flag_hints.items():
         hints.setdefault(vn, iv)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.preamble.catalog_hints extracted from this turn", context={
+            "catalog_prefix": catalog_prefix, "attr_count": len(attrs or []),
+            "catalog_hint_vns": sorted(catalog_hints), "flag_hint_vns": sorted(_flag_hints),
+            "added_hint_vns": sorted(set(hints) - _hint_keys_before),
+            "negated_now_vns": sorted(negated_now or ()),
+            "has_switch_trigger": bool(switch_trigger_question),
+            "turn": getattr(session, "turn", None)})
 
     if switch_trigger_question:
+        _hint_keys_before = set(hints) if would_log("DEBUG") else set()
         for k, v in _cpq_engine.extract_hints(switch_trigger_question).items():
             hints.setdefault(k, v)
         _switch_catalog_hints, _ = _cpq_engine.extract_catalog_hints(
@@ -52,6 +64,12 @@ def _step2_catalog_hints_and_negation(
             switch_trigger_question, attrs, req.workspace_id, catalog_prefix,
         ).items():
             hints.setdefault(vn, iv)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.preamble.catalog_hints merged from switch trigger", context={
+                "catalog_prefix": catalog_prefix,
+                "switch_trigger_len": len(switch_trigger_question or ""),
+                "added_hint_vns": sorted(set(hints) - _hint_keys_before),
+                "turn": getattr(session, "turn", None)})
 
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)

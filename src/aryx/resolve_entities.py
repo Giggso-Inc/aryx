@@ -17,12 +17,15 @@ called only from `resolve_run`, so they stay too.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord
+from aryx.raven_log import raven_log
 from aryx.resolution import resolve
+from aryx.resolution.stats import pop as _pop_stats
 from aryx.resolution.chunked import resolve_chunked
 from aryx.resolution.review_queue import StoreReviewSink
 from aryx.resolution.run import _materialize
@@ -80,6 +83,9 @@ def resolve_run(
             on_progress(stage, pct, detail)
 
     settings = get_settings()
+    _t0 = time.monotonic()
+    sink_unavailable = False
+    policy_fallback = False
 
     review = None
     try:
@@ -88,6 +94,11 @@ def resolve_run(
     except Exception as exc:  # noqa: BLE001 — queue unavailable, funnel still runs
         logger.warning("resolve_run run_id=%s review sink unavailable, "
                        "review-band pairs will be dropped: %s", run_id, exc)
+        sink_unavailable = True
+        raven_log("WARN", "P3", "ingest.resolve.review_sink_unavailable review queue unavailable",
+                  error_code="ARYX_ING_RESOLVE_DEGRADED",
+                  context={"task_id": run_id, "stage": "resolve", "error_class": type(exc).__name__,
+                           "recovery_selected": "drop_review_band_pairs", "result": "degraded"})
 
     policy = SurvivorshipPolicy(default_strategy=_DEFAULT_SURVIVORSHIP_STRATEGY)
     ws_store = None
@@ -100,6 +111,12 @@ def resolve_run(
         logger.warning("resolve_run run_id=%s survivorship policy lookup failed, "
                        "using default strategy=%s: %s",
                        run_id, _DEFAULT_SURVIVORSHIP_STRATEGY, exc)
+        policy_fallback = True
+        raven_log("WARN", "P3", "ingest.resolve.policy_lookup_failed survivorship policy lookup failed",
+                  error_code="ARYX_ING_RESOLVE_DEGRADED",
+                  context={"task_id": run_id, "stage": "resolve", "error_class": type(exc).__name__,
+                           "recovery_selected": "default_strategy",
+                           "fallback_target": _DEFAULT_SURVIVORSHIP_STRATEGY, "result": "degraded"})
     finally:
         if ws_store is not None:
             ws_store.close()
@@ -110,6 +127,13 @@ def resolve_run(
                  and all(k.lower() in _id_like_keys() for k in key_attrs))
     if exact_ids:
         logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s", run_id, key_attrs)
+    raven_log("DEBUG", "P4", "ingest.resolve.exact_ids_check exact-id mode decision",
+              context={"task_id": run_id, "ontology_type": ontology_type, "match_keys": list(key_attrs),
+                       "er_exact_id_match": bool(settings.er_exact_id_match), "has_keys": bool(key_attrs),
+                       "selected_option": "exact_ids" if exact_ids else "fuzzy",
+                       "available_options": ["exact_ids", "fuzzy"],
+                       "reason_code": "ALL_KEYS_ID_LIKE" if exact_ids else "NOT_ALL_KEYS_ID_LIKE_OR_DISABLED",
+                       "policy_fallback": policy_fallback, "review_sink": not sink_unavailable})
 
     _emit("Resolve", 32, f"Loading landed records for run {run_id}")
     records = store.landed_records(run_id, key_attrs)
@@ -132,7 +156,15 @@ def resolve_run(
     selectivity = None if exact_ids else _key_selectivity(
         records, settings.er_key_selectivity_sample_size,
     )
+    path = "normal"
     if selectivity is not None and selectivity < settings.er_min_key_selectivity:
+        path = "low_selectivity"
+        raven_log("INFO", "P4", "ingest.resolve.path_chosen resolve path: low key selectivity",
+                  context={"task_id": run_id, "selected_option": path,
+                           "available_options": ["exact_ids", "low_selectivity", "chunked", "normal"],
+                           "reason_code": "KEY_SELECTIVITY_BELOW_MIN", "selectivity": round(selectivity, 4),
+                           "threshold": settings.er_min_key_selectivity, "records": len(records),
+                           "match_keys": list(key_attrs)})
         logger.info(
             "resolve_run run_id=%s key_selectivity=%.4f below "
             "er_min_key_selectivity=%.4f (match_keys=%s, records=%d) — key has "
@@ -153,6 +185,12 @@ def resolve_run(
     # Not applicable to exact_ids mode: id-keyed sources already resolve by
     # exact equality with no pairwise scoring, regardless of size.
     elif not exact_ids and len(records) > settings.er_chunk_threshold:
+        path = "chunked"
+        raven_log("INFO", "P4", "ingest.resolve.path_chosen resolve path: chunked",
+                  context={"task_id": run_id, "selected_option": path,
+                           "available_options": ["exact_ids", "low_selectivity", "chunked", "normal"],
+                           "reason_code": "RECORDS_ABOVE_CHUNK_THRESHOLD", "records": len(records),
+                           "threshold": settings.er_chunk_threshold, "selectivity": selectivity})
         logger.info(
             "resolve_run run_id=%s records=%d exceeds er_chunk_threshold=%d — "
             "using chunked (streaming, Postgres-resumable) resolver",
@@ -167,6 +205,14 @@ def resolve_run(
             run_id, records, all_record_ids, backend, ontology_type, policy=policy,
         ))
     else:
+        path = "exact_ids" if exact_ids else "normal"
+        raven_log("INFO", "P4", "ingest.resolve.path_chosen resolve path: " + path,
+                  context={"task_id": run_id, "selected_option": path,
+                           "available_options": ["exact_ids", "low_selectivity", "chunked", "normal"],
+                           "reason_code": "EXACT_ID_KEYS" if exact_ids else "DEFAULT_FUNNEL",
+                           "records": len(records), "chunk_threshold": settings.er_chunk_threshold,
+                           "min_key_selectivity": settings.er_min_key_selectivity,
+                           "selectivity": selectivity})
         results = resolve(records, broker, ontology_type, policy=policy, review=review,
                           run_id=run_id, exact_ids=exact_ids,
 
@@ -174,4 +220,23 @@ def resolve_run(
     _emit("Resolve", 58, f"{len(results)} clusters found — saving entities")
     created = store.save(results)
     logger.info("resolve_run complete run_id=%s entities=%d", run_id, created)
+    counts = _pop_stats(run_id)
+    degraded = (sink_unavailable or counts.get("adjudication_failed", 0) > 0
+                or counts.get("review_dropped", 0) > 0 or counts.get("edge_cap_hit", 0) > 0)
+    impact = {"records": len(records), "entities": created, "merged": counts.get("merged", 0),
+              "adjudicated": counts.get("adjudicated", 0),
+              "adjudication_failed": counts.get("adjudication_failed", 0),
+              "review_dropped": counts.get("review_dropped", 0),
+              "blocks_skipped_oversized": counts.get("blocks_skipped_oversized", 0),
+              "edge_cap_hit": bool(counts.get("edge_cap_hit", 0)), "review_sink_unavailable": sink_unavailable}
+    ctx = {"task_id": run_id, "pipeline_run_id": run_id, "stage": "resolve",
+           "duration_ms": int((time.monotonic() - _t0) * 1000), "path": path,
+           "final_status": "degraded" if degraded else "complete",
+           "result": "degraded" if degraded else "ok",
+           "reason_code": "RESOLVE_DEGRADED" if degraded else "OK", "impact_scope": impact}
+    if degraded:
+        raven_log("WARN", "P3", "ingest.resolve.summary resolve finished degraded",
+                  error_code="ARYX_ING_RESOLVE_DEGRADED", context=ctx)
+    else:
+        raven_log("INFO", "P4", "ingest.resolve.summary resolve finished", context=ctx)
     return created

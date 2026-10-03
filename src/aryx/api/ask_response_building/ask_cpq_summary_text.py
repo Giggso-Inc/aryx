@@ -15,6 +15,7 @@ import time
 from aryx.api.ask_response_building.ask_cpq_summary_narrate import _narrate_cpq_summary
 from aryx.api.ask_response_building.ask_cpq_summary_prompt import _build_summary_narration_user_prompt
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log
 
 
 def _cpq_summary_text(
@@ -108,6 +109,8 @@ def _cpq_summary_text(
         product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
         catalog_prefix=_catalog_prefix)
     if not groups:
+        raven_log("DEBUG", "P4", "ask.response.summary_skipped no curated groups", context={
+            "selected_option": "empty", "reason_code": "NO_SUMMARY_GROUPS", "attr_count": len(attrs)})
         return _finish("")
     # The narrator and its bullet fallback are only ever asked to cover
     # THESE curated (label, value) facts — never the raw display_filled

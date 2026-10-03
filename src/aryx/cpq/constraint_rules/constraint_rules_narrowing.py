@@ -79,4 +79,5 @@ def apply_narrowing_rec_rules(
                 rule_type="constraint", rule_id=rule.rule_name,
                 attr=target.variable_name, outcome=f"allowed={allowed}",
                 bml_tier="script_narrowing",
+                ref_id=getattr(rule, "ref_id", None) or None,
             )

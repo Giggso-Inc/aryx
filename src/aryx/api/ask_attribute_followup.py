@@ -16,12 +16,14 @@ import logging
 from typing import Any
 
 from aryx.api.ask_attribute_search import _budget_s, decide
+from aryx.log_safe import text_ref
 from aryx.api.ask_request_models import AskRequest
 from aryx.cpq.attribute_search.budget import run_with_budget
 from aryx.cpq.attribute_search.lookup import find_products_by_attribute
 from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 from aryx.cpq.pending_scope.pending_scope import resolve_against_scope
 from aryx.cpq.state import CpqSession
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +44,20 @@ def _route_attribute_followup(req: AskRequest, reader: Any) -> dict[str, Any] | 
             return None
         match = resolve_against_scope(req.question, list(offered.offered_values))
         if not match.matched:
-            logger.info("attribute_search: follow-up %r is not a %r value", req.question, label)
+            logger.info("attribute_search: follow-up %s is not a %r value", text_ref(req.question), label)
             return None
         return match, find_products_by_attribute(label, match.matched, reader=reader,
                                                  workspace_id=req.workspace_id, engine=engine)
 
     try:
         found = run_with_budget(_lookup, budget_s=_budget_s())
-    except Exception:  # noqa: BLE001 -- over budget or failed: route the reply normally
+    except Exception as exc:  # noqa: BLE001 -- over budget or failed: route the reply normally
         logger.warning("attribute_search: follow-up lookup failed or over budget", exc_info=True)
+        raven_log("WARN", "P3", "ask.attr_search.followup_failed follow-up routed normally",
+                  error_code="ARYX_ASK_ATTR_SEARCH_FOLLOWUP_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "route_reply_normally", "fallback_target": None,
+                           "exit_condition": "exception", "result": "degraded", "attribute_label": label})
         return None
     if found is None or found[1] is None:
         return None

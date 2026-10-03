@@ -12,7 +12,8 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from aryx.store.oracle_cursor import OracleCursorWrapper
+from aryx.raven_log import raven_log
+from aryx.store.oracle_cursor import OracleCursorWrapper, _ora_code
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,11 @@ class OraclePool:
                     "ping_interval=0 should prevent this on acquire; "
                     "if recurring, check ADB idle timeout or network MTU settings"
                 )
+                raven_log("WARN", "P2", "db.oracle.connection_dropped connection dropped mid-query",
+                          error_code="ARYX_DB_CONN_DROPPED",
+                          context={"dependency_name": "oracle_adb", "operation": "pool.connection",
+                                   "result": "error", "error_class": type(exc).__name__,
+                                   "ora_code": _ora_code(exc) or "DPY-4011", "attempt": 1})
             raise
         finally:
             self._pool.release(raw)

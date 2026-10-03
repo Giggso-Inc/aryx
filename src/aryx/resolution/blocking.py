@@ -12,6 +12,8 @@ from collections import defaultdict
 
 from aryx.config import get_settings
 from aryx.models import ResolutionRecord
+from aryx.raven_log import raven_log, would_log
+from aryx.resolution.stats import bump
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,20 @@ class MultiKeyBlocker:
                     "resolve run_id=%s block=%s oversized members=%d max_block_size=%d -- skipping.",
                     run_id, key, len(members), self.max_block_size,
                 )
+                bump(run_id, "blocks_skipped_oversized")
+                raven_log("DEBUG", "P4", "ingest.resolve.block_skipped oversized block skipped",
+                          context={"task_id": run_id, "block_key_family": key.split(":", 1)[0],
+                                   "members": len(members), "threshold": self.max_block_size,
+                                   "selected_option": "skip", "available_options": ["keep", "skip"],
+                                   "reason_code": "BLOCK_OVERSIZED"})
                 continue
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.resolve.block_kept block within size limit",
+                          context={"task_id": run_id, "block_key_family": key.split(":", 1)[0],
+                                   "members": len(members), "threshold": self.max_block_size,
+                                   "selected_option": "keep", "reason_code": "BLOCK_WITHIN_LIMIT"})
             result[key] = members
+        raven_log("DEBUG", "P4", "ingest.resolve.blocking_done blocking finished",
+                  context={"task_id": run_id, "records": len(records), "raw_blocks": len(raw),
+                           "kept_blocks": len(result), "max_block_size": self.max_block_size})
         return result

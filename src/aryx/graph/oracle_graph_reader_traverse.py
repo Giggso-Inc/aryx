@@ -30,6 +30,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.graph.oracle_graph_reader_helpers import _entity
+from aryx.raven_log import submit_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ class _OracleGraphTraverseMixin:
 
             max_workers = min(_MAX_RTYPE_WORKERS, len(rel_types))
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = [pool.submit(_fetch_rtype, rtype) for rtype in rel_types]
+                futures = [submit_ctx(pool, _fetch_rtype, rtype) for rtype in rel_types]
                 for future in as_completed(futures):
                     _rtype, rows = future.result()
                     for row in rows:

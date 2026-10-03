@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_llm import ask_llm_resolve_pending_answer as _ask_llm_resolve_pending_answer_module
+from aryx.raven_log import raven_log
 
 
 def _step9_llm_fallback_match(
@@ -54,4 +55,11 @@ def _step9_llm_fallback_match(
         if scope_for_attr:
             _cands = [c for c in _cands if c in scope_cands]
         _llm_low_confidence_candidates = _cands or None
+    raven_log("DEBUG", "P4", "ask.reply.llm_fallback llm pick for pending reply", context={
+        "llm_returned": _llm_pick is not None,
+        "confidence": (_llm_pick or {}).get("confidence"),
+        "accepted": bool(result), "low_confidence_candidates": len(_llm_low_confidence_candidates or []),
+        "constrained": pending_constrained is not None, "scope_for_attr": bool(scope_for_attr),
+        "selected_option": "accept" if result else "ask" if _llm_low_confidence_candidates else "miss",
+        "reason_code": "HIGH_CONFIDENCE" if result else "LOW_OR_NO_PICK"})
     return result, _llm_low_confidence_candidates

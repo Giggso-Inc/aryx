@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -49,5 +50,7 @@ def try_final_pending(
         or (state.vn in scope.display_order and scope.dt_never_governed_anywhere(state.vn))
     ):
         ctx.pending.append(attr)
+        fill_log.log_decision(state.vn, "ask_final_pending", "pending", "FINAL_ASK")
         return True
+    fill_log.log_decision(state.vn, "ask_final_pending", "left_open", "LAYOUT_HIDDEN_OR_GOVERNED_ELSEWHERE")
     return False

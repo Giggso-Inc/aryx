@@ -16,6 +16,7 @@ from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope.pending_scope import set_pending_scope
+from aryx.raven_log import raven_log
 
 
 def _build_switch_redetect_prompt(
@@ -35,6 +36,7 @@ def _build_switch_redetect_prompt(
     """
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
+    _probe_reused = alias_map is not None
     if alias_map is None:
         alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
         switch_candidate = _cpq_engine.detect_product_mention(
@@ -46,6 +48,13 @@ def _build_switch_redetect_prompt(
             "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
             session.turn, session.product_name, switch_candidate,
         )
+        raven_log("INFO", "P4", "ask.switch.redetect different product detected, confirm offered", context={
+            "selected_option": "confirm_switch",
+            "available_options": ["confirm_switch", "suggest_single", "suggest_switch", "no_candidate"],
+            "reason_code": "CONFIDENT_SWITCH_CANDIDATE", "probe_reused": _probe_reused,
+            "current_product": getattr(session, "product_name", "") or "",
+            "switch_candidate": switch_candidate, "turn": getattr(session, "turn", None),
+            "question_len": len(getattr(req, "question", "") or "")})
         session.pending_switch_product = switch_candidate
         session.pending_switch_question = req.question
         session.pending_anchor = "confirm_switch"
@@ -73,7 +82,23 @@ def _build_switch_redetect_prompt(
         alias_map=alias_map,
     )
     if not suggestions:
+        raven_log("DEBUG", "P4", "ask.switch.redetect no switch candidate, turn continues", context={
+            "selected_option": "no_candidate",
+            "available_options": ["confirm_switch", "suggest_single", "suggest_switch", "no_candidate"],
+            "reason_code": (
+                "CANDIDATE_IS_CURRENT_PRODUCT" if switch_candidate else "NO_CANDIDATE_NO_SUGGESTIONS"),
+            "probe_reused": _probe_reused, "turn": getattr(session, "turn", None),
+            "current_product": getattr(session, "product_name", "") or "",
+            "question_len": len(getattr(req, "question", "") or "")})
         return None
+    raven_log("INFO", "P4", "ask.switch.redetect ambiguous product mention, suggestions offered", context={
+        "selected_option": "suggest_single" if len(suggestions) == 1 else "suggest_switch",
+        "available_options": ["confirm_switch", "suggest_single", "suggest_switch", "no_candidate"],
+        "reason_code": "SINGLE_SUGGESTION" if len(suggestions) == 1 else "MULTIPLE_SUGGESTIONS",
+        "suggestion_count": len(suggestions), "suggestions": list(suggestions),
+        "probe_reused": _probe_reused, "turn": getattr(session, "turn", None),
+        "current_product": getattr(session, "product_name", "") or "",
+        "question_len": len(getattr(req, "question", "") or "")})
     _ask_api_module.logger.info(
         "cpq_switch: ambiguous product mention turn=%s current=%r suggestions=%r",
         session.turn, session.product_name, suggestions,

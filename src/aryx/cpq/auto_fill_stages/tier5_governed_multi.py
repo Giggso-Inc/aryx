@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq.rule_trace import rule_trace
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -48,6 +49,7 @@ def governed_multi(
     # narrowed this attr → leave unselected, ask the
     # user (unchanged).
     if state.allowed_for_attr is not None and len(state.valid_opts) == 1:
+        fill_log.log_write(ctx, attr, state.vn, [o.item_value for o in state.valid_opts], None, state.governed_source, "tier5_governed_multi", multi=True)
         ctx.filled_multi[state.vn] = [o.item_value for o in state.valid_opts]
         ctx.display_filled[state.vn] = ", ".join(o.display_name for o in state.valid_opts)
         ctx.sources.setdefault(state.vn, state.governed_source)
@@ -72,6 +74,7 @@ def governed_multi(
             state.vn, ctx.filled, state.valid_opts, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
         )
         if dt_match:
+            fill_log.log_write(ctx, attr, state.vn, [dt_match.item_value], dt_match.display_name, "data_table", "tier5_governed_multi_dt", multi=True)
             ctx.filled_multi[state.vn] = [dt_match.item_value]
             ctx.display_filled[state.vn] = dt_match.display_name
             ctx.sources.setdefault(state.vn, "data_table")

@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from aryx.raven_log import raven_log, would_log
+
 logger = logging.getLogger(__name__)
 
 _DOC_EXTS = {
@@ -40,6 +42,11 @@ def _dispatch(
     from aryx.store.chunk_store import ChunkStore  # noqa: PLC0415
 
     tmp_path: Path | None = None
+    raven_log("DEBUG", "P4", "ingest.fn.dispatch branch chosen by extension",
+              context={"filename": filename, "selected_option": suffix if suffix in (".json", ".csv", ".xml", ".xlsx") else (
+                  "document" if suffix in _DOC_EXTS else "unsupported"),
+                  "available_options": [".json", ".csv", ".xml", ".xlsx", "document"],
+                  "reason_code": "EXTENSION", "fk_links": len(fk_links), "workspace_id": workspace_id})
     _run: dict[str, Any] = dict(
         dsn=settings.effective_dsn(),
         ontology_type=ontology_type,
@@ -95,6 +102,8 @@ def _dispatch(
                 for d, n, t in xml_plans
             ]
             auto_fk = _detect_fk_links(fk_plan_dicts)
+            raven_log("DEBUG", "P4", "ingest.fn.xml plans derived",
+                      context={"filename": filename, "plans": len(xml_plans), "fk_links": len(auto_fk)})
             if auto_fk:
                 logger.info("fn_handler XML auto-detected %d fk-link spec(s): %s",
                             len(auto_fk), auto_fk)
@@ -143,6 +152,8 @@ def _dispatch(
             orig_stem = Path(filename).stem
             xlsx_csvs = _xlsx_to_csvs(file_bytes, orig_stem)
             if not xlsx_csvs:
+                raven_log("DEBUG", "P4", "ingest.fn.xlsx no ingestible sheets",
+                          context={"filename": filename, "sheets": 0, "decision": "skip"})
                 logger.info("fn_handler: xlsx %r produced no ingestible sheets "
                             "(all hidden/empty)", filename)
             else:
@@ -207,6 +218,10 @@ def _dispatch(
                          dataset="upload", **_run)
 
         else:
+            raven_log("WARN", "P3", "ingest.fn.unsupported file type refused",
+                      error_code="ARYX_ING_UNSUPPORTED_TYPE",
+                      context={"filename": filename, "measured": suffix, "decision": "refuse",
+                               "reason_code": "UNSUPPORTED_TYPE"})
             raise ValueError(f"Unsupported file type: {suffix!r}")
 
     finally:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.auto_fill_stages import multi_fallback_layout
 from aryx.cpq.auto_fill_stages import multi_fallback_unconstrained
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 from aryx.cpq.engine import (
@@ -119,6 +120,7 @@ def try_multi_fallback(
         ) if attr.default_value else None
         if rec_match:
             rec_value, rec_display, state.fired_rule_name = rec_match
+            fill_log.log_write(ctx, attr, state.vn, [rec_value], rec_display, "rule", "multi_fallback_rec", multi=True)
             ctx.filled_multi[state.vn] = [rec_value]
             ctx.display_filled[state.vn] = rec_display
             ctx.sources.setdefault(state.vn, "rule")
@@ -136,6 +138,7 @@ def try_multi_fallback(
             multi_fallback_layout.select_all_constrained(
                 engine, attr, ctx, scope, state, candidate_opts)
         elif default_opt:
+            fill_log.log_write(ctx, attr, state.vn, [default_opt.item_value], default_opt.display_name, "default", "multi_fallback_default", multi=True)
             ctx.filled_multi[state.vn] = [default_opt.item_value]
             ctx.display_filled[state.vn] = default_opt.display_name
             ctx.sources.setdefault(state.vn, "default")
@@ -143,6 +146,7 @@ def try_multi_fallback(
             multi_fallback_unconstrained.blind_pick_narrowed(
                 engine, attr, ctx, scope, state, candidate_opts)
         else:
+            fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, "default", "multi_fallback_empty", multi=True)
             ctx.filled_multi[state.vn] = []
             ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
             ctx.sources.setdefault(state.vn, "default")

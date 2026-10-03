@@ -27,6 +27,9 @@ from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_not
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
+from aryx.raven_log import raven_log
+
+_CHANGE_OPTIONS = ["mode_request_skip", "multi_change", "single_change", "change_no_value", "continue"]
 
 
 def _step8_mid_config_change(
@@ -41,12 +44,23 @@ def _step8_mid_config_change(
     logger = _ask_api_module.logger
     logger.info("cpq_step: mid_config_change_request_gate enter run_id=%s", session.run_id)
     if mode_request:
+        raven_log("DEBUG", "P4", "ask.change.mid_config skipped for mode request", context={
+            "selected_option": "mode_request_skip", "available_options": _CHANGE_OPTIONS,
+            "reason_code": "MODE_REQUEST", "mode_request": mode_request,
+            "turn": getattr(session, "turn", None)})
         return None
     _cpq_engine = _ask_api_module._cpq_engine
 
     _mc_multi_matches = _cpq_engine.detect_change_requests_multi(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
     if len(_mc_multi_matches) >= 2:
+        raven_log("DEBUG", "P4", "ask.change.mid_config multi change detected", context={
+            "selected_option": "multi_change", "available_options": _CHANGE_OPTIONS,
+            "reason_code": "MULTI_CHANGE_REQUEST", "match_count": len(_mc_multi_matches),
+            "changed_fields": [getattr(m[0], "variable_name", None)
+                               for m in _mc_multi_matches if m][:25],
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         _scan_and_enqueue_remaining_targets(
             session, req.question, attrs,
             exclude_vns={a.variable_name for a, _ in _mc_multi_matches},
@@ -55,6 +69,11 @@ def _step8_mid_config_change(
             req, session, attrs, _mc_multi_matches,
             hiding_rules, rec_rules, con_rules,
         )
+        raven_log("DEBUG", "P4", "ask.change.multi_cascade result", context={
+            "selected_option": "multi_change" if _mc_multi_result is not None else "continue",
+            "available_options": ["multi_change", "continue"],
+            "reason_code": "CASCADE_HANDLED" if _mc_multi_result is not None else "CASCADE_NO_RESPONSE",
+            "match_count": len(_mc_multi_matches), "turn": getattr(session, "turn", None)})
         if _mc_multi_result is not None:
             return _append_unmatched_targets_note(
                 _mc_multi_result, req.question, attrs,
@@ -70,6 +89,13 @@ def _step8_mid_config_change(
         expected_variable_name=_mc_change_result[0].variable_name,
     ):
         _mc_changed_attr, _mc_new_value_hint = _mc_change_result
+        raven_log("DEBUG", "P4", "ask.change.mid_config single change confirmed", context={
+            "selected_option": "single_change", "available_options": _CHANGE_OPTIONS,
+            "reason_code": "CHANGE_REQUEST_CONFIRMED",
+            "changed_field": getattr(_mc_changed_attr, "variable_name", None),
+            "has_value_hint": bool(_mc_new_value_hint),
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         _scan_and_enqueue_remaining_targets(
             session, req.question, attrs,
             exclude_vns={_mc_changed_attr.variable_name},
@@ -87,6 +113,15 @@ def _step8_mid_config_change(
     _mc_attr_no_value = _cpq_engine.detect_change_target_without_value(
         req.question, attrs, session.filled,
     )
+    raven_log("DEBUG", "P4", "ask.change.mid_config no single change, value check", context={
+        "selected_option": "change_no_value" if _mc_attr_no_value else "continue",
+        "available_options": _CHANGE_OPTIONS,
+        "reason_code": (
+            "CHANGE_TARGET_WITHOUT_VALUE" if _mc_attr_no_value
+            else "CHANGE_NOT_CONFIRMED" if _mc_change_result else "NO_CHANGE_REQUEST"),
+        "single_detected_unconfirmed": bool(_mc_change_result),
+        "target_field": getattr(_mc_attr_no_value, "variable_name", None),
+        "turn": getattr(session, "turn", None)})
     if _mc_attr_no_value:
         _mc_nv_result = _build_no_value_response(
             req, session, attrs, _mc_attr_no_value, con_rules, bml_eval,

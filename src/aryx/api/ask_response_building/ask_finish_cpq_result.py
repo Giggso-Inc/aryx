@@ -16,6 +16,7 @@ from typing import Any
 
 from aryx.api import ask_attach_share_flags as _ask_attach_share_flags_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
 
 
@@ -47,6 +48,9 @@ def _finish_cpq_result(
             )
     except Exception:  # noqa: BLE001
         _ask_api_module.logger.debug("cpq_shadow_intent_actual: logging failed", exc_info=True)
+    # G8: turns that ended before step 11 still get their ask.turn.state record
+    # (no-op when step 11 already wrote it for this run/turn; never raises).
+    fill_log.turn_state_from_session_data(result.get("session_data"))
     _ask_attach_share_flags_module._attach_share_flags(result, req, reader)
     return result
 
