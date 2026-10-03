@@ -992,7 +992,7 @@ Each record below is a synthetic example in the exact raven-log format (14 field
 
 ## 9g. Hand-off status (2026-10-02, written when the developer's token limit was near)
 
-> **SUPERSEDED**: the current hand-off is `aryx-oci_todo_raven_logging_handoff.md` in this folder. The work is now committed (5 commits) and pushed to `origin/feat/ravenlogger`; read that document first. The text below is kept as the earlier snapshot.
+> **SUPERSEDED**: the current hand-off is `aryx-oci_todo_com_raven_logging_handoff.md` in this folder. The work is now committed (5 commits) and pushed to `origin/feat/ravenlogger`; read that document first. The text below is kept as the earlier snapshot.
 
 Branch `feat/ravenlogger` in `C:\Users\Admin\Desktop\Client\OCI\aryx-enterprise`, built on dev_oci `cac516f`. Everything is staged or in the working tree; NOTHING is committed. Design is frozen (`design.md` in the repo root, temporary, do not stage).
 
@@ -1002,7 +1002,7 @@ Branch `feat/ravenlogger` in `C:\Users\Admin\Desktop\Client\OCI\aryx-enterprise`
 - **Known gaps from the agents' reports**: area B did not cover `pipeline/profile.py`, `tag.py`, `embed.py`, `pii.py`, `ingest_validation/*`, the Falkor writers, the empty-text skips in exact resolve, the bad `ARYX_PROJECT_DIRTY_MAX` branch, and could not fill `input_ref`/`output_ref` for LLM calls (the call-row insert returns no id). Area D: rules carry no `ref_id`, so `ask.rule.fired` has `ref_id` null; `single_model_variable_name` and `model_variable_candidates` (owned by area C's files) are not instrumented; the constraint-cache hit has no new log.
 - **Behaviour changes to check on dev**: `evaluate_rules_loop` now sets a flag instead of using a bare `break`; `bml.py` submits tier-2 jobs with `submit_ctx` and collects results in order; `_resolve_via_data_tables` turns the candidate tuple into a list; `run_late_pass` stores the stability result in a variable before returning it.
 - **Rollback**: `ARYX_RAVEN_LOG_ENABLED=false`. Default level `INFO` and sink `stdout` keep volume low; `ARYX_RAVEN_LOG_LEVEL=DEBUG` turns on the deep trail.
-- **Gate note**: the write-time gate hides its deny message (stderr goes to /dev/null). `src/aryx/raven_log.py` was written through the shell with the developer's approval because the gate flags the logger's own plumbing. The inventory files `aryx-oci_todo_raven_logging_inventory_*.md` (one per area) hold the branch-by-branch checklist.
+- **Gate note**: the write-time gate hides its deny message (stderr goes to /dev/null). `src/aryx/raven_log.py` was written through the shell with the developer's approval because the gate flags the logger's own plumbing. The inventory files `aryx-oci_todo_com_raven_logging_inventory_*.md` (one per area) hold the branch-by-branch checklist.
 
 ## 9b. Env contract
 

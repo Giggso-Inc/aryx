@@ -5,7 +5,7 @@
 > - **Purpose**: Tells the next person continuing the Raven structured-logging work what is done, what is pending and how to carry on. Read this first.
 > - **Status**: LIVING
 > - **Last updated**: 2026-10-03, third session (Windows). Closed the remaining ingestion logging gaps, passed `ref_id` to `ask.rule.fired`, ran the full suite on the final tip (section 7). Earlier: 2026-10-02, second session (macOS): merged `dev_oci` and instrumented the retrieval deep trail (area C).
-> - **Supersedes**: the first-session hand-off `aryx-oci_todo_raven_logging_handoff.md`, which lives outside the repo on the first developer's machine. Section 6 lists where that document is now out of date. The plan and spec (`aryx-oci_todo_raven_logging.md`, event catalogue, level rules, env contract) also live there and are not in the repo.
+> - **Supersedes**: the first-session hand-off `aryx-oci_todo_com_raven_logging_handoff.md`, which lives outside the repo on the first developer's machine. Section 6 lists where that document is now out of date. The plan and spec (`aryx-oci_todo_com_raven_logging.md`, event catalogue, level rules, env contract) also live there and are not in the repo.
 > - **Formatting**: no markdown tables.
 
 ## 1. Where things are
