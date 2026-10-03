@@ -167,14 +167,14 @@ def project_and_write_raw_graph(
 ) -> RawGraphWriteResult:
     """Convenience wrapper: parse XML and write the resulting raw graph in one call."""
     projection = project_xml_to_raw_graph(data)
-    projection = _with_query_tables(projection)
+    projection = with_query_tables(projection)
     return write_raw_graph(
         projection, workspace_id=workspace_id, source_key=source_key, dsn=dsn, graph_url=graph_url,
         should_stop=should_stop,
     )
 
 
-def _with_query_tables(projection: RawGraphProjection) -> RawGraphProjection:
+def with_query_tables(projection: RawGraphProjection) -> RawGraphProjection:
     """Opt-in (``ARYX_CSV_BML_ENABLED``): record on each node which tables its SQL queries read.
 
     The store clips string properties to ~200 chars, so script text cannot be searched later;

@@ -312,7 +312,7 @@ def test_rerun_never_uses_columns_that_are_not_in_the_table():
 def _session(monkeypatch, bml_index, db, tmp_path):
     from aryx.csv_bml_ingestion import db as dbmod, llm_client, stored_graph, upload_hook as uh
     monkeypatch.setattr(dbmod, "oracle_connection_factory", lambda: db)
-    monkeypatch.setattr(stored_graph, "StoredGraphLookup", lambda factory, ws: bml_index)
+    monkeypatch.setattr(stored_graph, "CuratedFirstLookup", lambda factory, ws: bml_index)
     monkeypatch.setattr(llm_client, "project_llm_completer", lambda: None)
     monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(tmp_path / "sqlroot"))
     return uh.CsvBmlUploadSession(3, "job-9")
@@ -589,7 +589,7 @@ def test_a_failed_or_skipped_reupload_does_not_supersede_a_run_whose_table_is_st
     partial = sess.ingest(dirty, "attrSequence.csv").run_id               # loaded with a reject: A is open
     # the same file again, but the graph lookup now finds nothing -> skipped, the table is NOT touched
     monkeypatch.setattr(sess, "_lookup", SimpleNamespace(lookup=lambda t: SimpleNamespace(
-        matches=(), near_misses=(), table=t), script_count=0))
+        matches=(), near_misses=(), table=t, source=""), script_count=0))
     skipped = sess.ingest(dirty, "attrSequence.csv")
     assert skipped.status == "skipped" and skipped.run_id
     assert db.runs[partial]["state"] == "open"                              # still actionable against the table

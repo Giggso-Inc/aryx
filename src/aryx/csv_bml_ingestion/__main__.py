@@ -22,7 +22,8 @@ from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
 from aryx.csv_bml_ingestion.llm_client import project_llm_completer
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.pipeline import ingest_csv
-from aryx.csv_bml_ingestion.stored_graph import StoredGraphLookup
+from aryx.csv_bml_ingestion.constants import STORED_GRAPH_SOURCE
+from aryx.csv_bml_ingestion.stored_graph import CuratedFirstLookup
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 from aryx.csv_bml_ingestion.tracking import RunTracker
 
@@ -51,16 +52,16 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _load_index(args: argparse.Namespace, factory) -> "BmlIndex | StoredGraphLookup | None":
+def _load_index(args: argparse.Namespace, factory) -> "BmlIndex | CuratedFirstLookup | None":
     label = args.xml.name if args.xml else f"workspace={args.workspace_id}"
     tracker = RunTracker(label)
     try:
-        index = BmlIndex.from_xml_file(args.xml) if args.xml else StoredGraphLookup(factory, args.workspace_id)
+        index = BmlIndex.from_xml_file(args.xml) if args.xml else CuratedFirstLookup(factory, args.workspace_id)
     except CsvBmlIngestionError as exc:
         tracker.error("xml_graph", f"cannot build XML graph: {exc}", error_code=exc.code)
         print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
         return None
-    tracker.info("xml_graph", "XML graph ready", source="xml" if args.xml else "stored_graph",
+    tracker.info("xml_graph", "XML graph ready", source="xml" if args.xml else STORED_GRAPH_SOURCE,
                  nodes=index.node_count, query_nodes=index.script_count, queried_tables=len(index.tables))
     return index
 

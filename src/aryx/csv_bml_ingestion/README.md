@@ -34,17 +34,28 @@ python -m aryx.csv_bml_ingestion ingest --xml SL3500e_config.xml attrSequence.cs
 When an XML is ingested it becomes a knowledge graph; later, a CSV upload finds its BML scripts by
 searching **that graph** — the XML is not needed again. Off by default; one switch turns it on.
 
-1. **XML ingest** (existing path, `ARYX_INGEST_FILE_TYPE=xml` + `ARYX_INGEST_PIPELINE=cpq_ingestion`,
-   Oracle graph backend): with `ARYX_CSV_BML_ENABLED=true`, `raw_graph/store.py` also records, on every
-   graph node whose text holds SQL queries, three short **list** properties — `bml_tables`,
+1. **XML ingest and confirm** (existing path, `ARYX_INGEST_FILE_TYPE=xml` + `ARYX_INGEST_PIPELINE=cpq_ingestion`,
+   Oracle graph backend): the XML is written to the raw graph on upload, and **confirming** it builds the
+   **curated graph** (the final projection the Graph tab shows). With `ARYX_CSV_BML_ENABLED=true` both steps
+   (`raw_graph/store.py` on upload, `raw_graph/resolve_relate.py` on confirm) record, on every
+   node whose text holds SQL queries, three short **list** properties — `bml_tables`,
    `bml_queries`, `bml_query_tables` (`bml_graph.py`). They are needed because the graph store clips
    every *string* property to ~200 characters (an Oracle bind-size guard) so the script text itself cannot
    be searched once stored; lists are not clipped.
 2. **CSV upload** (`POST /admin/ingest/file`, unchanged API/UI): with the switch on, each uploaded `.csv`
    goes to `upload_hook.ingest_uploaded_csv` instead of the generic CSV path. Step 2 is
-   `stored_graph.StoredGraphLookup`: one JSON query over this workspace's raw-graph id range finds the
-   enriched nodes (typically a few dozen of hundreds of thousands), across **all** XMLs ingested into the
-   workspace; neighbours in the graph give each match its identity and path.
+   `stored_graph.CuratedFirstLookup`: one JSON query finds the enriched nodes (typically a few dozen of
+   hundreds of thousands), across **all** XMLs ingested into the workspace; neighbours in the graph give
+   each match its identity and path. It searches the **curated graph** (scope = the workspace id). Only
+   when the curated graph carries no query lists at all (XML not confirmed yet, or confirmed before this
+   feature) does it fall back to the raw graph; that decision is a Raven record
+   (`CBI_CURATED_EMPTY_FALLBACK`, WARN, with `workspace_id` and the recovery fields). An *error* while
+   checking the curated graph is not "no lists": it fails the upload instead of silently using the raw graph.
+   The curated scope is the plain workspace id, so it must stay below `ARYX_CPQ_RAW_WORKSPACE_OFFSET`
+   (otherwise `CBI_WORKSPACE_SCOPE`). A curated graph that
+   has query lists is authoritative: a table it does not mention is *not found*, even if an older raw
+   graph mentions it. The graph that answered is in the step-2 log (`source_graph`) and in the skip
+   message ("searched the curated graph").
 3. Steps 3–4 are unchanged (LLM-authored SQL if needed, validated load). A CSV whose table no stored
    query reads is **skipped** (`CBI_BML_NOT_FOUND`) and the upload job finishes as `failed` with the
    per-file reasons in its error text — it is never silently ingested another way.

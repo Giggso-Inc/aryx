@@ -52,6 +52,7 @@ class BmlLookup:
     table: str
     matches: tuple[BmlMatch, ...]
     near_misses: tuple[str, ...] = field(default=())  # other tables sharing the name as a prefix
+    source: str = ""                                   # which graph answered ("curated graph" / "raw graph")
 
 
 def iter_query_nodes(projection: RawGraphProjection):

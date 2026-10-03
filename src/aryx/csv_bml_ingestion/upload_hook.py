@@ -39,10 +39,10 @@ class CsvBmlUploadSession:
     def _ready(self):  # noqa: ANN202
         if self._lookup is None:
             from aryx.csv_bml_ingestion.db import oracle_connection_factory  # noqa: PLC0415
-            from aryx.csv_bml_ingestion.stored_graph import StoredGraphLookup  # noqa: PLC0415
+            from aryx.csv_bml_ingestion.stored_graph import CuratedFirstLookup  # noqa: PLC0415
 
             self._factory = oracle_connection_factory()
-            self._lookup = StoredGraphLookup(self._factory, self.workspace_id)
+            self._lookup = CuratedFirstLookup(self._factory, self.workspace_id)
         return self._factory, self._lookup
 
     def ingest(self, data: bytes, filename: str) -> IngestResult:
