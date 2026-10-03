@@ -88,7 +88,7 @@
    - run one quote turn ("I want APX 900 for US")
 
    Check that JSON lines appear in the container log, that every record of one job shares a `trace_id`, and that `ingest.job.completed` and `ask.turn.completed` appear. Repeat once with `ARYX_RAVEN_LOG_LEVEL=DEBUG` and read one turn's trail. Then try `ARYX_RAVEN_LOG_SINK=s3` with a test bucket.
-2. **Env example files**. `.env.example.oci` and `.env.example.oci-local` still need the block below added by hand after `ARYX_LOG_LEVEL=INFO` (the assistant is blocked from these files):
+2. **Env example files (done)**. The Raven block was appended to the end of `.env.example.oci` and `.env.example.oci-local`; the sample below is for reference:
 
    ```
    ARYX_RAVEN_LOG_ENABLED=true
@@ -164,4 +164,4 @@
   - All 191 Raven-log and personal-data tests pass together (13 files).
   - App check: the FastAPI app imports on both trees, `/health` returns 200, and all 250 changed modules import (no live database or startup hooks were available here).
   - Trap for the next person: on Windows `pytest-timeout` kills the **whole process** when one test passes its timeout, so a single-process run of a slow test file produces no summary at all. Use xdist workers, or run suspect tests one per process. Timings are kept in the hub's `claude-instructions/test-suite-timings.md`, not in the repo.
-- **Still pending**: a real run on dev (needs deploy access); the two `.env.example` blocks (section 4, item 2); dropping "WIP" from PR #422 once the developer agrees. Not done and not planned here: LLM `input_ref` / `output_ref`, the health-route record, `boto3` in the Function image, copying the plan and spec into `docs/`.
+- **Still pending**: a real run on dev (needs deploy access); dropping "WIP" from PR #422 once the developer agrees. Not done and not planned here: LLM `input_ref` / `output_ref`, the health-route record, `boto3` in the Function image. The plan is copied to `docs/raven/RAVEN_LOGGING_PLAN.md`.
