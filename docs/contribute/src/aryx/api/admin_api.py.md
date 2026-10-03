@@ -1,11 +1,11 @@
 # Attribution — src/aryx/api/admin_api.py
 
-Last updated: 2026-09-25T11:03:22.265272+00:00
-Total lines: 220
-Lines AI-generated: 54 (24.5%)
+Last updated: 2026-10-03T09:08:41.895896+00:00
+Total lines: 249
+Lines AI-generated: 54 (21.7%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 166
+Lines unattributed: 195
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -17,3 +17,4 @@ Owner (most recent author): m.munir@giggso.com
 | 136-157 | m.munir@giggso.com | — | — | — | — | — | 2026-09-25T07:20:38.686103+00:00 | pre-commit gap — unattributed by the local hook |
 | 158-200 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-25T10:28:38.524302+00:00 |  |
 | 201-220 | m.munir@giggso.com | — | — | — | — | — | 2026-09-25T11:03:22.226539+00:00 | pre-commit gap — unattributed by the local hook |
+| 221-249 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.545306+00:00 | pre-commit gap — unattributed by the local hook |

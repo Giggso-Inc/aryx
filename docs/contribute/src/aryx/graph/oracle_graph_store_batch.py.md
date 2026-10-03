@@ -1,11 +1,11 @@
 # Attribution — src/aryx/graph/oracle_graph_store_batch.py
 
-Last updated: 2026-09-24T10:36:17.164060+00:00
-Total lines: 225
-Lines AI-generated: 98 (43.6%)
+Last updated: 2026-10-03T09:08:41.893140+00:00
+Total lines: 242
+Lines AI-generated: 98 (40.5%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 127
+Lines unattributed: 144
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -19,3 +19,4 @@ Owner (most recent author): m.munir@giggso.com
 | 184-187 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131722+00:00 | pre-commit gap — unattributed by the local hook |
 | 188-224 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-24T10:21:45.846135+00:00 |  |
 | 225-225 | m.munir@giggso.com | — | — | — | — | — | 2026-09-24T10:36:17.131802+00:00 | pre-commit gap — unattributed by the local hook |
+| 226-242 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.582891+00:00 | pre-commit gap — unattributed by the local hook |
