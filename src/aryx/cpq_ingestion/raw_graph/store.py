@@ -9,6 +9,7 @@ itself; it only asks the existing setting.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Protocol
 
 from aryx.config import get_settings
@@ -93,6 +94,7 @@ def write_raw_graph(
     source_key: str,
     dsn: str,
     graph_url: str,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> RawGraphWriteResult:
     """Clear and rewrite one file's raw graph within ``workspace_id`` from ``projection``.
 
@@ -105,6 +107,19 @@ def write_raw_graph(
     documented, live-confirmed 180+ second MERGE-executemany() hang that the
     default (``full_rebuild=False``) path would otherwise silently take on
     every write (see ``OracleGraphStore.add_entities_batch``'s docstring).
+
+    should_stop — forwarded to the store's batch methods (see
+    ``OracleGraphStore.add_entities_batch``'s docstring for the convention:
+    checked per-chunk, stops without raising, keeps whatever was already
+    written). Previously this function had no way to interrupt a write in
+    progress at all: a cancelled job's ~11,700-chunk vertex+edge write for a
+    240MB file kept running for tens of minutes after "cancel" took effect
+    everywhere else, which is exactly the gap this closes. A should_stop
+    hit here leaves this file's raw graph genuinely partial (some nodes/
+    edges written, the rest missing) — accepted, since the raw graph is
+    documented above as "a rebuildable projection of one source file, not a
+    store of record": the next (non-cancelled) ingest of the same file
+    clear()s and fully rewrites this scope regardless.
     """
     backend = get_settings().effective_graph_backend()
     graph_ref = _graph_ref(workspace_id, source_key)
@@ -121,9 +136,9 @@ def write_raw_graph(
     entities = [(n.id, n.tag, n.properties, None, None) for n in projection.nodes]
     relationships = [(e.source_id, e.target_id, e.name) for e in projection.edges]
     if entities:
-        store.add_entities_batch(entities, full_rebuild=True)
-    if relationships:
-        store.add_relationships_batch(relationships, full_rebuild=True)
+        store.add_entities_batch(entities, full_rebuild=True, should_stop=should_stop)
+    if relationships and (should_stop is None or not should_stop()):
+        store.add_relationships_batch(relationships, full_rebuild=True, should_stop=should_stop)
     return RawGraphWriteResult(
         nodes_written=len(projection.nodes),
         edges_written=len(projection.edges),
@@ -139,12 +154,14 @@ def project_and_write_raw_graph(
     source_key: str,
     dsn: str,
     graph_url: str,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> RawGraphWriteResult:
     """Convenience wrapper: parse XML and write the resulting raw graph in one call."""
     projection = project_xml_to_raw_graph(data)
     projection = _with_query_tables(projection)
     return write_raw_graph(
         projection, workspace_id=workspace_id, source_key=source_key, dsn=dsn, graph_url=graph_url,
+        should_stop=should_stop,
     )
 
 

@@ -22,7 +22,7 @@ from aryx.log_safe import ora_code
 from aryx.worker.job_partial import pop_hidden
 from aryx.cpq_ingestion.routing import cpq_layout_upload_active
 from aryx.pipeline.doc_discovery.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
-from aryx.store.job_store import JobStore
+from aryx.store.job_store import JobStore, make_should_stop
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,13 @@ def _build_read_progress(jobs: JobStore, did: str, workspace_id: int) -> Callabl
     threads can call this concurrently — guarded by a lock.
 
     Cancellation: POST /admin/jobs/{job_id}/cancel only ever flips this job's
-    own row to 'cancelled' -- nothing in read_files()/extract_mentions()
-    checks should_stop, so the worker thread keeps running and this callback
-    keeps firing after a cancel. Each call now checks the job row first and
+    own row to 'cancelled'. `_read_job` now builds a should_stop and passes
+    it into read_files(), which the XML/cpq_ingestion raw-graph write path
+    (the slowest part of a read -- tens of minutes for a large file's
+    Oracle vertex/edge write, see OracleGraphStore._write_chunks) checks
+    per-chunk; extract_mentions()'s document-extraction path still doesn't
+    check it, so the worker thread can still keep running there after a
+    cancel, and this callback keeps firing in that case. Each call now checks the job row first and
     skips its write entirely once terminal: without this, dismiss()'s own
     409-while-running guard was pointless -- a cancelled-but-still-running
     read job counts as "terminal" there (safe to dismiss), but the very next
@@ -130,9 +134,10 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
                            "layout_files": len(layout_items), "documents": len(doc_paths),
                            "tabular_files": len(tabular), "other_dropped": len(remaining) - len(doc_paths) - len(tabular)})
         on_progress = _build_read_progress(jobs, did, workspace_id)
+        should_stop = make_should_stop(jobs, did)
         result = read_files(doc_paths, tabular, _local_broker(), context, did=did,
                             on_progress=on_progress, workspace_id=workspace_id,
-                            layout_items=layout_items)
+                            layout_items=layout_items, should_stop=should_stop)
         if _is_job_terminal(jobs, did):
             # Cancelled (or otherwise finished) while read_files() was still
             # running -- its own on_progress callback already stopped

@@ -328,6 +328,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     xml_csvs = project_raw_graph_and_flatten(
                         data, orig_stem, workspace_id=workspace_id,
                         dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+                        should_stop=should_stop,
                     )
                 else:
                     xml_csvs = _xml_to_csvs(data, orig_stem)

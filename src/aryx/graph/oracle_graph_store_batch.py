@@ -28,6 +28,7 @@ class _OracleGraphBatchMixin:
         chunks: list[list[dict]],
         query_name: str,
         on_batch: "Callable[[int], None] | None",
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Execute one `executemany` per chunk, sequentially or concurrently.
 
@@ -44,6 +45,23 @@ class _OracleGraphBatchMixin:
         prefetch in Phases 1-3. on_batch fires with the running total after
         each chunk completes, in COMPLETION order, not submission order --
         callers must treat it as a progress total, not a per-chunk sequence.
+
+        should_stop — checked at the top of each chunk (sequential) or in
+        the as_completed drain loop (concurrent); on True, stops submitting
+        further chunks and returns the count written so far, following the
+        established should_stop convention (dimension_link.py,
+        enrich_relate_isolated.py): break, don't raise, keep whatever is
+        already done. This matters here specifically because a cancelled
+        job previously had no way to interrupt this loop at all — a 240MB
+        XML's ~11,700-chunk vertex+edge write kept running to completion
+        (tens of minutes) after "cancel" with zero effect, the exact gap
+        this parameter closes. In the sequential branch, breaking (rather
+        than raising) is required for correctness, not just convention: the
+        pool's connection() context manager (oracle_connection_pool.py)
+        commits on clean exit but rolls back the WHOLE transaction -- every
+        chunk already executemany'd in this same connection, not just the
+        one in flight -- on any exception, so raising here would silently
+        discard already-committed-looking work instead of just stopping.
         """
         sql = load(query_name)
         workers = max(1, get_settings().oracle_graph_batch_workers)
@@ -59,7 +77,18 @@ class _OracleGraphBatchMixin:
         if _sequential:
             with self._pool.connection() as conn:
                 with conn.cursor() as cur:
-                    for chunk in chunks:
+                    for i, chunk in enumerate(chunks):
+                        if should_stop is not None and should_stop():
+                            logger.warning(
+                                "graph %s cancelled — stopping after %d/%d chunk(s), %d row(s) written",
+                                query_name, i, len(chunks), written,
+                            )
+                            raven_log("WARN", "P3", "ingest.project.chunks_cancelled graph chunk write stopped by cancel",
+                                      error_code="ARYX_ING_CANCELLED",
+                                      context={"stage": "project", "query": query_name, "selected_option": "stop",
+                                               "available_options": ["continue", "stop"], "reason_code": "SHOULD_STOP_TRUE",
+                                               "chunks_done": i, "chunks_total": len(chunks), "rows_written": written})
+                            break
                         _tc = time.monotonic()
                         cur.executemany(sql, chunk)
                         raven_log("DEBUG", "P4", "ingest.project.chunk_written graph chunk written",
@@ -77,17 +106,46 @@ class _OracleGraphBatchMixin:
                     cur.executemany(sql, chunk)
             return len(chunk)
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = [submit_ctx(pool, _write_one, chunk) for chunk in chunks]
+            completed = 0
             for future in as_completed(futures):
                 n = future.result()
                 written += n
+                completed += 1
                 raven_log("DEBUG", "P4", "ingest.project.chunk_written graph chunk written",
                           context={"stage": "project", "query": query_name, "rows": n, "written_total": written,
                                    "elapsed_ms": int((time.monotonic() - _t0) * 1000)})
                 logger.info("graph %s chunk rows=%d done", query_name, n)
                 if on_batch is not None:
                     on_batch(written)
+                if should_stop is not None and should_stop():
+                    logger.warning(
+                        "graph %s cancelled — stopping after %d/%d chunk(s) completed, %d row(s) written "
+                        "(any already-running chunks finish independently -- can't be force-killed mid executemany(),"
+                        " but no further queued chunks start)",
+                        query_name, completed, len(futures), written,
+                    )
+                    raven_log("WARN", "P3", "ingest.project.chunks_cancelled graph chunk write stopped by cancel",
+                              error_code="ARYX_ING_CANCELLED",
+                              context={"stage": "project", "query": query_name, "selected_option": "stop",
+                                       "available_options": ["continue", "stop"], "reason_code": "SHOULD_STOP_TRUE",
+                                       "chunks_done": completed, "chunks_total": len(futures), "rows_written": written})
+                    # cancel_futures=True drops every not-yet-started queued
+                    # chunk immediately; wait=False means this call doesn't
+                    # block on whichever `workers` chunks are already mid-
+                    # executemany() (those finish on their own, each in its
+                    # own already-committed connection -- see docstring).
+                    # Plain `with ThreadPoolExecutor(...) as pool:` would NOT
+                    # achieve this: its __exit__ calls shutdown(wait=True)
+                    # unconditionally, which blocks until every SUBMITTED
+                    # future finishes regardless of this break -- defeating
+                    # the whole point of stopping early.
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+        finally:
+            pool.shutdown(wait=True)
         return written
 
     def add_entities_batch(
@@ -95,6 +153,7 @@ class _OracleGraphBatchMixin:
         rows: list[tuple[int, str, dict, list | None, str | None]],
         on_batch: "Callable[[int], None] | None" = None,
         full_rebuild: bool = False,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Batch-upsert entity vertices in Oracle round-trips, one per chunk.
 
@@ -105,6 +164,8 @@ class _OracleGraphBatchMixin:
         on_batch — optional callback invoked with the running total of rows
         written after each executemany chunk, for sub-progress reporting
         (mirrors FalkorGraphStore.add_entities_batch).
+
+        should_stop — see ``_write_chunks``'s docstring; forwarded as-is.
 
         full_rebuild — True only for project_graph()'s full-rebuild path
         (clear() then rewrite everything), never for project_incremental().
@@ -137,7 +198,7 @@ class _OracleGraphBatchMixin:
         batch = list(seen.values())
         chunks = list(_iter_chunks(batch, payload_key="attrs"))
         query_name = "insert_graph_vertex" if full_rebuild else "merge_graph_vertex"
-        written = self._write_chunks(chunks, query_name, on_batch)
+        written = self._write_chunks(chunks, query_name, on_batch, should_stop=should_stop)
         logger.info("graph vertices batch done count=%d", len(rows))
         return written
 
@@ -206,10 +267,13 @@ class _OracleGraphBatchMixin:
         self,
         rows: list[tuple[int, int, str]],
         full_rebuild: bool = False,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> None:
         """Batch-upsert relationship edges in one Oracle round-trip.
 
         Each row: (source_id, target_id, name).
+
+        should_stop — see ``_write_chunks``'s docstring; forwarded as-is.
 
         full_rebuild — see add_entities_batch's docstring: switches
         merge_graph_edge (MERGE) to insert_graph_edge (plain INSERT),
@@ -238,5 +302,5 @@ class _OracleGraphBatchMixin:
             ]
         chunks = list(_iter_chunks(batch, payload_key="name"))
         query_name = "insert_graph_edge" if full_rebuild else "merge_graph_edge"
-        self._write_chunks(chunks, query_name, on_batch=None)
+        self._write_chunks(chunks, query_name, on_batch=None, should_stop=should_stop)
         logger.info("graph edges batch done count=%d", len(rows))

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.raw_graph.store import project_and_write_raw_graph
@@ -29,6 +30,7 @@ def project_raw_graph_and_flatten(
     dsn: str,
     graph_url: str,
     log_id: str | None = None,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> list[tuple[bytes, str]]:
     """Project the raw graph (if enabled), then flatten XML to CSV as usual.
 
@@ -55,6 +57,12 @@ def project_raw_graph_and_flatten(
             writer for the FalkorDB backend.
         log_id: Optional correlation id, forwarded to ``_xml_to_csvs`` for
             its own diagnostic logging.
+        should_stop: Optional cancellation poll, forwarded to the raw-graph
+            write (see ``write_raw_graph``'s docstring). Checked once more
+            after the write returns/is skipped, below: a cancel mid-write
+            leaves this file's raw graph partial and the CSV flatten step
+            — a second, separately expensive pass over the same XML bytes
+            — is not worth running for a job that's already stopping.
 
     Returns:
         Per-entity-type CSV bytes and filenames, exactly as ``_xml_to_csvs``
@@ -71,6 +79,7 @@ def project_raw_graph_and_flatten(
         try:
             result = project_and_write_raw_graph(
                 data, workspace_id=workspace_id, source_key=stem, dsn=dsn, graph_url=graph_url,
+                should_stop=should_stop,
             )
         except Exception as exc:  # noqa: BLE001 -- the raw graph is a best-effort provenance
             # layer alongside the primary CSV ingest path, not a precondition for it. A
@@ -104,4 +113,14 @@ def project_raw_graph_and_flatten(
             )
     else:
         logger.debug("cpq_ingestion: raw graph disabled (ARYX_CPQ_RAW_GRAPH_ENABLED=false), skipping")
+    if should_stop is not None and should_stop():
+        logger.warning(
+            "cpq_ingestion: job cancelled — skipping CSV flatten for stem=%s workspace_id=%s",
+            stem, workspace_id,
+        )
+        raven_log("WARN", "P3", "ingest.raw_graph.csv_skipped csv flatten skipped by cancel",
+                  error_code="ARYX_ING_CANCELLED",
+                  context={"stem": stem, "workspace_id": workspace_id, "selected_option": "stop",
+                           "available_options": ["continue", "stop"], "reason_code": "SHOULD_STOP_TRUE"})
+        return []
     return _xml_to_csvs(data, stem, log_id=log_id)
