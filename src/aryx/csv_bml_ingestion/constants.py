@@ -48,6 +48,12 @@ DEFAULT_BATCH_SIZE = 500
 # Raven-log service tag for this pipeline.
 RAVEN_COMPONENT = "csv_bml_ingestion"
 
+# Raven error code for step 2 falling back from the curated graph to the raw graph.
+CURATED_FALLBACK_CODE = "CBI_CURATED_EMPTY_FALLBACK"
+
+# Raven error code for step 2 falling back from the curated graph to the raw graph.
+CURATED_FALLBACK_CODE = "CBI_CURATED_EMPTY_FALLBACK"
+
 # Oracle reserved words that can plausibly appear as CSV headers. A header
 # that lowercases to one of these gets the ``_col`` suffix (see
 # ``csv_reader.to_column_name``); the SQL files must follow the same rule.

@@ -128,7 +128,7 @@ def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIn
         _log_matches(tracker, lookup)
         return lookup
     result.status, result.error_code = "skipped", "CBI_BML_NOT_FOUND"
-    result.message = f"no BML query reads table {table!r}"
+    result.message = f"no BML query reads table {table!r}" + (f" (searched the {lookup.source})" if lookup.source else "")
     tracker.error(C.STEP_BML_LOOKUP, result.message + " — skipping (no schema can be derived)",
                   error_code="CBI_BML_NOT_FOUND", table=table, near_misses=list(lookup.near_misses),
                   scripts_scanned=bml_index.script_count, source_graph=lookup.source)

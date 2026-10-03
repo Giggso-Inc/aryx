@@ -82,3 +82,15 @@ class TableProtectedError(CsvBmlIngestionError):
     """The table exists but was not created by this pipeline for this owner; it is never touched."""
 
     code = "CBI_TABLE_PROTECTED"
+
+
+class WorkspaceScopeError(CsvBmlIngestionError):
+    """A workspace id would collide with the id range the raw graphs use (see ``stored_graph``)."""
+
+    code = "CBI_WORKSPACE_SCOPE"
+
+
+class WorkspaceScopeError(CsvBmlIngestionError):
+    """A workspace id would collide with the id range the raw graphs use (see ``stored_graph``)."""
+
+    code = "CBI_WORKSPACE_SCOPE"

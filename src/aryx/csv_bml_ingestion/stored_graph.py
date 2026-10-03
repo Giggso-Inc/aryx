@@ -18,7 +18,6 @@ For each match it reads the neighbours in the graph to describe it (identity, pa
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
@@ -27,10 +26,11 @@ from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, TABL
 from aryx.csv_bml_ingestion.bml_index import (
     MAX_IDENTITY_CHARS, MAX_IDENTITY_VALUES, PATH_DEPTH, BmlLookup, BmlMatch, make_label,
 )
+from aryx.csv_bml_ingestion.constants import CURATED_FALLBACK_CODE, STEP_BML_LOOKUP
 from aryx.csv_bml_ingestion.db import ConnectionFactory
+from aryx.csv_bml_ingestion.errors import WorkspaceScopeError
 from aryx.csv_bml_ingestion.query_extract import SqlQuery
-
-logger = logging.getLogger(__name__)
+from aryx.csv_bml_ingestion.tracking import RunTracker
 
 RAW, CURATED = "raw graph", "curated graph"
 
@@ -65,10 +65,14 @@ class StoredGraphLookup:
     def __init__(self, factory: ConnectionFactory, workspace_id: int, scope: str = RAW) -> None:
         self._factory = factory
         self.source = scope
+        offset = get_cpq_ingestion_settings().cpq_raw_workspace_offset
         if scope == CURATED:                      # the curated graph lives under the plain workspace id
+            if int(workspace_id) >= offset:       # ...so it must stay below the raw graphs' id range
+                raise WorkspaceScopeError(
+                    f"workspace id {workspace_id} is not below the raw-graph id offset {offset}; the curated and "
+                    "raw graph scopes would overlap (raise ARYX_CPQ_RAW_WORKSPACE_OFFSET)")
             self._lo = self._hi = int(workspace_id)
         else:
-            offset = get_cpq_ingestion_settings().cpq_raw_workspace_offset
             self._lo = raw_workspace_id(workspace_id, offset, "")
             self._hi = raw_workspace_id(workspace_id + 1, offset, "") - 1
         self._rows: list[tuple[int, int, str, dict]] | None = None
@@ -142,39 +146,60 @@ class CuratedFirstLookup:
     The curated graph is authoritative whenever it carries query lists: a table it does not
     mention is *not found*, even if an older raw graph mentions it. Only when the curated graph
     has no query lists at all (XML not confirmed yet, or confirmed before the lists were
-    recorded) is the raw graph searched instead. The choice is made once per instance (one
-    upload job) and logged.
+    recorded) is the raw graph searched instead; that decision is a Raven record
+    (``CBI_CURATED_EMPTY_FALLBACK``) and the answering graph is named in the step-2 log.
+
+    An *error* while checking the curated graph (database down, timeout) is not "no query lists":
+    it propagates and fails the upload, so a transient fault can never silently serve a stale
+    raw graph. The choice is made once per instance (one upload job); the raw graph's lookup is
+    only built if it is needed.
     """
 
     def __init__(self, factory: ConnectionFactory, workspace_id: int) -> None:
         self.workspace_id = int(workspace_id)
+        self._factory = factory
         self.curated = StoredGraphLookup(factory, workspace_id, CURATED)
-        self.raw = StoredGraphLookup(factory, workspace_id, RAW)
+        self._raw: StoredGraphLookup | None = None
         self._chosen: StoredGraphLookup | None = None
         self.node_count = 0   # unknown without scanning the whole graph; kept for interface parity
 
     @property
+    def raw(self) -> StoredGraphLookup:
+        """The raw-graph lookup (built on first use)."""
+        if self._raw is None:
+            self._raw = StoredGraphLookup(self._factory, self.workspace_id, RAW)
+        return self._raw
+
+    @property
     def chosen(self) -> StoredGraphLookup:
-        """The graph searched for this job."""
+        """The graph searched for this job: the curated graph, or the raw graph when it has no query lists."""
         if self._chosen is None:
+            tracker = RunTracker(f"workspace={self.workspace_id}")
             if self.curated.script_count:
                 self._chosen = self.curated
             else:
                 self._chosen = self.raw
-                logger.warning(
-                    "csv_bml_ingestion: workspace %s has no query lists in its curated graph (XML not confirmed "
-                    "yet, or confirmed before this feature); searching the raw graph instead", self.workspace_id)
-            logger.info("csv_bml_ingestion: workspace %s step 2 searches the %s", self.workspace_id,
-                        self._chosen.source)
+                tracker.warn(
+                    STEP_BML_LOOKUP,
+                    "no query lists in the curated graph (XML not confirmed yet, or confirmed before this "
+                    "feature); searching the raw graph instead",
+                    error_code=CURATED_FALLBACK_CODE, workspace_id=self.workspace_id,
+                    triggering_error="no_query_lists", recovery_selected="raw_graph", fallback_target=RAW,
+                    exit_condition="degraded", result="degraded")
+            tracker.info(STEP_BML_LOOKUP, f"step 2 searches the {self._chosen.source}",
+                         workspace_id=self.workspace_id, source_graph=self._chosen.source)
         return self._chosen
 
     @property
     def script_count(self) -> int:
+        """Graph nodes that hold queries, in the graph this job searches."""
         return self.chosen.script_count
 
     @property
     def tables(self) -> list[str]:
+        """Every table any stored query reads, in the graph this job searches."""
         return self.chosen.tables
 
     def lookup(self, table: str) -> BmlLookup:
+        """Find nodes whose queries read ``table``; the result names the graph that answered."""
         return self.chosen.lookup(table)

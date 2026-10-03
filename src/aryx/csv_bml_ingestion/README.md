@@ -48,9 +48,14 @@ searching **that graph** — the XML is not needed again. Off by default; one sw
    hundreds of thousands), across **all** XMLs ingested into the workspace; neighbours in the graph give
    each match its identity and path. It searches the **curated graph** (scope = the workspace id). Only
    when the curated graph carries no query lists at all (XML not confirmed yet, or confirmed before this
-   feature) does it fall back to the raw graph, and it logs a warning when it does. A curated graph that
+   feature) does it fall back to the raw graph; that decision is a Raven record
+   (`CBI_CURATED_EMPTY_FALLBACK`, WARN, with `workspace_id` and the recovery fields). An *error* while
+   checking the curated graph is not "no lists": it fails the upload instead of silently using the raw graph.
+   The curated scope is the plain workspace id, so it must stay below `ARYX_CPQ_RAW_WORKSPACE_OFFSET`
+   (otherwise `CBI_WORKSPACE_SCOPE`). A curated graph that
    has query lists is authoritative: a table it does not mention is *not found*, even if an older raw
-   graph mentions it. The graph that answered is in the step-2 log (`source_graph`).
+   graph mentions it. The graph that answered is in the step-2 log (`source_graph`) and in the skip
+   message ("searched the curated graph").
 3. Steps 3–4 are unchanged (LLM-authored SQL if needed, validated load). A CSV whose table no stored
    query reads is **skipped** (`CBI_BML_NOT_FOUND`) and the upload job finishes as `failed` with the
    per-file reasons in its error text — it is never silently ingested another way.
