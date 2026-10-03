@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
-from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten
+from aryx.cpq_ingestion.pipeline import preview_raw_graph_counts, project_raw_graph_and_flatten
 from aryx.cpq_ingestion.raw_graph.models import RawGraphWriteResult
 
 SAMPLE_XML = b"<Root><Child>value</Child></Root>"
@@ -89,3 +89,34 @@ def test_two_files_in_one_job_use_distinct_source_keys():
 
     source_keys = [call.kwargs["source_key"] for call in mock_write.call_args_list]
     assert source_keys == ["fileA", "fileB"]
+
+
+class TestPreviewRawGraphCounts:
+    """preview_raw_graph_counts — the Read-stage Oracle write's replacement
+    for XML uploads under the Documents-tab flow: parse-only, no write (see
+    the function's own docstring for why the write was removed entirely).
+    """
+
+    def test_counts_match_a_flat_document(self):
+        xml = b"<Root><Record/><Record/><Record/></Root>"
+        nodes, edges = preview_raw_graph_counts(xml, "sample")
+        # 1 Root + 3 Record = 4 nodes; 3 CONTAINS edges (Root has no parent).
+        assert (nodes, edges) == (4, 3)
+
+    def test_counts_match_a_nested_document(self):
+        xml = (
+            b"<Catalogue>"
+            b'<Product name="Widget"><Price>19.99</Price></Product>'
+            b'<Product name="Gadget"><Price>29.99</Price></Product>'
+            b"</Catalogue>"
+        )
+        nodes, edges = preview_raw_graph_counts(xml, "catalogue")
+        # Catalogue + 2*(Product + Price) = 5 nodes; 4 CONTAINS edges.
+        assert (nodes, edges) == (5, 4)
+
+    def test_does_not_touch_the_raw_graph_store(self):
+        """The whole point: no Oracle/FalkorDB write happens here at all."""
+        xml = b"<Root><Child/></Root>"
+        with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
+            preview_raw_graph_counts(xml, "sample")
+        mock_write.assert_not_called()

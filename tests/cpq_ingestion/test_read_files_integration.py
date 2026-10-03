@@ -17,7 +17,7 @@ import pytest
 from aryx.broker import Broker
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.raw_graph.models import RawGraphWriteResult
-from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs, read_files
+from aryx.pipeline.doc_discovery.doc_discovery import read_files
 
 SAMPLE_XML = b"""<root>
     <item id="1" name="alpha"/>
@@ -46,45 +46,46 @@ def test_read_files_uses_legacy_xml_to_csvs_when_pipeline_inactive(monkeypatch):
 
 
 def test_read_files_routes_xml_through_cpq_ingestion_when_active(monkeypatch):
+    """When the pipeline is active, read_files() must NOT write the raw
+    graph to Oracle/FalkorDB at all (removed entirely -- Confirm time
+    re-derives and writes the same data from scratch regardless, see
+    preview_raw_graph_counts's docstring) -- it only parses for a node/edge
+    count preview, surfaced as a single synthetic plan's ontology_type."""
     monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
     get_cpq_ingestion_settings.cache_clear()
 
-    direct = _xml_to_csvs(SAMPLE_XML, "sample")
-
     with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
-        mock_write.return_value = RawGraphWriteResult(
-            nodes_written=3, edges_written=2, backend="falkordb", graph_ref="graph=aryx_raw_ws_50_sample",
-        )
         result = read_files(
             doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
             broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=50,
         )
 
-    mock_write.assert_called_once()
-    _, kwargs = mock_write.call_args
-    assert kwargs["workspace_id"] == 50
-    # Same CSV plans either way -- only the raw-graph side effect differs.
-    assert len(result["tabular"]) == len(direct)
+    mock_write.assert_not_called()
+    assert len(result["tabular"]) == 1
+    plan = result["tabular"][0]
+    assert plan["source_filename"] == "sample.xml"
+    assert plan["source_bytes"] == SAMPLE_XML
+    assert "nodes" in plan["ontology_type"] and "edges" in plan["ontology_type"]
 
 
-def test_read_files_forwards_the_real_workspace_id_not_a_default(monkeypatch):
-    """Regression guard: workspace_id must be the caller's real value, not
-    silently falling back to the default of 1 for every discovery job."""
+def test_read_files_ignores_workspace_id_for_the_cpq_xml_preview(monkeypatch):
+    """Regression guard, updated: workspace_id used to be forwarded to the
+    raw-graph write (see git history); that write no longer exists for this
+    path, so workspace_id has nothing left to reach here. This just confirms
+    passing an arbitrary workspace_id doesn't raise or otherwise misbehave."""
     monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
     get_cpq_ingestion_settings.cache_clear()
 
     with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
-        mock_write.return_value = RawGraphWriteResult(
-            nodes_written=1, edges_written=0, backend="falkordb", graph_ref="graph=aryx_raw_ws_999_sample",
-        )
-        read_files(
+        result = read_files(
             doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
             broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=999,
         )
 
-    assert mock_write.call_args.kwargs["workspace_id"] == 999
+    mock_write.assert_not_called()
+    assert len(result["tabular"]) == 1
 
 
 def test_read_files_defaults_workspace_id_to_one_for_backward_compatibility():

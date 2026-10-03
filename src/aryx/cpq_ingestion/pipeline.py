@@ -15,11 +15,33 @@ from collections.abc import Callable
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.raw_graph.store import project_and_write_raw_graph
+from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
 from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
 from aryx.raven_log import raven_log
 from aryx.worker.job_partial import note_hidden
 
 logger = logging.getLogger(__name__)
+
+
+def preview_raw_graph_counts(data: bytes, stem: str) -> tuple[int, int]:
+    """Parse-only preview for the Documents-tab discovery screen.
+
+    No Oracle write: Confirm time re-parses the same bytes from scratch and
+    writes via resolve_and_relate_raw_graph() regardless of anything Read
+    time did (see resolve_relate.py's module docstring -- Pass 1's stored
+    raw graph is never read back by Pass 2), so writing it here only to
+    show a preview was pure waste -- live-measured at ~100+ minutes for a
+    240MB file's ~11,700-chunk Oracle write, versus ~40s for this parse
+    alone. Returns (node_count, edge_count) for the discovery-summary UI.
+    """
+    t0 = time.monotonic()
+    projection = project_xml_to_raw_graph(data)
+    nodes, edges = len(projection.nodes), len(projection.edges)
+    raven_log("DEBUG", "P4", "ingest.raw_graph.preview parsed for discovery-summary counts only",
+              context={"stem": stem, "nodes": nodes, "edges": edges,
+                       "duration_ms": int((time.monotonic() - t0) * 1000)})
+    logger.info("cpq_ingestion: raw graph preview stem=%s nodes=%d edges=%d", stem, nodes, edges)
+    return nodes, edges
 
 
 def project_raw_graph_and_flatten(

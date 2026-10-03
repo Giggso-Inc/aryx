@@ -63,12 +63,12 @@
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      64,
+      102,
       "<try>"
     ],
     [
       ".claude/scripts/contribute-queue.py",
-      70,
+      108,
       "pending"
     ],
     [
@@ -14468,22 +14468,17 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      160,
-      "<if>"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      186,
+      205,
       "<try>"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      241,
+      262,
       "read_files"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      668,
+      689,
       "<if>"
     ],
     [
