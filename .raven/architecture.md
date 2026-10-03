@@ -85,6 +85,19 @@ diagrams of both.
   display order only. `ask_api.py`'s turn loop refuses to ever present a
   quote with an unresolved mandatory field, even at the turn cap. See
   `docs/diagrams/cpq-engine-technical-flow.html` for the full flow.
+- **Attribute-first discovery** (`cpq/attribute_search/`, `api/ask_attribute_*.py`,
+  flag `ARYX_CPQ_ATTR_SEARCH_ENABLED`, off by default) — a cold-start message
+  that names an attribute instead of a product ("a product with ATT as a
+  carrier") is routed by `classify_ask_route` to `attribute_search`. The
+  phrase is grounded deterministically against real catalog labels (no
+  LLM), matched against each family's menu options / yes-no attributes and
+  the Data Table, then hands off into the normal quote: 1 family starts it
+  with the value pre-filled as a "hint" (still re-validated by the engine's
+  constraint check), 2..N are offered via the existing `pending_scope`
+  product choice, "which value?" is remembered in `CpqSession.
+  pending_attribute_label`. Read-only over the catalog; per-family menu
+  snapshots are cached 5 min and cleared on re-ingest. See
+  `docs/cpq/CPQ_ATTRIBUTE_FIRST_DISCOVERY_PLAN_2026_10_02.md`.
 - **Shay bridge** (`api/shay_bridge_api.py`, `store/shay_bridge_store.py`) —
   connects Shay (a separate sales-assistant FastAPI service + Next.js UI,
   `shay_backend/`, its own schema in the same Oracle ADB in OCI mode) to

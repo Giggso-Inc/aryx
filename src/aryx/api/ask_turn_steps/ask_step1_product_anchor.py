@@ -22,6 +22,7 @@ from typing import Any
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_turn_steps.ask_step1_product_family_prompt import _build_product_family_prompt_or_resolve
+from aryx.cpq.attribute_search.seeds import apply_pending_seeds
 from aryx.cpq.pending_scope.pending_scope import clear_pending_scope, resolve_against_scope
 from aryx.raven_log import raven_log
 
@@ -160,6 +161,10 @@ def _step1_resolve_product_anchor(
                               "family_prompt_auto_resolve"],
         "turn": getattr(session, "turn", None), "run_id": session.run_id})
     session.product_name = detected
+    # Attribute-first discovery: fill in the value the customer searched by,
+    # remembered for the family they just picked (api/ask_attribute_handoff.py).
+    if session.attribute_search_seeds:
+        apply_pending_seeds(session, detected)
     # Keep the longer order utterance (often has country + customer) when
     # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
     # country-once: overwriting with the short reply made the later

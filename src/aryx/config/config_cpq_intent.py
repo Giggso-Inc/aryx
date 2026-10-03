@@ -324,6 +324,44 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
         ),
     )
+    cpq_attr_search_enabled: bool = Field(
+        default=False,
+        description=(
+            "Attribute-first product discovery, phase 1: lets the turn-1 "
+            "top-level router (classify_ask_route) return route="
+            "'attribute_search' for a cold-start message that names an "
+            "attribute/value but no product (e.g. 'I want a product that "
+            "has ATT as a carrier'), with the raw attribute_label/"
+            "attribute_value. Off by default -- the router's prompt and "
+            "schema are unchanged when off. When on, run_ask lists the "
+            "products whose Data Table rows offer that value "
+            "(api/ask_attribute_search.py), falling back to the normal "
+            "quote path when the attribute can't be grounded. "
+            "Override with ARYX_CPQ_ATTR_SEARCH_ENABLED."
+        ),
+    )
+    cpq_attr_search_max_choices: int = Field(
+        default=5,
+        description=(
+            "Attribute-first discovery, phase 4: the most product families "
+            "offered as a numbered choice when an attribute search matches "
+            "several. 1 match starts the quote directly; 2..N are offered as "
+            "choices; more than N gets a 'which product family?' question "
+            "instead of a long list. Override with "
+            "ARYX_CPQ_ATTR_SEARCH_MAX_CHOICES."
+        ),
+    )
+    cpq_attr_search_budget_s: float = Field(
+        default=25.0,
+        description=(
+            "Attribute-first discovery: time budget (seconds) for one "
+            "attribute search. A cold catalog cache can take tens of seconds "
+            "to load; past the budget the turn takes the normal quote path "
+            "(never a partial result) while the lookup keeps running to warm "
+            "the cache. Keep it under the deployment's proxy timeout. "
+            "Override with ARYX_CPQ_ATTR_SEARCH_BUDGET_S."
+        ),
+    )
 
     cpq_bml_tilde_split_enabled: bool = Field(
         default=False,

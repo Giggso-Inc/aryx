@@ -18,6 +18,8 @@ from typing import Any
 from aryx.raven_log import raven_log
 from aryx.api.ask_llm.ask_llm_classify_is_cpq_question import _llm_classify_is_cpq_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.api.ask_attribute_followup import _attribute_followup_or_forget
+from aryx.api.ask_attribute_search import _route_attribute_search
 from aryx.api.ask_feature_region_search import _route_feature_region_search
 from aryx.api.ask_response_building import ask_finish_cpq_result as _ask_finish_cpq_result_module
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
@@ -28,7 +30,7 @@ from aryx.api.ask_run_ask_router_error import _handle_router_error
 
 # Road taken by the latest run_ask in this context; read by submit_message (R1).
 _last_road: contextvars.ContextVar[str] = contextvars.ContextVar("ask_last_road", default="")
-_ROADS = ["quote", "qa", "standard", "feature_search", "ambiguous"]
+_ROADS = ["quote", "attribute_search", "qa", "standard", "feature_search", "ambiguous"]
 
 
 _last_step: contextvars.ContextVar[str] = contextvars.ContextVar("ask_last_step", default="")
@@ -74,6 +76,10 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     reader = _ask_core_helpers_module._reader(req.workspace_id)
     settings = _ask_api_module.get_settings()
     mode = (settings.cpq_intent_mode or "shadow").strip().lower()
+    # Attribute-first discovery: a reply to "which value?" (ask_attribute_followup.py).
+    followup, req = _attribute_followup_or_forget(req, reader)
+    if followup is not None:
+        return followup
     # ISSUE-001: `mode == "cpq"` is a dataclass default on EVERY CpqSession,
     # so it can't signal a live quote -- `product_name` is only set once a
     # real quote begins, the genuine "is a quote actually in progress" signal.
@@ -212,6 +218,11 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
                 "(auditor disagreement — proceeding with LLM)",
             )
         return _route_quote(req, reader, route_meta)
+
+    if route_meta.route == "attribute_search":
+        # Attribute-first discovery; not grounded -> the quote path it took before.
+        return _route_attribute_search(req, reader, route_meta) or _route_quote(
+            req, reader, dataclasses.replace(route_meta, route="quote"))
 
     if route_meta.route == "qa":
         return _route_qa(req, reader, route_meta)

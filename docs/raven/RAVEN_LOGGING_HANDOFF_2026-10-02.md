@@ -14,7 +14,8 @@
 - **Commits on the branch, in order**:
   1. 5 commits from the first session: foundation, ingestion intake, ingestion pipeline, retrieval turn flow (partial), CPQ engine.
   2. `9e458f2`: merge of `dev_oci` (44 upstream commits, `cac516f..ed84ab4`), with logging added to the new upstream decision points.
-  3. The area C deep trail commit, which follows the merge (see section 3).
+  3. `f1a4144`: the area C deep trail (see section 3).
+  4. A second merge of `dev_oci`, bringing in PR #423 (attribute-first product discovery, the `attribute_search` route). See section 3a.
 - **Rule from the hub**: `dev_oci` is pull-only. Never commit or push to it; changes reach it only through this PR.
 
 ## 2. What the merge commit did (`9e458f2`)
@@ -64,6 +65,21 @@
   - The existing tests that import the area C modules were run on the branch and on clean `dev_oci`; see the commit message for the comparison.
 - **Not reviewed line by line**: batches A, B and C have no agent report because of the limit. A reviewer should skim the diffs of `ask_turn_switch/*`, `ask_preamble/*`, `ask_response_building/*`, `ask_qa/*` and `ask_step1/2/678_*` for anything the checks above would not catch, such as a log record placed in the wrong branch.
 
+## 3a. Second merge of `dev_oci` (PR #423, attribute search)
+
+- **Conflicts**: one, in `cpq/intent_gateway/intent_gateway.py`. Kept both the logging wrapper around `classify_intent` and the new `_parse_route(raw, *, allow_attribute_search=False)` signature.
+- **Bug fixed**: `ask.route.selected` logged every `attribute_search` turn as `standard`, because `_ROADS` in `ask_run_ask.py` did not list the new road. `attribute_search` is now in `_ROADS`; that list is only used for logging.
+- **New records on the attribute-search code**:
+  - `ask.attr_search.skipped`: the message names a product, so the quote path is taken.
+  - `ask.attr_search.over_budget` (WARN): the lookup was over budget or too many were in flight.
+  - `ask.attr_search.lookup_failed` (ERROR).
+  - `ask.attr_search.lookup`: grounded or not.
+  - `ask.attr_search.product_check_failed` (WARN).
+  - `ask.attr_search.followup_failed` (WARN).
+  - `ask.attr_search.family_skipped` (WARN, in `menu_source`).
+- **Already fine**: `budget.run_with_budget` already submits with `contextvars.copy_context()`, so the run id reaches the lookup thread.
+- **Not changed (privacy)**: `ask_attribute_followup.py` logs the customer's raw reply in a stdlib line (`"follow-up %r is not a %r value"`). This belongs with the personal-data fixes in section 4, item 6.
+
 ## 4. What is still pending (in priority order)
 
 1. **A real run on dev**. It has never run against a real database. Deploy the branch to dev with the defaults, then:
@@ -95,7 +111,7 @@
    - The per-page and per-chunk records in `extract_mentions` and the REST connector build their context before the level check.
    - `boto3` is not in the OCI Function image, so the S3 sink cannot work there.
    - The health route writes a record every 15 seconds.
-6. **Separate PR (needs a yes)**: personal data in existing log lines. The Oracle error lines print bind values and the first row; the OCI user id is printed in full; `cpq_apply_answer_miss` logs the raw reply.
+6. **Separate PR (needs a yes)**: personal data in existing log lines. The Oracle error lines print bind values and the first row; the OCI user id is printed in full; `cpq_apply_answer_miss` and the attribute-search follow-up line log the raw reply.
 7. When all of the above is done, drop "WIP" from the PR title.
 
 ## 5. How to run the checks (macOS notes from this session)
@@ -115,4 +131,4 @@
 - **5.1 deep trail**: done for the files listed in section 3, with the review caveat there.
 - **5.2 compare against a clean base**: done, for the merge and for the area C related tests.
 - **5.5 "rules carry only rule_name"**: no longer true after the merge (`ref_id` exists). See section 4, item 4.
-- **Sections 0 to 3 of that document**: done for this round. The branch is up to date with `dev_oci` as of `ed84ab4`. If `dev_oci` moves again, repeat its section 0 (merge, not rebase, so PR #422 stays valid).
+- **Sections 0 to 3 of that document**: done for this round. The branch is up to date with `dev_oci` as of `6567b4f` (PR #423). If `dev_oci` moves again, repeat its section 0 (merge, not rebase, so PR #422 stays valid).
