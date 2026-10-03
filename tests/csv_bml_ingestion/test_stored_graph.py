@@ -187,7 +187,7 @@ def _session(monkeypatch, bml_index, tmp_path, db=None):
     db = db or FakeDb()
     built = []
     monkeypatch.setattr(dbmod, "oracle_connection_factory", lambda: (built.append("factory"), db)[1])
-    monkeypatch.setattr(stored_graph, "StoredGraphLookup", lambda factory, ws: (built.append(("lookup", ws)), bml_index)[1])
+    monkeypatch.setattr(stored_graph, "CuratedFirstLookup", lambda factory, ws: (built.append(("lookup", ws)), bml_index)[1])
     monkeypatch.setattr(llm_client, "project_llm_completer", lambda: None)
     monkeypatch.setenv("ARYX_CSV_BML_SQL_DIR", str(tmp_path / "sqlroot"))
     monkeypatch.delenv("ARYX_CSV_BML_REJECTS_DIR", raising=False)
@@ -362,3 +362,89 @@ def test_upload_loop_processes_xml_before_csv_when_enabled(monkeypatch):
         ingest=lambda d, n: (order.append("csv"), IngestResult(source=n, status="loaded"))[1]))
     fr._run_files([(b"a,b\n1,2\n", "x.csv"), (b"<r/>", "g.xml")], "T", [], [], "job3", workspace_id=1)
     assert order == ["xml", "csv"]
+
+
+# --- curated graph first, raw graph as the fallback ----------------------------------------------
+def _curated_first(monkeypatch, curated_projection, raw_projection):
+    from aryx.cpq_ingestion.naming import raw_workspace_id
+    monkeypatch.setattr(sg, "get_cpq_ingestion_settings", lambda: SimpleNamespace(cpq_raw_workspace_offset=1_000_000_000))
+    cur_db = FakeGraphDb(curated_projection, 3)                                         # curated scope = workspace id
+    raw_db = FakeGraphDb(raw_projection, raw_workspace_id(3, 1_000_000_000, "some_file"))
+    lk = sg.CuratedFirstLookup(None, 3)
+    lk.curated, lk.raw = StoredGraphLookup(cur_db, 3, sg.CURATED), StoredGraphLookup(raw_db, 3, sg.RAW)
+    lk.cur_db, lk.raw_db = cur_db, raw_db
+    return lk
+
+
+def test_curated_scope_is_exactly_the_workspace_id(monkeypatch, enriched):
+    lk = _curated_first(monkeypatch, enriched, enriched)
+    lk.lookup("attrsequence")
+    assert [c[1] for c in lk.cur_db.calls if c[0] == sg._ENRICHED_SQL] == [(3, 3)]
+
+
+def test_the_curated_graph_answers_and_the_raw_graph_is_not_even_read(monkeypatch, enriched):
+    lk = _curated_first(monkeypatch, enriched, project_xml_to_raw_graph(XML))
+    r = lk.lookup("attrSequence")
+    assert r.source == "curated graph" and r.matches[0].label == "id=111"
+    assert lk.raw_db.calls == []
+
+
+def test_without_query_lists_in_the_curated_graph_the_raw_graph_answers(monkeypatch, enriched, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger=sg.logger.name):
+        lk = _curated_first(monkeypatch, project_xml_to_raw_graph(XML), enriched)       # curated has no lists yet
+        r = lk.lookup("attrSequence")
+    assert r.source == "raw graph" and r.matches[0].label == "id=111"
+    assert "no query lists in its curated graph" in caplog.text
+
+
+def test_when_the_curated_graph_has_lists_it_is_the_authority(monkeypatch):
+    only_222 = enrich_projection(project_xml_to_raw_graph(
+        b"<root><fn><id>222</id><script_text>q = \"select a from attrToPDNonFrequency where b=1\" + \"\";</script_text></fn></root>"))
+    lk = _curated_first(monkeypatch, only_222, enrich_projection(project_xml_to_raw_graph(XML)))
+    r = lk.lookup("attrSequence")                      # only an older raw graph knows this table
+    assert r.matches == () and r.source == "curated graph"
+    assert lk.raw_db.calls == []
+
+
+def test_the_choice_is_made_once_per_job(monkeypatch, enriched):
+    lk = _curated_first(monkeypatch, enriched, enriched)
+    lk.lookup("attrsequence"); lk.lookup("attrtopdnonfrequency")
+    assert len([c for c in lk.cur_db.calls if c[0] == sg._ENRICHED_SQL]) == 1
+
+
+def test_the_pipeline_log_names_the_graph_that_answered(monkeypatch, enriched, tmp_path, seeded_sql_root):
+    from aryx.csv_bml_ingestion import ingest_csv
+    lk = _curated_first(monkeypatch, enriched, enriched)
+    csv_path = write_csv(tmp_path / "attrSequence.csv", SEQ_HEADER, ["String"] * 15,
+                         [["modify", "k", "M", "B", "", "", "a", "1", "R", "", "", "", "", "", ""]])
+    assert ingest_csv(csv_path, lk, FakeDb()).status == "loaded"
+
+
+# --- confirm step: the curated graph is built from a projection that carries the query lists ----------
+def test_the_confirm_step_adds_the_query_lists_before_resolving(monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph
+    monkeypatch.setenv("ARYX_CSV_BML_ENABLED", "true")
+    seen = {}
+
+    def fake_run_pipeline(connector, **kw):
+        seen.setdefault("props", []).extend(dict(r.payload) for r in connector.extract())
+        return {"entities": 1, "run_id": "r1"}
+
+    est = MagicMock()
+    est.entity_ids_by_run.return_value = {}
+    base = "aryx.cpq_ingestion.raw_graph.resolve_relate."
+    with patch(base + "run_pipeline", side_effect=fake_run_pipeline), patch(base + "EntityStore", return_value=est), \
+         patch(base + "project_workspace_graph", return_value={}), \
+         patch("aryx.cpq_ingestion.raw_graph.match_key_inference.llm_runtime.chat", side_effect=RuntimeError("no llm")):
+        resolve_and_relate_raw_graph(project_xml_to_raw_graph(XML), workspace_id=3, source_key="k", dsn="", graph_url="",
+                                     broker=MagicMock())
+    assert [p[TABLES_KEY] for p in seen["props"] if TABLES_KEY in p] == [["attrsequence"], ["attrtopdnonfrequency"]]
+
+
+def test_the_confirm_step_is_unchanged_when_the_switch_is_off(monkeypatch):
+    from aryx.cpq_ingestion.raw_graph.store import with_query_tables
+    monkeypatch.delenv("ARYX_CSV_BML_ENABLED", raising=False)
+    proj = project_xml_to_raw_graph(XML)
+    assert with_query_tables(proj) is proj

@@ -24,6 +24,7 @@ from aryx.broker import Broker
 from aryx.cpq_ingestion.raw_graph.containment_relate import translate_containment_edges
 from aryx.cpq_ingestion.raw_graph.match_key_inference import infer_match_keys_for_tag
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection
+from aryx.cpq_ingestion.raw_graph.store import with_query_tables
 from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     SOURCE_SYSTEM,
     RawGraphConnector,
@@ -72,6 +73,9 @@ def resolve_and_relate_raw_graph(
         )
         return {"tags": 0, "entities": 0, "relationships": 0}
 
+    # Opt-in (ARYX_CSV_BML_ENABLED): the curated graph is what a CSV upload searches for the BML query,
+    # so the query lists must be on the entities that resolve/relate builds it from.
+    projection = with_query_tables(projection)
     by_tag = group_nodes_by_tag(projection)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)

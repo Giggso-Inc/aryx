@@ -1,17 +1,24 @@
 """Step 2 against the *stored* knowledge graph: find scripts without the XML.
 
+``CuratedFirstLookup`` is what an upload uses: it searches the **curated** graph (the final
+projection the XML confirm step builds, scope = the workspace id) and falls back to the raw
+graph only when the curated one carries no query lists yet (XML not confirmed, or confirmed
+before the lists were recorded). ``StoredGraphLookup`` is the search over one of the two.
+
 ``StoredGraphLookup`` has the same ``lookup(table)`` contract as ``BmlIndex`` but reads
-the raw graph an earlier XML ingestion wrote to ``aryx_graph_vertex`` /
+a graph an earlier XML ingestion wrote to ``aryx_graph_vertex`` /
 ``aryx_graph_edge`` (Oracle backend). It looks only at nodes carrying the
 ``bml_tables`` list added by ``bml_graph`` at ingest time — typically a few dozen
 nodes out of hundreds of thousands, found with one JSON query — and searches
 **every** XML raw graph of the workspace (each XML has its own derived scope; they
-share one contiguous id range per workspace, see ``aryx.cpq_ingestion.naming``).
+share one contiguous id range per workspace, see ``aryx.cpq_ingestion.naming``), or the
+workspace's curated graph (a single scope: the workspace id).
 For each match it reads the neighbours in the graph to describe it (identity, path).
 """
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
@@ -22,6 +29,10 @@ from aryx.csv_bml_ingestion.bml_index import (
 )
 from aryx.csv_bml_ingestion.db import ConnectionFactory
 from aryx.csv_bml_ingestion.query_extract import SqlQuery
+
+logger = logging.getLogger(__name__)
+
+RAW, CURATED = "raw graph", "curated graph"
 
 _ENRICHED_SQL = (
     "SELECT workspace_id, entity_id, type, attributes FROM aryx_graph_vertex "
@@ -51,11 +62,15 @@ def _attrs(value: Any) -> dict:
 class StoredGraphLookup:
     """``lookup(table)`` over the workspace's stored XML knowledge graphs."""
 
-    def __init__(self, factory: ConnectionFactory, workspace_id: int) -> None:
-        offset = get_cpq_ingestion_settings().cpq_raw_workspace_offset
+    def __init__(self, factory: ConnectionFactory, workspace_id: int, scope: str = RAW) -> None:
         self._factory = factory
-        self._lo = raw_workspace_id(workspace_id, offset, "")
-        self._hi = raw_workspace_id(workspace_id + 1, offset, "") - 1
+        self.source = scope
+        if scope == CURATED:                      # the curated graph lives under the plain workspace id
+            self._lo = self._hi = int(workspace_id)
+        else:
+            offset = get_cpq_ingestion_settings().cpq_raw_workspace_offset
+            self._lo = raw_workspace_id(workspace_id, offset, "")
+            self._hi = raw_workspace_id(workspace_id + 1, offset, "") - 1
         self._rows: list[tuple[int, int, str, dict]] | None = None
         self.node_count = 0   # unknown without scanning the whole graph; kept for interface parity
 
@@ -83,7 +98,7 @@ class StoredGraphLookup:
         near = tuple(sorted(t for t in self.tables if t != key and t.startswith(key)))
         matches = [self._match(key, ws, eid, tag, attrs)
                    for ws, eid, tag, attrs in self._enriched() if key in attrs.get(TABLES_KEY, [])]
-        return BmlLookup(table=key, matches=tuple(matches), near_misses=near)
+        return BmlLookup(table=key, matches=tuple(matches), near_misses=near, source=self.source)
 
     def _match(self, table: str, ws: int, entity_id: int, tag: str, attrs: dict) -> BmlMatch:
         queries = tuple(
@@ -119,3 +134,47 @@ class StoredGraphLookup:
                 up = cur.fetchall()
                 cur_id = int(up[0][0]) if up else None
         return identity, tuple(reversed(tags))
+
+
+class CuratedFirstLookup:
+    """``lookup(table)`` over the workspace's graphs: curated first, raw only as a fallback.
+
+    The curated graph is authoritative whenever it carries query lists: a table it does not
+    mention is *not found*, even if an older raw graph mentions it. Only when the curated graph
+    has no query lists at all (XML not confirmed yet, or confirmed before the lists were
+    recorded) is the raw graph searched instead. The choice is made once per instance (one
+    upload job) and logged.
+    """
+
+    def __init__(self, factory: ConnectionFactory, workspace_id: int) -> None:
+        self.workspace_id = int(workspace_id)
+        self.curated = StoredGraphLookup(factory, workspace_id, CURATED)
+        self.raw = StoredGraphLookup(factory, workspace_id, RAW)
+        self._chosen: StoredGraphLookup | None = None
+        self.node_count = 0   # unknown without scanning the whole graph; kept for interface parity
+
+    @property
+    def chosen(self) -> StoredGraphLookup:
+        """The graph searched for this job."""
+        if self._chosen is None:
+            if self.curated.script_count:
+                self._chosen = self.curated
+            else:
+                self._chosen = self.raw
+                logger.warning(
+                    "csv_bml_ingestion: workspace %s has no query lists in its curated graph (XML not confirmed "
+                    "yet, or confirmed before this feature); searching the raw graph instead", self.workspace_id)
+            logger.info("csv_bml_ingestion: workspace %s step 2 searches the %s", self.workspace_id,
+                        self._chosen.source)
+        return self._chosen
+
+    @property
+    def script_count(self) -> int:
+        return self.chosen.script_count
+
+    @property
+    def tables(self) -> list[str]:
+        return self.chosen.tables
+
+    def lookup(self, table: str) -> BmlLookup:
+        return self.chosen.lookup(table)
