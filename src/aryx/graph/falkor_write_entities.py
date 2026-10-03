@@ -8,10 +8,12 @@ up by `FalkorStore.__init__`.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
 from aryx.graph.falkor_sanitize import _INDEX_PROP_RE, _display_name, _lift_props, _safe_labels
+from aryx.raven_log import current_run_id, raven_log, would_log
 
 
 class _FalkorEntityWriteMixin:
@@ -88,6 +90,7 @@ class _FalkorEntityWriteMixin:
         insert_graph_vertex fast path (docs/ingestion/SPARK_PARALLEL_
         MIGRATION_ANALYSIS_2026-09-23.md Phase 4 Part B follow-up).
         """
+        started = time.monotonic()
         groups: dict[tuple[str, ...], list[tuple[int, str, dict[str, Any], str | None]]] = {}
         for entity_id, ontology_type, attributes, labels, iri in entities:
             chain = [ontology_type] + list(labels or [])
@@ -119,8 +122,21 @@ class _FalkorEntityWriteMixin:
                     {"rows": params},
                 )
                 written += len(chunk)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.graph.entities_batch one UNWIND batch written",
+                              context={"dependency_name": "falkordb", "operation": "write_entities_batch",
+                                       "duration_ms": int((time.monotonic() - started) * 1000),
+                                       "result": "ok", "error_class": None, "attempt": 1,
+                                       "trace_id": current_run_id(), "label_set": list(safe_labels),
+                                       "batch_rows": len(chunk), "written_total": written})
                 if on_batch is not None:
                     on_batch(written)
+        raven_log("DEBUG", "P4", "ingest.graph.entities_written entity nodes written",
+                  context={"task_id": current_run_id(), "final_status": "complete",
+                           "duration_ms": int((time.monotonic() - started) * 1000),
+                           "stage": "graph_entities", "result": "ok", "reason_code": "ENTITIES_WRITTEN",
+                           "impact_scope": "graph_nodes", "entities": len(entities),
+                           "written": written, "label_groups": len(groups), "backend": "falkordb"})
         return written
 
     def remove_entity(self, entity_id: int) -> None:

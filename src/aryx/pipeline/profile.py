@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from aryx.models import CleanRecord, FieldProfile
+from aryx.raven_log import current_run_id, raven_log
 
 _MAX_SAMPLES = 5
 # Cap distinct tracking so a high-cardinality field can't grow memory without
@@ -39,12 +40,23 @@ class ProfileAccumulator:
                 seen.add(text)
                 if len(seen) >= _DISTINCT_CAP:
                     self._capped.add(field)
+                    raven_log("WARN", "P3", "ingest.profile.distinct_capped distinct count is now a floor",
+                              error_code="ARYX_ING_PROFILE_DISTINCT_CAPPED",
+                              context={"selected_option": "cap", "available_options": ["track", "cap"],
+                                       "reason_code": "DISTINCT_CAP_REACHED",
+                                       "policy_version": "profile_distinct_cap_v1",
+                                       "field": field, "cap": _DISTINCT_CAP})
             bucket = self._samples.setdefault(field, [])
             if len(bucket) < _MAX_SAMPLES and text not in bucket:
                 bucket.append(text)
 
     def result(self) -> list[FieldProfile]:
         """Return one FieldProfile per field observed so far."""
+        raven_log("DEBUG", "P4", "ingest.profile.result field profiles built",
+                  context={"task_id": current_run_id(), "final_status": "built", "duration_ms": 0,
+                           "stage": "profile", "result": "ok", "reason_code": "PROFILED",
+                           "impact_scope": "field_profiles", "fields": len(self._non_null),
+                           "capped_fields": sorted(self._capped)})
         return [
             FieldProfile(
                 field=field,

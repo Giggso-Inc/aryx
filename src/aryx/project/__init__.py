@@ -59,8 +59,15 @@ def project_auto(
     try:
         dirty_ratio_max = float(os.environ.get("ARYX_PROJECT_DIRTY_MAX",
                                                dirty_ratio_max))
-    except ValueError:
-        pass
+    except ValueError as exc:
+        # Bad ARYX_PROJECT_DIRTY_MAX: keep the default threshold, but say so.
+        raven_log("WARN", "P3", "ingest.project.dirty_max_invalid setting is not a number, default used",
+                  error_code="ARYX_ING_PROJECT_DIRTY_MAX_INVALID",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "use_default_threshold",
+                           "fallback_target": dirty_ratio_max, "exit_condition": "default_used",
+                           "result": "degraded", "setting": "ARYX_PROJECT_DIRTY_MAX",
+                           "raw_value": str(os.environ.get("ARYX_PROJECT_DIRTY_MAX", ""))[:40]})
     lo, hi = pct_range
     since = pstore.watermark()
     _ws = kwargs.get("workspace_id")
