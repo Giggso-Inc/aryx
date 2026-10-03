@@ -140,7 +140,7 @@ def _env_num(name: str, default: float, cast: Callable[[Any], Any]) -> Any:
     except (TypeError, ValueError):
         _warn_once(f"bad {name}={raw!r}; using {default}")
         value = default
-    return value if value > 0 else default
+    return value if 0 < value < float("inf") else default
 
 
 def _load_cfg() -> _Cfg:
@@ -286,7 +286,10 @@ class _S3BatchEmitter:
                     self._cv.wait(timeout=self._flush_s)
                 batch, dropped = self._take()
                 done = self._stop and self._n == 0
-            self._write(batch, dropped)
+            try:
+                self._write(batch, dropped)
+            except Exception as exc:  # keep the uploader alive; the batch is lost
+                _warn_once(f"S3 batch write failed, {len(batch)} record(s) lost: {exc!r}")
             if done:
                 return
 

@@ -244,3 +244,29 @@ def test_sink_both_writes_stdout_and_s3(monkeypatch, capsys):
     m.flush()
     assert len(fake.puts) == 1
     assert cfg.sink == "both"
+
+
+def test_s3_worker_survives_a_failing_write(monkeypatch):
+    fake = FakeS3()
+    em = m._S3BatchEmitter(_s3_cfg(monkeypatch), client=fake)
+    calls = {"n": 0}
+    real = em._write
+
+    def flaky(batch, dropped):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real(batch, dropped)
+
+    warned = []
+    monkeypatch.setattr(m, "_warn_once", warned.append)
+    monkeypatch.setattr(em, "_write", flaky)
+    em(_rec("INFO", 1))
+    em.close()  # the worker's write raises; it must warn and stop cleanly, not die
+    assert any("S3 batch write failed" in w for w in warned)
+
+
+def test_infinite_flush_seconds_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("ARYX_RAVEN_LOG_S3_FLUSH_SECONDS", "inf")
+    m.reload_config()
+    assert m._cfg().flush_s == 5.0
