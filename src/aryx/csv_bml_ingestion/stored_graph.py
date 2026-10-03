@@ -26,7 +26,9 @@ from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, TABL
 from aryx.csv_bml_ingestion.bml_index import (
     MAX_IDENTITY_CHARS, MAX_IDENTITY_VALUES, PATH_DEPTH, BmlLookup, BmlMatch, make_label,
 )
-from aryx.csv_bml_ingestion.constants import CURATED_FALLBACK_CODE, STEP_BML_LOOKUP
+from aryx.csv_bml_ingestion.constants import (
+    CURATED_FALLBACK_CODE, FALLBACK_RECOVERY, FALLBACK_TRIGGER, RESULT_DEGRADED, STEP_BML_LOOKUP,
+)
 from aryx.csv_bml_ingestion.db import ConnectionFactory
 from aryx.csv_bml_ingestion.errors import WorkspaceScopeError
 from aryx.csv_bml_ingestion.query_extract import SqlQuery
@@ -66,15 +68,22 @@ class StoredGraphLookup:
         self._factory = factory
         self.source = scope
         offset = get_cpq_ingestion_settings().cpq_raw_workspace_offset
+        try:
+            wid = int(workspace_id)
+        except (TypeError, ValueError):
+            raise WorkspaceScopeError(f"workspace id {workspace_id!r} is not an integer") from None
+        if wid <= 0 or offset <= 0:
+            raise WorkspaceScopeError(
+                f"workspace id ({wid}) and the raw-graph id offset ({offset}) must both be positive")
         if scope == CURATED:                      # the curated graph lives under the plain workspace id
-            if int(workspace_id) >= offset:       # ...so it must stay below the raw graphs' id range
+            if wid >= offset:                     # ...so it must stay below the raw graphs' id range
                 raise WorkspaceScopeError(
-                    f"workspace id {workspace_id} is not below the raw-graph id offset {offset}; the curated and "
+                    f"workspace id {wid} is not below the raw-graph id offset {offset}; the curated and "
                     "raw graph scopes would overlap (raise ARYX_CPQ_RAW_WORKSPACE_OFFSET)")
-            self._lo = self._hi = int(workspace_id)
+            self._lo = self._hi = wid
         else:
-            self._lo = raw_workspace_id(workspace_id, offset, "")
-            self._hi = raw_workspace_id(workspace_id + 1, offset, "") - 1
+            self._lo = raw_workspace_id(wid, offset, "")
+            self._hi = raw_workspace_id(wid + 1, offset, "") - 1
         self._rows: list[tuple[int, int, str, dict]] | None = None
         self.node_count = 0   # unknown without scanning the whole graph; kept for interface parity
 
@@ -156,9 +165,9 @@ class CuratedFirstLookup:
     """
 
     def __init__(self, factory: ConnectionFactory, workspace_id: int) -> None:
+        self.curated = StoredGraphLookup(factory, workspace_id, CURATED)   # validates the workspace id first
         self.workspace_id = int(workspace_id)
         self._factory = factory
-        self.curated = StoredGraphLookup(factory, workspace_id, CURATED)
         self._raw: StoredGraphLookup | None = None
         self._chosen: StoredGraphLookup | None = None
         self.node_count = 0   # unknown without scanning the whole graph; kept for interface parity
@@ -184,8 +193,8 @@ class CuratedFirstLookup:
                     "no query lists in the curated graph (XML not confirmed yet, or confirmed before this "
                     "feature); searching the raw graph instead",
                     error_code=CURATED_FALLBACK_CODE, workspace_id=self.workspace_id,
-                    triggering_error="no_query_lists", recovery_selected="raw_graph", fallback_target=RAW,
-                    exit_condition="degraded", result="degraded")
+                    triggering_error=FALLBACK_TRIGGER, recovery_selected=FALLBACK_RECOVERY, fallback_target=RAW,
+                    exit_condition=RESULT_DEGRADED, result=RESULT_DEGRADED)
             tracker.info(STEP_BML_LOOKUP, f"step 2 searches the {self._chosen.source}",
                          workspace_id=self.workspace_id, source_graph=self._chosen.source)
         return self._chosen

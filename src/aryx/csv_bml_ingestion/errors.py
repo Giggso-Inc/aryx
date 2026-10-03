@@ -88,9 +88,3 @@ class WorkspaceScopeError(CsvBmlIngestionError):
     """A workspace id would collide with the id range the raw graphs use (see ``stored_graph``)."""
 
     code = "CBI_WORKSPACE_SCOPE"
-
-
-class WorkspaceScopeError(CsvBmlIngestionError):
-    """A workspace id would collide with the id range the raw graphs use (see ``stored_graph``)."""
-
-    code = "CBI_WORKSPACE_SCOPE"

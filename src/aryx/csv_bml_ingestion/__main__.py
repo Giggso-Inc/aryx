@@ -22,6 +22,7 @@ from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
 from aryx.csv_bml_ingestion.llm_client import project_llm_completer
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.pipeline import ingest_csv
+from aryx.csv_bml_ingestion.constants import STORED_GRAPH_SOURCE
 from aryx.csv_bml_ingestion.stored_graph import CuratedFirstLookup
 from aryx.csv_bml_ingestion.table_name import extract_table_name
 from aryx.csv_bml_ingestion.tracking import RunTracker
@@ -60,7 +61,7 @@ def _load_index(args: argparse.Namespace, factory) -> "BmlIndex | CuratedFirstLo
         tracker.error("xml_graph", f"cannot build XML graph: {exc}", error_code=exc.code)
         print(f"ERROR [{exc.code}] {exc}", file=sys.stderr)
         return None
-    tracker.info("xml_graph", "XML graph ready", source="xml" if args.xml else "stored_graph (curated first, raw fallback)",
+    tracker.info("xml_graph", "XML graph ready", source="xml" if args.xml else STORED_GRAPH_SOURCE,
                  nodes=index.node_count, query_nodes=index.script_count, queried_tables=len(index.tables))
     return index
 
