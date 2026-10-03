@@ -17,6 +17,8 @@ from aryx.cpq_ingestion.naming import raw_workspace_id, raw_ws_graph
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection, RawGraphWriteResult
 from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +113,10 @@ def write_raw_graph(
         workspace_id, source_key, backend, graph_ref, len(projection.nodes), len(projection.edges),
     )
     store = get_raw_graph_store(workspace_id, source_key, dsn=dsn, graph_url=graph_url)
+    raven_log("DEBUG", "P4", "ingest.raw_graph.write clearing and rewriting file scope",
+              context={"workspace_id": workspace_id, "source_key": source_key, "backend": backend,
+                       "graph_ref": graph_ref, "nodes": len(projection.nodes), "edges": len(projection.edges),
+                       "selected_option": "full_rebuild", "reason_code": "CLEAR_THEN_WRITE"})
     store.clear()
     entities = [(n.id, n.tag, n.properties, None, None) for n in projection.nodes]
     relationships = [(e.source_id, e.target_id, e.name) for e in projection.edges]
@@ -156,6 +162,11 @@ def _with_query_tables(projection: RawGraphProjection) -> RawGraphProjection:
         from aryx.csv_bml_ingestion.bml_graph import enrich_projection
 
         return enrich_projection(projection)
-    except Exception:  # noqa: BLE001 -- the raw graph is a best-effort provenance layer
+    except Exception as exc:  # noqa: BLE001 -- the raw graph is a best-effort provenance layer
         logger.warning("cpq_ingestion: query-table enrichment failed; writing the plain raw graph", exc_info=True)
+        raven_log("WARN", "P3", "ingest.raw_graph.enrich_failed query-table enrichment skipped, plain graph written",
+                  error_code="ARYX_ING_RAW_GRAPH_ENRICH_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "plain_projection", "fallback_target": None,
+                           "exit_condition": "degraded", "result": "degraded"})
         return projection

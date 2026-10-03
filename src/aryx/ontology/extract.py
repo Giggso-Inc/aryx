@@ -31,6 +31,8 @@ from aryx.llm import complete_json
 from aryx.models import DocumentChunk, RawRecord
 from aryx.ontology.extract_prompt import _SCHEMA, _system_prompt
 from aryx.ontology.extract_records import _mentions_to_records, _verbatim_ok
+from aryx.raven_log import raven_log, submit_ctx, would_log
+from aryx.worker.job_partial import note_hidden
 
 __all__ = ["extract_mentions"]
 
@@ -47,6 +49,10 @@ def _extract_chunk_with_retry(
     for attempt in range(1, max_attempts + 1):
         try:
             result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.mentions.chunk attempt succeeded",
+                          context={"doc_id": chunk.doc_id[:8], "chunk": chunk.chunk_index, "attempt": attempt,
+                                   "max_attempts": max_attempts, "result": "ok"})
             return chunk, result, None
         except Exception as exc:  # noqa: BLE001 — any provider/parse failure is retryable
             last_exc = exc
@@ -55,7 +61,18 @@ def _extract_chunk_with_retry(
                     "extraction attempt %d/%d failed chunk=%d doc=%s error=%s — retrying",
                     attempt, max_attempts, chunk.chunk_index, chunk.doc_id[:8], exc,
                 )
+                raven_log("DEBUG", "P4", "ingest.mentions.chunk retry scheduled",
+                          context={"doc_id": chunk.doc_id[:8], "chunk": chunk.chunk_index, "attempt": attempt,
+                                   "max_attempts": max_attempts, "backoff_ms": int(retry_delay * attempt * 1000),
+                                   "triggering_error": type(exc).__name__, "recovery_selected": "retry",
+                                   "exit_condition": "attempts_remaining", "result": "retrying"})
                 time.sleep(retry_delay * attempt)
+            else:
+                raven_log("DEBUG", "P4", "ingest.mentions.chunk gave up after last attempt",
+                          context={"doc_id": chunk.doc_id[:8], "chunk": chunk.chunk_index, "attempt": attempt,
+                                   "max_attempts": max_attempts, "triggering_error": type(exc).__name__,
+                                   "recovery_selected": "give_up", "exit_condition": "attempts_exhausted",
+                                   "result": "failed"})
     return chunk, None, last_exc
 
 
@@ -119,11 +136,17 @@ def extract_mentions(
     completed = 0
     pending_flush: list[RawRecord] = []
     system_prompt = _system_prompt(context)
+    t0 = time.monotonic()
+    last_error_class = ""
+    raven_log("DEBUG", "P4", "ingest.mentions.start extraction settings",
+              context={"chunks": total, "workers": workers, "max_attempts": max_attempts,
+                       "retry_delay_s": retry_delay, "flush_every": flush_every,
+                       "has_progress_callback": on_progress is not None, "has_context": bool(context)})
 
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         futures = {
-            pool.submit(_extract_chunk_with_retry, chunk, broker, system_prompt,
+            submit_ctx(pool, _extract_chunk_with_retry, chunk, broker, system_prompt,
                        max_attempts, retry_delay): chunk
             for chunk in chunks
         }
@@ -132,6 +155,7 @@ def extract_mentions(
             completed += 1
             if result is None:
                 failed_chunks += 1
+                last_error_class = type(last_exc).__name__ if last_exc is not None else ""
                 logger.warning(
                     "extraction failed chunk=%d doc=%s after %d attempt(s), giving up: %s",
                     chunk.chunk_index, chunk.doc_id[:8], max_attempts, last_exc,
@@ -143,8 +167,17 @@ def extract_mentions(
                 records.extend(new_records)
                 pending_flush.extend(new_records)
                 rejected += new_rejected
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.mentions.chunk mentions gated",
+                              context={"doc_id": chunk.doc_id[:8], "chunk": chunk.chunk_index,
+                                       "mentions_returned": len(result.get("mentions", [])),
+                                       "kept": len(new_records), "rejected_by_span_gate": new_rejected})
 
             if on_progress and (completed % flush_every == 0 or completed == total):
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.mentions.flush progress callback",
+                              context={"completed": completed, "total": total, "flushed_records": len(pending_flush),
+                                       "selected_option": "flush", "reason_code": "FLUSH_EVERY_OR_LAST"})
                 on_progress(completed, total, pending_flush)
                 pending_flush = []
     finally:
@@ -158,4 +191,17 @@ def extract_mentions(
             "0 discovered types is due to LLM extraction failure, not an empty document",
             failed_chunks,
         )
+        note_hidden()
+        raven_log("ERROR", "P2", "ingest.mentions.all_failed every chunk failed extraction",
+                  error_code="ARYX_ING_LLM_EXTRACT_FAILED",
+                  context={"dependency_name": "oci_genai", "operation": "extract_mentions",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "error_class": last_error_class, "attempt": max_attempts, "chunks": total,
+                           "failed_chunks": failed_chunks, "model": "cheap_tier",
+                           "prompt_version": "unversioned"})
+    else:
+        raven_log("DEBUG", "P4", "ingest.mentions.done extraction finished",
+                  context={"chunks": total, "mentions": len(records), "rejected": rejected,
+                           "failed_chunks": failed_chunks, "partial": failed_chunks > 0,
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
     return records

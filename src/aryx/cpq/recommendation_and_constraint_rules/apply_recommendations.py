@@ -124,6 +124,7 @@ def apply_recommendation_rules(
             rule_type="recommendation", rule_id=rule.rule_name,
             attr=target.variable_name, outcome=f"set={recommended_value}",
             bml_tier="script" if rule.script is not None else None,
+            ref_id=getattr(rule, "ref_id", None) or None,
         )
     if new_fills:
         logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))

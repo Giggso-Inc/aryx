@@ -19,6 +19,7 @@ import defusedxml.ElementTree as defused_ET
 
 from aryx.cpq_ingestion.constants import RAW_EDGE_CONTAINS, RAW_PROP_TEXT
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -153,4 +154,7 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
             "project_xml_to_raw_graph: done, %d node(s) / %d edge(s), %.1fs elapsed",
             len(nodes), len(edges), time.monotonic() - start,
         )
+    raven_log("DEBUG", "P4", "ingest.raw_graph.project xml walked into nodes and edges",
+              context={"nodes": len(nodes), "edges": len(edges),
+                       "root_tag": nodes[0].tag if nodes else "", "bytes": len(data)})
     return RawGraphProjection(nodes=nodes, edges=edges)  # type: ignore[arg-type]  # every slot is filled by this point

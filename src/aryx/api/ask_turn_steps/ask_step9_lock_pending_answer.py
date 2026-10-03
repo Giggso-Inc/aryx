@@ -34,6 +34,7 @@ from aryx.api.ask_turn_steps.ask_step9_miss_response import (
     _step9_options_miss_response,
 )
 from aryx.api.ask_turn_steps.ask_step9_scope_setup import _step9_scope_and_constraint_setup
+from aryx.raven_log import raven_log
 
 from aryx.api.ask_llm.ask_llm_topic_switch_and_change_decline import _pending_reply_is_topic_switch
 
@@ -52,6 +53,12 @@ def _step9_lock_pending_answer(
     """
     pending_var: str | None = None
     if not (session.pending_variables and session.turn > 1 and not mode_request):
+        raven_log("DEBUG", "P4", "ask.reply.lock skipped, nothing pending", context={
+            "selected_option": "skip", "reason_code": (
+                "NO_PENDING_VARIABLES" if not session.pending_variables
+                else "FIRST_TURN" if session.turn <= 1 else "MODE_REQUEST"),
+            "pending_count": len(session.pending_variables or []), "turn": getattr(session, "turn", None),
+            "mode_request": mode_request})
         return None, pending_var
 
     # 2026-09-01 (ported from dev-rv-msi #305): before locking `req.question`
@@ -65,6 +72,9 @@ def _step9_lock_pending_answer(
     # — it was never a reply to that; pending_var stays None and the caller
     # proceeds with whatever STEP 5 convergence logic runs next.
     if _try_apply_grid_quantities_batch_reply(req.question, session, attrs):
+        raven_log("DEBUG", "P4", "ask.reply.lock grid batch reply applied", context={
+            "selected_option": "grid_batch_applied", "reason_code": "GRID_BATCH_REPLY",
+            "pending_count": len(session.pending_variables or []), "turn": getattr(session, "turn", None)})
         return None, pending_var
 
     # 2026-09-02 (ported from dev-rv-msi #307): a purely positional batch
@@ -76,6 +86,9 @@ def _step9_lock_pending_answer(
     # explanation of what actually went wrong.
     _mismatch_response = _grid_batch_count_mismatch_message(req, session, attrs)
     if _mismatch_response is not None:
+        raven_log("DEBUG", "P4", "ask.reply.lock grid batch count mismatch re-ask", context={
+            "selected_option": "mismatch_reask", "reason_code": "GRID_COUNT_MISMATCH",
+            "pending_count": len(session.pending_variables or []), "turn": getattr(session, "turn", None)})
         return _mismatch_response, pending_var
 
     pending_var = session.pending_variables[0]
@@ -86,6 +99,13 @@ def _step9_lock_pending_answer(
         req.question, pending_attr, attrs, session.filled,
         session.filled_multi, req.workspace_id,
     )
+    raven_log("DEBUG", "P4", "ask.reply.topic_switch pending reply checked", context={
+        "pending_field": pending_var, "pending_attr_found": pending_attr is not None,
+        "topic_switch": bool(_looks_like_new_request),
+        "selected_option": "new_request" if _looks_like_new_request else "answer_to_pending",
+        "available_options": ["answer_to_pending", "new_request"],
+        "reason_code": "TOPIC_SWITCH" if _looks_like_new_request else "PENDING_ANSWER",
+        "reply_len": len(req.question or ""), "turn": getattr(session, "turn", None)})
     if not (pending_attr and not _looks_like_new_request):
         return None, pending_var
 
@@ -107,6 +127,17 @@ def _step9_lock_pending_answer(
         req, pending_attr, pending_constrained, scope_for_attr, scope_cands, result,
     )
 
+    raven_log("DEBUG", "P4", "ask.reply.matched pending reply match outcome", context={
+        "pending_field": pending_var, "matched": bool(result),
+        "multi_match_count": len(multi_matches or []),
+        "llm_low_confidence_candidates": len(llm_low_confidence_candidates or []),
+        "option_count": len(pending_attr.options or []),
+        "selected_option": (
+            "apply" if result else "decline_optional_multiselect"
+            if (pending_attr.select_type == "multi" and not pending_attr.required) else
+            "low_confidence_ask" if llm_low_confidence_candidates else
+            "options_miss_reask" if pending_attr.options else "fall_through"),
+        "reason_code": "MATCHED" if result else "MISS", "turn": getattr(session, "turn", None)})
     if result:
         _resp = _step9_apply_pending_result(
             req, session, attrs, pending_attr, pending_var, result, multi_matches,

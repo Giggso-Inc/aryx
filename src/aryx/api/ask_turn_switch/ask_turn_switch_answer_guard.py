@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log
 
 
 def _is_answer_to_pending_over_switch(
@@ -76,6 +77,7 @@ def _is_answer_to_pending_over_switch(
     )
     alias_map: dict[str, str] | None = None
     switch_candidate: str | None = None
+    _options_matched = is_answer_to_pending
     if (
         is_answer_to_pending
         and not is_exact_option_reply
@@ -92,4 +94,18 @@ def _is_answer_to_pending_over_switch(
             and switch_candidate.strip().lower() != session.product_name.strip().lower()
         ):
             is_answer_to_pending = False
+    raven_log("DEBUG", "P4", "ask.switch.answer_guard answer-over-switch precedence decided", context={
+        "selected_option": "answer_to_pending" if is_answer_to_pending else "probe_switch",
+        "available_options": ["answer_to_pending", "probe_switch"],
+        "reason_code": (
+            "NO_PENDING_ATTR" if pending_attr_guard is None
+            else "EXACT_OPTION_REPLY" if is_answer_to_pending and is_exact_option_reply
+            else "OPTION_MATCH" if is_answer_to_pending
+            else "OTHER_PRODUCT_NAMED_OVER_OPTION" if _options_matched
+            else "NO_OPTION_MATCH"),
+        "pending_variable": getattr(pending_attr_guard, "variable_name", None),
+        "options_matched": _options_matched, "exact_option_reply": is_exact_option_reply,
+        "cross_check_ran": alias_map is not None, "switch_candidate": switch_candidate,
+        "current_product": getattr(session, "product_name", "") or "",
+        "reply_len": len(getattr(req, "question", "") or ""), "turn": getattr(session, "turn", None)})
     return is_answer_to_pending, alias_map, switch_candidate

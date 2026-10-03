@@ -38,6 +38,7 @@ from aryx.cpq.attribute_search.searchable import (
     yes_no,
 )
 from aryx.cpq.data_table import data_table_cache
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,12 @@ def _family_snapshot(
         attrs, _resolved = engine.load_product_config(reader, workspace_id, family)
     except Exception as exc:  # noqa: BLE001 -- one bad family must not end the search
         logger.warning("attribute_search: load_product_config(%r) failed: %s", family, exc)
+        raven_log("WARN", "P3", "ask.attr_search.family_skipped one family's menus could not load",
+                  error_code="ARYX_ASK_ATTR_SEARCH_FAMILY_SKIPPED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "skip_family", "fallback_target": None,
+                           "exit_condition": "skipped", "result": "skipped", "family": family,
+                           "workspace_id": workspace_id})
         _FAILED[key] = now
         return None
     _FAILED.pop(key, None)

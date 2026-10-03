@@ -9,7 +9,10 @@ import json
 import logging
 from typing import Any
 
+import time
+
 from aryx.broker.specs import ModelSpec
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,18 @@ def _oci_chat_raw(
             temperature=0.2,
         ),
     )
-    response = client.chat(chat_details=request)
+    _t0 = time.monotonic()
+    try:
+        response = client.chat(chat_details=request)
+    except Exception as exc:
+        raven_log("ERROR", "P2", "llm.call.failed oci genai chat call failed",
+                  error_code="ARYX_LLM_FAILED",
+                  context={"dependency_name": "oci_genai", "operation": "chat", "model": spec.name,
+                           "provider": "oci_genai", "role": "pipeline", "result": "error",
+                           "error_class": type(exc).__name__, "attempt": 1,
+                           "duration_ms": int((time.monotonic() - _t0) * 1000),
+                           "input_ref": None, "output_ref": None})
+        raise
     chat_response = response.data.chat_response
     text = chat_response.text.strip()
     token_count = getattr(chat_response, "token_count", None)
@@ -58,6 +72,12 @@ def _oci_chat_raw(
     else:
         in_tok = (len(system) + len(user)) // 4
         out_tok = len(text) // 4
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "llm.call.oci llm call done",
+                  context={"model": spec.name, "provider": "oci_genai", "role": "pipeline",
+                           "tokens_in": in_tok, "tokens_out": out_tok, "max_tokens": max_tokens,
+                           "tokens_reported_by_api": token_count is not None,
+                           "latency_ms": int((time.monotonic() - _t0) * 1000), "retry_count": 0})
     logger.debug("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
     return text, in_tok, out_tok
 
@@ -135,6 +155,14 @@ def oci_genai_json(
         # happens when the model produces verbose output that exceeds max_tokens.
         logger.debug("oci_genai_json parse failed model=%s raw=%r", spec.name, generated)
         if generated.lstrip().startswith("{") and not generated.rstrip().endswith("}"):
+            raven_log("WARN", "P3", "llm.retry.scheduled oci genai truncated json, retry with brevity",
+                      error_code="ARYX_LLM_RETRY",
+                      context={"triggering_error": "TRUNCATED_JSON", "attempt": 2, "max_attempts": 2,
+                               "backoff_ms": 0, "recovery_selected": "retry_with_brevity_constraint",
+                               "fallback_target": "", "exit_condition": "parse_ok_or_second_failure",
+                               "result": "retry_scheduled", "model": spec.name, "provider": "oci_genai",
+                               "role": "pipeline", "tokens_in": in_tok, "tokens_out": out_tok,
+                               "response_len": len(generated)})
             logger.warning(
                 "oci_genai_json truncated JSON detected model=%s len=%d — retrying with brevity constraint",
                 spec.name, len(generated),
@@ -154,9 +182,19 @@ def oci_genai_json(
             try:
                 data = json.loads(retry_generated)
                 logger.info("oci_genai_json retry succeeded model=%s", spec.name)
+                raven_log("INFO", "P4", "llm.retry.succeeded oci genai brevity retry parsed",
+                          context={"model": spec.name, "provider": "oci_genai", "attempt": 2,
+                                   "result": "ok", "tokens_in": in_tok + retry_in,
+                                   "tokens_out": out_tok + retry_out})
                 return data, in_tok + retry_in, out_tok + retry_out
             except json.JSONDecodeError:
                 logger.debug("oci_genai_json retry also failed model=%s raw=%r", spec.name, retry_generated)
+        raven_log("ERROR", "P2", "llm.retry.exhausted oci genai returned non-json",
+                  error_code="ARYX_LLM_FAILED",
+                  context={"dependency_name": "oci_genai", "operation": "oci_genai_json", "model": spec.name,
+                           "provider": "oci_genai", "role": "pipeline", "result": "error",
+                           "error_class": "NonJsonOutput", "tokens_in": in_tok, "tokens_out": out_tok,
+                           "exit_condition": "not_truncated_or_retry_failed", "response_len": len(generated)})
         raise RuntimeError(
             f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
             f"{generated[:200]!r}"

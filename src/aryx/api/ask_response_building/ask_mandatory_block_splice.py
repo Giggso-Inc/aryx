@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from aryx.cpq.engine import CpqEngine, SUMMARY_CATEGORY_NAMES, SUMMARY_FALLBACK_CATEGORY
+from aryx.raven_log import raven_log
 
 _SHARE_READY_MIN_FILLED = 3
 
@@ -98,6 +99,11 @@ def _beautify_mandatory_block(
         and (r.get("label", "").strip().casefold(), r.get("value", "").strip().casefold())
         not in already_shown
     ]
+    raven_log("DEBUG", "P4", "ask.response.mandatory_block built from beautify rows", context={
+        "selected_option": "block" if rows else "none", "available_options": ["block", "none"],
+        "reason_code": "MANDATORY_ROWS_REMAIN" if rows else "NO_UNSHOWN_MANDATORY_ROWS",
+        "beautify_row_count": len(beautify_rows), "already_shown_count": len(already_shown),
+        "mandatory_row_count": len(rows)})
     if not rows:
         return None
     width = max(len(r["label"]) for r in rows)
@@ -114,9 +120,15 @@ def _splice_mandatory_block_into_summary(answer: str, mandatory_block: str) -> s
     """
     fenced = f"{_MANDATORY_HEADER}\n```\n{mandatory_block}\n```"
     new_answer, count = _MANDATORY_SECTION_RE.subn(fenced, answer, count=1)
+    trailer_match = None if count else _CPQ_JSON_TRAILER_RE.search(answer)
+    _opt = "replace_section" if count else ("insert_before_trailer" if trailer_match else "append")
+    raven_log("DEBUG", "P4", "ask.response.mandatory_splice placed mandatory block", context={
+        "selected_option": _opt, "available_options": ["replace_section", "insert_before_trailer", "append"],
+        "reason_code": {"replace_section": "SECTION_FOUND", "insert_before_trailer": "TRAILER_FOUND",
+                        "append": "NO_SECTION_NO_TRAILER"}[_opt],
+        "answer_len": len(answer), "block_line_count": mandatory_block.count("\n") + 1})
     if count:
         return new_answer
-    trailer_match = _CPQ_JSON_TRAILER_RE.search(answer)
     if trailer_match:
         before = answer[:trailer_match.start()].rstrip()
         after = answer[trailer_match.start():].lstrip("\n")

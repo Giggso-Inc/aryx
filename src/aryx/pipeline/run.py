@@ -8,10 +8,12 @@ so the same code path that serves a small table also survives a terabyte
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from aryx.connectors.base import Connector
 from aryx.models import CleanRecord, FieldProfile
+from aryx.raven_log import raven_log
 from aryx.pipeline.clean import clean
 from aryx.pipeline.profile import ProfileAccumulator
 
@@ -39,13 +41,28 @@ def run_spine(
     """
     accumulator = ProfileAccumulator()
     count = 0
+    keys_in = keys_out = 0
+    _t0 = time.monotonic()
     for raw in connector.extract():
         record = clean(raw)
+        keys_in += len(getattr(raw, "payload", None) or ())
+        keys_out += len(getattr(record, "payload", None) or ())
         accumulator.add(record)
         if sink is not None:
             sink(record)
         count += 1
         if count % log_every == 0:
             logger.info("spine progress records=%d", count)
+            raven_log("DEBUG", "P4", "ingest.spine.progress spine progress checkpoint",
+                      context={"stage": "spine", "records": count, "log_every": log_every,
+                               "keys_dropped_by_clean": keys_in - keys_out,
+                               "duration_ms": int((time.monotonic() - _t0) * 1000)})
     logger.info("spine complete records=%d", count)
+    raven_log("DEBUG", "P4", "ingest.spine.complete spine finished",
+              context={"stage": "spine", "records": count, "keys_in": keys_in, "keys_out": keys_out,
+                       "keys_dropped_by_clean": keys_in - keys_out, "has_sink": sink is not None,
+                       "selected_option": "land_and_profile" if sink is not None else "profile_only",
+                       "available_options": ["land_and_profile", "profile_only"],
+                       "reason_code": "SINK_SUPPLIED" if sink is not None else "NO_SINK",
+                       "duration_ms": int((time.monotonic() - _t0) * 1000)})
     return accumulator.result()

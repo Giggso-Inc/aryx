@@ -44,6 +44,7 @@ from typing import Any, Literal
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
+from aryx.log_safe import text_ref
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import intent_gateway_attr_route as _attr_route
 from aryx.cpq.intent_gateway.intent_gateway_agreement import (
@@ -85,6 +86,7 @@ from aryx.cpq.telemetry import (
     log_rejection,
 )
 from aryx.llm import complete_text
+from aryx.raven_log import raven_log, submit_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +474,9 @@ def classify_intent(
     run_id = get_run_id() or "-"
 
     if not question.strip():
+        raven_log("DEBUG", "P4", "ask.intent.gateway empty question, fallback", context={
+            "selected_option": "fallback", "reason_code": "EMPTY_QUESTION",
+            "available_options": ["dispatch", "clarify", "fallback"], "model_id": model_id})
         return GatewayDecision(
             action="fallback", result=None, reason="empty_question",
             model_id=model_id,
@@ -537,8 +542,8 @@ def classify_intent(
         returns within `timeout` seconds as advertised.
         """
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        fut = pool.submit(
-            _llm_classify_once, question, bundles, session, model_id,
+        fut = submit_ctx(
+            pool, _llm_classify_once, question, bundles, session, model_id,
             workspace_id, repair_hint,
         )
         try:
@@ -851,6 +856,30 @@ class AskRouteDecision:
     attribute_value: str | None = None
 
 
+_classify_intent_inner = classify_intent  # the original, wrapped below to log its decision
+
+
+def classify_intent(question: str, *args: Any, **kwargs: Any) -> GatewayDecision:
+    """Run the mid-session intent gateway and record the action chosen and why."""
+    _t0 = time.monotonic()
+    decision = _classify_intent_inner(question, *args, **kwargs)
+    res = getattr(decision, "result", None)
+    cat = getattr(getattr(res, "intent_category", None), "value", None)
+    conf = getattr(getattr(res, "confidence", None), "value", None)
+    raven_log("DEBUG", "P4", "ask.intent.gateway classify_intent decided", context={
+        "selected_option": decision.action,
+        "available_options": ["dispatch", "clarify", "fallback"],
+        "reason_code": decision.reason or ("CACHE_HIT" if decision.cache_hit else "CLASSIFIED"),
+        "policy_version": "intent_gateway", "category": cat, "confidence": conf,
+        "variable_name": getattr(res, "variable_name", None), "cache_hit": decision.cache_hit,
+        "model_id": decision.model_id, "prompt_tokens": decision.prompt_tokens,
+        "completion_tokens": decision.completion_tokens,
+        "duration_ms": int((time.monotonic() - _t0) * 1000),
+        "question_len": len(question or ""), "ran_and_did_nothing": decision.action == "fallback",
+    })
+    return decision
+
+
 def _parse_route(
     raw: dict | None, *, allow_attribute_search: bool = False,
 ) -> AskRouteDecision | None:
@@ -946,13 +975,13 @@ def classify_ask_route(
     # N10: hard off-topic veto before any LLM call (saves latency; no misroute).
     if hard_off_topic(question):
         logger.info(
-            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%r", run_id, question[:80],
+            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%s", run_id, text_ref(question),
         )
         if settings.cpq_off_topic_veto_shadow_enabled:
             logger.info(
-                "cpq_off_topic_veto_shadow: run_id=%s q=%r term_strength=%s "
+                "cpq_off_topic_veto_shadow: run_id=%s q=%s term_strength=%s "
                 "site=pre_llm (no LLM verdict available -- veto skipped the "
-                "call)", run_id, question[:80],
+                "call)", run_id, text_ref(question),
                 _off_topic_shadow_term_strength(question),
             )
         return AskRouteDecision(
@@ -1033,7 +1062,7 @@ def classify_ask_route(
     # background instead.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        fut = pool.submit(_call)
+        fut = submit_ctx(pool, _call)
         text, pt, ct = fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(

@@ -15,6 +15,7 @@ from typing import Any
 
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
 from aryx.cpq.pending_scope.pending_scope import set_pending_scope
+from aryx.raven_log import raven_log
 
 
 def _resolve_pending_model_leaf_reply(
@@ -40,15 +41,31 @@ def _resolve_pending_model_leaf_reply(
         _reply, _leaf_scope, "product line", session, req.workspace_id,
     )
     if _scope_reply == "skip":
+        raven_log("INFO", "P4", "ask.model_leaf.pending_reply customer skipped product-line choice", context={
+            "selected_option": "skip", "available_options": ["skip", "family_only", "picked", "reask"],
+            "reason_code": "SCOPE_REPLY_SKIP", "candidate_count": len(_leaf_scope),
+            "reply_len": len(_reply), "turn": getattr(session, "turn", None)})
         return None, _build_scope_skip_response(
             req, session, _leaf_scope, "product line",
         )
     if _scope_reply == "family_only":
+        raven_log("INFO", "P4", "ask.model_leaf.pending_reply customer chose family only", context={
+            "selected_option": "family_only", "available_options": ["skip", "family_only", "picked", "reask"],
+            "reason_code": "SCOPE_REPLY_FAMILY_ONLY", "candidate_count": len(_leaf_scope),
+            "reply_len": len(_reply), "turn": getattr(session, "turn", None)})
         return None, _build_scope_family_only_response(
             req, session, _leaf_scope, "product line",
         )
     _sres = _scope_reply
     resolved_leaf = _sres.matched if _sres.matched else None
+    raven_log("INFO" if resolved_leaf is None else "DEBUG", "P4",
+              "ask.model_leaf.pending_reply product-line reply matched against candidates", context={
+                  "selected_option": "reask" if resolved_leaf is None else "picked",
+                  "available_options": ["skip", "family_only", "picked", "reask"],
+                  "reason_code": "NO_CANDIDATE_MATCHED" if resolved_leaf is None else "CANDIDATE_MATCHED",
+                  "picked_leaf": resolved_leaf, "candidate_count": len(_leaf_scope),
+                  "candidates": list(_leaf_scope), "reply_len": len(_reply),
+                  "turn": getattr(session, "turn", None)})
     if resolved_leaf is None:
         # Keep model-leaf candidates AND pending_scope in sync
         set_pending_scope(

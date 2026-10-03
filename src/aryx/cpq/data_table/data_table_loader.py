@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
@@ -204,6 +205,8 @@ def _load_all_tables(
         key = (workspace_id, catalog_prefix)
         if key in cache:
             logger.info("cpq_perf: _load_all_tables CACHE HIT (call-local) ws=%s prefix=%r", workspace_id, catalog_prefix)
+            fill_log.log_load("all_tables", cache="call_local", result="hit", workspace_id=workspace_id,
+                              catalog_prefix=catalog_prefix)
             return cache[key]
 
     _marker_at_read = _invalidate_on_marker_change(_TABLES_CACHE, _TABLES_CACHE_LAST_SEEN_MARKER)
@@ -213,6 +216,8 @@ def _load_all_tables(
         _mod_ts, _mod_result = _mod_hit
         if time.monotonic() - _mod_ts < _TABLES_CACHE_TTL_SECONDS:
             logger.info("cpq_perf: _load_all_tables CACHE HIT (module) ws=%s prefix=%r", workspace_id, catalog_prefix)
+            fill_log.log_load("all_tables", cache="module", result="hit", workspace_id=workspace_id,
+                              catalog_prefix=catalog_prefix)
             if cache is not None:
                 cache[_mod_key] = _mod_result
             return _mod_result
@@ -286,6 +291,12 @@ def _scan_all_tables(
         len(constraint_rows), len(sequence_rows), len(hierarchy_rows),
         len(series_mapping_rows), len(region_rule_rows),
     )
+    fill_log.log_load(
+        "all_tables", cache="miss", result="fresh_scan", workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        duration_ms=int((time.monotonic() - _t0) * 1000), constraint=len(constraint_rows),
+        sequence=len(sequence_rows), hierarchy=len(hierarchy_rows), series_mapping=len(series_mapping_rows),
+        region_rule=len(region_rule_rows),
+        empty=not (constraint_rows or sequence_rows or hierarchy_rows or series_mapping_rows or region_rule_rows))
     if cache is not None:
         cache[(workspace_id, catalog_prefix)] = result
     if not (constraint_rows or sequence_rows or hierarchy_rows

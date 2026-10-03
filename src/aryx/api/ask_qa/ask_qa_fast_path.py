@@ -16,6 +16,17 @@ from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_attr_option
 from aryx.api.ask_attr_recompute import ask_attr_text_helpers as _ask_attr_text_helpers_module
 from aryx.api.ask_catalog import ask_catalog_listing_text as _ask_catalog_listing_text_module
 from aryx.api.ask_llm import ask_llm_catalog_enumeration as _ask_llm_catalog_enumeration_module
+from aryx.raven_log import raven_log
+
+_FAST_OPTIONS = ["attr_options", "quote_attribute_listing", "catalog_attribute_listing", "miss"]
+
+
+def _log_fast(session: Any, opt: str, reason: str, level: str = "DEBUG", **ctx: Any) -> None:
+    """One raven record per fast-path / enumeration branch (never question or answer text)."""
+    raven_log(level, "P4", f"ask.qa.fast_path {'miss' if opt == 'miss' else 'answered'}",  # type: ignore[arg-type]
+              context={"selected_option": opt, "available_options": _FAST_OPTIONS,
+                       "reason_code": reason, "turn": getattr(session, "turn", None),
+                       "run_id": getattr(session, "run_id", None), "road": "qa", **ctx})
 
 
 def _qa_fast_path_or_enumeration(
@@ -42,6 +53,9 @@ def _qa_fast_path_or_enumeration(
         # ("make it ATT/FirstNet") can be preferred toward THIS attribute
         # even when a sibling attribute genuinely shares the same option value.
         session.last_qa_variables = [_attr_q.variable_name]
+        _log_fast(session, "attr_options", "ATTR_QUERY_MATCHED", "INFO",
+                  attr_vn=getattr(_attr_q, "variable_name", None),
+                  answer_len=len(qa_answer) if isinstance(qa_answer, str) else None)
         return qa_answer, (0, 0, 0, 0, 0, 0)
 
     if not (
@@ -49,6 +63,10 @@ def _qa_fast_path_or_enumeration(
         and any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
         and _ask_llm_catalog_enumeration_module._llm_detect_catalog_enumeration_query(req.question, req.workspace_id)
     ):
+        _log_fast(session, "miss", "NO_ATTRS" if not attrs else (
+            "NO_OPTIONS_KEYWORD" if not any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
+            else "NOT_CATALOG_ENUMERATION"), attr_query_matched=_attr_q is not None,
+            attr_count=len(attrs or []))
         return None
 
     # 2026-08-31 fix: "list the attributes in APX Next" style whole-
@@ -85,4 +103,8 @@ def _qa_fast_path_or_enumeration(
             attrs, _catalog_label, req.workspace_id, _catalog_prefix,
         )
     session.last_qa_variables = []
+    _in_quote = bool(getattr(session, "filled", None))
+    _log_fast(session, "quote_attribute_listing" if _in_quote else "catalog_attribute_listing",
+              "QUOTE_IN_PROGRESS" if _in_quote else "PRE_QUOTE_CATALOG", "INFO",
+              attr_count=len(attrs), answer_len=len(qa_answer) if isinstance(qa_answer, str) else None)
     return qa_answer, (0, 0, 0, 0, 0, 0)

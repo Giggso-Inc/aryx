@@ -18,6 +18,7 @@ from aryx.api.ask_model_leaf.ask_model_leaf_norm import _norm_leaf
 from aryx.config import get_settings
 from aryx.cpq import model_resolution as _model_resolution
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -53,8 +54,26 @@ def bind_turn_model_context(
             "cpq: model_resolution %s hint=%r elapsed_s=%.3f",
             _model_resolution.describe(res), hint[:200], time.monotonic() - t0,
         )
-    except Exception:  # noqa: BLE001 -- resolution must never affect the turn
+        chosen = res.chosen if res.resolved else None
+        raven_log("INFO", "P4", "ask.model.resolved turn model resolution result",
+                  context={"selected_option": getattr(chosen, "cpq_model", None),
+                           "available_options": ["resolved", "unresolved"],
+                           "reason_code": "MODEL_RESOLVED" if chosen is not None else "MODEL_UNRESOLVED",
+                           "policy_version": "model_resolution_v1",
+                           "node_name": getattr(chosen, "node_name", None),
+                           "base_models_count": len(getattr(chosen, "base_models", None) or ()),
+                           "deciding_step": res.deciding_step, "alternatives_count": len(res.alternatives),
+                           "alternatives": [a.cpq_model for a in res.alternatives[:10]],
+                           "catalog_prefix": catalog_prefix, "workspace_id": req.workspace_id,
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
+    except Exception as exc:  # noqa: BLE001 -- resolution must never affect the turn
         logger.exception("cpq: model_resolution failed (turn unaffected)")
+        raven_log("WARN", "P3", "ask.model.resolution_failed model scope off for this turn",
+                  error_code="ARYX_ASK_MODEL_RESOLUTION_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "unscoped_turn",
+                           "fallback_target": "static_candidates", "exit_condition": "degraded",
+                           "result": "degraded"})
 
 
 def resolved_node_name() -> str | None:

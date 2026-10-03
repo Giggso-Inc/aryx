@@ -20,6 +20,7 @@ from typing import Any
 from aryx.api.ask_attr_recompute.ask_attr_query_and_classify_usage import _build_attr_query_response
 from aryx.api.ask_label_collision.ask_label_collision_prompt_and_narrow import _narrow_label_collision
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _step8_label_collision_and_query(
@@ -35,7 +36,16 @@ def _step8_label_collision_and_query(
 
     _collision = _cpq_engine.detect_label_collision(req.question, attrs)
     if _collision:
+        _collision_raw_count = len(_collision)
         _collision = _narrow_label_collision(req.question, _collision)
+        raven_log("DEBUG", "P4", "ask.collision.label user label collision asked", context={
+            "selected_option": "label_collision",
+            "available_options": ["label_collision", "attr_query", "free_text_constraint", "continue"],
+            "reason_code": "SHARED_DISPLAY_LABEL", "detected_count": _collision_raw_count,
+            "narrowed_count": len(_collision or []),
+            "candidate_fields": [getattr(a, "variable_name", None) for a in (_collision or [])][:25],
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         _lines = "\n".join(
             f"- **{a.variable_name}**"
             f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
@@ -56,6 +66,13 @@ def _step8_label_collision_and_query(
 
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
     if queried_attr:
+        raven_log("DEBUG", "P4", "ask.qa.attr_query attribute option query answered", context={
+            "selected_option": "attr_query",
+            "available_options": ["label_collision", "attr_query", "free_text_constraint", "continue"],
+            "reason_code": "ATTR_OPTION_QUERY",
+            "queried_field": getattr(queried_attr, "variable_name", None),
+            "question_len": len(getattr(req, "question", None) or ""),
+            "turn": getattr(session, "turn", None)})
         return _build_attr_query_response(
             req, session, attrs, con_rules, bml_eval, queried_attr,
         )
@@ -71,6 +88,13 @@ def _step8_label_collision_and_query(
             _constraint_desc = _cpq_engine.describe_free_text_constraint(
                 _pending_attr_for_constraint, validation_rules,
             )
+            raven_log("DEBUG", "P4", "ask.qa.free_text_constraint pending constraint query checked", context={
+                "selected_option": "free_text_constraint" if _constraint_desc else "continue",
+                "available_options": ["free_text_constraint", "continue"],
+                "reason_code": "CONSTRAINT_DESCRIBED" if _constraint_desc else "NO_DESCRIBABLE_IDIOM",
+                "pending_field": getattr(_pending_attr_for_constraint, "variable_name", None),
+                "validation_rule_count": len(validation_rules or []),
+                "turn": getattr(session, "turn", None)})
             if _constraint_desc:
                 answer = (
                     f"**{_cpq_engine.disambiguated_label(_pending_attr_for_constraint, attrs)}** "
@@ -85,4 +109,10 @@ def _step8_label_collision_and_query(
                               "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
+    raven_log("DEBUG", "P4", "ask.preamble.label_query no gate matched", context={
+        "selected_option": "continue",
+        "available_options": ["label_collision", "attr_query", "free_text_constraint", "continue"],
+        "reason_code": "NO_COLLISION_OR_QUERY",
+        "pending_count": len(getattr(session, "pending_variables", None) or []),
+        "mode_request": mode_request, "turn": getattr(session, "turn", None)})
     return None

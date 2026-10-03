@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.raven_log import raven_log, submit_ctx
 from aryx.pipeline.enrich.enrich_drain import _drain_with_timeout
 from aryx.relationships import infer_relationship
 from aryx.store.entity_store import EntityStore
@@ -67,6 +68,10 @@ def _relate_isolated(
         for eid, etype, attrs in anchors_sample
     }
     if len(anchors) < 2:
+        raven_log("DEBUG", "P4", "ingest.relate_isolated.skipped fewer than two types, nothing to infer",
+                  context={"stage": "relate_isolated", "selected_option": "skip",
+                           "available_options": ["infer", "skip"], "reason_code": "FEWER_THAN_TWO_TYPES",
+                           "anchor_types": len(anchors), "isolated_entities": len(isolated_rows)})
         return 0  # need at least two types for cross-type inference
 
     # Group isolated entities by type using the anti-join result directly.
@@ -76,9 +81,18 @@ def _relate_isolated(
 
     if not isolated_by_type:
         logger.debug("_relate_isolated: no isolated entities — skipping")
+        raven_log("DEBUG", "P4", "ingest.relate_isolated.skipped no isolated entities",
+                  context={"stage": "relate_isolated", "selected_option": "skip",
+                           "available_options": ["infer", "skip"], "reason_code": "NO_ISOLATED_ENTITIES",
+                           "anchor_types": len(anchors)})
         return 0
 
     total_isolated = sum(len(v) for v in isolated_by_type.values())
+    raven_log("INFO", "P4", "ingest.relate_isolated.started isolated entities found",
+              context={"stage": "relate_isolated", "isolated_entities": total_isolated,
+                       "isolated_types": len(isolated_by_type), "anchor_types": len(anchors),
+                       "max_anchors": cfg.relate_isolated_max_anchors,
+                       "max_samples_per_type": cfg.relate_isolated_max_samples_per_type})
     logger.info(
         "_relate_isolated: %d isolated entity(ies) across %d type(s)",
         total_isolated, len(isolated_by_type),
@@ -162,9 +176,25 @@ def _relate_isolated(
                         "trying next candidate: %s", iso_type, a_type, exc,
                     )
                     last_result = (iso_type, -1, None, 0.0)
+                    raven_log("DEBUG", "P4", "ingest.relate_isolated.candidate inference failed, next candidate",
+                              context={"stage": "relate_isolated", "iso_type": iso_type, "anchor_type": a_type,
+                                       "selected_option": "next_candidate",
+                                       "available_options": ["accept", "next_candidate"],
+                                       "reason_code": "INFERENCE_FAILED", "error_class": type(exc).__name__})
                     continue
                 if name:
+                    raven_log("DEBUG", "P4", "ingest.relate_isolated.candidate related, accepted",
+                              context={"stage": "relate_isolated", "iso_type": iso_type, "anchor_type": a_type,
+                                       "selected_option": "accept",
+                                       "available_options": ["accept", "next_candidate"],
+                                       "reason_code": "RELATED_TRUE", "relationship_name": name,
+                                       "confidence": conf})
                     return iso_type, a_id, name, conf
+                raven_log("DEBUG", "P4", "ingest.relate_isolated.candidate unrelated, next candidate",
+                          context={"stage": "relate_isolated", "iso_type": iso_type, "anchor_type": a_type,
+                                   "selected_option": "next_candidate",
+                                   "available_options": ["accept", "next_candidate"],
+                                   "reason_code": "RELATED_FALSE", "confidence": conf})
                 last_result = (iso_type, a_id, name, conf)
         return last_result
 
@@ -173,7 +203,7 @@ def _relate_isolated(
     pool = ThreadPoolExecutor(max_workers=cfg.relate_workers)
     try:
         futures = {
-            pool.submit(_infer_type, iso_type): iso_type
+            submit_ctx(pool, _infer_type, iso_type): iso_type
             for iso_type in isolated_by_type
         }
         # This IS the safety net (runs regardless of the best-effort _relate()
@@ -194,8 +224,19 @@ def _relate_isolated(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("_relate_isolated type=%s inference failed, skipping: %s",
                                iso_type, exc)
+                raven_log("WARN", "P3", "ingest.relate_isolated.type_failed isolated type inference failed",
+                          error_code="ARYX_ING_RELATE_DEGRADED",
+                          context={"stage": "relate_isolated", "iso_type": iso_type,
+                                   "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                                   "recovery_selected": "skip_type", "result": "partial",
+                                   "exit_condition": "type_skipped"})
                 continue
             if name and anchor_id != -1:
+                raven_log("DEBUG", "P4", "ingest.relate_isolated.type_linked isolated type linked to anchor",
+                          context={"stage": "relate_isolated", "iso_type": iso_type,
+                                   "selected_option": "link_all", "available_options": ["link_all", "leave_isolated"],
+                                   "reason_code": "CONFIRMED_RELATIONSHIP", "entities": len(isolated_by_type[iso_type]),
+                                   "relationship_name": name})
                 # Create one edge per isolated entity of this type → anchor.
                 for iso_id, _, _ in isolated_by_type[iso_type]:
                     rels.append(Relationship(
@@ -214,6 +255,10 @@ def _relate_isolated(
     if rels:
         store.save_relationships(rels)
     linked_source_ids = {r.source_entity_id for r in rels}
+    raven_log("INFO", "P4", "ingest.relate_isolated.summary isolated linking finished",
+              context={"stage": "relate_isolated", "isolated_entities": total_isolated,
+                       "linked_entities": len(rels), "still_isolated": max(0, total_isolated - len(rels)),
+                       "isolated_types": len(isolated_by_type)})
     logger.info(
         "_relate_isolated: linked %d / %d isolated entity(ies) (%d type(s) confirmed)",
         len(rels), total_isolated,

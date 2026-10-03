@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_xml_projector.py
 
-Last updated: 2026-10-03T08:54:30.493632+00:00
+Last updated: 2026-10-03T08:54:38.461811+00:00
 Total lines: 215
 Lines AI-generated: 57 (26.5%)
 Lines human-typed: 52

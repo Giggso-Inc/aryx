@@ -15,6 +15,7 @@ background jobs — stays here.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -26,6 +27,7 @@ from aryx.api.doc_discover.doc_discover_confirm_job import _confirm_job
 from aryx.api.doc_discover.doc_discover_read_job import JOB_TERMINAL_STATUSES, _read_job
 from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 
@@ -54,17 +56,27 @@ def doc_discover_router() -> APIRouter:
     async def read(background_tasks: BackgroundTasks,
                    files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
+        t0 = time.monotonic()
         settings = get_settings()
         items: list[tuple[bytes, str]] = []
+        total_bytes = 0
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
                 logger.warning("doc read rejected filename=%s size=%d limit=%d",
                                 f.filename, len(data), _MAX_FILE)
+                raven_log("WARN", "P3", "ingest.docread.refused file too large", error_code="ARYX_ING_UPLOAD_REFUSED",
+                          context={"check": "max_file_bytes", "limit": _MAX_FILE, "measured": len(data),
+                                   "decision": "refuse", "reason_code": "FILE_TOO_LARGE"})
                 raise HTTPException(
                     400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit",
                 )
             items.append((data, f.filename or "upload"))
+            total_bytes += len(data)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.docread.check file accepted",
+                          context={"check": "max_file_bytes", "limit": _MAX_FILE, "measured": len(data),
+                                   "decision": "pass"})
         did = uuid.uuid4().hex
         jobs = JobStore(settings.effective_dsn())
         try:
@@ -72,6 +84,12 @@ def doc_discover_router() -> APIRouter:
         finally:
             jobs.close()
         logger.info("doc read queued did=%s files=%d workspace_id=%d", did, len(items), workspace_id)
+        bind_run_id(did)
+        raven_log("INFO", "P4", "ingest.job.queued document read accepted",
+                  context={"job_id": did, "discovery_id": did, "workspace_id": workspace_id, "road": "doc_read",
+                           "file_count": len(items), "total_bytes": total_bytes,
+                           "worker_backend": "background_task", "final_status": "queued", "result": "accepted",
+                           "reason_code": "JOB_QUEUED", "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_read_job, items, context, did, workspace_id)
         return {"discovery_id": did}
 
@@ -139,6 +157,7 @@ def doc_discover_router() -> APIRouter:
 
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        t0 = time.monotonic()
         # Existence/workspace-ownership check only needs the summary, not the
         # full discovery payload — discoveries.get() would deserialize every
         # raw file's bytes just to answer "does this exist" (confirmed live:
@@ -147,7 +166,17 @@ def doc_discover_router() -> APIRouter:
         if discoveries.get_summary(req.discovery_id, req.workspace_id) is None:
             logger.warning("doc confirm rejected discovery_id=%s: unknown or expired",
                             req.discovery_id)
+            raven_log("WARN", "P3", "ingest.docconfirm.refused unknown discovery",
+                      error_code="ARYX_ING_CONFIRM_REFUSED",
+                      context={"check": "discovery_exists", "discovery_id": req.discovery_id,
+                               "workspace_id": req.workspace_id, "decision": "refuse",
+                               "reason_code": "UNKNOWN_OR_MISMATCH"})
             raise HTTPException(404, "unknown discovery or workspace mismatch")
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.docconfirm.check discovery found",
+                      context={"check": "discovery_exists", "discovery_id": req.discovery_id, "decision": "pass",
+                               "restart": req.restart, "approved_types": len(req.approved_types),
+                               "approved_files": len(req.approved_files)})
         job_id = uuid.uuid4().hex
         jobs = JobStore(get_settings().effective_dsn())
         try:
@@ -162,6 +191,13 @@ def doc_discover_router() -> APIRouter:
         logger.info("doc confirm queued did=%s job=%s types=%d files=%d workspace_id=%d",
                     req.discovery_id, job_id, len(req.approved_types), len(req.approved_files),
                     req.workspace_id)
+        bind_run_id(job_id)
+        raven_log("INFO", "P4", "ingest.job.queued document confirm accepted",
+                  context={"job_id": job_id, "discovery_id": req.discovery_id, "workspace_id": req.workspace_id,
+                           "road": "doc_confirm", "file_count": len(req.approved_files), "total_bytes": 0,
+                           "approved_types": len(req.approved_types), "worker_backend": "background_task",
+                           "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_confirm_job, req.discovery_id,
                                   req.approved_types, req.approved_files,
                                   job_id, req.workspace_id, req.restart)

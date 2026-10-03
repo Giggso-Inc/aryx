@@ -34,6 +34,8 @@ from aryx.cpq_ingestion.raw_graph.models import RawNode
 from aryx.llm import llm_runtime
 from aryx.pipeline.doc_discovery.doc_discovery_types import _id_like_names, _key_suffixes
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,6 +85,11 @@ def _llm_guess_key_prop(tag: str, properties: dict[str, Any], context: str,
             "raw_graph infer_match_key did=%s tag=%s LLM inference failed: %s",
             log_id, tag, exc,
         )
+        raven_log("WARN", "P3", "ingest.raw_graph.match_key_llm_failed LLM match-key guess failed",
+                  error_code="ARYX_ING_MATCHKEY_LLM_FAILED",
+                  context={"log_id": log_id, "tag": tag, "dependency_name": "llm_menial",
+                           "operation": "infer_match_key", "result": "error", "error_class": type(exc).__name__,
+                           "attempt": 1, "recovery_selected": "default_first_property"})
         return None
 
 
@@ -121,4 +128,8 @@ def infer_match_keys_for_tag(tag: str, sample_nodes: list[RawNode], context: str
         "raw_graph infer_match_key did=%s tag=%s otype=%s match_keys=%s source=%s",
         log_id, tag, result["ontology_type"], result["match_keys"], source,
     )
+    raven_log("DEBUG", "P4", "ingest.raw_graph.match_key chosen for tag",
+              context={"log_id": log_id, "tag": tag, "match_keys": result["match_keys"], "selected_option": source,
+                       "available_options": ["heuristic", "llm", "default", "none"],
+                       "reason_code": "MATCH_KEY_SOURCE", "sample_property_names": list(sample_properties)[:20]})
     return result

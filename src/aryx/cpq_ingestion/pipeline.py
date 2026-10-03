@@ -10,10 +10,13 @@ runs at a different call site (confirm time, not read time).
 from __future__ import annotations
 
 import logging
+import time
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.raw_graph.store import project_and_write_raw_graph
 from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
+from aryx.raven_log import raven_log
+from aryx.worker.job_partial import note_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,12 @@ def project_raw_graph_and_flatten(
         produces them.
     """
     settings = get_cpq_ingestion_settings()
+    t0 = time.monotonic()
+    raven_log("DEBUG", "P4", "ingest.raw_graph.decision raw graph write enabled check",
+              context={"stem": stem, "workspace_id": workspace_id, "log_id": log_id,
+                       "selected_option": "write" if settings.cpq_raw_graph_enabled else "skip",
+                       "available_options": ["write", "skip"], "reason_code": "ARYX_CPQ_RAW_GRAPH_ENABLED",
+                       "flag_value": bool(settings.cpq_raw_graph_enabled)})
     if settings.cpq_raw_graph_enabled:
         try:
             result = project_and_write_raw_graph(
@@ -74,7 +83,19 @@ def project_raw_graph_and_flatten(
                 "log_id=%s: %s -- continuing with CSV ingest",
                 stem, workspace_id, log_id, exc,
             )
+            note_hidden()
+            raven_log("WARN", "P2", "ingest.raw_graph.write_failed raw graph not written, CSV ingest continues",
+                      error_code="ARYX_ING_RAW_GRAPH_FAILED",
+                      context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                               "backoff_ms": 0, "recovery_selected": "continue_csv_ingest",
+                               "fallback_target": "csv_flatten", "exit_condition": "degraded",
+                               "result": "degraded", "stem": stem, "workspace_id": workspace_id,
+                               "duration_ms": int((time.monotonic() - t0) * 1000)})
         else:
+            raven_log("INFO", "P4", "ingest.raw_graph.written raw graph projected",
+                      context={"stem": stem, "workspace_id": workspace_id, "backend": result.backend,
+                               "nodes": result.nodes_written, "edges": result.edges_written,
+                               "duration_ms": int((time.monotonic() - t0) * 1000)})
             logger.info(
                 "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
                 "nodes=%d edges=%d",

@@ -25,6 +25,8 @@ from aryx.connectors.base import Connector
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection, RawNode
 from aryx.models import RawRecord, SourceRef
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 #: `RawRecord.source.system` for every record produced by this adapter --
@@ -88,3 +90,6 @@ class RawGraphConnector(Connector):
             "raw graph nodes extracted tag=%s source_key=%s records=%d",
             self._tag, self._source_key, len(self._nodes),
         )
+        raven_log("DEBUG", "P4", "ingest.raw_graph.extract nodes replayed as records",
+                  context={"tag": self._tag, "source_key": self._source_key, "records": len(self._nodes),
+                           "zero_records": len(self._nodes) == 0})

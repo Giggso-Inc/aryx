@@ -13,6 +13,23 @@ from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
+from aryx.raven_log import raven_log
+
+
+
+def _n(obj: Any) -> int | None:
+    """len() for log contexts only — None instead of raising on a non-sized value."""
+    return len(obj) if hasattr(obj, "__len__") else None
+
+
+def _log_show_summary(session: Any, reason_code: str, level: str = "DEBUG", opt: str = "none",
+                      event: str = "skipped returning none", code: str = "", **extra: Any) -> None:
+    """One raven record per show-summary branch (counts only, never summary/answer text)."""
+    raven_log(level, "P3" if level == "WARN" else "P4", f"ask.response.show_summary {event}",  # type: ignore[arg-type]
+              error_code=code, context={"selected_option": opt, "reason_code": reason_code,
+              "available_options": ["none", "summary_in_progress", "summary_complete"],
+              "turn": getattr(session, "turn", None), "run_id": getattr(session, "run_id", None),
+              **extra})
 
 
 def _build_show_summary_response(
@@ -42,8 +59,15 @@ def _build_show_summary_response(
         _ask_api_module.logger.debug(
             "cpq show-summary: load_product_config failed: %r", exc,
         )
+        _log_show_summary(
+            session, "CATALOG_LOAD_FAILED", "WARN", event="catalog load failed",
+            code="ARYX_ASK_SHOW_SUMMARY_LOAD_FAILED", dependency_name="catalog",
+            triggering_error=type(exc).__name__, attempt=1, max_attempts=1, backoff_ms=0,
+            recovery_selected="return_none", fallback_target="caller_next_path",
+            exit_condition="exception", result="degraded")
         return None
     if not attrs or not session.display_filled:
+        _log_show_summary(session, "NO_ATTRS" if not attrs else "NOTHING_FILLED")
         return None
     # Live-verified bug, 2026-08-13: load_product_config's second return
     # value is the RESOLVED PRODUCT NAME (its own docstring says so), not
@@ -67,6 +91,8 @@ def _build_show_summary_response(
             _q_norm = req.question.strip().lower()
             for _opt in _pending_attr.options:
                 if _q_norm in (_opt.display_name.strip().lower(), _opt.item_value.strip().lower()):
+                    _log_show_summary(session, "EXACT_PENDING_OPTION_ANSWER",
+                                      pending_vn=getattr(_pending_attr, "variable_name", None))
                     return None
     hiding_rules = _cpq_engine.load_hiding_rules(
         req.workspace_id, catalog_prefix, session.product_name)
@@ -88,6 +114,7 @@ def _build_show_summary_response(
         product_anchor_hint=session.product_anchor_question,
     )
     if not summary:
+        _log_show_summary(session, "EMPTY_SUMMARY", visible_attr_count=_n(visible_attrs))
         return None
     if session.pending_variables:
         _next = next(
@@ -107,6 +134,11 @@ def _build_show_summary_response(
             f"Click **JSON** below to see the full payload, say **confirm** "
             f"to submit, or describe any changes."
         )
+    _pend = bool(session.pending_variables)
+    _log_show_summary(session, "PENDING_REMAINS" if _pend else "CONFIG_COMPLETE", "INFO",
+                      "summary_in_progress" if _pend else "summary_complete", "rendered summary",
+                      visible_attr_count=_n(visible_attrs), rule_governed_count=_n(rule_ids),
+                      summary_len=_n(summary), answer_len=_n(answer))
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_show_summary()"],

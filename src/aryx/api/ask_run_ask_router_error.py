@@ -14,6 +14,7 @@ from typing import Any
 from aryx.api import ask_standard_pipeline as _ask_standard_pipeline_module
 from aryx.api.ask_response_building.ask_finish_cpq_result import _route_quote
 from aryx.cpq.intent_gateway.intent_gateway import AskRouteDecision
+from aryx.raven_log import raven_log
 
 
 def _handle_router_error(
@@ -31,6 +32,17 @@ def _handle_router_error(
             "det=%s soft_quote=%s → fallback",
             mode, route_meta.error, route_meta.timed_out, det_is_cpq, soft_quote,
         )
+        from aryx.api.ask_run_ask import _route
+        raven_log(
+            "WARN", "P3", "ask.router.failed_surfaced gateway failed, deterministic fallback",
+            error_code="ARYX_ASK_ROUTER_FAILED",
+            context={"dependency_name": "oci_genai", "operation": "classify_ask_route",
+                     "result": "error", "error_class": "timeout" if route_meta.timed_out else "error",
+                     "attempt": 1, "recovery_selected": "deterministic_fallback",
+                     "timed_out": bool(route_meta.timed_out), "det_is_cpq": det_is_cpq,
+                     "soft_quote": soft_quote, "policy_version": mode},
+        )
+        _route("quote" if (det_is_cpq or soft_quote) else "standard", "ESCAPE_HATCH", mode)
         if det_is_cpq or soft_quote:
             return _route_quote(req, reader, route_meta)
         return _ask_standard_pipeline_module._standard_ask_pipeline(req, reader)
@@ -46,6 +58,14 @@ def _handle_router_error(
         "cpq_router: llm_first router failure surfaced to customer "
         "error=%r timed_out=%s",
         route_meta.error, route_meta.timed_out,
+    )
+    raven_log(
+        "ERROR", "P2", "ask.router.failed_surfaced llm_first router failure shown to customer",
+        error_code="ARYX_ASK_ROUTER_FAILED",
+        context={"dependency_name": "oci_genai", "operation": "classify_ask_route",
+                 "result": "error", "error_class": "timeout" if route_meta.timed_out else "error",
+                 "attempt": 1, "recovery_selected": "customer_error",
+                 "timed_out": bool(route_meta.timed_out), "policy_version": mode},
     )
     answer = (
         "Something went wrong processing your request — please try "

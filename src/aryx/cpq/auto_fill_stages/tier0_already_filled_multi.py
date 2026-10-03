@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 
@@ -79,9 +80,11 @@ def stage_already_filled_multi(
                             )
                             for v in ctx.filled_multi[state.vn]
                         )
+                        fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "FILL_SIGNATURE_UNCHANGED")
                         state.done = True
                         return
                     ctx.default_fill_signatures[state.vn] = _cur_sig
+                fill_log.log_pruned(state.vn, "DEFAULT_FIRST_AVAILABLE_REDERIVE", "stage_already_filled_multi", state="reopened")
                 ctx.filled_multi.pop(state.vn, None)
                 ctx.sources.pop(state.vn, None)
             else:
@@ -89,6 +92,7 @@ def stage_already_filled_multi(
                 kept = [v for v in ctx.filled_multi[state.vn] if v in allowed_set]
                 lost = [v for v in ctx.filled_multi[state.vn] if v not in allowed_set]
                 if lost:
+                    fill_log.log_pruned(state.vn, "MEMBERS_NOT_IN_CONSTRAINED_SET", "stage_already_filled_multi", state="narrowed")
                     ctx.dropped[state.vn] = lost
                     ctx.filled_multi[state.vn] = kept
         if not ctx.filled_multi.get(state.vn):
@@ -100,8 +104,10 @@ def stage_already_filled_multi(
                 # simply carries no rows. Only constraint-drops
                 # (non-user sources) fall through to re-resolution.
                 ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
+                fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "USER_CHOSE_EMPTY_MULTI")
                 state.done = True
                 return
+            fill_log.log_pruned(state.vn, "EMPTY_MULTI_REOPENED", "stage_already_filled_multi", state="reopened")
             ctx.filled_multi.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)
             # Falls through to normal resolution below — the drop may
@@ -133,5 +139,6 @@ def stage_already_filled_multi(
                     attr, ctx.filled_multi, scope.constrained_opts)
             ):
                 ctx.pending.append(attr)
+                fill_log.log_decision(state.vn, "stage_already_filled_multi", "pending", "GRID_SELECTOR_OPTIONS_REMAIN")
             state.done = True
             return

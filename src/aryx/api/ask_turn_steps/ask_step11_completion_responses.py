@@ -19,6 +19,7 @@ from typing import Any
 from aryx.api.ask_stale_constraint.ask_stale_constraint_reask import _reask_stale_constraint_violations
 
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
+from aryx.raven_log import raven_log
 
 
 def _step11_grid_gap_response(
@@ -30,6 +31,13 @@ def _step11_grid_gap_response(
     _cpq_engine = _ask_api_module._cpq_engine
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
+    raven_log("DEBUG", "P4", "ask.response.grid_gap unresolved grid quantity check", context={
+        "selected_option": "grid_gap_block" if unresolved_grid_gaps else "continue",
+        "available_options": ["grid_gap_block", "continue"],
+        "reason_code": "GRID_OPTION_NO_QUANTITY" if unresolved_grid_gaps else "NO_GRID_GAP",
+        "gap_count": len(unresolved_grid_gaps or []),
+        "gap_labels": [g[0] for g in (unresolved_grid_gaps or []) if g][:25],
+        "turn": getattr(session, "turn", None)})
     if not unresolved_grid_gaps:
         return None
     session.status = "configuring"
@@ -51,6 +59,12 @@ def _step11_stale_reask_response(
     _stale_reask = _reask_stale_constraint_violations(
         session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
     )
+    raven_log("DEBUG", "P4", "ask.response.stale_reask stale constraint check", context={
+        "selected_option": "continue" if _stale_reask is None else "stale_reask",
+        "available_options": ["stale_reask", "continue"],
+        "reason_code": "NO_STALE_VIOLATION" if _stale_reask is None else "STALE_CONSTRAINT_VIOLATION",
+        "constraint_rule_count": len(con_rules or []),
+        "turn": getattr(session, "turn", None)})
     if _stale_reask is None:
         return None
     return (f"{dropped_note.strip()}\n\n" if dropped_note else "") + _stale_reask
@@ -71,6 +85,11 @@ def _step11_completion_response(
         product_quantity=session.product_quantity, filled=session.filled,
         product_anchor_hint=session.product_anchor_question,
     )
+    raven_log("DEBUG", "P4", "ask.response.completion configuration complete summary built", context={
+        "selected_option": "completion_summary", "reason_code": "NOTHING_PENDING",
+        "status": "awaiting_approval", "product_name": getattr(session, "product_name", None),
+        "filled_count": len(display_filled or {}), "rule_governed_count": len(rule_ids or ()),
+        "summary_len": len(summary or ""), "turn": getattr(session, "turn", None)})
     return (
         (f"{dropped_note.strip()}\n\n" if dropped_note else "")
         + f"Configuration complete for **{session.product_name}**.\n\n"

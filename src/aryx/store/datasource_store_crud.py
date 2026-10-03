@@ -13,6 +13,7 @@ from psycopg.types.json import Json
 
 from aryx import datasource_secrets
 from aryx.queries import load
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +114,25 @@ class _DatasourceCrudMixin:
                         {"workspace_id": int(workspace_id), "name": name})
             row = cur.fetchone()
         if row:
+            raven_log("DEBUG", "P4", "ingest.datasource.ensure existing datasource reused",
+                      context={"workspace_id": int(workspace_id), "name": name[:255], "kind": kind,
+                               "selected_option": "existing", "available_options": ["existing", "create"],
+                               "reason_code": "FOUND_BY_NAME", "datasource_id": row[0]})
             return self._row(row, omit_cipher=True)
+        raven_log("DEBUG", "P4", "ingest.datasource.ensure creating new datasource",
+                  context={"workspace_id": int(workspace_id), "name": name[:255], "kind": kind,
+                           "selected_option": "create", "available_options": ["existing", "create"],
+                           "reason_code": "NOT_FOUND_BY_NAME"})
         try:
             return self.add(workspace_id, name, kind, {}, "")
         except Exception as exc:
             _is_dup = "23505" in str(exc) or "ORA-00001" in str(exc)
+            raven_log("DEBUG", "P4", "ingest.datasource.ensure create raced or failed",
+                      context={"workspace_id": int(workspace_id), "name": name[:255], "is_duplicate": _is_dup,
+                               "selected_option": "reread" if _is_dup else "reraise",
+                               "available_options": ["reread", "reraise"],
+                               "reason_code": "DUPLICATE_KEY" if _is_dup else "OTHER_ERROR",
+                               "error_class": type(exc).__name__})
             if not _is_dup:
                 raise
             with self._pool.connection() as conn, conn.cursor() as cur:

@@ -23,6 +23,8 @@ import logging
 from aryx.cpq_ingestion.raw_graph.models import RawEdge
 from aryx.models import Relationship
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,4 +81,9 @@ def translate_containment_edges(
         "raw_graph containment_relate did=%s edges_total=%d relationships_written=%d",
         log_id, len(edges), len(relationships),
     )
+    raven_log("DEBUG", "P4", "ingest.raw_graph.containment edges translated to relationships",
+              context={"log_id": log_id, "edges_total": len(edges), "skipped_unresolved_endpoint": skipped,
+                       "relationships": len(relationships),
+                       "deduplicated": len(edges) - skipped - len(relationships),
+                       "selected_option": "keep_resolved_only", "reason_code": "BOTH_ENDPOINTS_RESOLVED"})
     return relationships

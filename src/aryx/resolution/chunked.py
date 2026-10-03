@@ -28,6 +28,8 @@ from collections.abc import Iterator
 from aryx.config import get_settings
 from aryx.models import EntityMember, ResolvedEntity
 from aryx.resolution.chunked_backend import ChunkBackend, _key_pass
+from aryx.raven_log import raven_log, would_log
+from aryx.resolution.stats import bump
 from aryx.resolution.classical import score_pair
 from aryx.resolution.cluster import UnionFind
 from aryx.resolution.run import _materialize, _partition_pair_scores
@@ -53,6 +55,11 @@ def _score_pass(run_id: int, backend: ChunkBackend) -> None:
         if len(ids) > MAX_BLOCK:
             logger.warning("block %r has %d members > %d — skipped",
                            key, len(ids), MAX_BLOCK)
+            bump(run_id, "blocks_skipped_oversized")
+            raven_log("DEBUG", "P4", "ingest.resolve.block_skipped chunked oversized block skipped",
+                      context={"task_id": run_id, "members": len(ids), "threshold": MAX_BLOCK,
+                               "selected_option": "skip", "available_options": ["score", "skip"],
+                               "reason_code": "BLOCK_OVERSIZED", "path": "chunked"})
             backend.mark_done(run_id, key)
             continue
         members = backend.load_records(ids)
@@ -65,6 +72,10 @@ def _score_pass(run_id: int, backend: ChunkBackend) -> None:
                     edges.append((left.record_id, right.record_id, score))
         if edges:
             backend.add_edges(run_id, edges)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.resolve.chunk_block_scored chunked block scored",
+                      context={"task_id": run_id, "members": len(members), "edges": len(edges),
+                               "auto_merge_threshold": auto, "edges_persisted": bool(edges)})
         backend.mark_done(run_id, key)
 
 
@@ -118,8 +129,17 @@ def _cluster_pass(
             "ARYX_ER_MAX_EDGES_PER_RUN if this run's match volume is expected.",
             run_id, max_edges,
         )
+        bump(run_id, "edge_cap_hit")
+        raven_log("WARN", "P3", "ingest.resolve.edge_cap_hit edge cap reached, remaining edges not consumed",
+                  error_code="ARYX_ING_RESOLVE_DEGRADED",
+                  context={"task_id": run_id, "stage": "resolve", "threshold": max_edges,
+                           "edges_consumed": edge_count, "reason_code": "EDGE_CAP_HIT",
+                           "impact_scope": "some duplicates may not merge"})
     else:
         logger.info("run=%s cluster pass consumed edges=%d", run_id, edge_count)
+        raven_log("DEBUG", "P4", "ingest.resolve.cluster_edges edge cap not hit",
+                  context={"task_id": run_id, "edges_consumed": edge_count, "threshold": max_edges,
+                           "edge_cap_hit": False})
 
     by_id: dict[int, ResolutionRecord] = {}
     for start in range(0, len(all_ids), CLUSTER_LOAD_BATCH):

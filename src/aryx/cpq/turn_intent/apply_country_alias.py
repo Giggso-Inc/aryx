@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from aryx.cpq.engine import _country_alias_group, _valid, logger
 from aryx.cpq.state import ConfigAttr, MenuOption
+from aryx.log_safe import text_ref
 
 
 def country_alias_fallback(
@@ -33,9 +34,9 @@ def country_alias_fallback(
                 or opt.display_name.lower() in alias_group):
             if _valid(opt.item_value):
                 logger.info(
-                    "cpq_apply_answer_alias_match attr=%s reply=%r "
+                    "cpq_apply_answer_alias_match attr=%s reply=%s "
                     "resolved_to=%r",
-                    attr.variable_name, user_answer, opt.item_value,
+                    attr.variable_name, text_ref(user_answer), opt.item_value,
                 )
                 return opt.item_value, opt.display_name
     return None

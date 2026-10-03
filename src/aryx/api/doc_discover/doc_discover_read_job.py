@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -16,6 +17,9 @@ from tempfile import NamedTemporaryFile
 from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
+from aryx.worker.job_partial import pop_hidden
 from aryx.cpq_ingestion.routing import cpq_layout_upload_active
 from aryx.pipeline.doc_discovery.doc_discovery import DATA_EXTS, DOC_EXTS, read_files
 from aryx.store.job_store import JobStore
@@ -79,6 +83,11 @@ def _build_read_progress(jobs: JobStore, did: str, workspace_id: int) -> Callabl
         with lock:
             accumulated.extend(new_records)
             pct = 30 + int(min(completed / max(total, 1), 1.0) * 60)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.docread.progress partial snapshot persisted",
+                          trace_id=did,
+                          context={"job_id": did, "completed": completed, "total": total, "pct": min(pct, 90),
+                                   "new_mentions": len(new_records), "accumulated": len(accumulated)})
             jobs.update_stage(did, "Reading", min(pct, 90),
                               f"Extracted {completed}/{total} chunk(s)…")
             by_type: dict[str, list[str]] = {}
@@ -97,6 +106,8 @@ def _build_read_progress(jobs: JobStore, did: str, workspace_id: int) -> Callabl
 
 def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
               workspace_id: int = 1) -> None:
+    bind_run_id(did)
+    t0 = time.monotonic()
     settings = get_settings()
     jobs = JobStore(settings.effective_dsn())
     try:
@@ -114,6 +125,10 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in remaining
                      if Path(n).suffix.lower() in DOC_EXTS]
         tabular = [(d, n) for d, n in remaining if Path(n).suffix.lower() in DATA_EXTS]
+        raven_log("INFO", "P4", "ingest.route.docread split of uploaded files",
+                  context={"job_id": did, "selected_option": "read_files", "reason_code": "EXTENSION_SPLIT",
+                           "layout_files": len(layout_items), "documents": len(doc_paths),
+                           "tabular_files": len(tabular), "other_dropped": len(remaining) - len(doc_paths) - len(tabular)})
         on_progress = _build_read_progress(jobs, did, workspace_id)
         result = read_files(doc_paths, tabular, _local_broker(), context, did=did,
                             on_progress=on_progress, workspace_id=workspace_id,
@@ -134,8 +149,25 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
                     did, len(result.get("mentions", [])), len(result.get("tabular", [])),
                     len(result.get("summary", {}).get("types", [])))
         jobs.finish(did, run_id=None, status="complete")
+        hidden = pop_hidden(did)
+        raven_log("INFO", "P4", "ingest.job.completed document read finished",
+                  context={"task_id": did, "job_id": did, "final_status": "complete", "stage": "finish",
+                           "duration_ms": int((time.monotonic() - t0) * 1000),
+                           "result": "partial" if hidden else "ok",
+                           "reason_code": "HIDDEN_FAILURES" if hidden else "OK",
+                           "impact_scope": {"mentions": len(result.get("mentions", [])),
+                                            "tabular_files": len(result.get("tabular", [])),
+                                            "types": len(result.get("summary", {}).get("types", [])),
+                                            "hidden_failures": hidden}})
     except Exception as exc:  # noqa: BLE001
         logger.warning("doc read failed did=%s: %s", did, exc, exc_info=True)
+        pop_hidden(did)
+        raven_log("ERROR", "P2", "ingest.job.failed document read failed",
+                  error_code="ARYX_ING_JOB_FAILED",
+                  context={"task_id": did, "job_id": did, "final_status": "failed", "stage": "Reading",
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
+                           "ora_code": ora_code(exc)})
         jobs.finish(did, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()

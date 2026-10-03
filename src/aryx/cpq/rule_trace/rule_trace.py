@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from aryx.cpq.logging_context import get_run_id, install_run_id_logging
 from aryx.cpq.rule_trace.rule_trace_io import _trace_dir
@@ -62,6 +63,8 @@ from aryx.cpq.rule_trace.rule_trace_state import (
     bind_context,
     bind_pass,
 )
+from aryx.cpq.auto_fill_stages import fill_log
+from aryx.raven_log import raven_log, would_log
 from aryx.store.rule_trace_store import RuleTraceStore
 
 __all__ = [
@@ -74,6 +77,14 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
+
+
+def _durable_failed(operation: str, exc: BaseException, run_id: str = "") -> None:
+    """R11 -- a durable rule-trace write failed and was swallowed (WARN P3)."""
+    raven_log("WARN", "P3", "ask.rule_trace.durable_failed durable rule trace write failed",
+              error_code="ARYX_ASK_RULE_TRACE_FAILED", context={
+                  "dependency_name": "rule_trace_store", "operation": operation, "result": "failed",
+                  "error_class": type(exc).__name__, "run_id": run_id, "attempt": 1})
 
 
 def _store() -> RuleTraceStore:
@@ -102,8 +113,9 @@ def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> "_OpenT
         _open_sessions[run_id] = trace
     try:
         _store().open_session(run_id, workspace_id, catalog_prefix, file_key)
-    except Exception:
+    except Exception as exc:
         logger.exception("rule_trace: durable open_session failed run_id=%s", run_id)
+        _durable_failed("open_session", exc)
     logger.info("cpq: rule trace opened file=%s", file_path.name if file_path else "<local write disabled>")
     return trace
 
@@ -124,9 +136,31 @@ def sweep_orphans(timeout_hours: int | None = None) -> list[str]:
         timeout_hours = get_settings().cpq_rule_trace_orphan_timeout_hours
     try:
         return _store().sweep_orphans(timeout_hours=timeout_hours)
-    except Exception:
+    except Exception as exc:
         logger.exception("rule_trace: durable sweep_orphans failed")
+        _durable_failed("sweep_orphans", exc)
         return []
+
+
+def _log_fired(rule_type: str, rule_id: str, attr: str | None, ref_id: Any, bml_tier: str | None,
+               pass_num: int | None, seq_no: int) -> None:
+    """G6 -- ask.rule.fired: rule name, ref_id (None when the rule carries only a name), target
+    attribute and the attribute's source tag now. Rules carry only ``rule_name``; the new source
+    is inferred from the rule type (recommendation -> rule, auto_fill:<tag> -> <tag>)."""
+    fired = fill_log.count_rule_fire()
+    if not would_log("DEBUG"):
+        return
+    old = fill_log.current_source(attr)
+    new = "rule" if rule_type == "recommendation" else (
+        str(rule_id).split(":", 1)[1] if str(rule_id).startswith("auto_fill:") else None)
+    raven_log("DEBUG", "P4", "ask.rule.fired attributed to a target attribute", context={
+        "actor": "rule_engine", "requested_action": "set_attribute" if rule_type != "hiding" else "hide_attribute",
+        "resource": attr, "required_permission": "rule_in_model_scope", "decision": "applied",
+        "reason_code": "RULE_FIRED", "policy_version": "rule_scope_unscoped_v0",
+        "rule_id": rule_id, "rule_name": rule_id, "ref_id": ref_id, "rule_type": rule_type,
+        "bml_tier": bml_tier, "target_attribute": attr, "pass": pass_num, "seq_no": seq_no,
+        "old_source": old, "new_source": new, "rules_fired_this_turn": fired,
+        "rules_in_scope_for_model": None})
 
 
 def record_fire(
@@ -136,6 +170,7 @@ def record_fire(
     attr: str | None,
     outcome: str,
     bml_tier: str | None = None,
+    ref_id: int | str | None = None,
 ) -> None:
     """Append one fired-rule entry to the current session's trace.
 
@@ -171,9 +206,11 @@ def record_fire(
         _store().append_entry(
             run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("rule_trace: durable append_entry failed run_id=%s", run_id)
+        _durable_failed("append_entry", exc, run_id)
     logger.info("cpq: rule trace fired seq=%d rule_id=%s type=%s", seq_no, rule_id, rule_type)
+    _log_fired(rule_type, rule_id, attr, ref_id, bml_tier, pass_num, seq_no)
 
 
 def seal(run_id: str | None = None, status: str = "post_approval") -> None:
@@ -195,8 +232,9 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
         trace.sealed = True
     try:
         _store().seal_session(run_id, status=status)
-    except Exception:
+    except Exception as exc:
         logger.exception("rule_trace: durable seal_session failed run_id=%s", run_id)
+        _durable_failed("seal_session", exc, run_id)
     logger.info("cpq: rule trace sealed run_id=%s status=%s", run_id, status)
     with _lock:
         _sealed_run_ids.add(run_id)

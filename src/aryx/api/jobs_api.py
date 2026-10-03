@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.raven_log import raven_log, would_log
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from aryx.api.security import require_api_key
@@ -27,7 +29,14 @@ def _job_in_workspace(jobs: JobStore, job_id: str, workspace_id: int) -> dict[st
     """
     job = jobs.get(job_id)
     if job is None or job.get("workspace_id") != workspace_id:
+        raven_log("DEBUG", "P4", "ingest.jobs.scope job hidden from caller",
+                  context={"job_id": job_id, "actor_workspace_id": workspace_id, "found": job is not None,
+                           "decision": "deny", "reason_code": "NOT_FOUND_OR_OTHER_WORKSPACE"})
         raise HTTPException(status_code=404, detail="job not found")
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ingest.jobs.scope job visible to caller",
+                  context={"job_id": job_id, "actor_workspace_id": workspace_id, "decision": "allow",
+                           "reason_code": "WORKSPACE_MATCH"})
     return job
 
 
@@ -84,9 +93,14 @@ def jobs_router() -> APIRouter:
         )
         jobs = _store()
         try:
-            _job_in_workspace(jobs, job_id, workspace_id)
+            prior = _job_in_workspace(jobs, job_id, workspace_id)
             jobs.finish(job_id, run_id=None, status="cancelled",
                         error="Cancelled by user")
+            raven_log("INFO", "P3", "ingest.job.cancelled user cancelled job",
+                      trace_id=job_id,
+                      context={"object_id": job_id, "previous_state": prior.get("status"),
+                               "requested_state": "cancelled", "final_state": "cancelled", "trigger": "user",
+                               "result": "ok", "reason_code": "USER_CANCEL", "workspace_id": workspace_id})
         finally:
             jobs.close()
         return {"status": "cancelled", "job_id": job_id}
@@ -108,6 +122,8 @@ def jobs_router() -> APIRouter:
         finally:
             jobs.close()
         if not job.get("run_id"):
+            raven_log("DEBUG", "P4", "ingest.jobs.resume no run yet",
+                      context={"job_id": job_id, "decision": "refuse", "reason_code": "NO_RUN_ID"})
             raise HTTPException(status_code=404,
                                 detail="job not found or has no run yet")
         tracker = StageTracker(get_settings().effective_dsn())

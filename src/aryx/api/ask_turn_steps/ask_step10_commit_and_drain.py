@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from aryx.cpq.session_guard.session_guard import clear_queue_vn, drain_intent_queue_into_pending
-
+from aryx.raven_log import raven_log
 
 
 def _step10_commit_and_drain(
@@ -66,12 +66,14 @@ def _step10_commit_and_drain(
         k: v for k, v in session.filled_multi.items()
         if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
+    _changed_vars: list[str] = []
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
         if old_val != new_val:
+            _changed_vars.append(var)
             session.cascade_log.append({
                 "var": var, "old": old_val, "new": new_val,
-                "rule": session.filled_source.get(var, ""), "turn": session.turn,
+                "rule": session.filled_source.get(var, ""), "turn": getattr(session, "turn", None),
             })
 
     logger.info(
@@ -80,5 +82,17 @@ def _step10_commit_and_drain(
     )
 
     clear_queue_vn(session, pending_var)
+    _pending_before_drain = len(pending or [])
     pending = drain_intent_queue_into_pending(session, pending, visible_attrs)
+    raven_log("DEBUG", "P4", "ask.recompute.commit rule-eval state committed and queue drained", context={
+        "selected_option": "drained" if len(pending or []) != _pending_before_drain else "no_queue_change",
+        "available_options": ["drained", "no_queue_change"],
+        "reason_code": "STEP3_COMMITTED", "pending_field": pending_var,
+        "filled_count": len(filled or {}), "changed_fields": _changed_vars[:25],
+        "changed_count": len(_changed_vars),
+        "dropped_multi_fields": list(dropped_multi or {})[:25],
+        "dropped_note_suppressed": bool(dropped_multi),
+        "pending_before_drain": _pending_before_drain, "pending_after_drain": len(pending or []),
+        "elapsed_ms": int((time.monotonic() - step3_t0) * 1000),
+        "turn": getattr(session, "turn", None)})
     return dropped_note, pending

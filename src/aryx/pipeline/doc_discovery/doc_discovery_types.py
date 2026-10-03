@@ -18,6 +18,7 @@ from typing import Any
 
 from aryx.llm import llm_runtime
 from aryx.config import get_settings
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,15 @@ def _guess_key_col(sample: str) -> str:
         for h in headers[:6]:
             if any(h.lower().endswith(sfx) for sfx in suffixes):
                 return h
+        raven_log("DEBUG", "P4", "ingest.infer.key_col no suffix match, first column used",
+                  context={"columns_checked": len(headers[:6]), "suffixes": list(suffixes),
+                           "selected_option": "first_column" if headers else "name_default",
+                           "reason_code": "NO_KEY_SUFFIX_MATCH"})
         return headers[0] if headers else "name"
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        raven_log("DEBUG", "P4", "ingest.infer.key_col header parse failed, name default used",
+                  context={"error_class": type(exc).__name__, "selected_option": "name_default",
+                           "reason_code": "HEADER_PARSE_FAILED"})
         return "name"
 
 
@@ -103,15 +111,24 @@ def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
     """
     id_names = _id_like_names()
     if mk and mk[0].lower() in id_names:
+        raven_log("DEBUG", "P4", "ingest.infer.match_key already id-like, kept",
+                  context={"match_keys": mk, "selected_option": "keep", "reason_code": "FIRST_KEY_ID_LIKE"})
         return mk
     try:
         hdr_line = sample.split("\n")[0]
         hdrs = next(csv.reader(io.StringIO(hdr_line)), [])
         id_hdr = next((h for h in hdrs[:8] if h.lower() in id_names), None)
+        raven_log("DEBUG", "P4", "ingest.infer.match_key id-like header check",
+                  context={"match_keys_in": mk, "id_header_found": id_hdr,
+                           "selected_option": "promote_id_header" if id_hdr else "keep",
+                           "available_options": ["promote_id_header", "keep"],
+                           "reason_code": "ID_LIKE_HEADER_IN_FIRST_8" if id_hdr else "NO_ID_LIKE_HEADER"})
         if id_hdr:
             return [id_hdr]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        raven_log("DEBUG", "P4", "ingest.infer.match_key header scan failed, kept",
+                  context={"error_class": type(exc).__name__, "selected_option": "keep",
+                           "reason_code": "HEADER_SCAN_FAILED"})
     return mk
 
 
@@ -120,6 +137,12 @@ def _infer_type(sample: str, filename: str, context: str, did: str | None = None
     stype = _stem_type(filename)
     use_filename_type = bool(stype) and stype.lower() not in _GENERIC
     fallback = stype or "Entity"
+    raven_log("DEBUG", "P4", "ingest.infer.type filename signal checked",
+              context={"discovery_id": did, "filename": filename, "stem_type": stype,
+                       "selected_option": "filename" if use_filename_type else "llm",
+                       "available_options": ["filename", "llm"],
+                       "reason_code": "FILENAME_SPECIFIC" if use_filename_type else
+                       ("FILENAME_GENERIC" if stype else "FILENAME_EMPTY_STEM")})
     sys = ("You identify which columns uniquely identify each row in a CSV file "
            "that will be loaded into a knowledge graph.")
     user = (f"Goal: {context or 'general knowledge graph'}\nFile: {filename}\n"
@@ -146,9 +169,19 @@ def _infer_type(sample: str, filename: str, context: str, did: str | None = None
         logger.info("infer_type did=%s file=%s otype=%s match_keys=%s source=%s",
                     did, filename, result["ontology_type"], result["match_keys"],
                     "filename" if use_filename_type else "llm")
+        raven_log("DEBUG", "P4", "ingest.infer.type decided",
+                  context={"discovery_id": did, "filename": filename, "ontology_type": result["ontology_type"],
+                           "match_keys": result["match_keys"], "type_source": "filename" if use_filename_type else "llm",
+                           "llm_gave_match_keys": bool(d.get("match_keys"))})
         return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("infer_type did=%s file=%s LLM inference failed, falling back to otype=%s: %s",
                         did, filename, fallback, exc)
+        raven_log("WARN", "P3", "ingest.infer.type LLM inference failed, filename fallback used",
+                  error_code="ARYX_ING_INFER_TYPE_FALLBACK",
+                  context={"discovery_id": did, "filename": filename, "dependency_name": "llm_menial",
+                           "operation": "infer_type", "result": "error", "error_class": type(exc).__name__,
+                           "attempt": 1, "recovery_selected": "filename_stem_type", "fallback_target": fallback,
+                           "exit_condition": "degraded"})
         return {"ontology_type": fallback,
                 "match_keys": _id_priority_mk(sample, [_guess_key_col(sample)])}

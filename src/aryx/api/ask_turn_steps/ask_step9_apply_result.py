@@ -24,6 +24,7 @@ from aryx.cpq.session_guard.session_guard import push_snapshot
 from aryx.api.ask_stale_constraint.ask_invalidate_stale_base_model import _invalidate_stale_base_model
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _step9_apply_pending_result(
@@ -61,6 +62,13 @@ def _step9_apply_pending_result(
             attrs, session.filled, validation_rules, bml_eval=bml_eval,
             filled_multi=session.filled_multi)
         _warning_msg = _validation_warnings.get(pending_var)
+        raven_log("DEBUG", "P4", "ask.reply.apply validation rule check on matched value", context={
+            "selected_option": "reject_with_warning" if _warning_msg else "accept",
+            "available_options": ["accept", "reject_with_warning"],
+            "reason_code": "VALIDATION_WARNING" if _warning_msg else "VALIDATION_PASSED",
+            "pending_field": pending_var, "select_type": getattr(pending_attr, "select_type", None),
+            "warning_count": len(_validation_warnings or {}),
+            "turn": getattr(session, "turn", None)})
         if _warning_msg:
             del session.filled[pending_var]
             session.display_filled.pop(pending_var, None)
@@ -79,6 +87,7 @@ def _step9_apply_pending_result(
     matched_fragment = next(
         (dk for dk in DECISION_REQUIRED_KEYS if dk in pv_flat), None
     )
+    _ff_siblings: list[str] = []
     if matched_fragment:
         for sibling in attrs:
             svn = sibling.variable_name
@@ -88,13 +97,16 @@ def _step9_apply_pending_result(
                 session.filled[svn] = iv
                 session.display_filled[svn] = disp
                 session.filled_source[svn] = "cascade"
+                _ff_siblings.append(svn)
     _pv_dependent_eids = _cpq_engine.find_cascade_dependents(
         pending_attr, attrs, hiding_rules, rec_rules, con_rules,
     )
     _pv_by_eid = {a.entity_id: a for a in attrs}
+    _pv_cleared: list[str] = []
     for _pv_eid in _pv_dependent_eids:
         _pv_dep = _pv_by_eid.get(_pv_eid)
         if _pv_dep and _pv_dep.variable_name != pending_var:
+            _pv_cleared.append(_pv_dep.variable_name)
             session.filled.pop(_pv_dep.variable_name, None)
             session.filled_multi.pop(_pv_dep.variable_name, None)
             session.display_filled.pop(_pv_dep.variable_name, None)
@@ -103,4 +115,11 @@ def _step9_apply_pending_result(
         session, pending_attr, _pv_dependent_eids, _pv_by_eid, req.workspace_id,
         attrs[0].catalog_prefix if attrs else "",
     )
+    raven_log("DEBUG", "P4", "ask.reply.apply pending answer committed", context={
+        "selected_option": "committed", "reason_code": "PENDING_ANSWER_STORED",
+        "pending_field": pending_var, "select_type": getattr(pending_attr, "select_type", None),
+        "multi_match_count": len(multi_matches or []),
+        "decision_key_fragment": matched_fragment, "fill_forward_fields": _ff_siblings[:25],
+        "dependent_count": len(_pv_dependent_eids or []), "cleared_dependents": _pv_cleared[:25],
+        "turn": getattr(session, "turn", None)})
     return None

@@ -22,6 +22,7 @@ from typing import Any
 from aryx.cpq.intent_schema.intent_schema import IntentCategory
 
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
+from aryx.log_safe import text_ref
 from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
 
 
@@ -40,8 +41,8 @@ def _shadow_classify_cpq_turn(
             req.question, attrs, session, req.workspace_id)
         if result is None:
             logger.info(
-                "cpq_shadow_intent: message %r -> classification failed/unparseable",
-                req.question,
+                "cpq_shadow_intent: message %s -> classification failed/unparseable",
+                text_ref(req.question),
             )
             return
         resolved_summary = []
@@ -53,10 +54,10 @@ def _shadow_classify_cpq_turn(
                 "candidate_count": len(candidates),
             })
         logger.info(
-            "cpq_shadow_intent: message %r -> category=%s confidence=%s "
-            "resolved=%s clarifying_question=%r rationale=%r",
-            req.question, result.category.value, result.confidence.value,
-            resolved_summary, result.clarifying_question, result.rationale,
+            "cpq_shadow_intent: message %s -> category=%s confidence=%s "
+            "resolved=%s clarifying_question=%s rationale=%s",
+            text_ref(req.question), result.category.value, result.confidence.value,
+            resolved_summary, text_ref(result.clarifying_question), text_ref(result.rationale),
         )
     except Exception:  # noqa: BLE001 — shadow diagnostic must never affect the turn
         logger.debug("cpq_shadow_intent: diagnostic failed", exc_info=True)

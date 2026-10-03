@@ -9,6 +9,9 @@ import logging
 import re
 from typing import Any
 
+from aryx.log_safe import text_ref
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_QUESTION_RE = re.compile(
@@ -83,8 +86,14 @@ def assert_conversational_invariant(
     """Post-turn guardrail: config-seeking questions need consumable pending."""
     violations: list[str] = []
     if not answer_is_config_question(answer):
+        raven_log("DEBUG", "P4", "ask.invariant.checked not a config question", context={
+            "result": "skip", "reason_code": "NOT_CONFIG_QUESTION", "answer_len": len(answer or "")})
         return violations
     if has_consumable_pending_state(session_data):
+        raven_log("DEBUG", "P4", "ask.invariant.checked pending state can absorb reply", context={
+            "result": "ok", "reason_code": "HAS_PENDING_STATE",
+            "pending_keys": sorted(k for k, v in (session_data or {}).items()
+                                   if k.startswith("pending_") and v)})
         return violations
     rid = run_id or (session_data or {}).get("run_id") or "-"
     msg = (
@@ -94,7 +103,15 @@ def assert_conversational_invariant(
     )
     violations.append(msg)
     if log:
-        logger.warning("%s | answer_tail=%r", msg, (answer or "")[-180:])
+        logger.warning("%s | answer=%s", msg, text_ref(answer))
+        raven_log(
+            "WARN", "P3", "ask.invariant.orphan_question config question without pending state",
+            error_code="ARYX_ASK_ORPHAN_QUESTION",
+            context={"object_id": rid, "previous_state": "answer_composed",
+                     "requested_state": "awaiting_reply", "final_state": "no_pending_state",
+                     "trigger": "assert_conversational_invariant", "result": "violation",
+                     "reason_code": "NO_CONSUMABLE_PENDING", "answer_len": len(answer or "")},
+        )
     return violations
 
 

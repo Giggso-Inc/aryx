@@ -34,6 +34,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
+from aryx.raven_log import raven_log, submit_ctx, would_log
+from aryx.resolution.stats import bump
 from aryx.resolution.adjudicate import adjudicate
 from aryx.resolution.classical import block, score_pair
 from aryx.resolution.cluster import UnionFind, golden_record_weighted
@@ -65,6 +67,11 @@ def _block_embeddings(
     if cfg.er_auto_merge >= 1.0 and cfg.er_adjudicate >= 1.0:
         logger.debug("resolve run_id=%s embed skipped auto_merge=%.2f adjudicate=%.2f (both>=1.0)",
                      run_id, cfg.er_auto_merge, cfg.er_adjudicate)
+        raven_log("DEBUG", "P4", "ingest.resolve.embed_skipped embeddings skipped (exact-only thresholds)",
+                  context={"task_id": run_id, "selected_option": "skip_embed",
+                           "available_options": ["embed", "skip_embed"], "reason_code": "THRESHOLDS_AT_1_0",
+                           "auto_merge": cfg.er_auto_merge, "adjudicate": cfg.er_adjudicate,
+                           "records": len(records)})
         return {}
     out: dict[int, list[float]] = {}
     for start in range(0, len(records), cfg.embed_batch_size):
@@ -73,10 +80,20 @@ def _block_embeddings(
             vectors = broker.embed([r.text for r in batch])
             logger.debug("resolve run_id=%s embed batch start=%d size=%d vectors=%d",
                          run_id, start, len(batch), len(vectors) if vectors else 0)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.resolve.embed_batch embedding batch done",
+                          context={"task_id": run_id, "batch_start": start, "batch_size": len(batch),
+                                   "vectors": len(vectors) if vectors else 0,
+                                   "vectors_returned": bool(vectors)})
             if vectors:
                 for r, v in zip(batch, vectors):
                     out[r.record_id] = v
         except Exception as exc:  # noqa: BLE001
+            raven_log("WARN", "P3", "ingest.resolve.embed_failed embedding batch failed, string-only scoring",
+                      error_code="ARYX_ING_RESOLVE_DEGRADED",
+                      context={"task_id": run_id, "stage": "resolve", "batch_start": start,
+                               "batch_size": len(batch), "error_class": type(exc).__name__,
+                               "recovery_selected": "string_only_scoring", "result": "degraded"})
             logger.warning("resolve run_id=%s embed batch start=%d size=%d failed, "
                            "falling back to string-only: %s", run_id, start, len(batch), exc)
     return out
@@ -95,7 +112,18 @@ def _route_pair(left: ResolutionRecord, right: ResolutionRecord, score: float,
     auto = cfg.er_auto_merge
     adj = cfg.er_adjudicate
     rev = cfg.er_review
+    def _pair(band: str, decision: str, **extra: object) -> None:
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.resolve.pair pair routed",
+                      context={"task_id": run_id, "left_id": left.record_id, "right_id": right.record_id,
+                               "score": round(score, 4), "band": band, "decision": decision,
+                               "selected_option": decision,
+                               "available_options": ["merge", "adjudicate", "review", "reject"],
+                               "reason_code": f"SCORE_IN_{band.upper()}_BAND",
+                               "auto_merge": auto, "adjudicate_min": adj, "review_min": rev, **extra})
+
     if score >= auto:
+        _pair("auto_merge", "merge")
         union.union(left.record_id, right.record_id)
         logger.info("resolve run_id=%s pair left=%s right=%s score=%.3f band=auto_merge decision=merge",
                     run_id, left.record_id, right.record_id, score)
@@ -109,6 +137,8 @@ def _route_pair(left: ResolutionRecord, right: ResolutionRecord, score: float,
             logger.info("resolve run_id=%s pair left=%s right=%s score=%.3f band=adjudicate "
                         "llm_verdict=%s decision=%s", run_id, left.record_id, right.record_id,
                         score, same, "merge" if same else "no_merge")
+            _pair("adjudicate", "merge" if same else "no_merge", llm_verdict=bool(same),
+                  review_sink=review is not None)
             if same:
                 union.union(left.record_id, right.record_id)
                 return "adjudicate_merge"
@@ -117,6 +147,13 @@ def _route_pair(left: ResolutionRecord, right: ResolutionRecord, score: float,
             logger.warning("resolve run_id=%s pair left=%s right=%s score=%.3f band=adjudicate "
                            "adjudication failed, queueing for human: %s",
                            run_id, left.record_id, right.record_id, score, exc)
+            bump(run_id, "adjudication_failed")
+            raven_log("WARN", "P3", "ingest.resolve.adjudication_failed adjudication failed, queued for human",
+                      error_code="ARYX_ING_RESOLVE_DEGRADED",
+                      context={"task_id": run_id, "stage": "resolve", "left_id": left.record_id,
+                               "right_id": right.record_id, "score": round(score, 4),
+                               "error_class": type(exc).__name__, "recovery_selected": "human_review_queue",
+                               "result": "degraded", "queued": review is not None})
             if review is not None:
                 review.offer(left, right, score, llm_verdict=None,
                              llm_reason=f"llm unavailable: {exc}",
@@ -129,17 +166,21 @@ def _route_pair(left: ResolutionRecord, right: ResolutionRecord, score: float,
                              llm_reason=None, status="pending")
                 logger.info("resolve run_id=%s pair left=%s right=%s score=%.3f band=review "
                             "decision=queued", run_id, left.record_id, right.record_id, score)
+                _pair("review", "queued")
                 return "review"
             except Exception as exc:  # noqa: BLE001 — queue write failed, don't fail the run
                 logger.warning("resolve run_id=%s pair left=%s right=%s score=%.3f band=review "
                                "queue write failed, pair dropped: %s",
                                run_id, left.record_id, right.record_id, score, exc)
+                _pair("review", "dropped_queue_write_failed", error_class=type(exc).__name__)
                 return "review_dropped"
         logger.info("resolve run_id=%s pair left=%s right=%s score=%.3f band=review "
                     "decision=dropped_no_sink", run_id, left.record_id, right.record_id, score)
+        _pair("review", "dropped_no_sink")
         return "review_dropped"
     logger.debug("resolve run_id=%s pair left=%s right=%s score=%.3f band=reject decision=no_merge",
                  run_id, left.record_id, right.record_id, score)
+    _pair("reject", "no_merge")
     return "reject"
 
 
@@ -215,6 +256,10 @@ def resolve(
             "resolved run_id=%s mode=exact_ids records=%d entities=%d merged=%d",
             run_id, len(records), len(results), total_merged,
         )
+        bump(run_id, "merged", total_merged)
+        raven_log("DEBUG", "P4", "ingest.resolve.exact_done exact-id resolution finished",
+                  context={"task_id": run_id, "records": len(records), "entities": len(results),
+                           "merged": total_merged, "selected_option": "exact_ids"})
         return results
 
     max_pairs_per_block = get_settings().max_pairs_per_block
@@ -245,7 +290,7 @@ def resolve(
     embeddings_by_block: dict[str, dict[int, list[float]]] = {}
     with ThreadPoolExecutor(max_workers=embed_workers) as pool:
         future_to_key = {
-            pool.submit(_block_embeddings, group[:_embed_cap], broker, run_id): key
+            submit_ctx(pool, _block_embeddings, group[:_embed_cap], broker, run_id): key
             for key, group in block_items if len(group) > 1
         }
         for future in as_completed(future_to_key):
@@ -258,6 +303,10 @@ def resolve(
                 "resolve run_id=%s block=%d/%d size=1 skip total_merged=%d",
                 run_id, block_idx + 1, total_blocks, total_merged,
             )
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.resolve.block_singleton singleton block skipped",
+                          context={"task_id": run_id, "block_idx": block_idx + 1, "total_blocks": total_blocks,
+                                   "selected_option": "skip", "reason_code": "BLOCK_SIZE_1"})
             continue
         embeddings = embeddings_by_block.get(block_key, {})
         pairs_evaluated = 0
@@ -269,6 +318,11 @@ def resolve(
             for j in range(i + 1, len(group)):
                 if pairs_evaluated >= max_pairs_per_block:
                     done = True
+                    bump(run_id, "blocks_pair_capped")
+                    raven_log("DEBUG", "P4", "ingest.resolve.block_pair_cap block pair cap reached",
+                              context={"task_id": run_id, "block_idx": block_idx + 1, "members": len(group),
+                                       "pairs_evaluated": pairs_evaluated, "threshold": max_pairs_per_block,
+                                       "selected_option": "stop_block", "reason_code": "MAX_PAIRS_PER_BLOCK"})
                     break
                 left, right = group[i], group[j]
                 left_root_before = union.find(left.record_id)
@@ -285,6 +339,11 @@ def resolve(
                     block_merges += 1
                 pairs_evaluated += 1
         total_merged += block_merges
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.resolve.block_done block scored",
+                      context={"task_id": run_id, "block_idx": block_idx + 1, "total_blocks": total_blocks,
+                               "members": len(group), "pairs": pairs_evaluated, "merges": block_merges,
+                               "embedded": len(embeddings)})
         logger.info(
             "resolve run_id=%s block=%d/%d size=%d pairs=%d merges=%d total_merged=%d",
             run_id, block_idx + 1, total_blocks, len(group),
@@ -310,4 +369,12 @@ def resolve(
         band_counts.get("review", 0), band_counts.get("review_dropped", 0),
         band_counts.get("reject", 0),
     )
+    bump(run_id, "merged", total_merged)
+    bump(run_id, "adjudicated",
+         band_counts.get("adjudicate_merge", 0) + band_counts.get("adjudicate_no_merge", 0))
+    bump(run_id, "review_dropped", band_counts.get("review_dropped", 0))
+    raven_log("DEBUG", "P4", "ingest.resolve.funnel_done pair funnel finished",
+              context={"task_id": run_id, "records": len(records), "entities": len(results),
+                       "blocks": total_blocks, "band_counts": dict(band_counts),
+                       "max_pairs_per_block": max_pairs_per_block})
     return results

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _handle_confirm_switch_decline(
@@ -46,6 +47,12 @@ def _handle_confirm_switch_decline(
             "turn=%s old_pending=%r new_pending=%r",
             session.turn, _old_pending, _redetected,
         )
+        raven_log("INFO", "P4", "ask.switch.reoffer decline reply named a different product", context={
+            "selected_option": "reoffer_switch", "available_options": ["reoffer_switch", "decline"],
+            "reason_code": "REDETECTED_DIFFERENT_PRODUCT", "turn": getattr(session, "turn", None),
+            "current_product": getattr(session, "product_name", "") or "",
+            "old_pending_product": _old_pending or "", "new_pending_product": _redetected,
+            "reply_len": len(getattr(req, "question", "") or "")})
         answer = (
             f"It looks like you're asking about **{_redetected}**, but "
             f"this session is configuring **{session.product_name}**. "
@@ -66,6 +73,16 @@ def _handle_confirm_switch_decline(
         "cpq_switch: declined turn=%s staying on product=%r",
         session.turn, session.product_name,
     )
+    raven_log("INFO", "P4", "ask.switch.declined product switch declined, staying on current product", context={
+        "selected_option": "decline", "available_options": ["reoffer_switch", "decline"],
+        "reason_code": (
+            "NO_PRODUCT_REDETECTED" if not _redetected
+            else "REDETECTED_CURRENT_PRODUCT" if _redetected == getattr(session, "product_name", None)
+            else "REDETECTED_SAME_PENDING_PRODUCT"),
+        "turn": getattr(session, "turn", None),
+        "current_product": getattr(session, "product_name", "") or "",
+        "declined_product": _old_pending or "",
+        "reply_len": len(getattr(req, "question", "") or "")})
     answer = f"OK — continuing with **{session.product_name}**."
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {

@@ -12,6 +12,9 @@ from collections.abc import Callable
 
 from aryx.broker import Broker
 from aryx.connectors.base import Connector
+import time
+
+from aryx.raven_log import raven_log
 from aryx.pipeline.run import run_spine
 from aryx.pipeline.tag import tag_fields
 from aryx.store.batch_sink import BatchSink
@@ -51,19 +54,33 @@ def discover(
             on_progress(stage, pct, detail)
 
     _emit("Discover", 8, "Extracting records from source")
+    _t0 = time.monotonic()
     run_id = store.start_run(system, dataset)
     sink = BatchSink(store, run_id)
     profiles = run_spine(connector, sink=sink)
     sink.flush()
+    raven_log("DEBUG", "P4", "ingest.discover.landed records landed",
+              context={"task_id": run_id, "stage": "discover", "records": sink.total,
+                       "field_profiles": len(profiles), "duration_ms": int((time.monotonic() - _t0) * 1000),
+                       "source_system": system, "source_dataset": dataset})
     _emit("Discover", 15, f"{sink.total} records extracted — saving profiles")
     store.save_profiles(run_id, profiles)
     _emit("Discover", 20, f"{sink.total} records landed · {len(profiles)} field profiles saved")
     if broker is not None:
+        raven_log("DEBUG", "P4", "ingest.discover.tagging field tagging on",
+                  context={"task_id": run_id, "stage": "discover", "selected_option": "tag",
+                           "available_options": ["tag", "skip_tag"], "reason_code": "BROKER_SUPPLIED",
+                           "fields": len(profiles)})
         _emit("Discover", 22, f"Tagging {len(profiles)} fields with LLM")
         tags = tag_fields(profiles, broker)
         store.save_tags(run_id, tags)
         _emit("Discover", 25, f"{len(tags)} fields tagged")
         logger.info("discover tagged run_id=%s tags=%d", run_id, len(tags))
+    else:
+        raven_log("DEBUG", "P4", "ingest.discover.tagging field tagging off",
+                  context={"task_id": run_id, "stage": "discover", "selected_option": "skip_tag",
+                           "available_options": ["tag", "skip_tag"], "reason_code": "NO_BROKER",
+                           "fields": len(profiles)})
     store.finish_run(run_id, sink.total)
     logger.info("discover complete run_id=%s records=%d", run_id, sink.total)
     return run_id

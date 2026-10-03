@@ -29,6 +29,7 @@ from aryx.api.ask_turn_steps.post_loop_executor import (
 from aryx.config import get_settings
 from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -104,6 +105,7 @@ def _step10_recompute_pending(
         f, d_filled, p = _post_loop_auto_fill(
             f, session.filled_multi, session.filled_source, dropped_multi)
     logger.info("cpq_perf: post_loop_auto_fill took %.3fs", time.monotonic() - _pl_t0)
+    _pending_after_autofill = len(p or [])
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
@@ -117,7 +119,23 @@ def _step10_recompute_pending(
             if a.variable_name not in _cpq_engine.product_label_noise_vns(
                 v_attrs, hiding_rules, rec_rules, con_rules)
         ]
+    _pending_after_noise = len(p or [])
     p = _cpq_engine.append_pending_grid_quantities(
         p, v_attrs, f, session.filled_multi, session.filled_source, c_opts,
         **grid_narrow_kwargs(req.workspace_id, catalog_prefix))
+    raven_log("DEBUG", "P4", "ask.recompute.pending rules loop and auto-fill pass done", context={
+        "selected_option": "bounded_post_loop" if _bounded else "inline_post_loop",
+        "available_options": ["bounded_post_loop", "inline_post_loop"],
+        "reason_code": "POST_LOOP_TIMEOUT_ENABLED" if _bounded else "POST_LOOP_TIMEOUT_DISABLED",
+        "visible_count": len(v_attrs or []), "filled_count": len(f or {}),
+        "constrained_count": len(c_opts or {}), "rule_governed_count": len(r_ids or ()),
+        "hint_count": len(cur_hints or {}),
+        "model_leaf_resolved": bool(getattr(session, "model_leaf_resolved", None)),
+        "pending_after_autofill": _pending_after_autofill,
+        "noise_dropped_count": _pending_after_autofill - _pending_after_noise,
+        "grid_added_count": len(p or []) - _pending_after_noise,
+        "pending_count": len(p or []),
+        "pending_fields": [getattr(a, "variable_name", None) for a in (p or [])][:25],
+        "post_loop_ms": int((time.monotonic() - _pl_t0) * 1000),
+        "turn": getattr(session, "turn", None)})
     return v_attrs, f, d_filled, p, c_opts, r_ids

@@ -12,6 +12,7 @@ from sqlalchemy import MetaData, Table, create_engine, select
 
 from aryx.connectors.base import Connector
 from aryx.models import RawRecord, SourceRef
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -55,3 +56,6 @@ class SqlConnector(Connector):
         finally:
             engine.dispose()
         logger.info("sql extracted table=%s records=%d", self._table, count)
+        raven_log("DEBUG", "P4", "ingest.db.sql extract complete",
+                  context={"table": self._table, "key_column": self._key, "system": self._system,
+                           "records": count, "zero_records": count == 0})

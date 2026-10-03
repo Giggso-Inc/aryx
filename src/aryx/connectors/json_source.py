@@ -10,6 +10,7 @@ from typing import Any
 
 from aryx.connectors.base import Connector
 from aryx.models import RawRecord, SourceRef
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ class JsonConnector(Connector):
     def extract(self) -> Iterator[RawRecord]:
         data = json.loads(self._path.read_text(encoding="utf-8"))
         records = data if isinstance(data, list) else [data]
+        raven_log("DEBUG", "P4", "ingest.json.read parsed",
+                  context={"dataset": self._path.stem, "encoding": "utf-8",
+                           "top_level": "array" if isinstance(data, list) else "object",
+                           "selected_option": "records_from_array" if isinstance(data, list) else "single_object",
+                           "available_options": ["records_from_array", "single_object"],
+                           "reason_code": "TOP_LEVEL_SHAPE", "records": len(records), "zero_records": len(records) == 0})
         for record in records:
             flat = _flatten(record)
             record_id = _stable_id(record)

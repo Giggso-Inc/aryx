@@ -16,9 +16,11 @@ from typing import Any
 
 from aryx.api.ask_llm.ask_llm_switch_reply_and_compound_split import _llm_classify_switch_reply
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.log_safe import text_ref
 from aryx.api.ask_turn_switch.ask_turn_confirm_switch_decline import _handle_confirm_switch_decline
 from aryx.api.ask_turn_country_available_for import _country_available_for
 from aryx.api.ask_turn_switch.ask_turn_product_switch_complete import _complete_product_switch
+from aryx.raven_log import raven_log
 
 
 def _handle_confirm_switch_anchor(
@@ -56,6 +58,7 @@ def _handle_confirm_switch_anchor(
         r"^\s*(n|no|nope|nah|never|not\s+now|not\s+really)\b",
         reply, re.IGNORECASE,
     ))
+    _deterministic_affirmative = bool(affirmative)
     if not affirmative and not _clear_decline:
         _switch_decision = _llm_classify_switch_reply(
             req.question, session.pending_switch_product,
@@ -63,10 +66,22 @@ def _handle_confirm_switch_anchor(
         )
         if _switch_decision == "accept":
             affirmative = True
+    raven_log("DEBUG", "P4", "ask.switch.confirm_reply confirm-switch reply classified", context={
+        "selected_option": "switch" if affirmative else "stay",
+        "available_options": ["switch", "stay"],
+        "reason_code": (
+            "DETERMINISTIC_AFFIRMATIVE" if _deterministic_affirmative
+            else "CLEAR_DECLINE" if _clear_decline
+            else "LLM_ACCEPT" if affirmative else "LLM_NOT_ACCEPT"),
+        "llm_consulted": not _deterministic_affirmative and not _clear_decline,
+        "reply_len": len(getattr(req, "question", "") or ""),
+        "turn": getattr(session, "turn", None),
+        "current_product": getattr(session, "product_name", "") or "",
+        "pending_switch_product": getattr(session, "pending_switch_product", "") or ""})
     _ask_api_module.logger.info(
-        "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%r decision=%s",
+        "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%s decision=%s",
         session.turn, session.product_name, session.pending_switch_product,
-        req.question, "switch" if affirmative else "stay",
+        text_ref(req.question), "switch" if affirmative else "stay",
     )
     if affirmative:
         new_product = session.pending_switch_product
@@ -80,6 +95,13 @@ def _handle_confirm_switch_anchor(
                 "asking for a different country before completing the switch",
                 old_country, new_product, session.turn,
             )
+            raven_log("INFO", "P4", "ask.switch.country_invalid carried-over country invalid for new product",
+                      context={
+                          "selected_option": "ask_switch_country",
+                          "available_options": ["ask_switch_country", "complete_switch"],
+                          "reason_code": "COUNTRY_NOT_AVAILABLE_FOR_NEW_PRODUCT",
+                          "turn": getattr(session, "turn", None), "new_product": new_product,
+                          "has_country": bool(old_country)})
             answer = (
                 f"**{new_product}** isn't available for **{old_country}**. "
                 f"Could you provide a different country to continue switching?"
@@ -91,6 +113,13 @@ def _handle_confirm_switch_anchor(
                           "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
+        raven_log("DEBUG", "P4", "ask.switch.confirm_country carried-over country accepted, completing switch",
+                  context={
+                      "selected_option": "complete_switch",
+                      "available_options": ["ask_switch_country", "complete_switch"],
+                      "reason_code": "COUNTRY_VALID" if old_country else "NO_COUNTRY_CARRIED",
+                      "turn": getattr(session, "turn", None), "new_product": new_product,
+                      "has_country": bool(old_country)})
         _complete_product_switch(session, new_product, old_country)
         # Fall through — Step 1's anchor block below re-anchors the
         # country for the new product only if it's still empty (a

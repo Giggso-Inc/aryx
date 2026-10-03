@@ -16,6 +16,10 @@ from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope.pending_scope import format_did_you_mean, resolve_against_scope, set_pending_scope
+from aryx.raven_log import raven_log
+
+_FAMILY_OPTIONS = ["scope_fuzzy_match", "single_suggestion", "did_you_mean_suggestions",
+                   "did_you_mean_all_families", "ask_product_family"]
 
 
 def _build_product_family_prompt_or_resolve(
@@ -39,6 +43,7 @@ def _build_product_family_prompt_or_resolve(
         req.question, reader, req.workspace_id, limit=5, alias_map=_alias,
     )
     detected = ""
+    _fuzzy_suggestion_count = len(suggestions or [])
     # Also allow prefix / in-scope fuzzy against family names for short
     # nicknames that fall below the mid-band threshold — but ONLY for a
     # short, nickname-shaped reply (the documented intent above).
@@ -58,8 +63,18 @@ def _build_product_family_prompt_or_resolve(
         elif _sres.suggestions:
             suggestions = list(_sres.suggestions)
     if detected:
+        raven_log("DEBUG", "P4", "ask.anchor.family_prompt auto-resolved by scope fuzzy match", context={
+            "selected_option": "scope_fuzzy_match", "available_options": _FAMILY_OPTIONS,
+            "reason_code": "SCOPE_FUZZY_FAMILY_MATCH", "turn": getattr(session, "turn", None),
+            "product": detected, "family_count": len(families or []),
+            "fuzzy_suggestion_count": _fuzzy_suggestion_count})
         return None, detected  # fall through to anchor with fuzzy family match
     if len(suggestions) == 1:
+        raven_log("DEBUG", "P4", "ask.anchor.family_prompt auto-resolved single suggestion", context={
+            "selected_option": "single_suggestion", "available_options": _FAMILY_OPTIONS,
+            "reason_code": "SINGLE_FUZZY_SUGGESTION", "turn": getattr(session, "turn", None),
+            "product": suggestions[0], "family_count": len(families or []),
+            "fuzzy_suggestion_count": _fuzzy_suggestion_count})
         # Live-confirmed gap (2026-08-27, "quote for SVX" / "quote SVX" /
         # "SVX quote"): resolve_product_hint doesn't score a bare short
         # nickname confidently enough on its own, but suggest_product_
@@ -86,6 +101,11 @@ def _build_product_family_prompt_or_resolve(
         answer = format_did_you_mean(
             req.question, suggestions, scope_label="product family",
         )
+        raven_log("INFO", "P4", "ask.anchor.family_prompt did-you-mean asked from suggestions", context={
+            "selected_option": "did_you_mean_suggestions", "available_options": _FAMILY_OPTIONS,
+            "reason_code": "MULTIPLE_FUZZY_SUGGESTIONS", "turn": getattr(session, "turn", None),
+            "candidates": list(suggestions), "candidate_count": len(suggestions),
+            "family_count": len(families or []), "answer_len": len(answer or "")})
         _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [], "tools_called": ["cpq_product_did_you_mean()"],
@@ -120,6 +140,12 @@ def _build_product_family_prompt_or_resolve(
             f"To start the configuration I need the **product family** "
             f"(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
         )
+    raven_log("INFO", "P4", "ask.anchor.family_prompt product family asked", context={
+        "selected_option": "did_you_mean_all_families" if families else "ask_product_family",
+        "available_options": _FAMILY_OPTIONS,
+        "reason_code": "NO_FUZZY_SIGNAL" if families else "NO_FAMILIES_INGESTED",
+        "turn": getattr(session, "turn", None), "family_count": len(families or []),
+        "answer_len": len(answer or "")})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],

@@ -16,6 +16,7 @@ from typing import Any
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _compose_disambiguation_question
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.cpq.pending_scope.pending_scope import set_pending_scope
+from aryx.raven_log import raven_log
 
 
 def _build_model_leaf_ask_prompt(
@@ -42,6 +43,12 @@ def _build_model_leaf_ask_prompt(
         _static_leaf_answer, req.workspace_id,
     )
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, _leaf_answer)
+    raven_log("INFO", "P4", "ask.model_leaf.asked product-line disambiguation question asked", context={
+        "selected_option": "ask_model_leaf", "reason_code": "MULTIPLE_MODEL_LEAVES",
+        "candidate_count": len(leaf_candidates or []), "candidates": list(leaf_candidates or []),
+        "product": getattr(session, "product_name", "") or "",
+        "used_static_answer": _leaf_answer == _static_leaf_answer,
+        "answer_len": len(_leaf_answer or ""), "turn": getattr(session, "turn", None)})
     return {
         "answer": _leaf_answer, "terms": [],
         "tools_called": ["cpq_model_leaf_ambiguous()"],

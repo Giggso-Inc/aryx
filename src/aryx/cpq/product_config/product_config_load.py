@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.cpq.engine import ConfigAttr
 from aryx.cpq.product_config.product_config_attrs import build_config_attrs
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.product_config.product_config_entities import load_attr_entities
 from aryx.cpq.product_config.product_config_lookups import build_array_set_lookups, compute_rule_target_ids
 from aryx.cpq.product_config.product_config_menu_base import collect_base_menu_neighbors
@@ -26,6 +27,8 @@ def load_product_config(
     attr_ents, attr_pg, resolved_catalog_prefix, all_type_names = load_attr_entities(
         engine, reader, workspace_id, product_hint)
     if not attr_ents:
+        fill_log.log_load("product_config", result="no_attr_entities", workspace_id=workspace_id,
+                          empty=True, catalog_prefix=resolved_catalog_prefix)
         return [], product_hint
 
     neighbor_map, all_menu_ids, orphan_eids = collect_base_menu_neighbors(
@@ -67,4 +70,8 @@ def load_product_config(
     config_attrs = list(by_vn.values())
 
     config_attrs.sort(key=lambda a: a.order)
+    fill_log.log_load("product_config", result="loaded", workspace_id=workspace_id,
+                      catalog_prefix=resolved_catalog_prefix, attr_entity_count=len(attr_ents),
+                      attr_count=len(config_attrs), menu_attr_count=len(menu_by_attr),
+                      rule_target_count=len(rule_target_ids))
     return config_attrs, product_hint

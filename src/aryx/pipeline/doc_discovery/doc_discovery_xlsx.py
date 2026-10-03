@@ -10,6 +10,8 @@ import io
 import logging
 import re
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 # Non-alphanumeric run -> single underscore, for turning an arbitrary sheet
@@ -51,6 +53,9 @@ def _xlsx_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tup
             if ws.sheet_state != "visible":
                 logger.info("%sxlsx_to_csvs stem=%s: skipping hidden sheet %r",
                            prefix, stem, ws.title)
+                raven_log("DEBUG", "P4", "ingest.xlsx.sheet skipped hidden",
+                          context={"log_id": log_id, "stem": stem, "sheet": ws.title, "sheet_state": str(ws.sheet_state),
+                                   "decision": "skip", "reason_code": "HIDDEN_SHEET"})
                 continue
             rows_iter = ws.iter_rows(values_only=True)
             try:
@@ -58,11 +63,17 @@ def _xlsx_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tup
             except StopIteration:
                 logger.info("%sxlsx_to_csvs stem=%s: skipping empty sheet %r",
                            prefix, stem, ws.title)
+                raven_log("DEBUG", "P4", "ingest.xlsx.sheet skipped empty",
+                          context={"log_id": log_id, "stem": stem, "sheet": ws.title, "decision": "skip",
+                                   "reason_code": "EMPTY_SHEET"})
                 continue
             header = [str(h).strip() if h is not None else "" for h in header_row]
             if not any(header):
                 logger.info("%sxlsx_to_csvs stem=%s: skipping sheet %r with no header",
                            prefix, stem, ws.title)
+                raven_log("DEBUG", "P4", "ingest.xlsx.sheet skipped no header",
+                          context={"log_id": log_id, "stem": stem, "sheet": ws.title, "decision": "skip",
+                                   "reason_code": "NO_HEADER"})
                 continue
 
             buf = io.StringIO()
@@ -79,14 +90,24 @@ def _xlsx_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tup
                     "%sxlsx_to_csvs stem=%s: skipping header-only sheet %r (0 data rows)",
                     prefix, stem, ws.title,
                 )
+                raven_log("DEBUG", "P4", "ingest.xlsx.sheet skipped header only",
+                          context={"log_id": log_id, "stem": stem, "sheet": ws.title, "decision": "skip",
+                                   "reason_code": "ZERO_DATA_ROWS", "header_columns": len([h for h in header if h])})
                 continue
 
             csv_name = f"{stem}__{_sheet_slug(ws.title)}.csv"
             results.append((buf.getvalue().encode("utf-8"), csv_name))
+            raven_log("DEBUG", "P4", "ingest.xlsx.sheet flattened to csv",
+                      context={"log_id": log_id, "stem": stem, "sheet": ws.title, "csv_name": csv_name,
+                               "rows": row_count, "header_column_names": [h for h in header if h][:100],
+                               "decision": "keep"})
         logger.info(
             "xlsx_to_csvs log_id=%s stem=%s sheets_total=%d sheets_ingested=%d",
             log_id, stem, len(wb.worksheets), len(results),
         )
+        raven_log("INFO", "P4", "ingest.xlsx.flattened workbook sheets summarised",
+                  context={"log_id": log_id, "stem": stem, "sheets_total": len(wb.worksheets),
+                           "sheets_ingested": len(results), "zero_sheets": len(results) == 0})
         return results
     finally:
         wb.close()

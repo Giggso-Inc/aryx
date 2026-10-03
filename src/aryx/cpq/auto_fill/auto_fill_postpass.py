@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.auto_fill_stages import fill_log
 
 
 def resolve_pointer_defaults(
@@ -48,6 +49,7 @@ def resolve_pointer_defaults(
             continue
         ref_value = filled.get(attr.default_value)
         if ref_value:
+            fill_log.log_write_dicts(filled, {}, sources, attr, vn, ref_value, None, "cascade", "resolve_pointer_defaults")
             filled[vn] = ref_value
             display_filled[vn] = display_filled.get(attr.default_value, ref_value)
             sources.setdefault(vn, "cascade")
@@ -87,6 +89,8 @@ def cascade_fill_pending(
             # "United States" (a raw string from CRM_BILL_COUNTRY) this
             # way — nonsensical for a true/false field and exactly the
             # payload-shape mismatch the real CPQ API previously rejected.
+            fill_log.log_write_dicts(filled, {}, sources, attr, attr.variable_name, "false", "No", "default",
+                                     "cascade_fill_pending_boolean")
             filled[attr.variable_name] = "false"
             display_filled[attr.variable_name] = "No"
             sources.setdefault(attr.variable_name, "default")
@@ -104,6 +108,8 @@ def cascade_fill_pending(
             None,
         )
         if cascaded:
+            fill_log.log_write_dicts(filled, {}, sources, attr, attr.variable_name, cascaded, cascaded, "cascade",
+                                     "cascade_fill_pending")
             filled[attr.variable_name] = cascaded
             display_filled[attr.variable_name] = cascaded
             sources.setdefault(attr.variable_name, "cascade")

@@ -17,6 +17,7 @@ import logging
 import re
 
 from aryx.pipeline.doc_discovery.doc_discovery_types import _id_like_names, _key_suffixes, _name_like_names, _singular
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,11 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
             links.append(link)
             logger.info("fk-pass1 log_id=%s: %s.%s -> %s.%s (%s)",
                         log_id, plan_a["ontology_type"], col, type_b, target_attr, link["name"])
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.fk.link pass1 column-name link added",
+                          context={"log_id": log_id, "rule": "pass1", "source_type": plan_a["ontology_type"], "source_attr": col,
+                                   "target_type": type_b, "target_attr": target_attr, "decision": "link",
+                                   "reason_code": "PASS1"})
 
     # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
     # Handles patterns that Pass 1 misses because they don't follow {type}_id.
@@ -275,6 +281,11 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 })
                 logger.info("fk-pass2-ruleA log_id=%s: %s.%s -> %s.%s",
                             log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.fk.link pass2-ruleA column-name link added",
+                              context={"log_id": log_id, "rule": "pass2-ruleA", "source_type": plan_a["ontology_type"], "source_attr": col,
+                                       "target_type": plan_b["ontology_type"], "target_attr": mk_b, "decision": "link",
+                                       "reason_code": "PASS2_RULEA"})
 
     # Rule B — substring containment, still O(N^2 x cols) (see note above).
     for i, plan_a in enumerate(plans):
@@ -307,6 +318,11 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                     })
                     logger.info("fk-pass2-ruleB log_id=%s: %s.%s -> %s.%s",
                                 log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+                    if would_log("DEBUG"):
+                        raven_log("DEBUG", "P4", "ingest.fk.link pass2-ruleB column-name link added",
+                                  context={"log_id": log_id, "rule": "pass2-ruleB", "source_type": plan_a["ontology_type"], "source_attr": col,
+                                           "target_type": plan_b["ontology_type"], "target_attr": mk_b, "decision": "link",
+                                           "reason_code": "PASS2_RULEB"})
 
     # Rule C — shared key-suffix, index lookup. Target cardinality guard:
     # if the join target column has only one distinct value (e.g.
@@ -340,6 +356,11 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 })
                 logger.info("fk-pass2-ruleC log_id=%s: %s.%s -> %s.%s",
                             log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.fk.link pass2-ruleC column-name link added",
+                              context={"log_id": log_id, "rule": "pass2-ruleC", "source_type": plan_a["ontology_type"], "source_attr": col,
+                                       "target_type": plan_b["ontology_type"], "target_attr": mk_b, "decision": "link",
+                                       "reason_code": "PASS2_RULEC"})
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
     # _collect_tag injects {parent_tag}_id columns into child entity rows.
@@ -417,8 +438,17 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 log_id, plan_a["ontology_type"], actual_col,
                 plan_b["ontology_type"], target_attr,
             )
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.fk.link pass3 column-name link added",
+                          context={"log_id": log_id, "rule": "pass3", "source_type": plan_a["ontology_type"], "source_attr": actual_col,
+                                   "target_type": plan_b["ontology_type"], "target_attr": target_attr, "decision": "link",
+                                   "reason_code": "PASS3"})
 
     logger.info("detect_fk_links log_id=%s plans=%d links_found=%d", log_id, len(plans), len(links))
+    raven_log("DEBUG", "P4", "ingest.fk.detect column-name FK detection finished",
+              context={"log_id": log_id, "plans": len(plans), "links_found": len(links),
+                       "plan_types": [p.get("ontology_type") for p in plans][:50],
+                       "selected_option": "links_found" if links else "no_links", "reason_code": "PASSES_1_TO_3"})
     return links
 
 
@@ -457,6 +487,10 @@ def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None)
     fn_plan = next((p for p in plans if p["ontology_type"].endswith("BmFunction")), None)
     attr_plan = next((p for p in plans if p["ontology_type"].endswith("BmConfigAttr")), None)
     if fn_plan is None or attr_plan is None:
+        raven_log("DEBUG", "P4", "ingest.fk.script_flow skipped, BML plans absent",
+                  context={"log_id": log_id, "has_function_plan": fn_plan is not None,
+                           "has_attr_plan": attr_plan is not None, "selected_option": "skip",
+                           "reason_code": "BML_PLAN_PAIR_MISSING"})
         return []
 
     try:
@@ -465,14 +499,23 @@ def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None)
     except Exception:  # noqa: BLE001
         logger.warning("script-data-flow log_id=%s: could not parse %s CSV",
                         log_id, fn_plan["ontology_type"])
+        raven_log("WARN", "P3", "ingest.fk.script_flow function CSV unparseable, analysis skipped",
+                  error_code="ARYX_ING_SCRIPT_FLOW_SKIPPED",
+                  context={"log_id": log_id, "triggering_error": "csv_parse", "recovery_selected": "skip_analysis",
+                           "exit_condition": "skipped", "result": "degraded"})
         return []
     if not rows:
+        raven_log("DEBUG", "P4", "ingest.fk.script_flow skipped, function CSV empty",
+                  context={"log_id": log_id, "selected_option": "skip", "reason_code": "NO_ROWS"})
         return []
     header = rows[0]
     script_col = next(
         (h for h in header if h.lower() in ("script_text", "script")), None,
     )
     if script_col is None:
+        raven_log("DEBUG", "P4", "ingest.fk.script_flow skipped, no script column",
+                  context={"log_id": log_id, "header_column_names": header[:100], "selected_option": "skip",
+                           "reason_code": "NO_SCRIPT_COLUMN"})
         return []
     script_idx = header.index(script_col)
 
@@ -493,6 +536,9 @@ def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None)
         rows_out.append(row + extra)
 
     if not recognized:
+        raven_log("DEBUG", "P4", "ingest.fk.script_flow no array-iteration scripts recognised",
+                  context={"log_id": log_id, "scripts": len(rows) - 1, "recognized": 0, "selected_option": "skip",
+                           "reason_code": "NO_RECOGNISED_SHAPES"})
         return []
 
     buf = io.StringIO()
@@ -521,6 +567,8 @@ def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None)
         "emitting %d link spec(s)",
         log_id, recognized, len(rows) - 1, fn_plan["ontology_type"], len(links),
     )
+    raven_log("DEBUG", "P4", "ingest.fk.script_flow array-iteration links emitted",
+              context={"log_id": log_id, "scripts": len(rows) - 1, "recognized": recognized, "links": len(links)})
     return links
 
 
@@ -542,6 +590,10 @@ def _detect_fk_links_workspace(
     except Exception as exc:  # noqa: BLE001
         logger.warning("detect_fk_links_workspace job=%s file=%s header parse failed: %s",
                         job_id, plan.get("filename"), exc)
+        raven_log("WARN", "P3", "ingest.fk.workspace header parse failed, workspace FK skipped",
+                  error_code="ARYX_ING_WORKSPACE_FK_SKIPPED",
+                  context={"job_id": job_id, "filename": plan.get("filename"), "triggering_error": type(exc).__name__,
+                           "recovery_selected": "skip_workspace_fk", "exit_condition": "skipped", "result": "degraded"})
         return []
 
     src_type = plan.get("ontology_type", "")
@@ -571,6 +623,13 @@ def _detect_fk_links_workspace(
                 })
                 logger.info("fk-workspace job=%s: %s.%s -> %s.%s",
                             job_id, src_type, col, known, match_key)
+                raven_log("DEBUG", "P4", "ingest.fk.workspace link added to existing type",
+                          context={"job_id": job_id, "source_type": src_type, "source_attr": col,
+                                   "target_type": known, "target_attr": match_key, "decision": "link",
+                                   "reason_code": "KNOWN_TYPE_COLUMN_MATCH"})
                 break
 
+    raven_log("DEBUG", "P4", "ingest.fk.workspace finished",
+              context={"job_id": job_id, "known_types": len(known_types), "links": len(links),
+                       "already_seen_pairs": len(seen)})
     return links

@@ -14,6 +14,8 @@ from collections import Counter
 import defusedxml.ElementTree as defused_ET
 
 from aryx.config import get_settings
+from aryx.raven_log import raven_log
+from aryx.worker.job_partial import note_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,13 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
     except ET.ParseError as exc:
         logger.warning("xml_to_csvs log_id=%s stem=%s parse failed, treating as raw upload: %s",
                         log_id, stem, exc)
+        note_hidden()
+        raven_log("WARN", "P3", "ingest.xml.fallback_raw xml parse failed, raw upload used",
+                  error_code="ARYX_ING_XML_FALLBACK",
+                  context={"log_id": log_id, "stem": stem, "triggering_error": type(exc).__name__,
+                           "reason_code": "PARSE_FAILED", "recovery_selected": "raw_upload",
+                           "fallback_target": "single_row", "exit_condition": "degraded", "result": "degraded",
+                           "bytes": len(data)})
         return [(data, stem + ".csv")]
 
     # Candidate fields to use as entity name when no ``name`` field exists.
@@ -177,10 +186,21 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
                 _walk(child)
 
     _walk(root)
+    raven_log("DEBUG", "P4", "ingest.xml.detect entity element types detected",
+              context={"log_id": log_id, "stem": stem, "root_tag": root_tag, "entity_types": len(counts),
+                       "named_types": sum(1 for v in type_has_name.values() if v),
+                       "type_counts": dict(counts.most_common(30)),
+                       "root_is_entity": _is_entity(root)})
     if not counts:
         logger.warning(
             "xml_to_csvs log_id=%s stem=%s no entity elements detected "
             "(all leaves/containers), falling back to raw upload", log_id, stem)
+        note_hidden()
+        raven_log("WARN", "P3", "ingest.xml.fallback_raw no entity elements, raw upload used",
+                  error_code="ARYX_ING_XML_FALLBACK",
+                  context={"log_id": log_id, "stem": stem, "reason_code": "NO_ENTITIES",
+                           "recovery_selected": "raw_upload", "fallback_target": "single_row",
+                           "exit_condition": "degraded", "result": "degraded", "bytes": len(data)})
         return [(data, stem + ".csv")]
 
     # Prefer entity types that carry a human-readable name field over pure
@@ -195,6 +215,11 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
     _named = [t for t in _all_by_freq if type_has_name.get(t, False)]
     _unnamed = [t for t in _all_by_freq if not type_has_name.get(t, False)]
     top_tags = (_named + _unnamed)[:_xml_max_types]
+    raven_log("DEBUG", "P4", "ingest.xml.select entity types chosen under cap",
+              context={"log_id": log_id, "stem": stem, "candidates": len(_all_by_freq), "max_types": _xml_max_types,
+                       "max_rows_per_type": _xml_max_rows, "selected_types": top_tags,
+                       "dropped_by_cap": len(_all_by_freq) - len(top_tags),
+                       "selected_option": "named_first", "reason_code": "NAME_FIELD_PRIORITY"})
 
     def _collect_tag(
         elem: ET.Element, tag: str, parent_tag: str, parent_id: str | None,
@@ -264,8 +289,14 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
             records = _collect_tag(root, target_tag, root_tag, root_id)
 
         if not records:
+            raven_log("DEBUG", "P4", "ingest.xml.type no rows collected",
+                      context={"log_id": log_id, "stem": stem, "tag": target_tag, "decision": "skip",
+                               "reason_code": "ZERO_RECORDS"})
             continue
         if len(records) > _xml_max_rows:
+            raven_log("DEBUG", "P4", "ingest.xml.type row cap applied",
+                      context={"log_id": log_id, "stem": stem, "tag": target_tag, "rows": len(records),
+                               "limit": _xml_max_rows, "decision": "truncate", "reason_code": "XML_MAX_ROWS_PER_TYPE"})
             logger.warning(
                 "xml log_id=%s: %s has %d rows, capping at %d (set ARYX_XML_MAX_ROWS_PER_TYPE to change)",
                 log_id, target_tag, len(records), _xml_max_rows,
@@ -285,13 +316,27 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
         writer.writerows(records)
         csv_name = f"{stem}_{target_tag}.csv"
         results.append((buf.getvalue().encode("utf-8"), csv_name))
+        raven_log("DEBUG", "P4", "ingest.xml.type flattened to csv",
+                  context={"log_id": log_id, "stem": stem, "tag": target_tag, "csv_name": csv_name,
+                           "rows": len(records), "header_column_names": all_keys[:100],
+                           "column_count": len(all_keys)})
 
     if not results:
         logger.warning(
             "xml_to_csvs log_id=%s stem=%s %d candidate type(s) considered but 0 rows "
             "collected, falling back to raw upload", log_id, stem, len(top_tags))
+        note_hidden()
+        raven_log("WARN", "P3", "ingest.xml.fallback_raw zero rows collected, raw upload used",
+                  error_code="ARYX_ING_XML_FALLBACK",
+                  context={"log_id": log_id, "stem": stem, "reason_code": "ZERO_ROWS",
+                           "recovery_selected": "raw_upload", "fallback_target": "single_row",
+                           "exit_condition": "degraded", "result": "degraded", "candidate_types": len(top_tags),
+                           "bytes": len(data)})
         return [(data, stem + ".csv")]
     logger.info(
         "xml_to_csvs log_id=%s stem=%s detected_types=%d capped_to=%d output_csvs=%d rows_total=%d",
         log_id, stem, len(counts), len(top_tags), len(results), total_rows)
+    raven_log("INFO", "P4", "ingest.xml.flattened xml flattened to csvs",
+              context={"log_id": log_id, "stem": stem, "detected_types": len(counts), "capped_to": len(top_tags),
+                       "output_csvs": len(results), "rows_total": total_rows})
     return results
