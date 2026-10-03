@@ -100,7 +100,7 @@ Shared field rules for this section:
 - **Place**: in the except, next to the existing `... failed job=%s` warning
 - **Level / criticality / error_code**: ERROR / P2 / `ARYX_ING_JOB_FAILED`
 - **Class**: Outcome, pipeline
-- **Context**: `task_id`, `final_status="failed"`, `duration_ms`, `stage` (the last stage reported to `JobStore.update_stage`), `result="error"`, `reason_code=error_class`, `impact_scope`, plus `error_class` and the first 300 characters of `str(exc)` with SQL bind values stripped
+- **Context**: `task_id`, `final_status="failed"`, `duration_ms`, `stage` (the last stage reported to `JobStore.update_stage`), `result="error"`, `reason_code=error_class`, `impact_scope`, plus `error_class` and, for Oracle errors, `ora_code` (never the exception text, which can echo row values, filenames or URLs)
 - **Gap closed**: the outer catches print `str(exc)` with no class and no stage
 
 - **Id**: I5
@@ -511,7 +511,7 @@ State of dev_oci today (checked in code): none of the aryxent diagnostic tags ex
 
 **Decision D4 (needs the developer's answer)**: the content rule says "never values". The bug doc shows the values were the evidence. Proposal:
 - Log the value for enumerated and numeric attributes (catalog menu values such as `WHIP (STANDARD)`, base-model codes, quantities). These are catalog data, not customer data.
-- For free-text attributes and anything the customer typed (names, labels, addresses, notes, the user's message), log only the length and a short hash.
+- For free-text attributes and anything the customer typed (names, labels, addresses, notes, the user's message), log only the length and a short keyed digest (HMAC-SHA256 with a deployment secret, so short guessable texts cannot be recovered by hashing candidates; see `ARYX_RAVEN_LOG_HASH_KEY` in section 9b).
 - Keep banning row data, file content, SQL bind values, prompts, customer replies and credentials everywhere.
 
 ### Effort impact of 9e
@@ -1039,6 +1039,10 @@ All read lazily, none hardcoded. New in `aryx.raven_log`; documented in both OCI
 - **Variable**: `ARYX_RAVEN_LOG_S3_QUEUE_MAX`
 - **Meaning**: size of the in-memory queue in front of the S3 uploader; when it is full, DEBUG records are dropped first, then INFO (added during the build; it was missing from the first version of this list)
 - **Default**: `20000`
+
+- **Variable**: `ARYX_RAVEN_LOG_HASH_KEY`
+- **Meaning**: secret used to turn customer text into the short digest shown in log lines (added after the peer review of PR 422); set the same value on every pod so equal texts match across the deployment
+- **Default**: unset, which means a random key per process (equal texts match only within one process, and the digest can never be reproduced from outside)
 
 ## 9c. S3 emitter
 

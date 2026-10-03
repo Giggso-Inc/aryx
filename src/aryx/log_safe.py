@@ -11,21 +11,48 @@ usually the part that holds a name, address or phone number.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import re
+import secrets
 from collections.abc import Mapping
 from typing import Any
 
 _MAX_TYPES = 6
+_KEY: bytes | None = None
+
+
+def _key() -> bytes:
+    """Secret for the text digests: ARYX_RAVEN_LOG_HASH_KEY, else random per process.
+
+    With the env var set (same value on every pod) equal texts give equal digests
+    across the whole deployment; without it, only within one process. Either way
+    the digest cannot be reproduced by hashing guesses outside the deployment.
+    """
+    global _KEY
+    if _KEY is None:
+        env = os.environ.get("ARYX_RAVEN_LOG_HASH_KEY", "").strip()
+        _KEY = env.encode("utf-8") if env else secrets.token_bytes(32)
+    return _KEY
+
+
+def keyed_digest(text: str, hex_len: int) -> str:
+    """Leading ``hex_len`` hex chars of HMAC-SHA256(secret, text)."""
+    return hmac.new(_key(), text.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:hex_len]
 
 
 def text_ref(text: Any) -> str:
-    """Return ``len=<n> sha=<8 hex>`` for a text, or ``-`` when it is empty (never the text)."""
+    """Return ``len=<n> sha=<8 hex>`` for a text, or ``-`` when it is empty (never the text).
+
+    The digest is keyed (HMAC with a deployment secret), so short guessable texts
+    ("yes", "NA", a number) cannot be recovered by hashing candidates.
+    """
     if text is None:
         return "-"
     value = text if isinstance(text, str) else str(text)
     if not value:
         return "-"
-    digest = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:8]
+    digest = keyed_digest(value, 8)
     return f"len={len(value)} sha={digest}"
 
 

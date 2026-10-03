@@ -27,7 +27,7 @@ from aryx.store.oracle_sql_translate import _BIND_NAME_RE, _MERGE_ON_RE, _transl
 
 logger = logging.getLogger(__name__)
 
-# Statements slower than this are always logged (INFO), whatever the level filter.
+# Statements slower than this are logged at INFO (so they are dropped when the level is WARN or ERROR).
 SLOW_STATEMENT_MS = 2000
 _VERB_TABLE_RE = re.compile(
     r"^\s*(?:(INSERT)\s+INTO|(UPDATE)|(DELETE)\s+FROM|(MERGE)\s+INTO|(SELECT)\b.*?\bFROM)\s+([\w.\"$#]+)",
@@ -66,10 +66,17 @@ def _log_stmt_ok(op: str, method: str, rows: int, t0: float) -> None:
                            "rows": rows, "duration_ms": ms, "result": "ok"})
 
 
+# "object does not exist / already exists" codes: callers deliberately tolerate these
+# (best-effort purge steps, idempotent migrations), so they are WARN P3, not ERROR P2.
+_TOLERATED_ORA = frozenset({"ORA-00942", "ORA-00955", "ORA-01418", "ORA-01430", "ORA-02289"})
+
+
 def _log_stmt_failed(op: str, method: str, exc: BaseException, t0: float) -> None:
-    """ERROR for every failing statement (no params, no row0, no SQL text)."""
-    raven_log("ERROR", "P2", "db.oracle.call_failed oracle statement failed",
-              error_code="ARYX_DB_CALL_FAILED",
+    """ERROR for a failing statement, WARN for an object-missing/exists one (no params, no row0, no SQL text)."""
+    tolerated = _ora_code(exc) in _TOLERATED_ORA
+    raven_log("WARN" if tolerated else "ERROR", "P3" if tolerated else "P2",
+              "db.oracle.call_failed oracle statement failed",
+              error_code="ARYX_DB_CALL_FAILED_TOLERATED" if tolerated else "ARYX_DB_CALL_FAILED",
               context={"dependency_name": "oracle_adb", "operation": op, "method": method,
                        "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
                        "error_class": type(exc).__name__, "ora_code": _ora_code(exc), "attempt": 1})

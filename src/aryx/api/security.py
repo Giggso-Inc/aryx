@@ -116,6 +116,23 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
     return key if valid else None
 
 
+_REJECTED = {"n": 0}
+_REJECT_LOG_EVERY = 20  # one WARN for the first rejected key, then one per 20 (brute-force safe)
+
+
+def _note_rejected_key() -> None:
+    """WARN on a rejected API key, throttled; logs a running count, never the key or its length."""
+    _REJECTED["n"] += 1
+    n = _REJECTED["n"]
+    if n == 1 or n % _REJECT_LOG_EVERY == 0:
+        raven_log("WARN", "P3", "auth.api_key.rejected API key or token was not accepted",
+                  error_code="ARYX_AUTH_KEY_REJECTED",
+                  context={"actor": "api_client", "requested_action": "api_access", "resource": "api",
+                           "required_permission": "valid_api_key", "decision": "deny",
+                           "reason_code": "TOKEN_INVALID", "policy_version": "api_key_v1",
+                           "rejected_total": n, "logged_every": _REJECT_LOG_EVERY})
+
+
 def _verify_key(key: str) -> bool:
     """Verify an API key against the shared internal key or McpTokenStore."""
     configured_internal_key = os.environ.get("ARYX_INTERNAL_API_KEY", "").strip()
@@ -133,7 +150,7 @@ def _verify_key(key: str) -> bool:
         "internal_key_configured": bool(configured_internal_key),
         "internal_key_is_placeholder": configured_internal_key in _PLACEHOLDER_INTERNAL_KEYS,
         "internal_key_too_short": 0 < len(configured_internal_key) < _MIN_INTERNAL_KEY_LENGTH,
-        "key_len": len(key or ""), "policy_version": "api_key_v1"})
+        "policy_version": "api_key_v1"})
 
     try:
         from aryx.config import get_settings
@@ -145,6 +162,8 @@ def _verify_key(key: str) -> bool:
                 "decision": "allow" if _ok else "deny",
                 "reason_code": "TOKEN_VALID" if _ok else "TOKEN_INVALID",
                 "policy_version": "api_key_v1"})
+            if not _ok:
+                _note_rejected_key()
             return _ok
         finally:
             store.close()

@@ -157,15 +157,15 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         - state.oscillating_vns
     )
     non_oscillating_inconsistent = frozenset(state.inconsistent_vns) - state.oscillating_vns
-    _keys_same = set(state.filled.keys()) == state.prev_filled_keys
-    _vis_same = {a.entity_id for a in state.attrs} == state.prev_visible_ids
     _stable = bool(
         not non_oscillating_resynced
         and not non_oscillating_inconsistent
-        and _keys_same
-        and _vis_same
+        and set(state.filled.keys()) == state.prev_filled_keys
+        and {a.entity_id for a in state.attrs} == state.prev_visible_ids
     )
     if would_log("DEBUG"):
+        _keys_same = set(state.filled.keys()) == state.prev_filled_keys
+        _vis_same = {a.entity_id for a in state.attrs} == state.prev_visible_ids
         raven_log("DEBUG", "P4", "ask.rules_loop.break_check stability check", context={
             "selected_option": "stop" if _stable else "continue", "available_options": ["stop", "continue"],
             "reason_code": "STABLE" if _stable else "STATE_CHANGED", "policy_version": "rules_loop_v1",

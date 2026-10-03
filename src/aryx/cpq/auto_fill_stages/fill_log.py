@@ -116,15 +116,17 @@ def log_write(ctx: Any, attr: Any, vn: str, value: Any, display: Any, source: st
         free = is_free_text(attr)
         differs = old is not None and old != new
         pass_no = current_pass()
-        if differs:
-            raven_log("WARN", "P3", "ask.fill.overwritten a different value replaced an earlier one",
-                      error_code="ARYX_ASK_FILL_OVERWRITTEN", context={
+        if differs and (not force or would_log("DEBUG")):
+            # a forced overwrite is the rules loop recomputing a value on purpose: DEBUG, not WARN
+            raven_log("DEBUG" if force else "WARN", "P4" if force else "P3",
+                      "ask.fill.overwritten a different value replaced an earlier one",
+                      error_code="" if force else "ARYX_ASK_FILL_OVERWRITTEN", context={
                           "object_id": vn, "previous_state": _state(old, free),
                           "requested_state": _state(new, free), "final_state": _state(new, free),
                           "trigger": site, "result": "overwritten", "reason_code": "DIFFERENT_VALUE_REPLACED",
                           "pass": pass_no, "old_source": old_src, "new_source": source,
                           "source_kept": source if force else (old_src or source), **value_fields(new, free_text=free)})
-        elif would_log("DEBUG"):
+        elif not differs and would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ask.fill.set write site", context={
                 "object_id": vn, "previous_state": _state(old, free), "requested_state": _state(new, free),
                 "final_state": _state(new, free), "trigger": site,

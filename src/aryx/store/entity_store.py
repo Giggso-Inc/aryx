@@ -32,7 +32,7 @@ from aryx.models import (
     ResolvedEntity,
 )
 from aryx.config import get_settings
-from aryx.raven_log import raven_log
+from aryx.raven_log import raven_log, would_log
 from aryx.queries import load
 from aryx.store.entity_store_ids import _dumps, _fetch_entity_ids
 from aryx.store.pool import get_pool
@@ -118,10 +118,11 @@ class EntityStore:
                 record_id=record_id, text=text, payload=payload,
                 source_system=source_system, cleaned_at=cleaned_at,
             ))
-        raven_log("DEBUG", "P4", "ingest.resolve.records_loaded landed records loaded for resolve",
-                  context={"task_id": run_id, "stage": "resolve", "workspace_id": self._ws,
-                           "records": len(records), "match_key_attrs": list(key_attrs),
-                           "empty_match_text": sum(1 for r in records if not r.text)})
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.resolve.records_loaded landed records loaded for resolve",
+                      context={"task_id": run_id, "stage": "resolve", "workspace_id": self._ws,
+                               "records": len(records), "match_key_attrs": list(key_attrs),
+                               "empty_match_text": sum(1 for r in records if not r.text)})
         return records
 
     def entity_ids_by_run(self, run_id: int) -> dict[str, int]:

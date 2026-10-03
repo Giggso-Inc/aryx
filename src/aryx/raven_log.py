@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import atexit
 import contextvars
-import hashlib
+from aryx.log_safe import keyed_digest
 import json
 import logging
 import os
@@ -59,7 +59,7 @@ except Exception:  # pragma: no cover - exercised via monkeypatch in tests
 
 __all__ = [
     "new_span_id", "new_trace_id", "raven_log", "would_log", "bind_run_id",
-    "current_run_id", "submit_ctx", "ctx_callable", "value_fields", "flush",
+    "current_run_id", "submit_ctx", "value_fields", "flush",
     "reload_config",
 ]
 
@@ -97,7 +97,7 @@ def current_run_id() -> str:
     return cpq.get_run_id() if cpq is not None else ""
 
 
-def ctx_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
+def _ctx_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Return ``fn`` wrapped to run inside a snapshot of the caller's context."""
     ctx = contextvars.copy_context()
 
@@ -109,7 +109,7 @@ def ctx_callable(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def submit_ctx(executor: Any, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """``executor.submit(fn, ...)`` with the caller's context copied in."""
-    return executor.submit(ctx_callable(fn), *args, **kwargs)
+    return executor.submit(_ctx_callable(fn), *args, **kwargs)
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -436,7 +436,12 @@ _FORBIDDEN_KEYS = frozenset({
 
 def _scrub(obj: Any, depth: int = 0) -> Any:
     """Redact forbidden keys (content rule). Copies only when something is hit."""
-    if depth > 3 or not isinstance(obj, dict):
+    if depth > 3:
+        return obj
+    if isinstance(obj, (list, tuple)):
+        items = [_scrub(v, depth + 1) for v in obj]
+        return obj if all(a is b for a, b in zip(items, obj)) else items
+    if not isinstance(obj, dict):
         return obj
     out = None
     for key, val in obj.items():
@@ -462,7 +467,7 @@ def value_fields(value: Any, *, free_text: bool = False) -> dict[str, Any]:
     if free_text:
         text = value if isinstance(value, str) else json.dumps(value, default=str)
         return {"value_kind": "free_text", "value_len": len(text),
-                "value_hash": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]}
+                "value_hash": keyed_digest(text, 12)}
     if isinstance(value, (list, tuple, set, frozenset)):
         return {"value_kind": "enumerated_multi", "value": sorted(str(v) for v in value)}
     numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
