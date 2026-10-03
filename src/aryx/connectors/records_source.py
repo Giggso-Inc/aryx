@@ -10,6 +10,7 @@ from collections.abc import Iterator
 
 from aryx.connectors.base import Connector
 from aryx.models import RawRecord
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -24,3 +25,6 @@ class RecordsConnector(Connector):
     def extract(self) -> Iterator[RawRecord]:
         yield from self._records
         logger.info("records extracted label=%s records=%d", self._label, len(self._records))
+        raven_log("DEBUG", "P4", "ingest.records.replay extracted",
+                  context={"label": self._label, "records": len(self._records),
+                           "zero_records": len(self._records) == 0})

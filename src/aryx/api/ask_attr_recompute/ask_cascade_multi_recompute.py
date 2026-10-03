@@ -90,7 +90,7 @@ def _recompute_after_cascade_multi(
             session.cascade_log.append({
                 "var": var, "old": old_val, "new": new_val,
                 "rule": "cascade" if var in changed_vns else "cascade-dependent",
-                "turn": session.turn,
+                "turn": getattr(session, "turn", None),
             })
     session.filled = filled
     session.display_filled = display_filled

@@ -20,7 +20,7 @@ from aryx.api.ask_turn_steps.ask_step10_blocked_removal import _step10_blocked_r
 from aryx.api.ask_turn_steps.ask_step10_commit_and_drain import _step10_commit_and_drain
 from aryx.api.ask_turn_steps.ask_step10_recompute_pending import _step10_recompute_pending
 from aryx.api.ask_turn_steps.ask_step10_sibling_and_multi_hint import _step10_enforce_siblings_and_multi_hint
-
+from aryx.raven_log import raven_log
 
 
 def _step10_run_rule_eval_loop(
@@ -44,6 +44,10 @@ def _step10_run_rule_eval_loop(
         catalog_prefix, mode_request,
     )
     if _step10_early_response is not None:
+        raven_log("DEBUG", "P4", "ask.recompute.loop exited before rule eval", context={
+            "selected_option": "blocked_removal_response",
+            "available_options": ["blocked_removal_response", "rule_eval_complete"],
+            "reason_code": "BLOCKED_REMOVAL_HANDLED", "turn": getattr(session, "turn", None)})
         return _step10_early_response, [], {}, {}, [], {}, set(), ""
 
     _step3_t0 = time.monotonic()
@@ -77,4 +81,13 @@ def _step10_run_rule_eval_loop(
         prev_filled_snapshot, prev_filled_multi_snapshot, pending_var, _step3_t0,
     )
 
+    raven_log("DEBUG", "P4", "ask.recompute.loop rule eval finished", context={
+        "selected_option": "rule_eval_complete",
+        "available_options": ["blocked_removal_response", "rule_eval_complete"],
+        "reason_code": "PENDING_REMAINING" if pending else "NOTHING_PENDING",
+        "skip_always_ask_count": len(skip_always_ask or ()),
+        "model_leaf_resolved": bool(getattr(session, "model_leaf_resolved", None)),
+        "negated_count": len(negated_vns or ()), "pending_count": len(pending or []),
+        "filled_count": len(filled or {}), "elapsed_ms": int((time.monotonic() - _step3_t0) * 1000),
+        "turn": getattr(session, "turn", None)})
     return None, visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids, dropped_note

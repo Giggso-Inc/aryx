@@ -11,13 +11,15 @@ import io
 import itertools
 import logging
 import time
-from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from aryx.api.admin_api import _local_broker
 from aryx.api.file_ingest.file_ingest_limits import _DATA_EXTS, _DOC_EXTS
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
+from aryx.log_safe import ora_code
+from aryx.worker.job_partial import note_hidden, pop_hidden
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
@@ -30,7 +32,7 @@ from aryx.pipeline.dynamic_fk.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
-from aryx.store.job_store import JobStore
+from aryx.store.job_store import JobStore, make_should_stop
 from aryx.source.source_catalog import (
     restore_generic_source_entry,
     upsert_xlsx_catalog_entry,
@@ -40,6 +42,12 @@ from aryx.source.source_catalog import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_settings_flag(name: str) -> str:
+    """Return an ingest routing env flag value for logging (a routing switch, never a secret)."""
+    import os
+    return os.environ.get(name, "")
 
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
@@ -73,36 +81,6 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
     return chunks or [data]
 
 
-def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
-    """Cheap, throttled cancellation check for a running job's worker thread.
-
-    POST /admin/jobs/{job_id}/cancel only ever updated the job-store row
-    (see jobs_api.py) -- nothing in the pipeline ever read it back, so a
-    "cancelled" job kept running to completion regardless, consuming a
-    worker-pool slot the whole time (confirmed live: 20+ minutes of entity
-    creation after cancellation). This closure is polled from inside the
-    pipeline's hottest loops (dimension_link.py) and at each stage boundary
-    (orchestrate.py) -- real DB reads are throttled to at most once per
-    `min_interval_s` regardless of how often the caller checks, so callers
-    can poll every iteration without hammering Postgres.
-    """
-    state = {"last_check": 0.0, "cancelled": False}
-
-    def should_stop() -> bool:
-        if state["cancelled"]:
-            return True
-        now = time.monotonic()
-        if now - state["last_check"] < min_interval_s:
-            return False
-        state["last_check"] = now
-        row = jobs.get(job_id)
-        if row is not None and row.get("status") == "cancelled":
-            state["cancelled"] = True
-        return state["cancelled"]
-
-    return should_stop
-
-
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1, layout_catalog_prefix: str | None = None) -> None:
@@ -117,6 +95,9 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     distinct catalog_prefix values for multiple layout files must upload
     them in separate requests.
     """
+    bind_run_id(job_id)
+    t0 = time.monotonic()
+    stage_seen = ["start"]
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
@@ -134,6 +115,13 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         # skipped, not allowed to fail the whole batch upload.
         layout_items = [(d, n) for d, n in items if cpq_layout_upload_active(n)]
         items = [(d, n) for d, n in items if not cpq_layout_upload_active(n)]
+        raven_log("INFO", "P4", "ingest.route.files split layout vs ingest",
+                  context={"job_id": job_id, "selected_option": "layout_store" if layout_items else "ingest",
+                           "available_options": ["layout_store", "ingest"], "reason_code": "CPQ_LAYOUT_UPLOAD_ACTIVE",
+                           "layout_files": len(layout_items), "ingest_files": len(items),
+                           "flags": {"ARYX_INGEST_PIPELINE": get_settings_flag("ARYX_INGEST_PIPELINE"),
+                                     "ARYX_INGEST_FILE_TYPE": get_settings_flag("ARYX_INGEST_FILE_TYPE"),
+                                     "ARYX_CPQ_LAYOUT_SOURCE": get_settings_flag("ARYX_CPQ_LAYOUT_SOURCE")}})
         for layout_data, layout_name in layout_items:
             try:
                 prefix = store_layout_file(
@@ -145,16 +133,30 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     job_id, "Ingest", 20,
                     f"Stored layout file {layout_name} (catalog_prefix={prefix})",
                 )
-            except CpqLayoutFileTooLarge:
+            except CpqLayoutFileTooLarge as lay_exc:
                 logger.warning(
                     "cpq_ingestion: layout file %s too large, skipped",
                     layout_name, exc_info=True,
                 )
-            except Exception:
+                note_hidden(job_id)
+                raven_log("WARN", "P3", "ingest.layout.skipped layout file too large",
+                          error_code="ARYX_ING_LAYOUT_SKIPPED",
+                          context={"job_id": job_id, "filename": layout_name, "triggering_error": type(lay_exc).__name__,
+                                   "reason_code": "TOO_LARGE", "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                                   "recovery_selected": "skip_file", "fallback_target": None,
+                                   "exit_condition": "skipped", "result": "skipped"})
+            except Exception as lay_exc:
                 logger.warning(
                     "cpq_ingestion: failed to store layout file %s",
                     layout_name, exc_info=True,
                 )
+                note_hidden(job_id)
+                raven_log("WARN", "P3", "ingest.layout.skipped layout file store failed",
+                          error_code="ARYX_ING_LAYOUT_SKIPPED",
+                          context={"job_id": job_id, "filename": layout_name, "triggering_error": type(lay_exc).__name__,
+                                   "reason_code": "STORE_FAILED", "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                                   "recovery_selected": "skip_file", "fallback_target": None,
+                                   "exit_condition": "skipped", "result": "skipped"})
 
         # Register each uploaded file as a datasource so the workspace card shows
         # an accurate file count regardless of whether files were ingested via the
@@ -162,15 +164,36 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         ds_store = DatasourceStore(settings.effective_dsn())
         for _, fname in items:
             kind = "docs" if Path(fname).suffix.lower() in _DOC_EXTS else "csv"
+            ds_t0 = time.monotonic()
             try:
                 ds_store.ensure(workspace_id, fname[:255], kind)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.datasource.ensure registered upload as datasource",
+                              context={"job_id": job_id, "filename": fname[:255], "kind": kind, "result": "ok"})
             except Exception as ds_exc:
                 logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
-        on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
-        should_stop = _make_should_stop(jobs, job_id)
+                note_hidden(job_id)
+                raven_log("WARN", "P3", "ingest.datasource.register_failed file not in Data > Sources",
+                          error_code="ARYX_ING_DATASOURCE_FAILED",
+                          context={"job_id": job_id, "dependency_name": "adb", "operation": "datasource_ensure",
+                                   "duration_ms": int((time.monotonic() - ds_t0) * 1000), "result": "error",
+                                   "error_class": type(ds_exc).__name__, "attempt": 1,
+                                   "filename": fname[:255], "kind": kind})
+
+        def on_prog(s, p, d):
+            stage_seen[0] = s
+            return jobs.update_stage(job_id, s, p, d)
+
+        should_stop = make_should_stop(jobs, job_id)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
+        raven_log("INFO", "P4", "ingest.route.files road chosen per file type",
+                  context={"job_id": job_id, "selected_option": "data+docs" if data_files and doc_files else
+                           ("data" if data_files else "docs"), "available_options": ["data", "docs"],
+                           "reason_code": "EXTENSION_SPLIT", "data_files": len(data_files),
+                           "doc_files": len(doc_files),
+                           "by_ext": sorted({Path(n).suffix.lower() for _, n in items})})
 
         # Pre-compute FK links for multi-file CSV uploads so that cross-file
         # relationships are detected before any pipeline runs (mirrors XML path).
@@ -182,6 +205,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             for csv_d, csv_n in csv_data_files:
                 derived = _stem_type(csv_n) or ontology_type
                 csv_type_map[csv_n] = derived
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.route.csv type derived from filename",
+                              context={"job_id": job_id, "filename": csv_n, "derived_type": derived,
+                                       "selected_option": "filename" if _stem_type(csv_n) else "form_ontology_type",
+                                       "available_options": ["filename", "form_ontology_type"],
+                                       "reason_code": "STEM_TYPE"})
                 csv_plans.append({
                     "data": csv_d,
                     "filename": csv_n,
@@ -215,6 +244,8 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     logger.info("xlsx upload %r produced no ingestible sheets "
                                "(all hidden/empty)", xlsx_n)
                     xlsx_plans_by_file[xlsx_n] = []
+                    raven_log("DEBUG", "P4", "ingest.xlsx.no_sheets workbook produced nothing ingestible",
+                              context={"job_id": job_id, "filename": xlsx_n, "sheets": 0, "decision": "skip"})
                     continue
                 file_plans = []
                 prefix = orig_stem + "__"
@@ -229,6 +260,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     }
                     file_plans.append(plan)
                     xlsx_all_plans.append(plan)
+                    if would_log("DEBUG"):
+                        raven_log("DEBUG", "P4", "ingest.xlsx.sheet planned",
+                                  context={"job_id": job_id, "sheet": sheet_slug, "derived_type": derived_type,
+                                           "type_source": "sheet_name" if _stem_type(sheet_slug) else "form_ontology_type"})
                 xlsx_plans_by_file[xlsx_n] = file_plans
             xlsx_auto_fk = _detect_fk_links(xlsx_all_plans, log_id=job_id)
             if xlsx_auto_fk:
@@ -281,10 +316,19 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 # Each CSV gets its own ontology_type derived from the element
                 # tag so that cross-type pairs are generated for relate/fk_link.
                 orig_stem = Path(name).stem
-                if cpq_ingestion_pipeline_active(name):
+                _cpq_active = cpq_ingestion_pipeline_active(name)
+                raven_log("INFO", "P4", "ingest.route.xml road chosen",
+                          context={"job_id": job_id, "filename": name,
+                                   "selected_option": "cpq_raw_graph" if _cpq_active else "xml_to_csvs",
+                                   "available_options": ["cpq_raw_graph", "xml_to_csvs"],
+                                   "reason_code": "CPQ_INGESTION_PIPELINE_ACTIVE" if _cpq_active else "DEFAULT_XML",
+                                   "flags": {"ARYX_INGEST_PIPELINE": get_settings_flag("ARYX_INGEST_PIPELINE"),
+                                             "ARYX_INGEST_FILE_TYPE": get_settings_flag("ARYX_INGEST_FILE_TYPE")}})
+                if _cpq_active:
                     xml_csvs = project_raw_graph_and_flatten(
                         data, orig_stem, workspace_id=workspace_id,
                         dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+                        should_stop=should_stop,
                     )
                 else:
                     xml_csvs = _xml_to_csvs(data, orig_stem)
@@ -305,6 +349,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     logger.info("XML auto-detected %d fk-link spec(s): %s", len(auto_fk), auto_fk)
                 for idx, (csv_data, csv_name, derived_type) in enumerate(xml_plans):
                     is_last = (idx == len(xml_plans) - 1)
+                    if would_log("DEBUG"):
+                        raven_log("DEBUG", "P4", "ingest.xml.plan run",
+                                  context={"job_id": job_id, "plan_index": idx, "plans": len(xml_plans),
+                                           "derived_type": derived_type, "relate": is_last, "skip_graph": not is_last,
+                                           "fk_links": len(auto_fk) if is_last else 0})
                     jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
                     # relate/skip_graph mirror ingest_confirmed() semantics:
                     # - relate only on the last plan (full entity set visible)
@@ -362,6 +411,8 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 # batch (mirrors the XML path's is_last/skip_graph pattern).
                 file_plans = xlsx_plans_by_file.get(name, [])
                 if not file_plans:
+                    raven_log("DEBUG", "P4", "ingest.xlsx.skip workbook has no plans",
+                              context={"job_id": job_id, "filename": name, "decision": "skip"})
                     continue
                 global_last_plan = xlsx_all_plans[-1] if xlsx_all_plans else None
                 for plan in file_plans:
@@ -412,6 +463,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 csv_chunks = _chunk_csv_bytes(data, chunk_rows) if chunk_rows > 0 else [data]
                 stem = Path(name).stem
                 total_chunks = len(csv_chunks)
+                raven_log("DEBUG", "P4", "ingest.route.csv chunking decision",
+                          context={"job_id": job_id, "filename": name, "multi_csv": multi_csv, "derived_type": eff_type,
+                                   "selected_option": "chunked" if total_chunks > 1 else "single",
+                                   "available_options": ["chunked", "single"], "reason_code": "CSV_CHUNK_ROWS",
+                                   "chunk_rows": chunk_rows, "chunks": total_chunks, "relate": eff_relate,
+                                   "fk_links": len(eff_fk)})
                 for chunk_idx, chunk_data in enumerate(csv_chunks):
                     is_last_chunk = (chunk_idx == total_chunks - 1)
                     dataset = f"{stem}_c{chunk_idx:04d}" if total_chunks > 1 else stem
@@ -438,6 +495,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     source_dataset=stem,
                 )
         if doc_files:
+            raven_log("INFO", "P4", "ingest.route.docs document road chosen",
+                      context={"job_id": job_id, "selected_option": "document_router", "docs": len(doc_files),
+                               "reason_code": "DOC_EXTENSIONS", "chunk_size": settings.chunk_size,
+                               "chunk_overlap": settings.chunk_overlap})
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
             tmp_paths.extend(doc_paths)
@@ -456,18 +517,44 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
+        hidden = pop_hidden(job_id)
         if csv_bml_problems:
             jobs.finish(job_id, run_id=None, status="failed", error="; ".join(csv_bml_problems)[:2000])
+            raven_log("ERROR", "P2", "ingest.job.failed csv_bml_ingestion rejected one or more CSVs",
+                      error_code="ARYX_ING_CSV_BML_FAILED",
+                      context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": "csv_bml",
+                               "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                               "reason_code": "CSV_BML_NOT_LOADED", "error_class": "CsvBmlNotLoaded",
+                               "impact_scope": {"files_total": len(items), "csv_bml_failed": len(csv_bml_problems),
+                                                "hidden_failures": hidden}})
         else:
             jobs.finish(job_id, run_id=None, status="complete")
+            raven_log("INFO", "P4", "ingest.job.completed file ingest finished",
+                      context={"task_id": job_id, "job_id": job_id, "final_status": "complete", "stage": "finish",
+                               "duration_ms": int((time.monotonic() - t0) * 1000),
+                               "result": "partial" if hidden else "ok",
+                               "reason_code": "HIDDEN_FAILURES" if hidden else "OK",
+                               "impact_scope": {"files_total": len(items), "hidden_failures": hidden}})
     except PipelineCancelled:
         # The job row is already "cancelled" (that's what should_stop() just
         # read to get here) -- leave it alone, don't overwrite it with
         # "failed". This is the actual fix: the worker thread now really
         # stops instead of running the rest of the pipeline to completion.
         logger.info("file ingest cancelled job=%s", job_id)
+        pop_hidden(job_id)
+        raven_log("INFO", "P3", "ingest.job.cancelled worker stopped",
+                  context={"object_id": job_id, "previous_state": "running", "requested_state": "cancelled",
+                           "final_state": "cancelled", "trigger": "worker_stop", "result": "stopped",
+                           "reason_code": "USER_CANCEL", "stage": stage_seen[0]})
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc)
+        pop_hidden(job_id)
+        raven_log("ERROR", "P2", "ingest.job.failed file ingest failed",
+                  error_code="ARYX_ING_JOB_FAILED",
+                  context={"task_id": job_id, "job_id": job_id, "final_status": "failed", "stage": stage_seen[0],
+                           "duration_ms": int((time.monotonic() - t0) * 1000), "result": "error",
+                           "reason_code": type(exc).__name__, "error_class": type(exc).__name__,
+                           "ora_code": ora_code(exc)})
         if jobs is not None:
             jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:

@@ -175,6 +175,20 @@ services:
       - ARYX_DB_POOL_MAX_SIZE=${ARYX_DB_POOL_MAX_SIZE:-25}
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
+      # Raven structured logging (aryx.raven_log). LEVEL: DEBUG|INFO|WARN|ERROR.
+      # SINK: stdout|s3|both. S3 settings are only read for s3/both; the region
+      # has no default and the credentials come from the environment only.
+      - ARYX_RAVEN_LOG_ENABLED=${ARYX_RAVEN_LOG_ENABLED:-true}
+      - ARYX_RAVEN_LOG_LEVEL=${ARYX_RAVEN_LOG_LEVEL:-INFO}
+      - ARYX_RAVEN_LOG_SINK=${ARYX_RAVEN_LOG_SINK:-stdout}
+      - ARYX_RAVEN_LOG_HASH_KEY=${ARYX_RAVEN_LOG_HASH_KEY:-}
+      - ARYX_RAVEN_LOG_S3_PATH=${ARYX_RAVEN_LOG_S3_PATH:-}
+      - ARYX_RAVEN_LOG_S3_ACCESS_ID=${ARYX_RAVEN_LOG_S3_ACCESS_ID:-}
+      - ARYX_RAVEN_LOG_S3_ACCESS_TOKEN=${ARYX_RAVEN_LOG_S3_ACCESS_TOKEN:-}
+      - ARYX_RAVEN_LOG_S3_REGION=${ARYX_RAVEN_LOG_S3_REGION:-}
+      - ARYX_RAVEN_LOG_S3_FLUSH_SECONDS=${ARYX_RAVEN_LOG_S3_FLUSH_SECONDS:-5}
+      - ARYX_RAVEN_LOG_S3_BATCH_MAX=${ARYX_RAVEN_LOG_S3_BATCH_MAX:-500}
+      - ARYX_RAVEN_LOG_S3_QUEUE_MAX=${ARYX_RAVEN_LOG_S3_QUEUE_MAX:-20000}
       # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
       - ARYX_API_AUTH=${ARYX_API_AUTH:-false}

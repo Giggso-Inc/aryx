@@ -37,6 +37,7 @@ from collections.abc import Callable
 
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.raven_log import raven_log
 from aryx.pipeline.dimension_link.dimension_link_columns import (
     CandidateKey,
     ValueMap,
@@ -75,15 +76,21 @@ def detect_and_link_dimensions(
     with many distinct attr/val pairs can produce thousands of dimension
     hub entities, one create_entity() call at a time, with no other natural
     exit point. should_stop() itself is cheap (throttled to at most one real
-    check per second, see file_ingest_api._make_should_stop), so checking it
+    check per second, see file_ingest_api.make_should_stop), so checking it
     every inner iteration is safe.
     """
     cfg = get_settings()
     if not cfg.dimension_link_enabled:
+        raven_log("DEBUG", "P4", "ingest.dimension.skipped dimension linking disabled",
+                  context={"stage": "dimension_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "FLAG_DISABLED"})
         return 0
 
     entities = list(estore.list_entities())
     if not entities:
+        raven_log("DEBUG", "P4", "ingest.dimension.skipped no entities",
+                  context={"stage": "dimension_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "NO_ENTITIES"})
         return 0
 
     by_type_col_val = _candidate_columns(entities)
@@ -103,6 +110,11 @@ def detect_and_link_dimensions(
 
     if len(candidates) < 2:
         logger.debug("dimension_link: fewer than 2 dimension candidate columns — skipping")
+        raven_log("DEBUG", "P4", "ingest.dimension.skipped fewer than two dimension columns",
+                  context={"stage": "dimension_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "FEWER_THAN_2_CANDIDATES",
+                           "candidates": len(candidates), "min_distinct": cfg.dimension_min_distinct_values,
+                           "max_cardinality_ratio": cfg.dimension_max_cardinality_ratio})
         return 0
 
     dimension_groups = _dimension_groups(
@@ -110,6 +122,11 @@ def detect_and_link_dimensions(
     )
     if not dimension_groups:
         logger.info("dimension_link: no cross-type dimension groups found")
+        raven_log("DEBUG", "P4", "ingest.dimension.skipped no cross-type dimension groups",
+                  context={"stage": "dimension_link", "selected_option": "skip",
+                           "available_options": ["link", "skip"], "reason_code": "NO_DIMENSION_GROUPS",
+                           "candidates": len(candidates), "min_overlap": cfg.dimension_min_overlap,
+                           "min_types": cfg.dimension_min_types})
         return 0
 
     max_rels = cfg.dimension_max_edges_per_group
@@ -122,6 +139,12 @@ def detect_and_link_dimensions(
                 "dimension_link: job cancelled — stopping after %d/%d groups, "
                 "%d edges linked so far", group_idx, len(dimension_groups), total_edges,
             )
+            raven_log("WARN", "P3", "ingest.dimension.cancelled dimension linking stopped by cancel",
+                      error_code="ARYX_ING_CANCELLED",
+                      context={"stage": "dimension_link", "selected_option": "stop",
+                               "available_options": ["continue", "stop"], "reason_code": "SHOULD_STOP_TRUE",
+                               "groups_done": group_idx, "groups_total": len(dimension_groups),
+                               "edges_so_far": total_edges})
             break
         name_counts: dict[str, int] = defaultdict(int)
         for _etype, col in group:
@@ -166,7 +189,18 @@ def detect_and_link_dimensions(
                 "— saving %d edges collected so far, not aborting",
                 dim_name, max_rels, len(rels),
             )
+            raven_log("WARN", "P3", "ingest.dimension.group_capped dimension group edge cap hit or cancelled",
+                      error_code="ARYX_ING_RELATE_DEGRADED",
+                      context={"stage": "dimension_link", "dimension": dim_name, "threshold": max_rels,
+                               "edges_collected": len(rels), "triggering_error": "EDGE_CAP_OR_CANCEL",
+                               "attempt": 1, "max_attempts": 1, "recovery_selected": "save_partial",
+                               "result": "partial", "exit_condition": "cancelled" if stopped else "cap_hit"})
         if rels:
+            raven_log("DEBUG", "P4", "ingest.dimension.group_linked dimension group linked",
+                      context={"stage": "dimension_link", "dimension": dim_name,
+                               "types": sorted({t for t, _ in group}), "hub_entities": len(value_hub_ids),
+                               "edges": len(rels), "selected_option": "save", "available_options": ["save", "skip"],
+                               "reason_code": "EDGES_COLLECTED"})
             estore.save_relationships(rels)
             total_edges += len(rels)
             logger.info(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.base_model_placeholder import is_base_model_placeholder
 from aryx.cpq.engine import (
@@ -98,3 +99,5 @@ def stage_satisfied_recommendation(
         elif rec_match:
             state.value, state.display, state.fired_rule_name = rec_match
             state.source = "rule"
+            fill_log.log_decision(state.vn, "stage_satisfied_recommendation", "matched",
+                                  "RECOMMENDATION_ALREADY_SATISFIED", rule_name=state.fired_rule_name)

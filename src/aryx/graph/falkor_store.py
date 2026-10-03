@@ -32,6 +32,7 @@ from aryx.graph.falkor_sanitize import (
 )
 from aryx.graph.falkor_write_entities import _FalkorEntityWriteMixin
 from aryx.graph.falkor_write_relationships import _FalkorRelationshipMixin
+from aryx.raven_log import current_run_id, raven_log, would_log
 
 __all__ = [
     "FalkorStore",
@@ -42,6 +43,16 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _index_failed(index: str, exc: Exception, impact: str) -> None:
+    """Record a failed, non-fatal index creation; writes degrade to a full scan."""
+    raven_log("WARN", "P3", f"ingest.graph.index_failed index on {index} not created",
+              error_code="ARYX_ING_GRAPH_INDEX_FAILED",
+              context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                       "backoff_ms": 0, "recovery_selected": "continue_without_index",
+                       "fallback_target": impact, "exit_condition": "degraded", "result": "degraded",
+                       "index": index, "backend": "falkordb", "trace_id": current_run_id()})
 
 
 class FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin):
@@ -89,13 +100,17 @@ class FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin):
         """
         try:
             self._graph.delete()
-        except Exception:  # graph may not exist yet  # noqa: BLE001
-            pass
+        except Exception as exc:  # graph may not exist yet  # noqa: BLE001
+            raven_log("DEBUG", "P4", "ingest.graph.clear_skipped graph did not exist yet",
+                      context={"selected_option": "continue", "available_options": ["continue", "abort"],
+                               "reason_code": "GRAPH_NOT_PRESENT", "policy_version": "falkor_clear_v1",
+                               "error_class": type(exc).__name__, "backend": "falkordb"})
         try:
             self._graph.query("CREATE INDEX FOR (e:Entity) ON (e.id)")
         except Exception as exc:  # noqa: BLE001 — perf optimization only; MERGE still works without it
             logger.warning("falkor: failed to create index on Entity.id, "
                            "writes will fall back to full-scan MERGE: %s", exc)
+            _index_failed("Entity.id", exc, "full_scan_merge")
         try:
             # Same fix as Entity.id above, for the SAME reason — add_provenance's
             # MERGE (s:Source {system, dataset, record_id}) had no index, so
@@ -110,6 +125,7 @@ class FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin):
         except Exception as exc:  # noqa: BLE001 — perf optimization only
             logger.warning("falkor: failed to create index on Source.record_id, "
                            "provenance writes will fall back to full-scan MERGE: %s", exc)
+            _index_failed("Source.record_id", exc, "full_scan_merge")
         try:
             # /graph's reader issues one query per relationship name, filtering
             # on r.name (see reader.py's subgraph()) — with no index on the
@@ -123,6 +139,7 @@ class FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin):
         except Exception as exc:  # noqa: BLE001 — perf optimization only
             logger.warning("falkor: failed to create index on REL.name, "
                            "relationship-name lookups will fall back to full-scan: %s", exc)
+            _index_failed("REL.name", exc, "full_scan_lookup")
 
     def ensure_indexes(self) -> int:
         """Create exact-match indexes for Entity lookups (idempotent).
@@ -143,6 +160,16 @@ class FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin):
                 created += 1
             except Exception as exc:  # noqa: BLE001 — duplicate index or unsupported
                 logger.debug("falkor: index on Entity.%s not created: %s", prop, exc)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.graph.index_not_created index already exists or unsupported",
+                              context={"selected_option": "skip", "available_options": ["create", "skip"],
+                                       "reason_code": "CREATE_FAILED", "policy_version": "falkor_indexes_v1",
+                                       "property": prop, "error_class": type(exc).__name__})
         logger.info("falkor: ensure_indexes created=%d candidates=%d",
                     created, len(self._index_candidates))
+        raven_log("DEBUG", "P4", "ingest.graph.indexes_ensured",
+                  context={"task_id": current_run_id(), "final_status": "complete", "duration_ms": 0,
+                           "stage": "graph_indexes", "result": "ok", "reason_code": "INDEXES_ENSURED",
+                           "impact_scope": "graph_lookup", "created": created,
+                           "candidates": len(self._index_candidates), "backend": "falkordb"})
         return created

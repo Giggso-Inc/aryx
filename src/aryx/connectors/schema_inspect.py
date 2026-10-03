@@ -10,6 +10,8 @@ from typing import Any
 
 from sqlalchemy import create_engine, inspect
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,4 +52,7 @@ def introspect(url: str, max_tables: int = 200) -> list[dict[str, Any]]:
     finally:
         engine.dispose()
     logger.info("introspected url-dialect tables=%d", len(out))
+    raven_log("DEBUG", "P4", "ingest.db.introspect tables listed",
+              context={"tables": len(out), "max_tables": max_tables, "capped": len(names) > max_tables,
+                       "tables_seen": len(names)})
     return out

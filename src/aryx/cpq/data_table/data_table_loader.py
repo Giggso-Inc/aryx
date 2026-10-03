@@ -9,9 +9,14 @@ Phase 2a, 2026-09-03).
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
+from aryx.config import get_settings
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
     _invalidate_on_marker_change,
@@ -54,6 +59,53 @@ _SHAPE_SCAN_CACHE_TTL_SECONDS = _TABLES_CACHE_TTL_SECONDS
 # Every extra shape-scan cache; other modules (data_table_inference) append
 # theirs so `_clear_tables_cache` is the one test-isolation hook.
 _SHAPE_SCAN_CACHES: list[dict] = [_DEFAULTINATTR_CACHE]
+
+
+# Per-(workspace_id, catalog_prefix) scan lock (port of dev-rv-msi #368 Part B
+# and #371). Process-local only; never evicted (one bare Lock per key). Gated
+# by Settings.cpq_tables_cache_lock_enabled.
+_TABLES_CACHE_LOCKS: dict[tuple[int, str], threading.Lock] = {}
+_TABLES_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _tables_cache_lock(key: tuple[int, str]) -> threading.Lock:
+    """Lazily-created per-key scan lock."""
+    with _TABLES_CACHE_LOCKS_GUARD:
+        lock = _TABLES_CACHE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _TABLES_CACHE_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _bounded_tables_cache_lock(
+    key: tuple[int, str], timeout_s: float | None = None,
+) -> Iterator[bool]:
+    """Acquire the per-key scan lock for at most `timeout_s` (default:
+    Settings.cpq_tables_cache_lock_timeout_s, 90 s). Yields True if acquired,
+    False on timeout (caller proceeds unlocked). Releases only if acquired."""
+    if timeout_s is None:
+        timeout_s = float(get_settings().cpq_tables_cache_lock_timeout_s)
+    lock = _tables_cache_lock(key)
+    _t0 = time.monotonic()
+    acquired = lock.acquire(timeout=timeout_s)
+    _waited = time.monotonic() - _t0
+    if not acquired:
+        logger.warning(
+            "cpq_perf: _load_all_tables lock wait TIMED OUT after %.3fs ws=%s "
+            "prefix=%r -- scanning without the lock", _waited, key[0], key[1],
+        )
+    elif _waited >= 1.0:
+        logger.info(
+            "cpq_perf: _load_all_tables lock wait %.3fs ws=%s prefix=%r",
+            _waited, key[0], key[1],
+        )
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            lock.release()
 
 
 def _cached_shape_scan(
@@ -153,6 +205,8 @@ def _load_all_tables(
         key = (workspace_id, catalog_prefix)
         if key in cache:
             logger.info("cpq_perf: _load_all_tables CACHE HIT (call-local) ws=%s prefix=%r", workspace_id, catalog_prefix)
+            fill_log.log_load("all_tables", cache="call_local", result="hit", workspace_id=workspace_id,
+                              catalog_prefix=catalog_prefix)
             return cache[key]
 
     _marker_at_read = _invalidate_on_marker_change(_TABLES_CACHE, _TABLES_CACHE_LAST_SEEN_MARKER)
@@ -162,10 +216,36 @@ def _load_all_tables(
         _mod_ts, _mod_result = _mod_hit
         if time.monotonic() - _mod_ts < _TABLES_CACHE_TTL_SECONDS:
             logger.info("cpq_perf: _load_all_tables CACHE HIT (module) ws=%s prefix=%r", workspace_id, catalog_prefix)
+            fill_log.log_load("all_tables", cache="module", result="hit", workspace_id=workspace_id,
+                              catalog_prefix=catalog_prefix)
             if cache is not None:
                 cache[_mod_key] = _mod_result
             return _mod_result
 
+    if not get_settings().cpq_tables_cache_lock_enabled:
+        return _scan_all_tables(workspace_id, catalog_prefix, cache, _mod_key, _marker_at_read)
+
+    with _bounded_tables_cache_lock(_mod_key) as _acquired:
+        if _acquired:
+            # Re-check: another thread may have populated the cache while we waited.
+            _hit = _TABLES_CACHE.get(_mod_key)
+            if _hit is not None and time.monotonic() - _hit[0] < _TABLES_CACHE_TTL_SECONDS:
+                logger.info(
+                    "cpq_perf: _load_all_tables CACHE HIT (module, post-lock) ws=%s prefix=%r",
+                    workspace_id, catalog_prefix,
+                )
+                if cache is not None:
+                    cache[_mod_key] = _hit[1]
+                return _hit[1]
+        return _scan_all_tables(workspace_id, catalog_prefix, cache, _mod_key, _marker_at_read)
+
+
+def _scan_all_tables(
+    workspace_id: int, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+    _mod_key: tuple[int, str], _marker_at_read: float | None,
+) -> tuple:
+    """The uncached grouped scan + classify + cache write-back."""
     _t0 = time.monotonic()
     rdb = get_cpq_rdb()
     constraint_rows: list[dict[str, Any]] = []
@@ -211,8 +291,26 @@ def _load_all_tables(
         len(constraint_rows), len(sequence_rows), len(hierarchy_rows),
         len(series_mapping_rows), len(region_rule_rows),
     )
+    fill_log.log_load(
+        "all_tables", cache="miss", result="fresh_scan", workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        duration_ms=int((time.monotonic() - _t0) * 1000), constraint=len(constraint_rows),
+        sequence=len(sequence_rows), hierarchy=len(hierarchy_rows), series_mapping=len(series_mapping_rows),
+        region_rule=len(region_rule_rows),
+        empty=not (constraint_rows or sequence_rows or hierarchy_rows or series_mapping_rows or region_rule_rows))
     if cache is not None:
         cache[(workspace_id, catalog_prefix)] = result
+    if not (constraint_rows or sequence_rows or hierarchy_rows
+            or series_mapping_rows or region_rule_rows):
+        # An all-empty scan is indistinguishable from a swallowed DB error or
+        # timeout (the rdb methods return empty on failure). Keep it only in
+        # the per-turn cache above; do NOT store it in the 300 s module cache,
+        # or every Data Table lookup would find nothing for five minutes.
+        logger.warning(
+            "cpq: _load_all_tables scan returned no rows ws=%s prefix=%r -- "
+            "not stored in the module cache (possible DB error or timeout)",
+            workspace_id, catalog_prefix,
+        )
+        return result
     _cache_write_if_marker_unchanged(_TABLES_CACHE, _mod_key, (time.monotonic(), result), _marker_at_read)
     return result
 

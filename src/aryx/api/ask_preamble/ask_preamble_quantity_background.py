@@ -25,6 +25,7 @@ from aryx.cpq.quantity.quantity_turn_detection import question_mentions_quantity
 from aryx.api.ask_core_helpers import _safe_detect_product_mention
 from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _preamble_capture_quantity_background(
@@ -35,20 +36,42 @@ def _preamble_capture_quantity_background(
     gate to reuse (avoids re-extracting the same value twice).
     """
     _qty_hint = extract_quantity_hint(req.question)
+    _qty_hint_source = "text" if _qty_hint is not None else "none"
     if _qty_hint is None and route_meta is not None and route_meta.quantity is not None:
         _qty_hint = route_meta.quantity
+        _qty_hint_source = "route_meta"
     if _qty_hint is not None and is_valid_product_quantity(_qty_hint):
         _qty_bg_precheck = quantity_turn_precheck(req.question, [])
         if not (_qty_bg_precheck and _qty_bg_precheck.get("has_change_verb")):
             session.product_quantity = _qty_hint
+            raven_log("DEBUG", "P4", "ask.preamble.quantity_background quantity captured directly", context={
+                "selected_option": "set_direct",
+                "available_options": ["set_direct", "llm_confirmed", "llm_rejected", "ignore"],
+                "reason_code": "NO_CHANGE_VERB", "quantity": _qty_hint, "hint_source": _qty_hint_source,
+                "turn": getattr(session, "turn", None)})
         else:
             _qty_bg_confirmed, _qty_bg_value, _ = _llm_confirm_and_extract_quantity(
                 req, session, [],
                 hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
                 fallback_value=_qty_hint, fallback_decimal=None,
             )
+            _qty_bg_applied = bool(_qty_bg_confirmed and _qty_bg_value is not None)
+            raven_log("DEBUG", "P4", "ask.preamble.quantity_background change-verb quantity checked by LLM",
+                      context={
+                          "selected_option": "llm_confirmed" if _qty_bg_applied else "llm_rejected",
+                          "available_options": ["set_direct", "llm_confirmed", "llm_rejected", "ignore"],
+                          "reason_code": "LLM_CONFIRMED" if _qty_bg_applied else "LLM_REJECTED_OR_NO_VALUE",
+                          "hint_quantity": _qty_hint, "hint_source": _qty_hint_source,
+                          "llm_quantity": _qty_bg_value if isinstance(_qty_bg_value, (int, float)) else None,
+                          "turn": getattr(session, "turn", None)})
             if _qty_bg_confirmed and _qty_bg_value is not None:
                 session.product_quantity = _qty_bg_value
+    elif _qty_hint is not None:
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_background implausible quantity ignored", context={
+            "selected_option": "ignore",
+            "available_options": ["set_direct", "llm_confirmed", "llm_rejected", "ignore"],
+            "reason_code": "IMPLAUSIBLE_QUANTITY", "hint_quantity": _qty_hint,
+            "hint_source": _qty_hint_source, "turn": getattr(session, "turn", None)})
     return _qty_hint
 
 
@@ -66,10 +89,24 @@ def _preamble_quantity_no_quote_gate(
         and not _safe_detect_product_mention(
             req.question, reader, req.workspace_id)
     ):
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_no_quote gate not applicable", context={
+            "selected_option": "skip", "available_options": ["no_quote_reply", "skip"],
+            "reason_code": "PRODUCT_SELECTED" if getattr(session, "product_name", None)
+            else "HAS_QUANTITY_HINT" if qty_hint is not None else "CONDITIONS_NOT_MET",
+            "turn": getattr(session, "turn", None)})
         return None
     _qty_pre_anchor = quantity_turn_precheck(req.question, [])
     if _qty_pre_anchor is None:
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_no_quote precheck found no quantity turn", context={
+            "selected_option": "skip", "available_options": ["no_quote_reply", "skip"],
+            "reason_code": "PRECHECK_NONE", "turn": getattr(session, "turn", None)})
         return None
+    raven_log("INFO", "P4", "ask.preamble.quantity_no_quote quantity asked before any quote, gate handled turn",
+              context={
+                  "selected_option": "no_quote_reply", "available_options": ["no_quote_reply", "skip"],
+                  "reason_code": "QUANTITY_BEFORE_PRODUCT", "turn": getattr(session, "turn", None),
+                  "default_quantity": getattr(session, "product_quantity", None),
+                  "question_len": len(getattr(req, "question", "") or "")})
     answer = (
         f"Quantity is not configured yet — no quote has been started, so "
         f"there's nothing to set a quantity on (it defaults to "

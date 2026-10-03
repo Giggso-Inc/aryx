@@ -18,6 +18,7 @@ from aryx.api.ask_qa.ask_qa_label_collision import _qa_label_collision_response
 from aryx.api.ask_qa.ask_qa_multi_attr_options import _qa_multi_attr_options_response
 from aryx.api.ask_qa.ask_qa_resume_prompt import _build_qa_resume_prompt
 from aryx.api.ask_qa.ask_qa_status_shortcircuit import _qa_status_shortcircuit
+from aryx.raven_log import raven_log
 
 
 def _handle_cpq_qa(
@@ -49,6 +50,12 @@ def _handle_cpq_qa(
         return _multi_attr_response
 
     _fast_path_result = _qa_fast_path_or_enumeration(req, session, attrs, product_hint)
+    raven_log("DEBUG", "P4", "ask.qa.road fast path or graph search chosen", context={
+        "selected_option": "fast_path" if _fast_path_result is not None else "graph_search",
+        "available_options": ["fast_path", "graph_search"],
+        "reason_code": "ATTRIBUTE_OPTIONS_ANSWERED" if _fast_path_result is not None
+        else "FAST_PATH_NO_ANSWER", "attr_count": len(attrs), "resume_review": bool(resume_review),
+        "product_hint": product_hint or "", "turn": getattr(session, "turn", None)})
     if _fast_path_result is not None:
         qa_answer, (p_in, p_out, p_ms, s_in, s_out, s_ms) = _fast_path_result
     else:

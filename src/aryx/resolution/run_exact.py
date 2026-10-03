@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from aryx.models import ResolutionRecord
+from aryx.raven_log import raven_log
 from aryx.resolution.blocking import normalize
 from aryx.resolution.cluster import UnionFind
 
@@ -82,4 +83,18 @@ def _resolve_exact(
             merged += 1
     logger.info("resolve run_id=%s mode=exact_ids groups=%d records=%d merged=%d empty_text=%d",
                 run_id, len(groups), len(records), merged, empty_text)
+    exact_ctx = {"pipeline_run_id": run_id, "mode": "exact_ids", "groups": len(groups),
+                 "records": len(records), "merged": merged, "empty_text": empty_text}
+    if empty_text:
+        # Blank match text never merges: each such record stays its own entity.
+        raven_log("WARN", "P3", "ingest.resolve.empty_match_text records without match text kept separate",
+                  error_code="ARYX_ING_RESOLVE_EMPTY_MATCH_TEXT",
+                  context={"selected_option": "keep_separate", "available_options": ["merge", "keep_separate"],
+                           "reason_code": "EMPTY_MATCH_TEXT", "policy_version": "resolve_exact_v1",
+                           **exact_ctx})
+    else:
+        raven_log("DEBUG", "P4", "ingest.resolve.exact_grouped exact-id grouping done",
+                  context={"selected_option": "group_exact", "available_options": ["group_exact"],
+                           "reason_code": "EXACT_IDS", "policy_version": "resolve_exact_v1",
+                           **exact_ctx})
     return merged

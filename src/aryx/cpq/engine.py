@@ -597,6 +597,7 @@ from aryx.cpq import catalog_hints
 from aryx.cpq import mandatory_input
 from aryx.cpq.auto_fill import auto_fill_postpass
 from aryx.cpq.auto_fill import auto_fill_resolve
+from aryx.cpq.auto_fill_stages import fill_log as _fill_log
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
 
@@ -866,6 +867,12 @@ class CpqEngine:
         self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
     ) -> str | None:
         return nl_hint_extraction.entity_fetch._match_family_name(self, reader, workspace_id, prefix, hint_norm)
+
+    def _match_basemodel_to_config_name(
+        self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
+        rdb_cache: dict | None = None,
+    ) -> str | None:
+        return nl_hint_extraction.entity_fetch._match_basemodel_to_config_name(self, reader, workspace_id, prefix, hint_norm, rdb_cache)
 
     def _scope_to_catalog(
         self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
@@ -1244,7 +1251,11 @@ class CpqEngine:
                     "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
                     workspace_id, catalog_prefix,
                 )
+                _fill_log.log_load("value_rules_cache", result="hit", workspace_id=workspace_id,
+                                   catalog_prefix=catalog_prefix)
                 return rule_scope.scope_value_rules_tuple(_cache_result, workspace_id, catalog_prefix)
+        _fill_log.log_load("value_rules_cache", result="miss" if _cache_hit is None else "expired",
+                           workspace_id=workspace_id, catalog_prefix=catalog_prefix)
 
         _t0 = time.monotonic()
         logger.info(
@@ -1261,7 +1272,9 @@ class CpqEngine:
             existing_questions = {
                 q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
             }
-        except Exception:
+        except Exception as exc:
+            _fill_log.log_load_failed("ingest_question_store", exc, "INGEST_QUESTION_STORE_UNAVAILABLE",
+                                      workspace_id=workspace_id)
             ingest_store = None
             existing_questions = {}
         _result = value_rules_load.load_value_rules(
@@ -1333,8 +1346,10 @@ class CpqEngine:
         return rec_con_rules.load_constraint_rules(
             self, workspace_id, catalog_prefix)
 
-    def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
-        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix)
+    def build_bml_evaluator(
+        self, workspace_id: int, catalog_prefix: str = "", run_id: str = "",
+    ) -> BmlEvaluator:
+        return rec_con_rules.build_bml_evaluator(workspace_id, catalog_prefix, run_id=run_id)
 
     def apply_constraint_rules(
         self,
@@ -1399,12 +1414,13 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
         product_anchor_hint: str | None = None,
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         return rules_loop.evaluate_rules_loop(
             self, attrs, hints, filled, hiding_rules, rec_rules, con_rules,
             bml_eval, filled_source, filled_multi, dropped_multi, country,
             negated_vns, skip_always_ask, rule_conflict_order, display_order,
-            workspace_id, catalog_prefix, product_anchor_hint,
+            workspace_id, catalog_prefix, product_anchor_hint, _dt_cache,
         )
 
 
@@ -1718,6 +1734,25 @@ class CpqEngine:
         patch (same re-export-hub pitfall documented elsewhere in this
         codebase).
         """
+        # TODO(hardcoding): the "hWVersion_astro" literal is kept (not
+        # derived from the attr) so flag-off results stay provably identical.
+        return CpqEngine._named_attr_confirmed_not_applicable(
+            "hWVersion_astro", hint_text, workspace_id, catalog_prefix, cache,
+        )
+
+    @staticmethod
+    def _named_attr_confirmed_not_applicable(
+        vn: str, hint_text: str | None, workspace_id: int | None,
+        catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> bool:
+        """`_hardware_version_confirmed_not_applicable`'s one-sided "real
+        Data Table evidence, never a guess" contract for any variable name
+        `vn` (port of dev-rv-msi #365). True ONLY when `hint_text` resolves
+        to a confident set of CPQModel candidates and NONE of them is ever
+        seen governing `vn`. Callers decide whether `vn` is safe to check
+        this way (structural anchors must be exempted by the caller).
+        """
         if not hint_text or workspace_id is None:
             return False
         candidates = dt_resolve_product_cpq_models_from_hint(
@@ -1727,9 +1762,23 @@ class CpqEngine:
             return False
         return not any(
             dt_attr_ever_governed_for_cpq_model(
-                cm, "hWVersion_astro", workspace_id, catalog_prefix, cache,
+                cm, vn, workspace_id, catalog_prefix, cache,
             )
             for cm in candidates
+        )
+
+    @staticmethod
+    def _attrs_confirmed_not_applicable_for_hint(
+        pending: list["ConfigAttr"], hint_text: str | None,
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list["ConfigAttr"]:
+        """Drop pending attrs never governed for the device resolved from
+        `hint_text` (port of dev-rv-msi #362). See
+        aryx.cpq.auto_fill.auto_fill_pending_prune."""
+        from aryx.cpq.auto_fill import auto_fill_pending_prune
+        return auto_fill_pending_prune.attrs_confirmed_not_applicable_for_hint(
+            pending, hint_text, workspace_id, catalog_prefix, cache,
         )
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────

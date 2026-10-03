@@ -93,7 +93,7 @@ def _recompute_after_cascade(
             session.cascade_log.append({
                 "var": var, "old": old_val, "new": new_val,
                 "rule": "cascade" if var == changed_attr.variable_name else "cascade-dependent",
-                "turn": session.turn,
+                "turn": getattr(session, "turn", None),
             })
     session.filled = filled
     session.display_filled = display_filled

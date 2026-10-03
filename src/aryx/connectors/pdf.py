@@ -6,6 +6,8 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,10 +25,16 @@ class PdfConnector:
         try:
             for page_num, page in enumerate(doc, start=1):
                 parts = [page.get_text()]
-                for img_info in page.get_images(full=True):
+                images = page.get_images(full=True)
+                ocr_hits = 0
+                for img_info in images:
                     ocr_text = _ocr_image_bytes(doc.extract_image(img_info[0])["image"])
                     if ocr_text:
                         parts.append(ocr_text)
+                        ocr_hits += 1
+                raven_log("DEBUG", "P4", "ingest.doc.pdf page read",
+                          context={"filename": self._path.name, "page": page_num, "images": len(images),
+                                   "ocr_text_found": ocr_hits, "empty_page": not "".join(parts).strip()})
                 yield page_num, "\n".join(parts)
         finally:
             doc.close()
@@ -43,4 +51,6 @@ def _ocr_image_bytes(img_bytes: bytes) -> str:
         return pytesseract.image_to_string(img).strip()
     except Exception as exc:
         logger.debug("ocr skipped: %s", exc)
+        raven_log("DEBUG", "P4", "ingest.doc.ocr skipped",
+                  context={"error_class": type(exc).__name__, "decision": "skip", "reason_code": "OCR_UNAVAILABLE_OR_FAILED"})
         return ""

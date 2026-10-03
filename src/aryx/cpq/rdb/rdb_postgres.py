@@ -6,11 +6,15 @@ Split out of `cpq/rdb.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
+from aryx.raven_log import raven_log
+from aryx.store.db_timeouts import log_if_timeout
 
 if TYPE_CHECKING:
     import psycopg
@@ -18,12 +22,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _read_failed(operation: str) -> None:
+    """A PostgresCpqRdb fetch swallowed an error and returned empty: say so (ERROR P2).
+
+    Call from inside the ``except`` block (reads the active exception). Mirrors
+    the Oracle helper of the same name so an outage is not an invisible "no rules"."""
+    exc = sys.exc_info()[1]
+    raven_log("ERROR", "P2", "ask.rdb.read_failed postgres CPQ rdb read failed, empty result returned",
+              error_code="ARYX_ASK_RDB_READ_FAILED", context={
+                  "dependency_name": "postgres", "operation": operation, "result": "failed_empty_returned",
+                  "error_class": type(exc).__name__ if exc is not None else "", "attempt": 1})
+
+
+def _warn_if_timeout(exc: BaseException, tag: str) -> None:
+    """Flag-gated: WARN when a swallowed rdb error is a call timeout."""
+    if get_settings().cpq_rdb_call_timeout_enabled:
+        log_if_timeout(exc, f"cpq rdb({tag})")
+
+
 class PostgresCpqRdb:
     """Postgres implementation — JSONB operators over aryx_entity."""
 
     def _connection(self) -> Iterator["psycopg.Connection"]:
         from aryx.store.pool import get_pool
-        return get_pool(get_settings().effective_dsn()).connection()
+        settings = get_settings()
+        pool_cm = get_pool(settings.effective_dsn()).connection()
+        if not settings.cpq_rdb_call_timeout_enabled:
+            return pool_cm
+        return self._bounded_connection(pool_cm, int(settings.cpq_rdb_call_timeout_ms))
+
+    @staticmethod
+    @contextmanager
+    def _bounded_connection(pool_cm: Any, timeout_ms: int) -> Iterator["psycopg.Connection"]:
+        """Borrow a pooled connection with statement_timeout set, reset on exit.
+
+        The value is an int literal, never a bind parameter: ``SET`` does not
+        accept parameters (the dev-rv-msi #370 bug).
+        """
+        with pool_cm as conn:
+            try:
+                conn.execute(f"SET statement_timeout = {int(timeout_ms)}")
+            except Exception:
+                logger.warning("cpq rdb: SET statement_timeout failed; continuing unbounded", exc_info=True)
+            try:
+                yield conn
+            finally:
+                try:
+                    conn.execute("SET statement_timeout = DEFAULT")
+                except Exception:
+                    logger.warning("cpq rdb: statement_timeout reset failed", exc_info=True)
 
     def fetch_entity_attributes(
         self, entity_ids: list[int], workspace_id: int,
@@ -42,8 +89,10 @@ class PostgresCpqRdb:
                     )
                     for eid, attrs in cur.fetchall():
                         result[int(eid)] = _as_attrs(attrs)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: attribute fetch failed", exc_info=True)
+            _read_failed("fetch_entity_attributes")
         return result
 
     def fetch_entities_by_type(
@@ -74,8 +123,10 @@ class PostgresCpqRdb:
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: type fetch failed for %s", type_suffix, exc_info=True)
+            _read_failed("fetch_entities_by_type")
         return rows
 
     def fetch_entities_by_exact_type(
@@ -103,8 +154,10 @@ class PostgresCpqRdb:
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: exact type fetch failed for %s", ontology_type, exc_info=True)
+            _read_failed("fetch_entities_by_exact_type")
         return rows
 
     def fetch_all_entities_grouped_by_type(
@@ -137,8 +190,10 @@ class PostgresCpqRdb:
                         if not otype:
                             continue
                         result.setdefault(otype, []).append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: fetch_all_entities_grouped_by_type failed", exc_info=True)
+            _read_failed("fetch_all_entities_grouped_by_type")
         return result
 
     def list_ontology_types(self, workspace_id: int) -> list[str]:
@@ -160,8 +215,10 @@ class PostgresCpqRdb:
                         (workspace_id,),
                     )
                     types = [row[0] for row in cur.fetchall() if row[0]]
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: ontology type listing failed", exc_info=True)
+            _read_failed("list_ontology_types")
         return types
 
     def fetch_rules(
@@ -218,8 +275,10 @@ class PostgresCpqRdb:
                         out = (int(eid), _as_int(src_id), name or "",
                                _as_int(fn_id) or -1)
                         rows.append(out + (str(row[4] or ""),) if with_ref_id else out)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: rule fetch failed", exc_info=True)
+            _read_failed("fetch_rules")
         return rows
 
     def fetch_value_rules(
@@ -277,8 +336,10 @@ class PostgresCpqRdb:
                         out = (int(eid), _as_int(src_id), name or "",
                                rule_type or "", _as_int(fn_id) or -1)
                         rows.append(out + (str(row[5] or ""),) if with_ref_id else out)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: value-rule fetch failed", exc_info=True)
+            _read_failed("fetch_value_rules")
         return rows
 
     def fetch_rule_inputs(
@@ -317,8 +378,10 @@ class PostgresCpqRdb:
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, val or "", (op or "").strip()))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: rule-input fetch failed", exc_info=True)
+            _read_failed("fetch_rule_inputs")
         return rows
 
     def fetch_rule_actions(
@@ -362,8 +425,10 @@ class PostgresCpqRdb:
                                          val or "", _as_int(fn) or -1,
                                          _as_int(st) if _as_int(st) is not None else 0,
                                          comments or ""))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: rule-action fetch failed", exc_info=True)
+            _read_failed("fetch_rule_actions")
         return rows
 
     def fetch_marked_attrs(
@@ -396,8 +461,10 @@ class PostgresCpqRdb:
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: marked-attr fetch failed", exc_info=True)
+            _read_failed("fetch_marked_attrs")
         return rows
 
     def fetch_rule_chain_links(
@@ -429,8 +496,10 @@ class PostgresCpqRdb:
                         rid_i, cid_i = _as_int(rid), _as_int(cid)
                         if rid_i and cid_i:
                             rows.append((rid_i, cid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: rule-chain fetch failed", exc_info=True)
+            _read_failed("fetch_rule_chain_links")
         return rows
 
     def fetch_function_scripts(
@@ -548,8 +617,10 @@ class PostgresCpqRdb:
                         rid_i, aid_i, lmid_i = _as_int(rid), _as_int(aid), _as_int(lmid)
                         if aid_i and lmid_i:
                             rows.append((rid_i or 0, aid_i, lmid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
             logger.debug("cpq rdb: layout-attr-assoc fetch failed", exc_info=True)
+            _read_failed("fetch_layout_attr_assoc")
         return rows
 
     def fetch_layout_model_nodes(

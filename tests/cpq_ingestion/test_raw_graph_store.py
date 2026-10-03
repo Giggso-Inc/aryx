@@ -69,6 +69,13 @@ def test_write_raw_graph_calls_clear_then_full_rebuild_batches_on_falkordb(monke
     with patch("aryx.graph.falkor_store.FalkorStore.add_entities_batch") as mock_entities, \
          patch("aryx.graph.falkor_store.FalkorStore.add_relationships_batch") as mock_rels, \
          patch("aryx.graph.falkor_store.FalkorDB") as mock_db:
+        # write_raw_graph now reports the batch calls' ACTUAL return values
+        # (PR #425 review fix -- previously it always reported
+        # len(projection.nodes)/len(projection.edges) regardless of what
+        # was really written), so these mocks must return realistic counts
+        # for result.nodes_written/edges_written to mean anything here.
+        mock_entities.return_value = 2
+        mock_rels.return_value = 1
         mock_db.return_value.select_graph.return_value = MagicMock()
         result = write_raw_graph(
             _sample_projection(), workspace_id=50, source_key="catalog",
@@ -83,6 +90,33 @@ def test_write_raw_graph_calls_clear_then_full_rebuild_batches_on_falkordb(monke
     assert result.edges_written == 1
     assert result.backend == "falkordb"
     assert result.graph_ref == "graph=aryx_raw_ws_50_catalog"
+
+
+def test_write_raw_graph_skips_relationships_batch_when_already_cancelled(monkeypatch):
+    """PR #425 review: should_stop is checked again right before the
+    relationships batch (a cancel can land either before this function
+    starts or partway through the entities batch), and if it already
+    fired, add_relationships_batch must never even be called -- not called
+    and short-circuited internally, not called at all -- since starting a
+    batch already known to be cancelled is pure wasted connection/setup
+    overhead for a result that will immediately stop anyway."""
+    monkeypatch.delenv("ARYX_GRAPH_BACKEND", raising=False)
+    monkeypatch.delenv("ARYX_OCI_MODE", raising=False)
+    with patch("aryx.graph.falkor_store.FalkorStore.add_entities_batch") as mock_entities, \
+         patch("aryx.graph.falkor_store.FalkorStore.add_relationships_batch") as mock_rels, \
+         patch("aryx.graph.falkor_store.FalkorDB") as mock_db:
+        mock_entities.return_value = 0  # as if should_stop fired mid-entities-batch
+        mock_db.return_value.select_graph.return_value = MagicMock()
+        result = write_raw_graph(
+            _sample_projection(), workspace_id=50, source_key="catalog",
+            dsn="unused", graph_url="redis://localhost:6379",
+            should_stop=lambda: True,
+        )
+
+    mock_entities.assert_called_once()  # entities is always attempted; should_stop is checked inside its own loop
+    mock_rels.assert_not_called()
+    assert result.nodes_written == 0
+    assert result.edges_written == 0
 
 
 def test_write_raw_graph_clears_before_writing_on_falkordb(monkeypatch):

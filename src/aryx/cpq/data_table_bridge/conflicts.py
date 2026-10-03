@@ -7,8 +7,11 @@ calls.
 
 from __future__ import annotations
 
+from typing import Any
+
 from aryx.config import get_settings
 from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table_bridge.candidates import (
     _DEFAULT_CPQ_MODEL_CANDIDATES,
     _cpq_model_candidates,
@@ -106,6 +109,25 @@ def find_confirmed_data_table_conflicts(
     return confirmed_conflicts
 
 
+def _log_lookup(fn: str, vn: str, outcome: str, reason: str, *, models: list | None = None,
+                candidate_count: int = 0, legal: Any = "n/a", falls_to: str | None = None,
+                discarded: bool = False) -> None:
+    """G4 -- ask.datatable.lookup (DEBUG, always) plus WARN P3 when several values were dropped
+    and the pick falls to raw catalog order. ``legal`` is the three-state legal set."""
+    state = "unknown_none" if legal is None else ("n/a" if legal == "n/a" else ("empty" if legal == [] else "list"))
+    ctxd = {
+        "selected_option": outcome, "available_options": ["single_match", "ambiguous_discarded", "none"],
+        "reason_code": reason, "policy_version": "data_table_bridge_v1", "object_id": vn, "trigger": fn,
+        "cpq_models": models or [], "candidate_count": candidate_count, "outcome": outcome,
+        "legal_set_state": state, "legal_set_size": len(legal) if isinstance(legal, list) else None,
+        "falls_to": falls_to}
+    if discarded:
+        raven_log("WARN", "P3", "ask.datatable.discarded several legal values dropped, pick falls to raw catalog order",
+                  error_code="ARYX_ASK_DATATABLE_DISCARDED", context=ctxd)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.datatable.lookup result", context=ctxd)
+
+
 def _resolve_via_data_tables(
     vn: str, filled: dict[str, str], valid_opts: list[MenuOption],
     workspace_id: int | None, catalog_prefix: str = "",
@@ -118,15 +140,20 @@ def _resolve_via_data_tables(
     table data at all, or no `workspace_id` all return None (never guess).
     """
     if workspace_id is None:
+        _log_lookup("_resolve_via_data_tables", vn, "none", "NO_WORKSPACE_ID")
         return None
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
+        _log_lookup("_resolve_via_data_tables", vn, "none", "NO_BASE_MODEL_YET")
         return None
     product = filled.get("productSelectionProduct_all", "")
-    any_whitelist_coverage = False
-    for cpq_model in _without_generic_non_primary(_cpq_model_candidates(
+    _models = list(_without_generic_non_primary(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    )):
+    )))
+    _ambiguous = 0
+    _widest = 0
+    any_whitelist_coverage = False
+    for cpq_model in _models:
         values = dt_resolve_whitelist_values(
             cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
         )
@@ -137,14 +164,36 @@ def _resolve_via_data_tables(
             # This candidate is ambiguous -- try the REST of the candidate
             # tuple before giving up (same "continue past ambiguous, don't
             # abort" contract `_resolve_narrowed_legal_values` uses below).
+            _ambiguous += 1
+            _widest = max(_widest, len(values))
             continue
-        return next((o for o in valid_opts if o.item_value == values[0]), None)
+        _hit = next((o for o in valid_opts if o.item_value == values[0]), None)
+        _log_lookup("_resolve_via_data_tables", vn, "single_match", "SINGLE_LEGAL_VALUE", models=_models,
+                    candidate_count=len(values), legal=list(values),
+                    falls_to=None if _hit is not None else "value_not_in_valid_opts")
+        return _hit
     if any_whitelist_coverage and get_settings().cpq_defaultinattr_shape_enabled:
         # The Whitelist spoke for this attr (empty or 2+ legal values): a
         # Defaultinattr default must not override it. Fall back only when
         # EVERY candidate returned None (no Whitelist coverage at all).
+        if _ambiguous:
+            _log_lookup("_resolve_via_data_tables", vn, "ambiguous_discarded", "AMBIGUOUS_DISCARDED",
+                        models=_models, candidate_count=_widest, legal="n/a", falls_to="raw_catalog_order",
+                        discarded=True)
+        else:
+            _log_lookup("_resolve_via_data_tables", vn, "none", "WHITELIST_EMPTY", models=_models, legal=[])
         return None
-    return _defaultinattr_option(vn, base_model, valid_opts, workspace_id, catalog_prefix, cache)
+    _opt = _defaultinattr_option(vn, base_model, valid_opts, workspace_id, catalog_prefix, cache)
+    if _opt is not None:
+        _log_lookup("_resolve_via_data_tables", vn, "single_match", "DEFAULTINATTR_DEFAULT", models=_models,
+                    candidate_count=1, legal=[_opt.item_value], falls_to=None)
+    elif _ambiguous:
+        _log_lookup("_resolve_via_data_tables", vn, "ambiguous_discarded", "AMBIGUOUS_DISCARDED", models=_models,
+                    candidate_count=_widest, legal="n/a", falls_to="raw_catalog_order", discarded=True)
+    else:
+        _log_lookup("_resolve_via_data_tables", vn, "none",
+                    "NO_TABLE_ROWS" if not any_whitelist_coverage else "WHITELIST_EMPTY", models=_models)
+    return _opt
 
 
 def _defaultinattr_option(
@@ -176,14 +225,21 @@ def _resolve_narrowed_legal_values(
     """
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
+        _log_lookup("_resolve_narrowed_legal_values", vn, "none", "NO_BASE_MODEL_YET", legal=None)
         return None
     product = filled.get("productSelectionProduct_all", "")
-    for cpq_model in _cpq_model_candidates(
+    _models = list(_cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
-    ):
+    ))
+    for cpq_model in _models:
         values = dt_resolve_whitelist_values(
             cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
         )
         if values is not None:
+            _log_lookup("_resolve_narrowed_legal_values", vn, "single_match" if len(values) == 1 else (
+                "none" if not values else "ambiguous_discarded"),
+                "LEGAL_SET_FOUND" if values else "LEGAL_SET_EMPTY", models=_models,
+                candidate_count=len(values), legal=list(values))
             return values
+    _log_lookup("_resolve_narrowed_legal_values", vn, "none", "NO_TABLE_ROWS", models=_models, legal=None)
     return None

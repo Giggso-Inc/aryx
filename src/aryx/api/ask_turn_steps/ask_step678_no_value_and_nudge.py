@@ -19,6 +19,7 @@ from typing import Any
 from aryx.api.ask_response_building.ask_build_no_value_response import _build_no_value_response
 from aryx.api.ask_response_building.ask_cpq_summary_text import _cpq_summary_text
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _step6_no_value_or_nudge(
@@ -34,6 +35,11 @@ def _step6_no_value_or_nudge(
         req.question, attrs, session.filled,
     )
     if _no_value_attr:
+        raven_log("INFO", "P4", "ask.review.no_value change target named without value", context={
+            "selected_option": "ask_value", "available_options": ["ask_value", "nudge"],
+            "reason_code": "CHANGE_TARGET_NO_VALUE",
+            "variable_name": getattr(_no_value_attr, "variable_name", None),
+            "turn": getattr(session, "turn", None)})
         return _build_no_value_response(
             req, session, attrs, _no_value_attr, con_rules, bml_eval,
             "cpq_change_target_no_value",
@@ -53,6 +59,13 @@ def _step6_no_value_or_nudge(
         + f"Click **JSON** below to see the full payload, "
           f"say **confirm** to submit, or describe what to change."
     )
+    raven_log("INFO", "P4", "ask.review.nudge nothing parsed, summary re-shown", context={
+        "selected_option": "nudge", "available_options": ["ask_value", "nudge"],
+        "reason_code": "NO_DETECTOR_MATCHED", "status": getattr(session, "status", None),
+        "product": getattr(session, "product_name", None),
+        "rule_governed_count": len(rule_ids_nudge or ()), "has_summary": bool(summary),
+        "question_len": len(getattr(req, "question", "") or ""),
+        "answer_len": len(answer or ""), "turn": getattr(session, "turn", None)})
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_review_nudge()"],

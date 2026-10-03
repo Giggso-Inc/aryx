@@ -23,6 +23,7 @@ from typing import Any
 
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
+from aryx.cpq.constraint_rules.constraint_rules_stats import ScriptEvalStats
 from aryx.cpq.engine import _substitute_util_get_constraint_vals
 
 
@@ -36,10 +37,12 @@ def apply_narrowing_rec_rules(
     dt_cache: dict[tuple[int, str], tuple] | None,
     constrained: dict[int, list[str]],
     contributions: dict[int, list[tuple[frozenset, list[str], str]]],
+    stats: ScriptEvalStats | None = None,
 ) -> None:
     """Mutates `constrained`/`contributions` in place for every
     script-backed narrowing RecommendationRule that resolves 2+ values.
     """
+    _stats = stats if stats is not None else ScriptEvalStats()  # throwaway when none passed
     for rule in narrowing_rec_rules:
         if rule.script is None or bml_eval is None:
             continue
@@ -66,7 +69,7 @@ def apply_narrowing_rec_rules(
         _script = _substitute_util_get_constraint_vals(
             rule.script, filled, workspace_id, catalog_prefix, dt_cache,
         )
-        allowed = bml_eval.allowed_values_for_script(_script, filled)
+        allowed = _stats.timed(bml_eval.allowed_values_for_script, _script, filled)
         if allowed and len(allowed) >= 2:
             intersect(
                 constrained, contributions, target, allowed,
@@ -76,4 +79,5 @@ def apply_narrowing_rec_rules(
                 rule_type="constraint", rule_id=rule.rule_name,
                 attr=target.variable_name, outcome=f"allowed={allowed}",
                 bml_tier="script_narrowing",
+                ref_id=getattr(rule, "ref_id", None) or None,
             )

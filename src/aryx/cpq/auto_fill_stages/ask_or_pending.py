@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from aryx.cpq.auto_fill_stages import ask_data_gap
 from aryx.cpq.auto_fill_stages import ask_rule_governed_blind
 from aryx.cpq.auto_fill_stages import ask_final_pending
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -124,6 +125,8 @@ def resolve_ask_or_pending(
             # priority order the pre-existing final `elif` used to
             # enforce before this restructuring.
             ctx.pending.append(attr)
+            fill_log.log_decision(state.vn, "ask_or_pending", "pending", "FORCED_ASK_ANCHOR",
+                                  is_decision_attr=state.is_decision_attr)
         else:
             if ask_data_gap.try_missing_data_skip(engine, attr, ctx, scope, state):
                 return True
@@ -133,4 +136,5 @@ def resolve_ask_or_pending(
                 return True
             ask_final_pending.try_final_pending(engine, attr, ctx, scope, state)
         return True
+    fill_log.log_decision(state.vn, "ask_or_pending", "not_asked", "NO_OPTIONS_OR_NOISE_OR_SKIP_ALWAYS_ASK")
     return False

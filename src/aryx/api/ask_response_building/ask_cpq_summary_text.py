@@ -10,9 +10,12 @@ via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
+import time
+
 from aryx.api.ask_response_building.ask_cpq_summary_narrate import _narrate_cpq_summary
 from aryx.api.ask_response_building.ask_cpq_summary_prompt import _build_summary_narration_user_prompt
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log
 
 
 def _cpq_summary_text(
@@ -94,7 +97,11 @@ def _cpq_summary_text(
     _catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     _cpq_engine = _ask_api_module._cpq_engine
     display_order = _cpq_engine.load_layout_display_order(workspace_id, _catalog_prefix)
+    _tc_t0 = time.monotonic()
     _required_vns = _cpq_engine.mandatory_tier_c_vns(filled, workspace_id, _catalog_prefix)
+    _ask_api_module.logger.info(
+        "cpq_perf: mandatory_tier_c_vns took %.3fs", time.monotonic() - _tc_t0,
+    )
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
         display_order=display_order, product_quantity=product_quantity,
@@ -102,6 +109,8 @@ def _cpq_summary_text(
         product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
         catalog_prefix=_catalog_prefix)
     if not groups:
+        raven_log("DEBUG", "P4", "ask.response.summary_skipped no curated groups", context={
+            "selected_option": "empty", "reason_code": "NO_SUMMARY_GROUPS", "attr_count": len(attrs)})
         return _finish("")
     # The narrator and its bullet fallback are only ever asked to cover
     # THESE curated (label, value) facts — never the raw display_filled

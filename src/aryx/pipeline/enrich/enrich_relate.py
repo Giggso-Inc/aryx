@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import Relationship
+from aryx.raven_log import raven_log, submit_ctx, would_log
 from aryx.pipeline.enrich.enrich_drain import _drain_with_timeout
 from aryx.relationships import infer_relationship
 from aryx.store.entity_store import EntityStore
@@ -61,6 +62,13 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         "_relate: %d type(s), %d cross-type combos, effective_pairs=%d (cap=%d)",
         n_types, n_cross_combos, effective_pairs, max_pairs,
     )
+    raven_log("DEBUG", "P4", "ingest.relate.budget relate pair budget computed",
+              context={"stage": "relate", "types": n_types, "cross_type_combos": n_cross_combos,
+                       "effective_pairs": effective_pairs, "threshold": max_pairs,
+                       "selected_option": "cap_to_cross_combos" if n_cross_combos < max_pairs else "cap_to_max_pairs",
+                       "available_options": ["cap_to_cross_combos", "cap_to_max_pairs"],
+                       "reason_code": "MIN_OF_MAX_PAIRS_AND_CROSS_COMBOS", "sample_per_type": SAMPLES_PER_TYPE,
+                       "sampled_entities": len(entities), "workers": relate_workers, "max_attrs": max_attrs})
 
     candidates: list[tuple] = []
 
@@ -119,6 +127,11 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
             t_list = by_type[t]
             if anchor_list and t_list:
                 candidates.append((anchor_list[0], t_list[0]))
+                raven_log("DEBUG", "P4", "ingest.relate.coverage_pair coverage pair added for uncovered type",
+                          context={"stage": "relate", "uncovered_type": t, "anchor_type": anchor,
+                                   "selected_option": "add_coverage_pair",
+                                   "available_options": ["add_coverage_pair", "skip"],
+                                   "reason_code": "TYPE_NOT_IN_ANY_CANDIDATE"})
                 logger.info(
                     "_relate: coverage pair added for type %s (anchor=%s)",
                     t, anchor,
@@ -154,7 +167,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     pool = ThreadPoolExecutor(max_workers=relate_workers)
     try:
         futures = {
-            pool.submit(_infer, left, right): (left[0], right[0])
+            submit_ctx(pool, _infer, left, right): (left[0], right[0])
             for left, right in candidates
         }
         for fut, pair in _drain_with_timeout(futures, cfg.relate_pair_timeout, "_relate"):
@@ -166,11 +179,25 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
                 infer_failures += 1
                 logger.warning("_relate pair=%s inference failed, skipping: %s",
                                pair, exc)
+                raven_log("DEBUG", "P4", "ingest.relate.pair pair inference failed, skipped",
+                          context={"stage": "relate", "left_id": pair[0], "right_id": pair[1],
+                                   "selected_option": "skip", "available_options": ["keep", "skip"],
+                                   "reason_code": "INFERENCE_FAILED", "error_class": type(exc).__name__})
                 continue
             if name:
+                raven_log("DEBUG", "P4", "ingest.relate.pair pair related, edge kept",
+                          context={"stage": "relate", "left_id": src_id, "right_id": tgt_id,
+                                   "selected_option": "keep", "available_options": ["keep", "skip"],
+                                   "reason_code": "RELATED_TRUE", "relationship_name": name,
+                                   "confidence": conf})
                 rels.append(Relationship(
                     source_entity_id=src_id, target_entity_id=tgt_id,
                     name=name, confidence=conf))
+            else:
+                raven_log("DEBUG", "P4", "ingest.relate.pair pair unrelated, no edge",
+                          context={"stage": "relate", "left_id": src_id, "right_id": tgt_id,
+                                   "selected_option": "skip", "available_options": ["keep", "skip"],
+                                   "reason_code": "RELATED_FALSE_OR_NO_NAME", "confidence": conf})
     finally:
         # wait=False: don't block on any pair abandoned by _drain_with_timeout —
         # they finish in the background and their result is simply discarded.
@@ -178,6 +205,17 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     if infer_failures:
         logger.warning("_relate %d/%d pair inference(s) failed and were skipped",
                        infer_failures, len(candidates))
+        raven_log("WARN", "P3", "ingest.relate.summary relate pairs failed and were skipped",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "relate", "triggering_error": "PAIR_INFERENCE_FAILED",
+                           "attempt": 1, "max_attempts": 1, "recovery_selected": "skip_pair",
+                           "result": "partial", "exit_condition": "all_pairs_drained_or_timeout",
+                           "pairs_total": len(candidates), "pairs_failed": infer_failures,
+                           "relationships_found": len(rels)})
+    else:
+        raven_log("DEBUG", "P4", "ingest.relate.summary relate clean run",
+                  context={"stage": "relate", "pairs_total": len(candidates), "pairs_failed": 0,
+                           "relationships_found": len(rels)})
     store.save_relationships(rels)
     logger.info(
         "_relate evaluated %d pair(s) across %d type(s), found %d relationship(s) "

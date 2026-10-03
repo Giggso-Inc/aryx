@@ -6,7 +6,7 @@ Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→enti
 
 As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), the size/type
 limits live in `api.file_ingest_limits` and the background worker
-(`_run_files` + its helpers `_save_tmp`/`_chunk_csv_bytes`/`_make_should_stop`)
+(`_run_files` + its helpers `_save_tmp`/`_chunk_csv_bytes`/`make_should_stop`)
 lives in `api.file_ingest_run` -- both re-imported here so `main.py`'s
 existing import, `_run_files`'s external callers, and direct imports of the
 helpers keep working unchanged. Whitebox patches on `_run_files`'s OWN
@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -30,14 +31,15 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from aryx.api.file_ingest.file_ingest_limits import _ALL, _FK_REQUIRED_KEYS, _MAX_FILE, _MAX_FILES, _MAX_TOTAL
-from aryx.api.file_ingest.file_ingest_run import _chunk_csv_bytes, _make_should_stop, _run_files, _save_tmp
+from aryx.api.file_ingest.file_ingest_run import _chunk_csv_bytes, make_should_stop, _run_files, _save_tmp
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, submit_ctx, would_log
 from aryx.store.job_store import JobStore
 
 __all__ = [
     "_chunk_csv_bytes",
     "_get_executor",
-    "_make_should_stop",
+    "make_should_stop",
     "_run_files",
     "_save_tmp",
     "file_ingest_router",
@@ -95,24 +97,44 @@ def file_ingest_router() -> APIRouter:
             ),
         ),
     ) -> dict[str, Any]:
+        t0 = time.monotonic()
         if len(files) > _MAX_FILES:
+            raven_log("WARN", "P3", "ingest.upload.refused too many files", error_code="ARYX_ING_UPLOAD_REFUSED",
+                      context={"check": "max_files", "limit": _MAX_FILES, "measured": len(files),
+                               "decision": "refuse", "reason_code": "TOO_MANY_FILES"})
             raise HTTPException(400, f"Max {_MAX_FILES} files per upload")
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.upload.check file count ok",
+                      context={"check": "max_files", "limit": _MAX_FILES, "measured": len(files), "decision": "pass"})
         items: list[tuple[bytes, str]] = []
         total = 0
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
+                raven_log("WARN", "P3", "ingest.upload.refused file too large", error_code="ARYX_ING_UPLOAD_REFUSED",
+                          context={"check": "max_file_bytes", "limit": _MAX_FILE, "measured": len(data),
+                                   "decision": "refuse", "reason_code": "FILE_TOO_LARGE"})
                 raise HTTPException(
                     400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit",
                 )
             total += len(data)
             if total > _MAX_TOTAL:
+                raven_log("WARN", "P3", "ingest.upload.refused total too large", error_code="ARYX_ING_UPLOAD_REFUSED",
+                          context={"check": "max_total_bytes", "limit": _MAX_TOTAL, "measured": total,
+                                   "decision": "refuse", "reason_code": "TOTAL_TOO_LARGE"})
                 raise HTTPException(
                     400, f"Total upload exceeds {_MAX_TOTAL // (1024 * 1024)} MB limit",
                 )
             suffix = Path(f.filename or "").suffix.lower()
             if suffix not in _ALL:
+                raven_log("WARN", "P3", "ingest.upload.refused unsupported type", error_code="ARYX_ING_UPLOAD_REFUSED",
+                          context={"check": "extension", "measured": suffix, "decision": "refuse",
+                                   "reason_code": "UNSUPPORTED_TYPE"})
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.upload.check file accepted",
+                          context={"check": "file", "extension": suffix, "bytes": len(data),
+                                   "total_bytes": total, "decision": "pass"})
             items.append((data, f.filename or f"upload{suffix}"))
         settings = get_settings()
         job_id = uuid.uuid4().hex
@@ -121,13 +143,27 @@ def file_ingest_router() -> APIRouter:
             jobs.create(job_id, "upload", f"{len(items)} file(s)", workspace_id)
         finally:
             jobs.close()
+        bind_run_id(job_id)
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
 
         try:
             links = json.loads(fk_links) if fk_links else []
         except json.JSONDecodeError as exc:
+            raven_log("WARN", "P3", "ingest.upload.refused fk_links not json", error_code="ARYX_ING_UPLOAD_REFUSED",
+                      context={"check": "fk_links_json", "decision": "refuse", "reason_code": "FK_LINKS_INVALID",
+                               "job_id": job_id})
             raise HTTPException(400, f"fk_links is not valid JSON: {exc}") from exc
         worker_backend = settings.effective_worker_backend()
+        raven_log("INFO", "P4", "ingest.job.queued upload accepted",
+                  context={"job_id": job_id, "workspace_id": workspace_id, "road": "file",
+                           "file_count": len(items), "total_bytes": total, "worker_backend": worker_backend,
+                           "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.handoff worker backend chosen",
+                      context={"job_id": job_id, "selected_option": worker_backend,
+                               "available_options": ["local", "oci_functions", "oci_dataflow"],
+                               "reason_code": "EFFECTIVE_WORKER_BACKEND", "fk_links": len(links)})
         if worker_backend == "oci_functions":
             import base64
             from aryx.worker.oci_functions_worker import submit_to_oci_function
@@ -153,17 +189,25 @@ def file_ingest_router() -> APIRouter:
         else:
             for i, lnk in enumerate(links):
                 if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
+                    raven_log("WARN", "P3", "ingest.upload.refused fk_link missing keys",
+                              error_code="ARYX_ING_UPLOAD_REFUSED",
+                              context={"check": "fk_link_keys", "index": i, "decision": "refuse",
+                                       "reason_code": "FK_LINK_KEYS", "job_id": job_id})
                     raise HTTPException(400,
                         f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
-            future = _get_executor().submit(
-                _run_files, items, ontology_type, keys, links, job_id, workspace_id,
+            future = submit_ctx(_get_executor(), _run_files, items, ontology_type, keys, links, job_id, workspace_id,
                 catalog_prefix,
             )
-            future.add_done_callback(
-                lambda f: (exc := f.exception()) and logger.error(
-                    "ingest job=%s raised unhandled exception: %s", job_id, exc
-                )
-            )
+            def _unhandled(f: Any) -> None:
+                exc = f.exception()
+                if exc:
+                    logger.error("ingest job=%s raised unhandled exception: %s", job_id, exc)
+                    raven_log("ERROR", "P1", "ingest.job.unhandled worker raised past its own catch",
+                              error_code="ARYX_ING_UNHANDLED", trace_id=job_id,
+                              context={"job_id": job_id, "final_status": "unknown", "result": "error",
+                                       "reason_code": type(exc).__name__, "error_class": type(exc).__name__})
+
+            future.add_done_callback(_unhandled)
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

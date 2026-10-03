@@ -56,6 +56,27 @@ def get_summary(discovery_id: str, workspace_id: int = 1) -> dict[str, Any] | No
         store.close()
 
 
+def get_status(discovery_id: str, workspace_id: int = 1) -> str | None:
+    """Return just the status for a discovery, scoped to the calling workspace."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.effective_dsn())
+    try:
+        return store.get_status(discovery_id, workspace_id)
+    finally:
+        store.close()
+
+
+def drop_if_pending(discovery_id: str, workspace_id: int = 1) -> bool:
+    """Delete a discovery result iff it's still 'pending', scoped to the
+    calling workspace. Returns True iff a row was actually deleted."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.effective_dsn())
+    try:
+        return store.drop_if_pending(discovery_id, workspace_id)
+    finally:
+        store.close()
+
+
 def drop(discovery_id: str) -> None:
     """Delete a discovery result."""
     settings = get_settings()

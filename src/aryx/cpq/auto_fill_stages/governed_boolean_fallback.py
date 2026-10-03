@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -49,3 +50,4 @@ def stage_governed_boolean(
         state.value = "false"
         state.display = "No"
         state.source = state.governed_source
+        fill_log.log_decision(state.vn, "stage_governed_boolean", "picked", "GOVERNED_BOOLEAN_DEFAULT_FALSE")

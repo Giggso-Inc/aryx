@@ -13,6 +13,7 @@ from typing import Any
 
 from aryx.broker import Broker
 from aryx.config import get_settings
+from aryx.raven_log import raven_log, submit_ctx
 from aryx.relationships import infer_fk_links
 from aryx.store.entity_store import EntityStore
 
@@ -33,6 +34,12 @@ def _infer_one_batch(
         return infer_fk_links(batch_schemas, broker)
     except Exception:  # noqa: BLE001 — schema inference is best-effort
         logger.exception("schema FK inference failed for batch %s — skipping", batch_keys)
+        raven_log("WARN", "P3", "ingest.relate.schema_fk_batch_failed schema fk batch failed, skipped",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "schema_fk", "triggering_error": "BATCH_INFERENCE_FAILED", "attempt": 1,
+                           "max_attempts": 1, "recovery_selected": "skip_batch", "result": "partial",
+                           "exit_condition": "batch_skipped", "batch_types": len(batch_keys),
+                           "anchor_type": anchor_type})
         return []
 
 
@@ -53,8 +60,17 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
         sample = store.list_entities_typed_sample(1)
     except Exception:  # noqa: BLE001 — schema FK inference is best-effort
         logger.exception("_infer_schema_fk_links: typed sample query failed — skipping")
+        raven_log("WARN", "P3", "ingest.relate.summary schema fk typed sample query failed",
+                  error_code="ARYX_ING_RELATE_DEGRADED",
+                  context={"stage": "schema_fk", "triggering_error": "TYPED_SAMPLE_QUERY_FAILED", "attempt": 1,
+                           "max_attempts": 1, "recovery_selected": "skip_schema_fk", "result": "skipped",
+                           "exit_condition": "stage_skipped", "pairs_total": 0, "pairs_failed": 0})
         return []
     if len(sample) < 2:
+        raven_log("DEBUG", "P4", "ingest.relate.schema_fk_skipped fewer than two types sampled",
+                  context={"stage": "schema_fk", "selected_option": "skip",
+                           "available_options": ["infer", "skip"], "reason_code": "FEWER_THAN_TWO_TYPES",
+                           "sampled_types": len(sample)})
         return []
 
     _MAX_SCHEMA_ATTRS = 8   # reduced per-type to fit more types per call
@@ -103,9 +119,12 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
     # thread as each future resolves, so it's identical to the old
     # sequential result, just not sequential wall-clock time.
     workers = max(1, get_settings().fk_schema_batch_workers)
+    raven_log("DEBUG", "P4", "ingest.relate.schema_fk_plan schema fk batches planned",
+              context={"stage": "schema_fk", "types": len(type_schemas), "anchor_type": anchor_type,
+                       "batches": len(batches), "batch_size": batch_size, "workers": workers})
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_infer_one_batch, batch_types, type_schemas, anchor_type, broker)
+            submit_ctx(pool, _infer_one_batch, batch_types, type_schemas, anchor_type, broker)
             for batch_types in batches
         ]
         for future in as_completed(futures):
@@ -121,4 +140,7 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
             "schema FK inference found %d link(s) across %d batch(es): %s",
             len(all_links), len(batches), all_links,
         )
+    raven_log("INFO", "P4", "ingest.relate.schema_fk_done schema fk inference finished",
+              context={"stage": "schema_fk", "links_found": len(all_links), "batches": len(batches),
+                       "found_any": bool(all_links)})
     return all_links

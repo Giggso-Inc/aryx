@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import _valid
 
@@ -61,6 +62,7 @@ def stage_default_value(
     ):
         state.value = attr.default_value
         state.source = "default"
+        fill_log.log_decision(state.vn, "stage_default_value", "picked", "XML_DEFAULT_VALUE")
         state.display = next(
             (o.display_name for o in attr.options
              if o.item_value == attr.default_value),
@@ -113,3 +115,4 @@ def stage_default_value(
         state.value = attr.default_value.strip().lower()
         state.source = "default"
         state.display = "Yes" if state.value == "true" else "No"
+        fill_log.log_decision(state.vn, "stage_default_value", "picked", "BOOLEAN_DEFAULT")

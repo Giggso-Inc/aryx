@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _handle_suggest_switch_anchor(req: "Any", session: Any) -> dict[str, Any] | None:
@@ -23,6 +24,19 @@ def _handle_suggest_switch_anchor(req: "Any", session: Any) -> dict[str, Any] | 
     turn, which routes it into the standard confirm_switch flow.
     """
     _sreply = req.question.strip().lower()
+    _suggest_selected = (
+        "reprompt_candidates" if _sreply.startswith(("y", "yes"))
+        else "decline" if _sreply.startswith(("n", "no")) else "fall_through")
+    raven_log(
+        "DEBUG" if _suggest_selected == "fall_through" else "INFO", "P4",
+        "ask.switch.suggest_reply suggest-switch reply routed", context={
+            "selected_option": _suggest_selected,
+            "available_options": ["reprompt_candidates", "decline", "fall_through"],
+            "reason_code": {"reprompt_candidates": "BARE_YES_MULTIPLE_CANDIDATES",
+                            "decline": "REPLY_DECLINED"}.get(_suggest_selected, "OTHER_REPLY_REDETECT"),
+            "candidate_count": len(getattr(session, "pending_switch_candidates", None) or []),
+            "current_product": getattr(session, "product_name", "") or "",
+            "reply_len": len(_sreply), "turn": getattr(session, "turn", None)})
     if _sreply.startswith(("y", "yes")):
         cand_list = ", ".join(f"**{c}**" for c in session.pending_switch_candidates)
         answer = (

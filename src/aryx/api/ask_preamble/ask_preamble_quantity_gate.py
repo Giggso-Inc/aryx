@@ -26,6 +26,7 @@ from aryx.api.ask_response_building.ask_build_product_quantity_response import _
 from aryx.api.ask_llm.ask_llm_confirm_extract_quantity import _llm_confirm_and_extract_quantity
 from aryx.api.ask_llm.ask_llm_extract_quantity_and_country_reply import _llm_extract_quantity
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _preamble_dedicated_quantity_gate(
@@ -39,6 +40,11 @@ def _preamble_dedicated_quantity_gate(
     """
     from aryx.api import ask_api as _ask_api_module
     if not (session.product_name and question_mentions_quantity(req.question)):
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_gate gate not applicable", context={
+            "selected_option": "skip",
+            "available_options": ["product_quantity", "disambiguate", "attr_target", "rejected", "skip"],
+            "reason_code": "NO_PRODUCT_SELECTED" if not getattr(session, "product_name", None)
+            else "NO_QUANTITY_MENTION", "turn": getattr(session, "turn", None)})
         return None
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
@@ -49,9 +55,21 @@ def _preamble_dedicated_quantity_gate(
         )
     except Exception as exc:  # noqa: BLE001 — never crash a turn on this gate
         logger.debug("cpq quantity gate: load_product_config failed: %r", exc)
+        raven_log("WARN", "P3", "ask.preamble.quantity_gate catalog load failed, continuing without attrs",
+                  error_code="ARYX_ASK_QUANTITY_GATE_CONFIG_LOAD_FAILED", context={
+                      "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                      "backoff_ms": 0, "recovery_selected": "empty_attr_list",
+                      "fallback_target": "product_quantity_only", "exit_condition": "exception",
+                      "result": "degraded", "product": getattr(session, "product_name", None),
+                      "turn": getattr(session, "turn", None)})
         _qty_attrs = []
     _qty_pre = quantity_turn_precheck(req.question, _qty_attrs)
     if _qty_pre is None:
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_gate precheck found no quantity turn", context={
+            "selected_option": "skip",
+            "available_options": ["product_quantity", "disambiguate", "attr_target", "rejected", "skip"],
+            "reason_code": "PRECHECK_NONE", "attr_count": len(_qty_attrs or []),
+            "turn": getattr(session, "turn", None)})
         return None
 
     if (
@@ -60,6 +78,13 @@ def _preamble_dedicated_quantity_gate(
         and _qty_pre.get("decimal_value") is None
     ):
         _qty_llm_value = _llm_extract_quantity(req.question, req.workspace_id)
+        raven_log("DEBUG", "P4", "ask.preamble.quantity_gate change verb without number, LLM extraction tried",
+                  context={
+                      "selected_option": "llm_value" if _qty_llm_value is not None else "no_value",
+                      "available_options": ["llm_value", "no_value"],
+                      "reason_code": "CHANGE_VERB_NO_NUMBER",
+                      "llm_quantity": _qty_llm_value if isinstance(_qty_llm_value, (int, float)) else None,
+                      "turn": getattr(session, "turn", None)})
         if _qty_llm_value is not None:
             _qty_pre["value"] = _qty_llm_value
             _qty_pre["is_change"] = True
@@ -77,6 +102,19 @@ def _preamble_dedicated_quantity_gate(
                 fallback_value=_qty_pre["value"],
                 fallback_decimal=_qty_pre.get("decimal_value"),
             )
+        raven_log(
+            "INFO" if _qty_confirmed else "DEBUG", "P4",
+            "ask.preamble.quantity_gate product-quantity target decided", context={
+                "selected_option": "product_quantity" if _qty_confirmed else "rejected",
+                "available_options": ["product_quantity", "disambiguate", "attr_target", "rejected", "skip"],
+                "reason_code": (
+                    "QUANTITY_QUESTION" if not _qty_pre.get("is_change")
+                    else "LLM_CONFIRMED_CHANGE" if _qty_confirmed else "LLM_REJECTED_CHANGE"),
+                "is_change": bool(_qty_pre.get("is_change")),
+                "quantity": _qty_value if isinstance(_qty_value, (int, float)) else None,
+                "has_decimal": _qty_decimal is not None,
+                "current_quantity": getattr(session, "product_quantity", None),
+                "turn": getattr(session, "turn", None)})
         if _qty_confirmed:
             return _build_product_quantity_change_response(
                 req, session, reader,
@@ -90,6 +128,15 @@ def _preamble_dedicated_quantity_gate(
         # processing below, exactly as if this gate never fired.
         return None
 
+    raven_log(
+        "INFO" if _qty_target is None else "DEBUG", "P4",
+        "ask.preamble.quantity_gate non-product quantity target decided", context={
+            "selected_option": "disambiguate" if _qty_target is None else "attr_target",
+            "available_options": ["product_quantity", "disambiguate", "attr_target", "rejected", "skip"],
+            "reason_code": "AMBIGUOUS_QUANTITY_TARGET" if _qty_target is None else "CATALOG_ATTR_TARGET",
+            "target_variable": _qty_target,
+            "candidate_variables": [getattr(a, "variable_name", None) for a in (_qty_candidates or [])],
+            "turn": getattr(session, "turn", None)})
     if _qty_target is None:
         _qty_options = ", ".join(
             f"**{a.display_label}**" for a in _qty_candidates

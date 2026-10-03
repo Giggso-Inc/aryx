@@ -14,6 +14,7 @@ import logging
 import time
 
 from aryx.llm import llm_runtime
+from aryx.log_safe import text_ref
 from aryx.api.ask_llm.ask_llm_classify_is_ask_in_scope import _llm_classify_is_ask_in_scope
 from aryx.api.ask_request_models import Turn
 from aryx.api.ask_standard_pipeline._rewrite import _MAX_ANSWER_LINES, _enforce_plain_answer
@@ -67,8 +68,8 @@ def _synthesise(question: str, context: str, overview: str = "",
         question, workspace_id, prior_context=conv,
     )
     logger.info(
-        "cpq_qa_scope: has_context=%s for %r -> is_ask_in_scope=%s",
-        has_context, question, is_cpq_relevant,
+        "cpq_qa_scope: has_context=%s for %s -> is_ask_in_scope=%s",
+        has_context, text_ref(question), is_cpq_relevant,
     )
 
     if not is_cpq_relevant:

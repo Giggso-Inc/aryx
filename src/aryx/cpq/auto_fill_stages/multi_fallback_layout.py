@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import logger
 
@@ -68,6 +69,7 @@ def select_all_constrained(
     # constraint's narrowed set) a few lines up, so this
     # never selects an option the active rule has excluded.
     if candidate_opts:
+        fill_log.log_write(ctx, attr, state.vn, [o.item_value for o in candidate_opts], None, "auto_all_constrained", "select_all_constrained", multi=True)
         ctx.filled_multi[state.vn] = [o.item_value for o in candidate_opts]
         ctx.display_filled[state.vn] = ", ".join(
             o.display_name for o in candidate_opts)

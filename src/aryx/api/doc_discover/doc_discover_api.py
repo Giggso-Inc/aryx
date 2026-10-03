@@ -15,6 +15,7 @@ background jobs — stays here.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -23,8 +24,10 @@ from pydantic import BaseModel
 
 from aryx import discoveries
 from aryx.api.doc_discover.doc_discover_confirm_job import _confirm_job
-from aryx.api.doc_discover.doc_discover_read_job import _read_job
+from aryx.api.doc_discover.doc_discover_read_job import JOB_TERMINAL_STATUSES, _read_job
+from aryx.api.workspace_scope import resolve_workspace_id_warn
 from aryx.config import get_settings
+from aryx.raven_log import bind_run_id, raven_log, would_log
 from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 
@@ -53,17 +56,27 @@ def doc_discover_router() -> APIRouter:
     async def read(background_tasks: BackgroundTasks,
                    files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
+        t0 = time.monotonic()
         settings = get_settings()
         items: list[tuple[bytes, str]] = []
+        total_bytes = 0
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
                 logger.warning("doc read rejected filename=%s size=%d limit=%d",
                                 f.filename, len(data), _MAX_FILE)
+                raven_log("WARN", "P3", "ingest.docread.refused file too large", error_code="ARYX_ING_UPLOAD_REFUSED",
+                          context={"check": "max_file_bytes", "limit": _MAX_FILE, "measured": len(data),
+                                   "decision": "refuse", "reason_code": "FILE_TOO_LARGE"})
                 raise HTTPException(
                     400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit",
                 )
             items.append((data, f.filename or "upload"))
+            total_bytes += len(data)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.docread.check file accepted",
+                          context={"check": "max_file_bytes", "limit": _MAX_FILE, "measured": len(data),
+                                   "decision": "pass"})
         did = uuid.uuid4().hex
         jobs = JobStore(settings.effective_dsn())
         try:
@@ -71,6 +84,12 @@ def doc_discover_router() -> APIRouter:
         finally:
             jobs.close()
         logger.info("doc read queued did=%s files=%d workspace_id=%d", did, len(items), workspace_id)
+        bind_run_id(did)
+        raven_log("INFO", "P4", "ingest.job.queued document read accepted",
+                  context={"job_id": did, "discovery_id": did, "workspace_id": workspace_id, "road": "doc_read",
+                           "file_count": len(items), "total_bytes": total_bytes,
+                           "worker_backend": "background_task", "final_status": "queued", "result": "accepted",
+                           "reason_code": "JOB_QUEUED", "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_read_job, items, context, did, workspace_id)
         return {"discovery_id": did}
 
@@ -88,8 +107,57 @@ def doc_discover_router() -> APIRouter:
         finally:
             store.close()
 
+    @router.post("/{did}/dismiss")
+    def dismiss(did: str, workspace_id: int | None = None) -> dict[str, Any]:
+        # T9/T11 warn-mode convention (PR #391/#401) for mutating routes --
+        # this is a destructive endpoint, same class of concern as jobs_api's
+        # cancel/resume.
+        workspace_id = resolve_workspace_id_warn(workspace_id, "POST /admin/docs/{did}/dismiss")
+
+        # The read job (POST /admin/docs/read, above) uses `did` as its own
+        # job_id. A still-running read job's on_progress callback (see
+        # doc_discover_read_job.py) keeps writing to the discovery row;
+        # cancelling it only flips this job row to 'cancelled' without
+        # actually stopping the worker thread (nothing in read_files()/
+        # extract_mentions() checks should_stop), so 'cancelled' counting as
+        # terminal here is safe only because _build_read_progress and
+        # _read_job's own final write both now check this same job row and
+        # suppress their write once it's terminal -- see that module's
+        # _is_job_terminal for the other half of this fix.
+        jobs = JobStore(get_settings().effective_dsn())
+        try:
+            job = jobs.get(did)
+        finally:
+            jobs.close()
+        if (job is not None and job.get("workspace_id") == workspace_id
+                and job.get("status") not in JOB_TERMINAL_STATUSES):
+            raise HTTPException(409, "cannot dismiss a discovery while its read job is still running")
+
+        # Folds the "is it still pending" check into the DELETE itself
+        # (status='pending' in the WHERE clause) instead of a separate
+        # get_status()-then-drop(): a plain check-then-delete has a TOCTOU
+        # race where /confirm flips the row to 'confirming' in the window
+        # between the two calls, and an unconditional drop() deletes it
+        # anyway -- orphaning the confirm job the status check was meant to
+        # prevent. This also means only 'pending' rows are ever eligible (a
+        # 'confirmed' row, deleting which would destroy real ingest history,
+        # is simply never matched) with no separate blocklist to keep in
+        # sync with every status this table can have.
+        if discoveries.drop_if_pending(did, workspace_id):
+            logger.info("doc discovery dismissed did=%s workspace_id=%d", did, workspace_id)
+            return {"status": "dismissed"}
+
+        # The delete didn't match any row -- find out why, for the error
+        # response only (never for the delete decision itself above).
+        status = discoveries.get_status(did, workspace_id)
+        if status is None:
+            logger.warning("doc dismiss rejected discovery_id=%s: unknown or expired", did)
+            raise HTTPException(404, "unknown discovery or workspace mismatch")
+        raise HTTPException(409, f"cannot dismiss a discovery with status={status}")
+
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        t0 = time.monotonic()
         # Existence/workspace-ownership check only needs the summary, not the
         # full discovery payload — discoveries.get() would deserialize every
         # raw file's bytes just to answer "does this exist" (confirmed live:
@@ -98,7 +166,17 @@ def doc_discover_router() -> APIRouter:
         if discoveries.get_summary(req.discovery_id, req.workspace_id) is None:
             logger.warning("doc confirm rejected discovery_id=%s: unknown or expired",
                             req.discovery_id)
+            raven_log("WARN", "P3", "ingest.docconfirm.refused unknown discovery",
+                      error_code="ARYX_ING_CONFIRM_REFUSED",
+                      context={"check": "discovery_exists", "discovery_id": req.discovery_id,
+                               "workspace_id": req.workspace_id, "decision": "refuse",
+                               "reason_code": "UNKNOWN_OR_MISMATCH"})
             raise HTTPException(404, "unknown discovery or workspace mismatch")
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.docconfirm.check discovery found",
+                      context={"check": "discovery_exists", "discovery_id": req.discovery_id, "decision": "pass",
+                               "restart": req.restart, "approved_types": len(req.approved_types),
+                               "approved_files": len(req.approved_files)})
         job_id = uuid.uuid4().hex
         jobs = JobStore(get_settings().effective_dsn())
         try:
@@ -113,6 +191,13 @@ def doc_discover_router() -> APIRouter:
         logger.info("doc confirm queued did=%s job=%s types=%d files=%d workspace_id=%d",
                     req.discovery_id, job_id, len(req.approved_types), len(req.approved_files),
                     req.workspace_id)
+        bind_run_id(job_id)
+        raven_log("INFO", "P4", "ingest.job.queued document confirm accepted",
+                  context={"job_id": job_id, "discovery_id": req.discovery_id, "workspace_id": req.workspace_id,
+                           "road": "doc_confirm", "file_count": len(req.approved_files), "total_bytes": 0,
+                           "approved_types": len(req.approved_types), "worker_backend": "background_task",
+                           "final_status": "queued", "result": "accepted", "reason_code": "JOB_QUEUED",
+                           "duration_ms": int((time.monotonic() - t0) * 1000)})
         background_tasks.add_task(_confirm_job, req.discovery_id,
                                   req.approved_types, req.approved_files,
                                   job_id, req.workspace_id, req.restart)

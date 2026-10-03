@@ -22,7 +22,10 @@ from typing import Any
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _build_scope_family_only_response, _build_scope_skip_response, _resolve_scope_reply, _scoped_reask_response
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_turn_steps.ask_step1_product_family_prompt import _build_product_family_prompt_or_resolve
+from aryx.cpq.attribute_search.seeds import apply_pending_seeds
 from aryx.cpq.pending_scope.pending_scope import clear_pending_scope, resolve_against_scope
+from aryx.log_safe import text_ref
+from aryx.raven_log import raven_log
 
 
 def _step1_resolve_product_anchor(
@@ -55,13 +58,17 @@ def _step1_resolve_product_anchor(
         and _cpq_engine.detect_qa_question(req.question, None, strict=True)
     ):
         _ask_api_module.logger.info(
-            "cpq_intent_gate: question-shaped message %r intercepted "
+            "cpq_intent_gate: question-shaped message %s intercepted "
             "before product-anchor detection (turn=%s) -> routing to Q&A",
-            req.question, session.turn,
+            text_ref(req.question), session.turn,
         )
+        raven_log("DEBUG", "P4", "ask.anchor.resolved question-shaped reply routed to qa", context={
+            "selected_option": "qa", "available_options": ["qa", "anchor"],
+            "reason_code": "QUESTION_SHAPED_PENDING_ANCHOR", "turn": getattr(session, "turn", None)})
         return _ask_handle_cpq_qa_module._handle_cpq_qa(req, session, [], reader, resume_review=False)
     # PROMPT 7: reply to a prior "did you mean" / family list first
     detected = ""
+    _via = ""
     _fresh_detection_tried = False
     if session.pending_scope_candidates and session.pending_scope_kind in (
         "product_suggestions", "family_disambiguation", "",
@@ -71,6 +78,12 @@ def _step1_resolve_product_anchor(
             req.question, _scope_cands0, "product family",
             session, req.workspace_id,
         )
+        raven_log("DEBUG", "P4", "ask.anchor.scope_reply stale candidate list matched", context={
+            "scope_kind": session.pending_scope_kind, "candidate_count": len(_scope_cands0),
+            "result": _sres0 if isinstance(_sres0, str) else (
+                "matched" if _sres0.matched else "no_match"),
+            "suggestion_count": len(getattr(_sres0, "suggestions", []) or []),
+            "turn": getattr(session, "turn", None)})
         if _sres0 == "skip":
             return _build_scope_skip_response(
                 req, session, _scope_cands0, "product family",
@@ -81,6 +94,7 @@ def _step1_resolve_product_anchor(
             )
         if _sres0.matched:
             detected = _sres0.matched
+            _via = "scope_reply"
             clear_pending_scope(session)
         else:
             # A weak/"miss"-tier match against the STALE candidate list
@@ -96,6 +110,7 @@ def _step1_resolve_product_anchor(
             )
             _fresh_detection_tried = True
             if detected:
+                _via = "mention_after_stale_scope"
                 clear_pending_scope(session)
             elif _sres0.suggestions:
                 return _scoped_reask_response(
@@ -107,6 +122,7 @@ def _step1_resolve_product_anchor(
         detected = _cpq_engine.detect_product_mention(
             req.question, hints, reader, req.workspace_id,
         )
+        _via = "mention" if detected else ""
     if not detected and session.pending_anchor == "product":
         # Only blind-accept raw text when it resolves via scope ladder
         # against known families — never invent a product name.
@@ -115,6 +131,7 @@ def _step1_resolve_product_anchor(
             _sraw = resolve_against_scope(req.question, list(_fams))
             if _sraw.matched:
                 detected = _sraw.matched
+                _via = "family_scope_ladder"
     if not detected:
         # Priority 2: resolve against real ingested catalog/family/
         # product-option data instead of accepting raw text
@@ -126,11 +143,29 @@ def _step1_resolve_product_anchor(
         match = _cpq_engine.resolve_product_hint(reader, req.workspace_id, req.question)
         if match:
             detected = match[1]
+            _via = "resolve_product_hint"
     if not detected:
         _response, detected = _build_product_family_prompt_or_resolve(req, session, reader)
+        raven_log("DEBUG", "P4", "ask.anchor.not_found customer asked or auto-resolved", context={
+            "selected_option": "ask_customer" if _response is not None else "auto_resolve",
+            "available_options": ["ask_customer", "auto_resolve"],
+            "reason_code": "NO_PRODUCT_DETECTED", "turn": getattr(session, "turn", None),
+            "auto_resolved_product": detected or "",
+            "pending_anchor": session.pending_anchor})
         if _response is not None:
             return _response
+        _via = "family_prompt_auto_resolve"
+    raven_log("INFO", "P4", "ask.anchor.resolved product anchored", context={
+        "selected_option": _via, "reason_code": "PRODUCT_ANCHORED", "product": detected,
+        "available_options": ["scope_reply", "mention", "mention_after_stale_scope",
+                              "family_scope_ladder", "resolve_product_hint",
+                              "family_prompt_auto_resolve"],
+        "turn": getattr(session, "turn", None), "run_id": session.run_id})
     session.product_name = detected
+    # Attribute-first discovery: fill in the value the customer searched by,
+    # remembered for the family they just picked (api/ask_attribute_handoff.py).
+    if session.attribute_search_seeds:
+        apply_pending_seeds(session, detected)
     # Keep the longer order utterance (often has country + customer) when
     # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
     # country-once: overwriting with the short reply made the later

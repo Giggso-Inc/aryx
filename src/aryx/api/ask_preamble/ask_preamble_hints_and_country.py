@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.cpq.intent_gateway.intent_gateway import soft_quote_heuristic
+from aryx.raven_log import raven_log
 
 from aryx.api.ask_llm.ask_llm_extract_quantity_and_country_reply import _llm_resolve_bare_country_reply
 
@@ -77,4 +78,15 @@ def _preamble_extract_hints_and_resolve_country(
     ):
         session.product_anchor_question = req.question
 
+    raven_log("DEBUG", "P4", "ask.preamble.hints hints and country resolved", context={
+        "hint_names": sorted(hints.keys()),
+        "country": hints.get("country") or session.country or "",
+        "country_valid": bool(_recognized_country),
+        "country_source": (
+            "pending_anchor_reply" if session.pending_anchor == "country"
+            else "route_meta" if (route_meta is not None and route_meta.country)
+            else "session" if session.country else "none"),
+        "country_llm_call_failed": _country_llm_call_failed,
+        "session_country_set": bool(session.country), "turn": getattr(session, "turn", None),
+    })
     return hints, _country_llm_call_failed

@@ -10,6 +10,7 @@ from psycopg import sql
 from aryx.connectors.base import Connector
 from aryx.models import RawRecord, SourceRef
 from aryx.queries import load
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class PostgresConnector(Connector):
         """Stream rows from the configured table as RawRecords."""
         # SQL text lives in queries/select_all.sql; the table name is bound
         # via sql.Identifier — never string-formatted into the statement.
+        count = 0
         query = sql.SQL(load("select_all")).format(table=sql.Identifier(self._table))
         with psycopg.connect(self._dsn) as conn:
             with conn.cursor(name="aryx_extract") as cur:
@@ -48,6 +50,7 @@ class PostgresConnector(Connector):
                 cur.execute(query)
                 columns = [d.name for d in cur.description or []]
                 for row in cur:
+                    count += 1
                     payload = dict(zip(columns, row))
                     yield RawRecord(
                         source=SourceRef(
@@ -58,3 +61,6 @@ class PostgresConnector(Connector):
                         payload=payload,
                     )
         logger.info("postgres extract complete table=%s", self._table)
+        raven_log("DEBUG", "P4", "ingest.db.postgres extract complete",
+                  context={"table": self._table, "key_column": self._key, "batch_size": self._batch_size,
+                           "records": count})

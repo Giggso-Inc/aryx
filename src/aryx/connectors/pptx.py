@@ -6,6 +6,8 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,9 @@ class PptxConnector:
                     ocr_text = _ocr_image_bytes(shape.image.blob)
                     if ocr_text:
                         parts.append(ocr_text)
+            raven_log("DEBUG", "P4", "ingest.doc.pptx slide read",
+                      context={"filename": self._path.name, "slide": slide_num, "text_parts": len(parts),
+                               "empty_slide": not parts})
             yield slide_num, "\n".join(parts)
 
     def close(self) -> None:
@@ -43,4 +48,6 @@ def _ocr_image_bytes(img_bytes: bytes) -> str:
         return pytesseract.image_to_string(img).strip()
     except Exception as exc:
         logger.debug("ocr skipped: %s", exc)
+        raven_log("DEBUG", "P4", "ingest.doc.ocr skipped",
+                  context={"error_class": type(exc).__name__, "decision": "skip", "reason_code": "OCR_UNAVAILABLE_OR_FAILED"})
         return ""

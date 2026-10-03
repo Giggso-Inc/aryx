@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import re
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _country_alias_group,
@@ -100,4 +101,6 @@ def stage_hint_match(
                 state.display = hint_val
             if state.value:
                 state.source = "hint"
+            fill_log.log_decision(state.vn, "stage_hint_match", "matched" if state.value else "no_option_match",
+                                  "HINT_KEY_MATCHED_ATTR", hint_key=hint_key)
             break

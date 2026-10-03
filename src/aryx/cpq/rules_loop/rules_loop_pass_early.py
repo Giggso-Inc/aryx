@@ -13,7 +13,9 @@ from typing import Any
 
 from aryx.cpq.catalog_profile import resolve_base_model_vn, resolve_hidden_master_string_vn
 from aryx.cpq.rule_trace import rule_trace
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
 
@@ -109,10 +111,17 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # answered, a hide almost always means a REAL, current-state
     # conflict, and leaving those stale values in `filled`/`multi` let
     # them keep colliding with new answers turn after turn.
-    if all(
-        state.filled.get(_anchor_vn) for _anchor_vn in _DECISION_ANCHOR_VNS
-    ):
+    _anchors_filled = all(state.filled.get(_anchor_vn) for _anchor_vn in _DECISION_ANCHOR_VNS)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.rules_loop.hiding hiding rules applied", context={
+            "pass": pass_num, "hidden_count": len(hidden_vns), "anchors_filled": _anchors_filled,
+            "selected_option": "pop_hidden_fills" if _anchors_filled else "keep_hidden_fills",
+            "available_options": ["pop_hidden_fills", "keep_hidden_fills"],
+            "reason_code": "ANCHORS_FILLED" if _anchors_filled else "ANCHORS_MISSING",
+            "policy_version": "rules_loop_v1", "hiding_rule_count": len(scope.hiding_rules)})
+    if _anchors_filled:
         for k in hidden_vns:
+            fill_log.log_pruned(k, "HIDING_RULE_ANCHORS_FILLED", "run_early_pass", state="hidden")
             state.filled.pop(k, None)
             state.display_filled.pop(k, None)
             state.sources.pop(k, None)
@@ -131,6 +140,7 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
         time.monotonic() - _t0, pass_num, len(state.attrs), len(suppressed_vns),
     )
     for k in suppressed_vns:
+        fill_log.log_pruned(k, "SUPPRESSED_UNGOVERNED", "run_early_pass", state="suppressed")
         state.filled.pop(k, None)
         state.display_filled.pop(k, None)
         state.sources.pop(k, None)

@@ -27,7 +27,9 @@ class RunTracker:
         self.source = source
         try:
             mod = _raven()
-            self.trace_id: str | None = mod.new_trace_id()
+            # Inside an ingestion worker the job id is bound (bind_run_id), so
+            # these records share the upload's trace_id; the CLI has none.
+            self.trace_id: str | None = mod.current_run_id() or mod.new_trace_id()
             self._new_span = mod.new_span_id
         except Exception as exc:  # noqa: BLE001
             logger.warning("csv_bml_ingestion: raven unavailable, using stdlib logging only: %s", exc)

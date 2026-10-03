@@ -36,17 +36,21 @@ def test_raven_log_emits_schema_v1_json(capsys: pytest.CaptureFixture[str]) -> N
     assert parsed["message"] == "unit test emit"
 
 
-def test_raven_log_requires_error_code_on_error() -> None:
+def test_raven_log_missing_error_code_on_error_fails_open(caplog) -> None:
+    """The wrapper never raises into the app (plan F1): an ERROR without an
+    error_code is refused by the SDK, and the wrapper reports it on the
+    stdlib logger instead of raising."""
     pytest.importorskip("raven_logger")
     from aryx.raven_log import raven_log
 
-    with pytest.raises(ValueError, match="error_code"):
+    with caplog.at_level("WARNING", logger="aryx.raven_log"):
         raven_log(
             level="ERROR",
             criticality="P2",
             message="boom",
             error_code="",
         )
+    assert "error_code" in caplog.text
 
 
 def test_health_emits_raven_log() -> None:

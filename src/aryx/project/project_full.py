@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aryx.graph import FalkorStore
 
+from aryx.raven_log import raven_log
+from aryx.resolution.stats import bump
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,11 @@ def project_graph(
     """
     logger.info("graph project start ws=%s — clearing", workspace_id)
     graph.clear()
+    bump(("project", workspace_id), "cleared")
+    raven_log("INFO", "P4", "ingest.project.cleared graph cleared before full rebuild",
+              context={"stage": "project", "mode": "full", "workspace_id": workspace_id,
+                       "backend": type(graph).__name__, "graph_ref": getattr(graph, "name", None)
+                       or getattr(graph, "graph_name", None)})
     logger.info("graph cleared — writing entities")
     ancestors_for = type_ancestors or {}
     lo, hi = pct_range
@@ -89,6 +96,12 @@ def project_graph(
 
     entities = list(store.list_entities())
     n_entities_total = len(entities)
+    raven_log("DEBUG", "P4", "ingest.project.write_path graph writer path chosen",
+              context={"stage": "project", "workspace_id": workspace_id, "entities": n_entities_total,
+                       "selected_option": "batch" if hasattr(graph, "add_entities_batch") else "per_row",
+                       "available_options": ["batch", "per_row"],
+                       "reason_code": "WRITER_HAS_BATCH" if hasattr(graph, "add_entities_batch") else "WRITER_LACKS_BATCH",
+                       "ancestor_types": len(ancestors_for)})
     if hasattr(graph, "add_entities_batch"):
         rows = [
             (eid, ot, attrs, ancestors_for.get(ot, []),
@@ -136,6 +149,12 @@ def project_graph(
     if hasattr(graph, "ensure_indexes"):
         graph.ensure_indexes()
 
+    raven_log("DEBUG", "P4", "ingest.project.finalize isolated marking and index creation",
+              context={"stage": "project", "workspace_id": workspace_id,
+                       "mark_isolated": hasattr(graph, "mark_isolated_entities"),
+                       "ensure_indexes": hasattr(graph, "ensure_indexes"),
+                       "provenance_batch": hasattr(graph, "add_provenance_batch"),
+                       "relationships_batch": hasattr(graph, "add_relationships_batch")})
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
     logger.info("graph projected %s labels_used=%d",

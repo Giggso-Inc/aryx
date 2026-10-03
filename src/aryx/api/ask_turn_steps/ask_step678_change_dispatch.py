@@ -24,6 +24,9 @@ from aryx.api.ask_handle.ask_handle_cascade_multi import _handle_cascade_multi
 from aryx.api.ask_intent_queue_text_helpers import _append_unmatched_targets_note, _scan_and_enqueue_remaining_targets
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
+from aryx.raven_log import raven_log
+
+_DISPATCH_OPTIONS = ["multi_cascade", "single_cascade", "llm_rejected", "no_change_detected"]
 
 
 def _step6_change_dispatch(
@@ -47,6 +50,11 @@ def _step6_change_dispatch(
             req, session, attrs, _multi_matches,
             hiding_rules, rec_rules, con_rules,
         )
+        raven_log("DEBUG", "P4", "ask.change.dispatch multi-attribute change", context={
+            "selected_option": "multi_cascade", "available_options": _DISPATCH_OPTIONS,
+            "reason_code": "MULTI_HANDLED" if _multi_result is not None else "MULTI_HANDLER_DECLINED",
+            "variable_names": sorted(_multi_vns), "match_count": len(_multi_matches),
+            "handled": _multi_result is not None, "turn": getattr(session, "turn", None)})
         if _multi_result is not None:
             return _append_unmatched_targets_note(
                 _multi_result, req.question, attrs,
@@ -56,11 +64,20 @@ def _step6_change_dispatch(
 
     change_result = _cpq_engine.detect_change_request(
         req.question, attrs, session.filled, filled_multi=session.filled_multi)
-    if change_result and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
+    _change_ok = change_result and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.CHANGE_REQUEST,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=change_result[0].variable_name,
-    ):
+    )
+    raven_log("DEBUG", "P4", "ask.change.dispatch single change decision", context={
+        "selected_option": "single_cascade" if _change_ok else (
+            "llm_rejected" if change_result else "no_change_detected"),
+        "available_options": _DISPATCH_OPTIONS,
+        "reason_code": "CHANGE_CONFIRMED" if _change_ok else (
+            "CHANGE_NOT_CONFIRMED" if change_result else "NO_CHANGE_REQUEST"),
+        "variable_name": getattr(change_result[0], "variable_name", None) if change_result else None,
+        "multi_match_count": len(_multi_matches), "turn": getattr(session, "turn", None)})
+    if _change_ok:
         changed_attr, new_value_hint = change_result
         # Enqueue sibling named targets before applying the primary.
         _scan_and_enqueue_remaining_targets(

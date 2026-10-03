@@ -18,6 +18,7 @@ from aryx.api.ask_country_change_revalidate import (
     _rederive_and_revalidate_for_country_change,
 )
 from aryx.cpq.engine import DECISION_REQUIRED_KEYS, variable_name_words
+from aryx.raven_log import raven_log
 
 
 def _build_country_change_response(
@@ -50,6 +51,10 @@ def _build_country_change_response(
     """
     if session.country and session.country.strip().lower() == new_country.strip().lower():
         answer = f"Country is already set to **{session.country}** — no change made."
+        raven_log("DEBUG", "P4", "ask.response.country_change no-op country unchanged", context={
+            "selected_option": "no_op", "available_options": ["no_op", "apply_change"],
+            "reason_code": "COUNTRY_ALREADY_SET", "turn": getattr(session, "turn", None),
+            "run_id": getattr(session, "run_id", None), "answer_len": len(answer)})
     else:
         session.country = new_country
         answer = f"Country → {session.country}"
@@ -80,12 +85,20 @@ def _build_country_change_response(
         # ["regional", "discount", "code"], and "regional" != "region", so
         # it correctly does NOT match, while "modelSelectionRegion_astro"
         # splits to [..., "region", "astro"] and correctly does.
+        _cleared_vns: list[str] = []
         for _mirror_vn in list(session.filled.keys()):
             _vn_words = set(variable_name_words(_mirror_vn))
             if _vn_words & DECISION_REQUIRED_KEYS:
                 session.filled.pop(_mirror_vn, None)
                 session.display_filled.pop(_mirror_vn, None)
                 session.filled_source.pop(_mirror_vn, None)
+                _cleared_vns.append(_mirror_vn)
+        raven_log("INFO", "P4", "ask.response.country_change applied new country", context={
+            "selected_option": "apply_change", "available_options": ["no_op", "apply_change"],
+            "reason_code": "COUNTRY_CHANGED", "turn": getattr(session, "turn", None),
+            "run_id": getattr(session, "run_id", None), "new_country": new_country,
+            "cleared_mirror_count": len(_cleared_vns), "cleared_mirror_vns": _cleared_vns[:20],
+            "reader_present": reader is not None})
         _rederive_and_revalidate_for_country_change(req, session, new_country, reader)
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {

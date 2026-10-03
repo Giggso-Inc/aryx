@@ -22,6 +22,7 @@ from aryx.cpq.data_table.data_table_resolver import (
     resolve_whitelist_values as dt_resolve_whitelist_values,
 )
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.state import MenuOption
 
 logger = logging.getLogger(__name__)
@@ -55,10 +56,27 @@ def scoped_first_available(
             chosen.cpq_model, scoped_base_model, vn, filled,
             workspace_id, catalog_prefix, cache,
         )
-    except Exception:  # noqa: BLE001 -- scoping must never break the fill pass
+    except Exception as exc:  # noqa: BLE001 -- scoping must never break the fill pass
         logger.exception("cpq: model_scope pick lookup failed vn=%r", vn)
+        raven_log("WARN", "P3", "ask.fill.model_scope_failed scoped pick skipped, pick falls through",
+                  error_code="ARYX_ASK_MODEL_SCOPE_PICK_FAILED",
+                  context={"object_id": vn, "cpq_model": chosen.cpq_model,
+                           "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": 0, "recovery_selected": "fall_through",
+                           "fallback_target": "inferred_legal", "exit_condition": "degraded",
+                           "result": "degraded"})
         return None
     scoped = next((o for o in valid_opts if legal and o.item_value in legal), None)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.fill.model_scope scoped pick lookup",
+                  context={"selected_option": scoped.item_value if scoped is not None else None,
+                           "available_options": ["scoped", "none"],
+                           "reason_code": "SCOPED_LEGAL" if scoped is not None else (
+                               "NO_LEGAL_SET" if legal is None else "NO_LEGAL_OPTION"),
+                           "policy_version": "model_scope_pick_v1", "object_id": vn,
+                           "cpq_model": chosen.cpq_model, "base_model_scoped": bool(scoped_base_model),
+                           "legal_count": len(legal) if legal else 0,
+                           "differs_from_first": scoped is not None and scoped.item_value != valid_opts[0].item_value})
     if scoped is not None and scoped.item_value != valid_opts[0].item_value:
         if ctx.first_time(("pick", vn, valid_opts[0].item_value, scoped.item_value)):
             logger.info(

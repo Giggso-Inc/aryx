@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 
 
@@ -60,10 +61,15 @@ def compute_rule_target_ids(engine: Any, workspace_id: int, resolved_catalog_pre
     # aryx entity_id — both are checked where the target id is used,
     # since either can appear as a rule action's target.
     try:
-        rule_actions_by_rule = engine._load_rule_join_data(
-            workspace_id, resolved_catalog_prefix)[2]
-        return {
+        rule_join = engine._load_rule_join_data(workspace_id, resolved_catalog_prefix)
+        rule_actions_by_rule = rule_join[2]
+        ids = {
             aid for acts in rule_actions_by_rule.values() for aid, *_rest in acts
         }
+        # dev-rv-msi #374: BmConfigMarkedAttr is the real target linkage for
+        # many declarative rules; union it in only when the guard is on.
+        if get_settings().cpq_rule_governed_hidden_attr_guard_enabled:
+            ids |= {aid for aids in rule_join[3].values() for aid in aids}
+        return ids
     except Exception:
         return set()

@@ -32,6 +32,7 @@ from aryx.models import (
     ResolvedEntity,
 )
 from aryx.config import get_settings
+from aryx.raven_log import raven_log, would_log
 from aryx.queries import load
 from aryx.store.entity_store_ids import _dumps, _fetch_entity_ids
 from aryx.store.pool import get_pool
@@ -117,6 +118,11 @@ class EntityStore:
                 record_id=record_id, text=text, payload=payload,
                 source_system=source_system, cleaned_at=cleaned_at,
             ))
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ingest.resolve.records_loaded landed records loaded for resolve",
+                      context={"task_id": run_id, "stage": "resolve", "workspace_id": self._ws,
+                               "records": len(records), "match_key_attrs": list(key_attrs),
+                               "empty_match_text": sum(1 for r in records if not r.text)})
         return records
 
     def entity_ids_by_run(self, run_id: int) -> dict[str, int]:
@@ -143,10 +149,20 @@ class EntityStore:
         Returns the number of entities written.
         """
         if not results:
+            raven_log("DEBUG", "P4", "ingest.resolve.save_skipped no entities to save",
+                      context={"stage": "resolve", "workspace_id": self._ws, "selected_option": "skip",
+                               "available_options": ["save", "skip"], "reason_code": "EMPTY_RESULTS"})
             return 0
+        _backend = get_settings().effective_db_backend()
+        raven_log("DEBUG", "P4", "ingest.resolve.save_batch entity save path chosen",
+                  context={"stage": "resolve", "workspace_id": self._ws, "entities": len(results),
+                           "members": sum(len(m) for _, m in results),
+                           "selected_option": "oracle_batch" if _backend == "oci" else "postgres_batch",
+                           "available_options": ["oracle_batch", "postgres_batch"],
+                           "reason_code": "EFFECTIVE_DB_BACKEND_" + str(_backend).upper()})
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if get_settings().effective_db_backend() == "oci":
+                if _backend == "oci":
                     return self._save_batch(cur, results)
                 return self._save_batch_postgres(cur, results)
 

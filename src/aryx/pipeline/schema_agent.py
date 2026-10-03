@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from aryx.llm import llm_runtime
+from aryx.raven_log import current_run_id, raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +98,30 @@ def discover_mappings(schema: list[dict], context: str) -> dict[str, Any]:
         " a column in one table references another table (even without a formal FK)."
     )
     parsed: dict[str, Any] = {}
+    started = time.monotonic()
+    llm_error = ""
+    used_heuristic = False
     try:
         parsed = _parse(llm_runtime.chat("menial", sys, user)[0])
     except Exception as exc:  # noqa: BLE001 — LLM hang/timeout must not block demo
         logger.warning("schema agent LLM failed (%s); falling back to heuristic", exc)
+        llm_error = type(exc).__name__
+        raven_log("WARN", "P3", "ingest.schema_agent.llm_failed LLM mapping failed, heuristic used",
+                  error_code="ARYX_ING_SCHEMA_AGENT_LLM_FAILED",
+                  context={"dependency_name": "llm", "operation": "schema_mapping",
+                           "duration_ms": int((time.monotonic() - started) * 1000),
+                           "result": "error", "error_class": llm_error, "attempt": 1,
+                           "trace_id": current_run_id(), "triggering_error": llm_error,
+                           "max_attempts": 1, "backoff_ms": 0,
+                           "recovery_selected": "heuristic_mapping", "fallback_target": "heuristic",
+                           "exit_condition": "fallback_used", "tables_in": len(schema)})
     if not parsed.get("tables"):
         logger.info("schema agent: using heuristic mapping (no LLM result)")
+        raven_log("DEBUG", "P4", "ingest.schema_agent.heuristic using the heuristic mapping",
+                  context={"selected_option": "heuristic", "available_options": ["llm", "heuristic"],
+                           "reason_code": "LLM_FAILED" if llm_error else "LLM_EMPTY",
+                           "policy_version": "schema_agent_v1", "tables_in": len(schema)})
+        used_heuristic = True
         parsed = _heuristic_mapping(schema)
     tables = [t for t in parsed.get("tables", []) if t.get("include", True) and t.get("table")]
     by_table = {t["table"]: t for t in tables}
@@ -117,6 +137,13 @@ def discover_mappings(schema: list[dict], context: str) -> dict[str, Any]:
                 "target_attr": link["to_column"], "name": f"HAS_{src_type}".upper(),
             })
     logger.info("schema agent tables=%d edges=%d", len(tables), len(edges))
+    raven_log("DEBUG", "P4", "ingest.schema_agent.completed mapping built",
+              context={"task_id": current_run_id(), "final_status": "complete",
+                       "duration_ms": int((time.monotonic() - started) * 1000),
+                       "stage": "schema_mapping", "result": "ok", "reason_code": "MAPPED",
+                       "impact_scope": "ontology_mapping", "tables_in": len(schema),
+                       "tables_out": len(tables), "edges": len(edges),
+                       "used_heuristic": used_heuristic})
     return {"tables": [{"table": t["table"], "ontology_type": t["ontology_type"],
                         "match_keys": t.get("match_keys") or t.get("pk") or []}
                        for t in tables], "edges": edges}

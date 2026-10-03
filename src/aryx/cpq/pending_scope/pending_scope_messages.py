@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 
+from aryx.log_safe import text_ref
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,9 +88,9 @@ def log_scope_retained(
     misses: int,
 ) -> None:
     logger.info(
-        "cpq_scope_retained run_id=%s kind=%s n=%d misses=%d reply=%r "
+        "cpq_scope_retained run_id=%s kind=%s n=%d misses=%d reply=%s "
         "suggestions=%r",
-        run_id or "-", kind, n_candidates, misses, (reply or "")[:80],
+        run_id or "-", kind, n_candidates, misses, text_ref(reply),
         suggestions[:5],
     )
 
@@ -101,6 +103,6 @@ def log_scope_lost(
 ) -> None:
     """Should be structurally impossible after PROMPT 7 — alert if seen."""
     logger.error(
-        "cpq_scope_lost run_id=%s reason=%s reply=%r",
-        run_id or "-", reason, (reply or "")[:120],
+        "cpq_scope_lost run_id=%s reason=%s reply=%s",
+        run_id or "-", reason, text_ref(reply),
     )

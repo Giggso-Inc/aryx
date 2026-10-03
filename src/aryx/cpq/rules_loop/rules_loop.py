@@ -11,7 +11,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
 from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
@@ -39,6 +41,7 @@ def evaluate_rules_loop(
     workspace_id: int | None = None,
     catalog_prefix: str = "",
     product_anchor_hint: str | None = None,
+    _dt_cache: dict[tuple[int, str], tuple] | None = None,
 ) -> tuple[list[Any], dict[str, str], dict[str, str], dict[int, list[str]]]:
     """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -81,6 +84,10 @@ def evaluate_rules_loop(
 
     skip_always_ask — passed straight through to auto_fill; compute via
     resolve_always_ask_skips() once per turn at the caller.
+
+    _dt_cache — optional caller-owned Data Table cache (same shape as
+    auto_fill's `_dt_cache`) so a later standalone auto_fill can reuse the
+    loop's memoized table scans. None keeps prior behavior.
     """
     sources = filled_source if filled_source is not None else {}
     multi = filled_multi if filled_multi is not None else {}
@@ -97,7 +104,7 @@ def evaluate_rules_loop(
 
     state = LoopState(
         attrs=attrs, filled=filled, display_filled={}, sources=sources,
-        multi=multi, dropped=dropped,
+        multi=multi, dropped=dropped, dt_cache=_dt_cache or {},
     )
     scope = LoopScope(
         hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,
@@ -118,11 +125,30 @@ def evaluate_rules_loop(
     # after the loop, which is only safe today because _MAX_LOOPS is a
     # positive constant guaranteeing at least one iteration.
     pass_num = -1
+    should_break = False
+    fill_log.bind_sources(sources)
     for pass_num in range(_MAX_LOOPS):
+        fill_log.set_pass(pass_num)
         run_early_pass(engine, pass_num, state, scope)
         should_break = run_late_pass(engine, pass_num, state, scope)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.rules_loop.pass pass finished", context={
+                "pass": pass_num, "filled_count": len(state.filled), "visible_attr_count": len(state.attrs),
+                "multi_count": len(state.multi), "constrained_attr_count": len(state.constrained_opts or {}),
+                "resynced_count": len(getattr(state, "resynced", None) or {}),
+                "inconsistent_count": len(state.inconsistent_vns),
+                "oscillating_count": len(state.oscillating_vns), "stable": should_break,
+                "rules_hiding": len(scope.hiding_rules), "rules_rec": len(scope.rec_rules),
+                "rules_con": len(scope.con_rules)})
         if should_break:
             break
+    fill_log.set_pass(None)
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.rules_loop.stopped loop exit", context={
+            "selected_option": "converged" if should_break else "max_passes",
+            "available_options": ["converged", "max_passes"],
+            "reason_code": "STATE_STABLE" if should_break else "MAX_PASSES_REACHED",
+            "policy_version": "rules_loop_v1", "passes": pass_num + 1, "max_passes": _MAX_LOOPS})
 
     logger.info(
         "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",

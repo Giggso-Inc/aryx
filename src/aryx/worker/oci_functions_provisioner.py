@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 
+from aryx.raven_log import raven_log
 from aryx.worker.oci_functions_provisioner_config import _build_fn_config
 from aryx.worker.oci_functions_provisioner_resources import (
     _get_or_create_application,
@@ -79,4 +80,6 @@ def provision_ingest_function(
     logger.info(
         "provision complete: app=%s fn=%s ocid=%s", app_name, fn_name, fn_id
     )
+    raven_log("INFO", "P4", "ingest.provision.complete OCI ingest function provisioned",
+              context={"app_name": app_name, "fn_name": fn_name, "fn_ocid": fn_id, "result": "ok"})
     return fn_id

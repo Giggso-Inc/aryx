@@ -9,6 +9,7 @@ runs end-to-end without any model configured.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from aryx.broker import Broker
@@ -18,6 +19,8 @@ from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.naming import ws_graph
 from aryx.models import OntologyType
+from aryx.raven_log import raven_log
+from aryx.resolution.stats import pop as _pop_stats
 from aryx.pipeline.cooccurrence_link import detect_and_link_cooccurrence
 from aryx.pipeline.dimension_link.dimension_link import detect_and_link_dimensions
 from aryx.pipeline.enrich.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
@@ -44,7 +47,7 @@ class PipelineCancelled(Exception):
 
     Caught by the caller (file_ingest_api.py's _run_files) to end the
     worker thread cleanly instead of running the remaining stages to
-    completion -- see _make_should_stop's docstring for the bug this fixes.
+    completion -- see make_should_stop's docstring for the bug this fixes.
     """
 
 
@@ -58,11 +61,19 @@ def _check_cancelled(should_stop: ShouldStop | None, stage: str) -> None:
     """Raise PipelineCancelled if the job was cancelled mid-run.
 
     Called at every stage boundary (cheap: should_stop() itself throttles
-    the underlying DB read, see _make_should_stop) so a cancel takes effect
+    the underlying DB read, see make_should_stop) so a cancel takes effect
     within one stage instead of running the whole remaining pipeline.
     """
     if should_stop is not None and should_stop():
+        raven_log("WARN", "P3", "ingest.pipeline.cancelled job cancelled at stage boundary",
+                  error_code="ARYX_ING_CANCELLED",
+                  context={"stage": stage, "selected_option": "cancel", "available_options": ["continue", "cancel"],
+                           "reason_code": "SHOULD_STOP_TRUE", "final_status": "cancelled"})
         raise PipelineCancelled(f"job cancelled before stage={stage}")
+    raven_log("DEBUG", "P4", "ingest.pipeline.cancel_check not cancelled, continuing",
+              context={"stage": stage, "selected_option": "continue",
+                       "available_options": ["continue", "cancel"], "reason_code": "NOT_CANCELLED",
+                       "has_should_stop": should_stop is not None})
 
 
 def project_workspace_graph(
@@ -80,9 +91,17 @@ def project_workspace_graph(
     OracleGraphStore selection and ``project_auto`` call itself.
     """
     logger.info("project stage — building type ancestors ws=%s", workspace_id)
+    _pop_stats(("project", workspace_id))  # reset per-call markers (cleared / incremental)
+    _t0 = time.monotonic()
     type_ancestors = _build_type_ancestors(dsn)
     cfg = get_settings()
-    if cfg.effective_graph_backend() == "oci_graph":
+    backend = cfg.effective_graph_backend()
+    if backend == "oci_graph":
+        raven_log("DEBUG", "P4", "ingest.project.backend_chosen graph backend: oci_graph",
+                  context={"stage": "project", "workspace_id": workspace_id, "selected_option": "oci_graph",
+                           "available_options": ["oci_graph", "falkordb"],
+                           "reason_code": "EFFECTIVE_GRAPH_BACKEND_OCI_GRAPH",
+                           "type_ancestors": len(type_ancestors or {})})
         try:
             from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
             graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
@@ -92,14 +111,41 @@ def project_workspace_graph(
                 "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
             ) from exc
     else:
+        raven_log("DEBUG", "P4", "ingest.project.backend_chosen graph backend: falkordb",
+                  context={"stage": "project", "workspace_id": workspace_id, "selected_option": "falkordb",
+                           "available_options": ["oci_graph", "falkordb"],
+                           "reason_code": "EFFECTIVE_GRAPH_BACKEND_NOT_OCI_GRAPH",
+                           "type_ancestors": len(type_ancestors or {})})
         graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
     logger.info("project stage — calling project_auto ws=%s", workspace_id)
     pstore = ProjectionStore(dsn, workspace_id=workspace_id)
-    return project_auto(
-        estore, pstore, graph_inst,
-        type_ancestors=type_ancestors, workspace_id=workspace_id,
-        on_progress=on_progress, pct_range=(90, 95),
-    )
+    try:
+        counts = project_auto(
+            estore, pstore, graph_inst,
+            type_ancestors=type_ancestors, workspace_id=workspace_id,
+            on_progress=on_progress, pct_range=(90, 95),
+        )
+    except Exception as exc:
+        markers = _pop_stats(("project", workspace_id))
+        raven_log("ERROR", "P1", "ingest.project.failed graph projection failed",
+                  error_code="ARYX_ING_PROJECT_FAILED",
+                  context={"stage": "project", "workspace_id": workspace_id, "backend": backend,
+                           "graph_ref": getattr(graph_inst, "name", None) or getattr(graph_inst, "graph_name", None),
+                           "mode": "incremental" if markers.get("incremental") else "full",
+                           "cleared_before_failure": bool(markers.get("cleared")),
+                           "final_status": "failed", "result": "error",
+                           "error_class": type(exc).__name__, "dependency_name": "graph_store",
+                           "duration_ms": int((time.monotonic() - _t0) * 1000),
+                           "impact_scope": "workspace graph empty or partial; retrieval degraded"})
+        raise
+    markers = _pop_stats(("project", workspace_id))
+    raven_log("INFO", "P4", "ingest.project.completed graph projection completed",
+              context={"stage": "project", "workspace_id": workspace_id, "backend": backend,
+                       "graph_ref": getattr(graph_inst, "name", None) or getattr(graph_inst, "graph_name", None),
+                       "mode": "incremental" if markers.get("incremental") else "full",
+                       "final_status": "done", "result": "ok",
+                       "duration_ms": int((time.monotonic() - _t0) * 1000), "counts": dict(counts or {})})
+    return counts
 
 
 def run_pipeline(
@@ -146,7 +192,20 @@ def run_pipeline(
         run_id = resume_run_id
         runner = StageRunner(dsn, run_id, resume=True)
         logger.info("resuming run_id=%s", run_id)
+        raven_log("INFO", "P4", "ingest.pipeline.start resuming run (no re-extract)",
+                  context={"task_id": run_id, "selected_option": "resume",
+                           "available_options": ["resume", "discover"], "reason_code": "RESUME_RUN_ID_GIVEN",
+                           "workspace_id": workspace_id, "ontology_type": ontology_type,
+                           "relate": bool(relate), "tag": bool(tag), "skip_graph": bool(skip_graph),
+                           "max_pairs": _max_pairs, "fk_specs": len(fk_links or []),
+                           "match_keys": list(match_keys)})
     else:
+        raven_log("INFO", "P4", "ingest.pipeline.start new run: discover first",
+                  context={"selected_option": "discover", "available_options": ["resume", "discover"],
+                           "reason_code": "NO_RESUME_RUN_ID", "workspace_id": workspace_id,
+                           "ontology_type": ontology_type, "relate": bool(relate), "tag": bool(tag),
+                           "skip_graph": bool(skip_graph), "max_pairs": _max_pairs,
+                           "fk_specs": len(fk_links or []), "match_keys": list(match_keys)})
         _emit(on_progress, "Discover", 5, "Starting extraction from source")
         store = PostgresStore(dsn, workspace_id)
         try:
@@ -185,6 +244,11 @@ def run_pipeline(
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
             logger.error("ontology type seed failed type=%s ws=%s", ontology_type, workspace_id, exc_info=True)
+            raven_log("ERROR", "P2", "ingest.ontology.seed_failed ontology type seed failed, pipeline continues",
+                      error_code="ARYX_ING_ONTOLOGY_SEED_FAILED",
+                      context={"task_id": run_id, "stage": "seed", "ontology_type": ontology_type,
+                               "workspace_id": workspace_id, "result": "error",
+                               "reason_code": "SEED_EXCEPTION_SWALLOWED", "impact_scope": "schema diagram"})
         _check_cancelled(should_stop, "relate")
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
@@ -210,6 +274,11 @@ def run_pipeline(
                 for spec in schema_links:
                     if not _FK_REQUIRED.issubset(spec):
                         logger.warning("schema_fk: skipping incomplete FK spec: %s", spec)
+                        raven_log("WARN", "P3", "ingest.fk.spec_skipped schema_fk spec incomplete, skipped",
+                                  error_code="ARYX_ING_FK_SPEC_INCOMPLETE",
+                                  context={"task_id": run_id, "stage": "schema_fk", "selected_option": "skip",
+                                           "available_options": ["link", "skip"], "reason_code": "MISSING_REQUIRED_FIELDS",
+                                           "missing": sorted(_FK_REQUIRED - set(spec))})
                         continue
                     rel_name = spec.get(
                         "name",
@@ -229,6 +298,11 @@ def run_pipeline(
                 for spec in fk_links:
                     if not _FK_REQUIRED.issubset(spec):
                         logger.warning("fk_link: skipping incomplete FK spec: %s", spec)
+                        raven_log("WARN", "P3", "ingest.fk.spec_skipped fk_link spec incomplete, skipped",
+                                  error_code="ARYX_ING_FK_SPEC_INCOMPLETE",
+                                  context={"task_id": run_id, "stage": "fk_link", "selected_option": "skip",
+                                           "available_options": ["link", "skip"], "reason_code": "MISSING_REQUIRED_FIELDS",
+                                           "missing": sorted(_FK_REQUIRED - set(spec))})
                         continue
                     rel_name = spec.get(
                         "name",
@@ -273,7 +347,7 @@ def run_pipeline(
             # strictly wasted work, not additional coverage.
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
-                relationships += _relate_isolated(estore, broker)
+                relationships += _relate_isolated(estore, broker, should_stop=should_stop)
         _check_cancelled(should_stop, "dimension_link")
         if not skip_graph and not runner.skip("dimension_link"):
             # Tier-2 deterministic linking: connect entity types that share a
@@ -300,6 +374,9 @@ def run_pipeline(
                                                  on_progress=on_progress)
         else:
             logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
+            raven_log("INFO", "P4", "ingest.project.deferred projection deferred to final plan",
+                      context={"task_id": run_id, "stage": "project", "selected_option": "defer",
+                               "available_options": ["project", "defer"], "reason_code": "SKIP_GRAPH_TRUE"})
             _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('entities', 0)} nodes, {counts.get('relationships', 0)} edges")
     finally:
         estore.close()
@@ -308,4 +385,8 @@ def run_pipeline(
                "relationships": relationships, **counts}
     _emit(on_progress, "Done", 100, f"{entities} entities · {relationships} relationships · {counts.get('entities', 0)} graph nodes")
     logger.info("pipeline complete %s", summary)
+    raven_log("INFO", "P4", "ingest.pipeline.completed pipeline finished",
+              context={"task_id": run_id, "stage": "done", "final_status": "complete", "result": "ok",
+                       "entities": entities, "relationships": relationships,
+                       "graph_counts": dict(counts), "workspace_id": workspace_id})
     return summary

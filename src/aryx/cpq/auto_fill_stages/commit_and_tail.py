@@ -28,6 +28,7 @@ from aryx.cpq.auto_fill_stages import (
     multi_optout_and_empty,
     noise_var_default,
 )
+from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -47,6 +48,8 @@ def stage_commit_and_tail(
         return
     # Original: `if filled_multi_now: return` -- a multi-select already
     # written into ctx.filled_multi upstream needs none of what follows.
+    fill_log.log_decision(state.vn, "stage_commit_and_tail", "entered", "RESOLUTION_STATE",
+                          has_value=bool(state.value), filled_multi_now=state.filled_multi_now)
     if state.filled_multi_now:
         state.done = True
         return

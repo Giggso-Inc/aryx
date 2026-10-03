@@ -16,6 +16,18 @@ from aryx.api.ask_response_building.ask_build_show_summary_response import _buil
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, is_valid_product_quantity,
 )
+from aryx.raven_log import raven_log
+
+
+
+def _qlog(level: str, event: str, opt: str, reason: str, session: Any, code: str = "", **ctx: Any) -> None:
+    """One raven record per quantity-builder branch (counts/flags only, never answer text)."""
+    raven_log(level, "P3" if level == "WARN" else "P4", f"ask.response.quantity_{event}",  # type: ignore[arg-type]
+              error_code=code, context={"selected_option": opt, "reason_code": reason,
+              "available_options": ["reject_decimal", "reject_invalid", "summary", "plain",
+                                    "plain_with_resume"], "turn": getattr(session, "turn", None),
+              "run_id": getattr(session, "run_id", None),
+              "quantity": getattr(session, "product_quantity", None), **ctx})
 
 
 def _build_product_quantity_change_response(
@@ -45,6 +57,8 @@ def _build_product_quantity_change_response(
             f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
             f"still **{session.product_quantity}**."
         )
+        _qlog("INFO", "rejected decimal quantity", "reject_decimal", "QUANTITY_DECIMAL_REJECTED",
+              session, answer_len=len(answer))
         _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
@@ -64,6 +78,9 @@ def _build_product_quantity_change_response(
             f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
             f"**{session.product_quantity}**."
         )
+        _qlog("INFO", "rejected out-of-range quantity", "reject_invalid", "QUANTITY_OUT_OF_RANGE",
+              session, requested_quantity=value, min_quantity=MIN_PRODUCT_QUANTITY,
+              max_quantity=MAX_PRODUCT_QUANTITY, answer_len=len(answer))
         _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [],
@@ -85,8 +102,12 @@ def _build_product_quantity_change_response(
                 + _qty_summary_resp["answer"]
             )
             _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
+            _qlog("INFO", "applied with full summary", "summary", "QUANTITY_APPLIED_CONFIG_COMPLETE",
+                  session, quantity_changed=value is not None,
+                  answer_len=len(str(_qty_summary_resp.get("answer") or "")))
             return _qty_summary_resp
     answer = f"**Quantity** → {session.product_quantity}"
+    _qty_pending_attr = None
     # docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md follow-up: a
     # customer applying a quantity change while a different question is
     # still pending (e.g. Hardware Version, never answered) got no
@@ -107,6 +128,11 @@ def _build_product_quantity_change_response(
             _ask_api_module.logger.debug(
                 "cpq quantity resume-reminder: load_product_config failed: %r", exc,
             )
+            _qlog("WARN", "resume_load_failed catalog load failed", "plain", "CATALOG_LOAD_FAILED",
+                  session, "ARYX_ASK_QTY_RESUME_LOAD_FAILED", dependency_name="catalog",
+                  triggering_error=type(exc).__name__, attempt=1, max_attempts=1, backoff_ms=0,
+                  recovery_selected="skip_resume_reminder", fallback_target="plain",
+                  exit_condition="exception", result="degraded")
             _qty_resume_attrs = []
         _qty_pending_attr = next(
             (a for a in _qty_resume_attrs if a.variable_name == session.pending_variables[0]),
@@ -119,6 +145,11 @@ def _build_product_quantity_change_response(
                     _qty_pending_attr, attrs=_qty_resume_attrs,
                 )
             )
+    _pending = bool(getattr(session, "pending_variables", None))
+    _qlog("INFO", "applied plain line", "plain_with_resume" if _qty_pending_attr is not None else "plain",
+          ("RESUME_APPENDED" if _qty_pending_attr is not None else "PENDING_ATTR_NOT_FOUND")
+          if _pending else "SUMMARY_UNAVAILABLE", session, quantity_changed=value is not None,
+          pending_vn=getattr(_qty_pending_attr, "variable_name", None), answer_len=len(answer))
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],

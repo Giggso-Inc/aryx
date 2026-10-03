@@ -48,6 +48,7 @@ from aryx.cpq.data_table.data_table_loader import (
 )
 from aryx.cpq.data_table.data_table_product import (
     _clear_attr_var_mapping_cache,
+    resolve_cpq_model_from_display_name,
     resolve_product_cpq_model_family,
     resolve_product_cpq_models_from_hint,
     resolve_product_cpq_models_from_rows,
@@ -68,6 +69,7 @@ __all__ = [
     "find_inconsistent_filled_pairs_detailed",
     "governed_attr_names_for_base_model",
     "governed_required_attr_names_for_base_model",
+    "resolve_cpq_model_from_display_name",
     "resolve_invalid_product_variant",
     "resolve_product_cpq_model_family",
     "resolve_product_cpq_models_from_hint",

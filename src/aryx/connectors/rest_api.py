@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
@@ -15,6 +16,8 @@ from typing import Any
 
 from aryx.connectors.base import Connector
 from aryx.models import RawRecord, SourceRef
+from aryx.raven_log import current_run_id, raven_log, would_log
+from aryx.worker.job_partial import note_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +92,31 @@ class RestApiConnector(Connector):
         url = self._url
         seen = 0
         for page in range(self._max_pages):
+            page_t0 = time.monotonic()
             try:
                 payload = _request(url, self._headers)
             except Exception as exc:  # noqa: BLE001
                 logger.error("rest fetch failed page=%d url=%s err=%s",
                              page, url, exc)
+                note_hidden()
+                raven_log("WARN", "P2", "ingest.rest.page_failed REST page fetch failed, earlier pages kept",
+                          error_code="ARYX_ING_REST_PARTIAL",
+                          context={"dependency_name": "rest_source", "operation": "fetch_page",
+                                   "duration_ms": int((time.monotonic() - page_t0) * 1000), "result": "partial",
+                                   "error_class": type(exc).__name__, "attempt": page + 1, "page": page,
+                                   "trace_id": current_run_id(),
+                                   "records_kept": seen, "url_host": urllib.parse.urlparse(url).hostname or ""})
                 return
             records = _select(payload, self._record_path)
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ingest.rest.page fetched",
+                          context={"dependency_name": "rest_source", "operation": "fetch_page",
+                                   "result": "ok", "error_class": None, "attempt": page + 1,
+                                   "trace_id": current_run_id(),
+                                   "page": page, "records": len(records), "zero_records": len(records) == 0,
+                                   "duration_ms": int((time.monotonic() - page_t0) * 1000),
+                                   "url_host": urllib.parse.urlparse(url).hostname or "",
+                                   "record_path_set": bool(self._record_path)})
             for rec in records:
                 seen += 1
                 yield RawRecord(
@@ -105,6 +126,14 @@ class RestApiConnector(Connector):
                 )
             nxt = self._next_url(url, payload)
             if not nxt:
+                raven_log("DEBUG", "P4", "ingest.rest.paging stopped no next page",
+                          context={"page": page, "pages_fetched": page + 1, "records_total": seen,
+                                   "selected_option": "stop", "available_options": ["stop", "next_page"],
+                                   "reason_code": "NO_NEXT_PAGE", "max_pages": self._max_pages})
                 return
             url = nxt
         logger.info("rest extracted records=%d pages=%d", seen, self._max_pages)
+        raven_log("WARN", "P3", "ingest.rest.page_cap reached max_pages with more pages available",
+                  error_code="ARYX_ING_REST_PAGE_CAP",
+                  context={"max_pages": self._max_pages, "records_total": seen, "reason_code": "MAX_PAGES",
+                           "recovery_selected": "stop_at_cap"})

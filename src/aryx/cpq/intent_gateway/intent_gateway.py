@@ -44,7 +44,9 @@ from typing import Any, Literal
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
+from aryx.log_safe import text_ref
 from aryx.cpq.engine import CpqEngine
+from aryx.cpq.intent_gateway import intent_gateway_attr_route as _attr_route
 from aryx.cpq.intent_gateway.intent_gateway_agreement import (
     MUTATING_CATEGORIES,
     _deterministic_mutating_signals,
@@ -84,6 +86,7 @@ from aryx.cpq.telemetry import (
     log_rejection,
 )
 from aryx.llm import complete_text
+from aryx.raven_log import raven_log, submit_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +474,9 @@ def classify_intent(
     run_id = get_run_id() or "-"
 
     if not question.strip():
+        raven_log("DEBUG", "P4", "ask.intent.gateway empty question, fallback", context={
+            "selected_option": "fallback", "reason_code": "EMPTY_QUESTION",
+            "available_options": ["dispatch", "clarify", "fallback"], "model_id": model_id})
         return GatewayDecision(
             action="fallback", result=None, reason="empty_question",
             model_id=model_id,
@@ -536,8 +542,8 @@ def classify_intent(
         returns within `timeout` seconds as advertised.
         """
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        fut = pool.submit(
-            _llm_classify_once, question, bundles, session, model_id,
+        fut = submit_ctx(
+            pool, _llm_classify_once, question, bundles, session, model_id,
             workspace_id, repair_hint,
         )
         try:
@@ -746,7 +752,7 @@ def classify_intent(
 # Decides QUOTE vs QA vs AMBIGUOUS vs OFF_TOPIC for cold-start turns.
 # Live CPQ sessions never call this — they go straight to _run_cpq_turn.
 
-AskRoute = Literal["quote", "qa", "ambiguous", "off_topic"]
+AskRoute = Literal["quote", "qa", "ambiguous", "off_topic", "attribute_search"]
 
 _ROUTE_SCHEMA: dict = {
     "type": "object",
@@ -843,14 +849,47 @@ class AskRouteDecision:
     # other free-text LLM extraction in this codebase.
     quantity: int | None = None
     country: str | None = None
+    # route=attribute_search only (intent_gateway_attr_route.py): the raw
+    # attribute label/value the user typed, UNVALIDATED -- grounding against
+    # the catalog is the caller's job, same as quantity/country.
+    attribute_label: str | None = None
+    attribute_value: str | None = None
 
 
-def _parse_route(raw: dict | None) -> AskRouteDecision | None:
+_classify_intent_inner = classify_intent  # the original, wrapped below to log its decision
+
+
+def classify_intent(question: str, *args: Any, **kwargs: Any) -> GatewayDecision:
+    """Run the mid-session intent gateway and record the action chosen and why."""
+    _t0 = time.monotonic()
+    decision = _classify_intent_inner(question, *args, **kwargs)
+    res = getattr(decision, "result", None)
+    cat = getattr(getattr(res, "intent_category", None), "value", None)
+    conf = getattr(getattr(res, "confidence", None), "value", None)
+    raven_log("DEBUG", "P4", "ask.intent.gateway classify_intent decided", context={
+        "selected_option": decision.action,
+        "available_options": ["dispatch", "clarify", "fallback"],
+        "reason_code": decision.reason or ("CACHE_HIT" if decision.cache_hit else "CLASSIFIED"),
+        "policy_version": "intent_gateway", "category": cat, "confidence": conf,
+        "variable_name": getattr(res, "variable_name", None), "cache_hit": decision.cache_hit,
+        "model_id": decision.model_id, "prompt_tokens": decision.prompt_tokens,
+        "completion_tokens": decision.completion_tokens,
+        "duration_ms": int((time.monotonic() - _t0) * 1000),
+        "question_len": len(question or ""), "ran_and_did_nothing": decision.action == "fallback",
+    })
+    return decision
+
+
+def _parse_route(
+    raw: dict | None, *, allow_attribute_search: bool = False,
+) -> AskRouteDecision | None:
     if not isinstance(raw, dict):
         return None
     route = raw.get("route")
-    if route not in ("quote", "qa", "ambiguous", "off_topic"):
+    extra = (_attr_route.ATTRIBUTE_SEARCH,) if allow_attribute_search else ()
+    if route not in ("quote", "qa", "ambiguous", "off_topic", *extra):
         return None
+    route, attr_label, attr_value, raw = _attr_route.resolve_attr_route(raw, route)
     conf = raw.get("confidence") or "low"
     if conf not in ("high", "medium", "low"):
         conf = "low"
@@ -887,7 +926,7 @@ def _parse_route(raw: dict | None) -> AskRouteDecision | None:
     # value that IS a real country into its canonical spelling.
     if country:
         country = CpqEngine.is_recognized_country(country) or country
-    if conf == "low" and route in ("quote", "qa"):
+    if conf == "low" and route in ("quote", "qa", _attr_route.ATTRIBUTE_SEARCH):
         # Low confidence → force clarify rather than wrong path
         return AskRouteDecision(
             route="ambiguous",
@@ -907,6 +946,8 @@ def _parse_route(raw: dict | None) -> AskRouteDecision | None:
         rationale=str(raw.get("rationale") or ""),
         quantity=quantity,
         country=country,
+        attribute_label=attr_label,
+        attribute_value=attr_value,
     )
 
 
@@ -934,13 +975,13 @@ def classify_ask_route(
     # N10: hard off-topic veto before any LLM call (saves latency; no misroute).
     if hard_off_topic(question):
         logger.info(
-            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%r", run_id, question[:80],
+            "cpq_ask_route: HARD_OFF_TOPIC run_id=%s q=%s", run_id, text_ref(question),
         )
         if settings.cpq_off_topic_veto_shadow_enabled:
             logger.info(
-                "cpq_off_topic_veto_shadow: run_id=%s q=%r term_strength=%s "
+                "cpq_off_topic_veto_shadow: run_id=%s q=%s term_strength=%s "
                 "site=pre_llm (no LLM verdict available -- veto skipped the "
-                "call)", run_id, question[:80],
+                "call)", run_id, text_ref(question),
                 _off_topic_shadow_term_strength(question),
             )
         return AskRouteDecision(
@@ -953,6 +994,8 @@ def classify_ask_route(
             agreement=(det_is_cpq is False) if det_is_cpq is not None else None,
         )
 
+    attr_on = _attr_route.is_enabled(settings)
+    schema = _attr_route.extend_schema(_ROUTE_SCHEMA) if attr_on else _ROUTE_SCHEMA
     sys = (
         "You are the top-level router for an enterprise product-configuration "
         "and quoting assistant (Aryx CPQ).\n"
@@ -962,9 +1005,11 @@ def classify_ask_route(
         "changing configuration state\n"
         "- ambiguous: could be quote OR qa (or unclear) — must ask a "
         "clarifying_question\n"
-        "- off_topic: not product configuration or quoting at all\n\n"
-        f"Reply ONLY as JSON matching:\n{json.dumps(_ROUTE_SCHEMA, indent=1)}\n\n"
+        "- off_topic: not product configuration or quoting at all\n"
+        f"{_attr_route.ROUTE_LINE if attr_on else ''}\n"
+        f"Reply ONLY as JSON matching:\n{json.dumps(schema, indent=1)}\n\n"
         f"{_ROUTE_FEW_SHOTS}\n"
+        f"{_attr_route.FEW_SHOTS + chr(10) if attr_on else ''}"
         "Rules:\n"
         "1. If destination country (or product + qty + country) is already "
         "in the message, still route=quote — never invent a missing-country "
@@ -996,6 +1041,7 @@ def classify_ask_route(
         "the five shown above — never leave the country field null just "
         "because the exact spelling/punctuation looks unfamiliar, as "
         "long as it plausibly names a real country.\n"
+        f"{_attr_route.RULE_TEXT if attr_on else ''}"
     )
     session_block = (
         f"SESSION HINT: {session_hint}\n" if session_hint else "SESSION HINT: none (cold start)\n"
@@ -1016,7 +1062,7 @@ def classify_ask_route(
     # background instead.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        fut = pool.submit(_call)
+        fut = submit_ctx(pool, _call)
         text, pt, ct = fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(
@@ -1051,7 +1097,7 @@ def classify_ask_route(
         pool.shutdown(wait=False)
 
     raw = _parse_json_object(text)
-    parsed = _parse_route(raw)
+    parsed = _parse_route(raw, allow_attribute_search=attr_on)
     if parsed is None:
         # One schema retry
         try:
@@ -1061,7 +1107,9 @@ def classify_ask_route(
             )
             pt += pt2
             ct += ct2
-            parsed = _parse_route(_parse_json_object(text2))
+            parsed = _parse_route(
+                _parse_json_object(text2), allow_attribute_search=attr_on,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("cpq_ask_route: retry failed run_id=%s err=%r", run_id, exc)
             parsed = None
@@ -1110,7 +1158,7 @@ def classify_ask_route(
     parsed.det_is_cpq = det_is_cpq
     if det_is_cpq is not None:
         # Agreement: quote ↔ det True; off_topic/qa ↔ det False is soft.
-        llm_cpq = parsed.route in ("quote", "ambiguous")
+        llm_cpq = map_route_to_det_expectation(parsed.route)
         parsed.agreement = (llm_cpq == det_is_cpq) or parsed.route == "ambiguous"
         log_divergence(DivergenceRecord(
             run_id=run_id,
@@ -1122,13 +1170,14 @@ def classify_ask_route(
         ))
     logger.info(
         "cpq_ask_route: run_id=%s route=%s conf=%s det_is_cpq=%s agree=%s "
-        "model=%s tokens=(%d,%d) rationale=%r",
+        "model=%s tokens=(%d,%d) attr=(%r,%r) rationale=%r",
         run_id, parsed.route, parsed.confidence, det_is_cpq, parsed.agreement,
-        model_id, pt, ct, parsed.rationale,
+        model_id, pt, ct, parsed.attribute_label, parsed.attribute_value,
+        parsed.rationale,
     )
     return parsed
 
 
 def map_route_to_det_expectation(route: AskRoute) -> bool:
     """Whether the deterministic is_cpq_question auditor should be True."""
-    return route in ("quote", "ambiguous")
+    return route in ("quote", "ambiguous", _attr_route.ATTRIBUTE_SEARCH)

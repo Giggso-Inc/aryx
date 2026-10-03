@@ -16,6 +16,15 @@ from typing import Any
 from aryx.api.ask_attr_recompute.ask_attr_text_helpers import _build_attr_options_text
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_llm import ask_llm_split_multi_attr_options as _ask_llm_split_multi_attr_options_module
+from aryx.raven_log import raven_log
+
+
+def _log_multi(session: Any, opt: str, reason: str, level: str = "DEBUG", **ctx: Any) -> None:
+    """One raven record per multi-attribute-options branch (never question/answer text)."""
+    raven_log(level, "P4", f"ask.qa.multi_attr_options {'answered' if opt == 'multi_answer' else 'skipped'}",  # type: ignore[arg-type]
+              context={"selected_option": opt, "available_options": ["multi_answer", "fall_through"],
+                       "reason_code": reason, "turn": getattr(session, "turn", None),
+                       "run_id": getattr(session, "run_id", None), "road": "qa", **ctx})
 
 
 def _qa_multi_attr_options_response(
@@ -38,11 +47,13 @@ def _qa_multi_attr_options_response(
         any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
         and (" and " in f" {req.question.lower()} " or "," in req.question)
     ):
+        _log_multi(session, "fall_through", "NO_OPTIONS_KEYWORD_OR_CONJUNCTION")
         return None
     _multi_qs = _ask_llm_split_multi_attr_options_module._llm_split_multi_attr_options_query(
         req.question, attrs, req.workspace_id,
     )
     if not _multi_qs:
+        _log_multi(session, "fall_through", "LLM_SPLIT_EMPTY")
         return None
     _multi_answers = []
     _multi_qa_vns: list[str] = []
@@ -56,12 +67,17 @@ def _qa_multi_attr_options_response(
             _multi_answers.append(_sub_answer)
             _multi_qa_vns.append(_sub_attr.variable_name)
     if len(_multi_answers) < 2:
+        _log_multi(session, "fall_through", "FEWER_THAN_TWO_RESOLVED",
+                   sub_question_count=len(_multi_qs), resolved_count=len(_multi_answers))
         return None
     # Remember EVERY attribute this compound query asked about, not just
     # the last one processed — see last_qa_variables' own docstring
     # (Issue 12).
     session.last_qa_variables = _multi_qa_vns
     qa_answer = "\n\n".join(_multi_answers)
+    _log_multi(session, "multi_answer", "MULTI_ATTRS_RESOLVED", "INFO",
+               sub_question_count=len(_multi_qs), resolved_count=len(_multi_answers),
+               attr_vns=_multi_qa_vns[:10], answer_len=len(qa_answer))
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, qa_answer)
     return {
         "answer": qa_answer, "terms": [],

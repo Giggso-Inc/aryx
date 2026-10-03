@@ -19,6 +19,7 @@ from aryx.api.ask_intent_queue_text_helpers import _queue_followup_note
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_label_collision import ask_decline_reply_and_label_collision_llm as _ask_decline_reply_and_label_collision_llm_module
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
+from aryx.raven_log import raven_log
 
 
 def _resolve_pending_change_collision(
@@ -35,12 +36,16 @@ def _resolve_pending_change_collision(
         return None
     _resolved_vn = None
     _reply = req.question.strip()
+    _pending_vns = list(session.pending_change_collision_vns)
+    _via = "unresolved"
     if _reply in session.pending_change_collision_vns:
         _resolved_vn = _reply
+        _via = "exact_variable_name"
     elif _reply.isdigit():
         _idx = int(_reply) - 1
         if 0 <= _idx < len(session.pending_change_collision_vns):
             _resolved_vn = session.pending_change_collision_vns[_idx]
+            _via = "list_index"
     if _resolved_vn is None:
         _candidates = [
             a for a in attrs
@@ -49,6 +54,14 @@ def _resolve_pending_change_collision(
         if _candidates:
             _resolved_vn = _ask_decline_reply_and_label_collision_llm_module._llm_resolve_label_collision(
                 _reply, _candidates, session, req.workspace_id)
+            _via = "llm_fallback" if _resolved_vn else "llm_no_match"
+    raven_log("DEBUG", "P4", "ask.collision.change_reply resolution", context={
+        "selected_option": _via,
+        "available_options": ["exact_variable_name", "list_index", "llm_fallback",
+                              "llm_no_match", "unresolved"],
+        "reason_code": "CHANGE_COLLISION_RESOLVED" if _resolved_vn else "CHANGE_COLLISION_UNRESOLVED",
+        "resolved_variable_name": _resolved_vn or "", "candidate_vns": _pending_vns,
+        "reply_len": len(_reply), "turn": getattr(session, "turn", None)})
     if _resolved_vn:
         _resolved_attr = next(
             (a for a in attrs if a.variable_name == _resolved_vn), None)
@@ -59,6 +72,11 @@ def _resolve_pending_change_collision(
             _resolved_change = _cpq_engine.detect_change_request(
                 _orig_question, [_resolved_attr], session.filled,
                 filled_multi=session.filled_multi)
+            raven_log("INFO", "P4", "ask.collision.change_reply resolved attr handled", context={
+                "selected_option": "cascade" if _resolved_change else "ask_value",
+                "available_options": ["cascade", "ask_value"],
+                "reason_code": "ORIGINAL_CHANGE_VALUE_FOUND" if _resolved_change else "ORIGINAL_CHANGE_NO_VALUE",
+                "variable_name": _resolved_vn, "turn": getattr(session, "turn", None)})
             if _resolved_change:
                 _, _resolved_value = _resolved_change
                 return _ask_handle_cascade_module._handle_cascade(
@@ -70,6 +88,10 @@ def _resolve_pending_change_collision(
             )
     # Unrecognized reply — clear the stale pending state and fall through
     # to normal routing rather than getting stuck forever.
+    raven_log("DEBUG", "P4", "ask.collision.change_reply stale pending cleared, normal routing", context={
+        "selected_option": "fall_through", "available_options": ["fall_through"],
+        "reason_code": "RESOLVED_ATTR_NOT_IN_CATALOG" if _resolved_vn else "REPLY_UNRECOGNIZED",
+        "resolved_variable_name": _resolved_vn or "", "turn": getattr(session, "turn", None)})
     session.pending_change_collision_vns = []
     session.pending_change_collision_question = ""
     return None

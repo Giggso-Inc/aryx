@@ -6,17 +6,32 @@ Split out of `cpq/rdb.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
-from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb
+from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb, _warn_if_timeout
+from aryx.raven_log import raven_log
+from aryx.store.db_timeouts import oracle_call_timeout
 
 if TYPE_CHECKING:
     from aryx.store.oracle_pool import OracleConnectionWrapper
 
 logger = logging.getLogger(__name__)
+
+
+def _read_failed(operation: str) -> None:
+    """R7 -- an OracleCpqRdb fetch swallowed an error and returned empty: say so (ERROR P2).
+
+    Call from inside the ``except`` block (reads the active exception)."""
+    exc = sys.exc_info()[1]
+    raven_log("ERROR", "P2", "ask.rdb.read_failed oracle CPQ rdb read failed, empty result returned",
+              error_code="ARYX_ASK_RDB_READ_FAILED", context={
+                  "dependency_name": "oracle_adb", "operation": operation, "result": "failed_empty_returned",
+                  "error_class": type(exc).__name__ if exc is not None else "", "attempt": 1})
 
 
 class OracleCpqRdb(PostgresCpqRdb):
@@ -29,7 +44,18 @@ class OracleCpqRdb(PostgresCpqRdb):
     def _connection(self) -> Iterator["OracleConnectionWrapper"]:
         from aryx.store.oracle_pool import get_oracle_pool
         settings = get_settings()
-        return get_oracle_pool(settings.oci_adb_dsn).connection()
+        pool_cm = get_oracle_pool(settings.oci_adb_dsn).connection()
+        if not settings.cpq_rdb_call_timeout_enabled:
+            return pool_cm
+        return self._bounded_oracle_connection(pool_cm, int(settings.cpq_rdb_call_timeout_ms))
+
+    @staticmethod
+    @contextmanager
+    def _bounded_oracle_connection(pool_cm: Any, timeout_ms: int) -> Iterator["OracleConnectionWrapper"]:
+        """Borrow a pooled connection with conn.call_timeout set; restore on exit."""
+        with pool_cm as conn:
+            with oracle_call_timeout(conn, timeout_ms):
+                yield conn
 
     def fetch_entity_attributes(
         self, entity_ids: list[int], workspace_id: int,
@@ -48,8 +74,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         result[int(eid)] = _as_attrs(attrs)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): attribute fetch failed", exc_info=True)
+            _read_failed("fetch_entity_attributes")
         return result
 
     def fetch_entities_by_type(
@@ -71,8 +99,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): type fetch failed", exc_info=True)
+            _read_failed("fetch_entities_by_type")
         return rows
 
     def fetch_entities_by_exact_type(
@@ -89,8 +119,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): exact type fetch failed", exc_info=True)
+            _read_failed("fetch_entities_by_exact_type")
         return rows
 
     def fetch_all_entities_grouped_by_type(
@@ -113,8 +145,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         if not otype:
                             continue
                         result.setdefault(otype, []).append((int(eid), _as_attrs(attrs)))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): fetch_all_entities_grouped_by_type failed", exc_info=True)
+            _read_failed("fetch_all_entities_grouped_by_type")
         return result
 
     def list_ontology_types(self, workspace_id: int) -> list[str]:
@@ -128,8 +162,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         (workspace_id,),
                     )
                     types = [row[0] for row in cur.fetchall() if row[0]]
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): ontology type listing failed", exc_info=True)
+            _read_failed("list_ontology_types")
         return types
 
     def fetch_rules(
@@ -165,8 +201,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         out = (int(eid), _as_int(src_id), name or "",
                                _as_int(fn_id) or -1)
                         rows.append(out + (str(row[4] or ""),) if with_ref_id else out)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule fetch failed", exc_info=True)
+            _read_failed("fetch_rules")
         return rows
 
     def fetch_value_rules(
@@ -204,8 +242,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         out = (int(eid), _as_int(src_id), name or "",
                                rule_type or "", _as_int(fn_id) or -1)
                         rows.append(out + (str(row[5] or ""),) if with_ref_id else out)
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): value-rule fetch failed", exc_info=True)
+            _read_failed("fetch_value_rules")
         return rows
 
     def fetch_rule_inputs(
@@ -235,8 +275,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, val or "", (op or "").strip()))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-input fetch failed", exc_info=True)
+            _read_failed("fetch_rule_inputs")
         return rows
 
     def fetch_rule_actions(
@@ -270,8 +312,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                                          val or "", _as_int(fn) or -1,
                                          _as_int(st) if _as_int(st) is not None else 0,
                                          comments or ""))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-action fetch failed", exc_info=True)
+            _read_failed("fetch_rule_actions")
         return rows
 
     def fetch_marked_attrs(
@@ -297,8 +341,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): marked-attr fetch failed", exc_info=True)
+            _read_failed("fetch_marked_attrs")
         return rows
 
     def fetch_rule_chain_links(
@@ -324,8 +370,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, cid_i = _as_int(rid), _as_int(cid)
                         if rid_i and cid_i:
                             rows.append((rid_i, cid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): rule-chain fetch failed", exc_info=True)
+            _read_failed("fetch_rule_chain_links")
         return rows
 
     def fetch_layout_attr_assoc(
@@ -351,6 +399,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                         rid_i, aid_i, lmid_i = _as_int(rid), _as_int(aid), _as_int(lmid)
                         if aid_i and lmid_i:
                             rows.append((rid_i or 0, aid_i, lmid_i))
-        except Exception:
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): layout-attr-assoc fetch failed", exc_info=True)
+            _read_failed("fetch_layout_attr_assoc")
         return rows

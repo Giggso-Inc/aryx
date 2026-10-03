@@ -7,6 +7,9 @@ the same data with wrapper tags removed.
 """
 from __future__ import annotations
 
+import logging
+import tracemalloc
+
 from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
 
 WRAPPED_XML = b"""<Accounts>
@@ -108,3 +111,105 @@ def test_edges_reference_only_existing_node_ids():
     for edge in projection.edges:
         assert edge.source_id in node_ids
         assert edge.target_id in node_ids
+
+
+def test_node_list_order_matches_id_order_for_nested_documents():
+    """Regression guard: a node's RawNode is only built once its element
+    *ends* (post-order), but its slot in the returned list is reserved at
+    *start* time (pre-order) and filled in place -- so list order must
+    match id order exactly, same as the old DOM-walk implementation.
+    Without this, group_nodes_by_tag/RawGraphConnector.extract (which
+    replay nodes in list order into the resolve pipeline) would see a
+    different record order than before for any nested (non-flat) document."""
+    projection = project_xml_to_raw_graph(WRAPPED_XML)
+    assert [n.id for n in projection.nodes] == list(range(1, len(projection.nodes) + 1))
+
+
+# ── Large-document scalability ──────────────────────────────────────────────
+# Live incident: a 240MB XML upload stalled for 15+ minutes with near-zero
+# CPU, never logging anything between "read_files start" and the (never
+# reached) raw-graph write -- the prior implementation built the ENTIRE
+# document as one in-memory DOM tree (defused_ET.fromstring) before any
+# processing could even begin. Replaced with streaming iterparse +
+# elem.clear(), which discards each element's children/attrib/text as soon
+# as its own node is built -- peak memory is bounded by the tree's DEPTH,
+# not its total size or element count.
+
+def _make_flat_xml(n: int) -> bytes:
+    """n sibling <Record> elements under one <Root> -- same shape class as
+    the real large-file incident (many flat siblings, not deep nesting)."""
+    parts = [b"<Root>"]
+    for i in range(n):
+        parts.append(f'<Record Id="{i}"><Name>Item {i}</Name></Record>'.encode())
+    parts.append(b"</Root>")
+    return b"".join(parts)
+
+
+def test_large_flat_document_produces_correct_counts():
+    """Not a performance assertion (CI timing is unreliable) -- just proves
+    correctness doesn't degrade at a scale the old recursive DOM walk was
+    never exercised against (its own docstring only ever verified 14
+    nodes). 1 Root + 50,000 Record + 50,000 Name = 100,001 nodes;
+    100,000 CONTAINS edges (Root has no parent)."""
+    data = _make_flat_xml(50_000)
+    projection = project_xml_to_raw_graph(data)
+    assert len(projection.nodes) == 100_001
+    assert len(projection.edges) == 100_000
+    assert all(e.name == "CONTAINS" for e in projection.edges)
+    node_ids = {n.id for n in projection.nodes}
+    assert len(node_ids) == len(projection.nodes)  # all unique
+    for edge in projection.edges:
+        assert edge.source_id in node_ids
+        assert edge.target_id in node_ids
+
+
+def test_large_flat_document_peak_memory_scales_with_output_not_a_full_extra_tree():
+    """The RESULT lists (nodes/edges) necessarily grow with element count --
+    that's unavoidable since every node/edge is returned, so peak memory
+    growing roughly linearly with element count is EXPECTED, not a
+    regression. What a streaming walk must avoid is growing *worse* than
+    that -- e.g. the old DOM implementation's failure mode of ALSO holding
+    a full parsed tree alongside the output, which would add a second
+    multiplier on top of the linear output growth. 10x more elements
+    should cost roughly 10x the memory, not 20x+."""
+    small = _make_flat_xml(2_000)
+    large = _make_flat_xml(20_000)  # 10x more elements, same depth
+
+    tracemalloc.start()
+    project_xml_to_raw_graph(small)
+    _, peak_small = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    tracemalloc.start()
+    project_xml_to_raw_graph(large)
+    _, peak_large = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    # Generous headroom (2x the 10x element-count increase) over the
+    # expected linear-with-output scaling, to absorb noise without masking
+    # a real regression back to full-DOM-plus-output memory behavior.
+    assert peak_large < peak_small * 20
+
+
+def test_large_document_logs_progress(caplog):
+    """The old implementation logged nothing between function entry and
+    return, however long a parse took -- a slow-but-working 240MB parse
+    was indistinguishable from a hang. Progress logging must fire for a
+    document crossing the log interval."""
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    data = _make_flat_xml(60_000)  # > _PROGRESS_LOG_INTERVAL (50,000) nodes
+    with caplog.at_level(logging.INFO, logger=xml_projector.__name__):
+        project_xml_to_raw_graph(data)
+    assert any("element(s) processed" in r.message for r in caplog.records)
+    assert any("done" in r.message for r in caplog.records)
+
+
+def test_small_document_does_not_log_progress(caplog):
+    """No log spam for the common case -- only documents actually crossing
+    the interval threshold should produce progress lines."""
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    with caplog.at_level(logging.INFO, logger=xml_projector.__name__):
+        project_xml_to_raw_graph(WRAPPED_XML)
+    assert not any("element(s) processed" in r.message for r in caplog.records)

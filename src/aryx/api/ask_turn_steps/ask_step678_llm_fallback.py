@@ -21,6 +21,9 @@ from aryx.api.ask_response_building.ask_build_no_value_response import _build_no
 from aryx.api.ask_handle import ask_handle_cascade as _ask_handle_cascade_module
 from aryx.api.ask_handle import ask_handle_multi_select_removal as _ask_handle_multi_select_removal_module
 from aryx.api.ask_llm import ask_llm_classify_change_intent as _ask_llm_classify_change_intent_module
+from aryx.raven_log import raven_log
+
+_LLM_OPTIONS = ["removal", "cascade", "ask_value", "rejected", "none"]
 
 
 def _step6_llm_fallback_classify(
@@ -35,16 +38,34 @@ def _step6_llm_fallback_classify(
     _llm_intent, _ci_it, _ci_ot = _ask_llm_classify_change_intent_module._llm_classify_change_intent(
         req.question, attrs, session, req.workspace_id)
     if not _llm_intent:
+        raven_log("DEBUG", "P4", "ask.change.llm_fallback no intent", context={
+            "selected_option": "none", "available_options": _LLM_OPTIONS,
+            "reason_code": "LLM_NO_VALID_INTENT", "input_tokens": _ci_it, "output_tokens": _ci_ot,
+            "turn": getattr(session, "turn", None)})
         return None
     _llm_attr = next(
         (a for a in attrs if a.variable_name == _llm_intent["variable_name"]), None)
+    _llm_kind = _llm_intent.get("intent") if isinstance(_llm_intent, dict) else None
+    _llm_vn = _llm_intent.get("variable_name") if isinstance(_llm_intent, dict) else None
+    _llm_has_value = bool(_llm_intent.get("value")) if isinstance(_llm_intent, dict) else False
     if _llm_attr is None:
+        raven_log("DEBUG", "P4", "ask.change.llm_fallback rejected, attr not in catalog", context={
+            "selected_option": "rejected", "available_options": _LLM_OPTIONS,
+            "reason_code": "LLM_ATTR_NOT_IN_CATALOG", "intent": _llm_kind, "variable_name": _llm_vn,
+            "turn": getattr(session, "turn", None)})
         return None
     if _llm_intent["intent"] == "remove":
         _cpq_engine = _ask_api_module._cpq_engine
         _current = session.filled_multi.get(_llm_attr.variable_name) or []
         _mentioned = _cpq_engine.apply_multi_answer(_llm_attr, _llm_intent["value"])
         _to_remove = [iv for iv, _dn in _mentioned if iv in _current]
+        raven_log("DEBUG", "P4", "ask.change.llm_fallback remove intent", context={
+            "selected_option": "removal" if _to_remove else "rejected",
+            "available_options": _LLM_OPTIONS,
+            "reason_code": "LLM_REMOVE_ACCEPTED" if _to_remove else "LLM_REMOVE_NOTHING_SELECTED",
+            "intent": _llm_kind, "variable_name": _llm_vn,
+            "mentioned_count": len(_mentioned or []), "remove_count": len(_to_remove),
+            "turn": getattr(session, "turn", None)})
         if _to_remove:
             return _with_classify_usage(
                 _ask_handle_multi_select_removal_module._handle_multi_select_removal(
@@ -54,6 +75,13 @@ def _step6_llm_fallback_classify(
                 _ci_it, _ci_ot,
             )
     elif _llm_intent["intent"] == "change":
+        raven_log("DEBUG", "P4", "ask.change.llm_fallback change intent accepted", context={
+            "selected_option": "cascade" if _llm_has_value else "ask_value",
+            "available_options": _LLM_OPTIONS,
+            "reason_code": "LLM_CHANGE_WITH_VALUE" if _llm_has_value else "LLM_CHANGE_NO_VALUE",
+            "intent": _llm_kind, "variable_name": _llm_vn, "has_value": _llm_has_value,
+            "input_tokens": _ci_it, "output_tokens": _ci_ot,
+            "turn": getattr(session, "turn", None)})
         if not _llm_intent["value"]:
             # 2026-07-28 fix: the LLM correctly named the attribute
             # ("change the hardware type" -> the Hardware Version attr —
@@ -76,4 +104,9 @@ def _step6_llm_fallback_classify(
             req, session, attrs, _llm_attr, _llm_intent["value"],
             hiding_rules, rec_rules, con_rules,
         ), _ci_it, _ci_ot)
+    else:
+        raven_log("DEBUG", "P4", "ask.change.llm_fallback rejected, unknown intent", context={
+            "selected_option": "rejected", "available_options": _LLM_OPTIONS,
+            "reason_code": "LLM_INTENT_UNHANDLED", "intent": _llm_kind, "variable_name": _llm_vn,
+            "turn": getattr(session, "turn", None)})
     return None

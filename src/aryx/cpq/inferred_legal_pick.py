@@ -15,6 +15,7 @@ import logging
 from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_inference import infer_implied_legal_values
 from aryx.cpq.logging_context import install_run_id_logging
+from aryx.raven_log import raven_log
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
 from aryx.cpq.state import MenuOption
 
@@ -60,7 +61,17 @@ def inferred_first_available(
                 "cpq: inferred_legal_values vn=%r cpq_model=%r tier=%r values=%r picked=%r",
                 vn, cpq_model, tier, values, legal[0].item_value,
             )
+            raven_log("DEBUG", "P4", "ask.fill.inferred_legal pick from inferred legal values",
+                      context={"selected_option": legal[0].item_value, "available_options": [o.item_value for o in legal][:20],
+                               "reason_code": f"INFERRED_{str(tier).upper()}", "policy_version": "inferred_legal_v1",
+                               "object_id": vn, "cpq_model": cpq_model, "legal_count": len(legal)})
             return legal[0]
-    except Exception:  # noqa: BLE001 -- inference must never break the fill pass
+    except Exception as exc:  # noqa: BLE001 -- inference must never break the fill pass
         logger.exception("cpq: inferred legal pick failed vn=%r", vn)
+        raven_log("WARN", "P3", "ask.fill.inferred_legal_failed inference skipped, pick falls through",
+                  error_code="ARYX_ASK_INFERRED_LEGAL_FAILED",
+                  context={"object_id": vn, "triggering_error": type(exc).__name__, "attempt": 1,
+                           "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "fall_through",
+                           "fallback_target": "raw_catalog_order", "exit_condition": "degraded",
+                           "result": "degraded"})
     return None

@@ -18,6 +18,7 @@ from typing import Any
 from aryx.queries import load
 from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
 from aryx.store.oracle_workspace_helpers import _parse_brief
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,15 @@ _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx
 # interpolation is unavoidable — building here keeps f-strings away from execute().
 _DELETE_PARTITION_SQLS = {t: f"DELETE FROM {t} WHERE workspace_id = :1" for t in _PARTITIONED}
 _TRUNCATE_SQLS = {t: f"DELETE FROM {t}" for t in _PARTITIONED}
+
+
+def _csv_purge_failed(step: str, wid: int | None, exc: BaseException) -> None:
+    """WARN for one skipped best-effort CSV cleanup step of a workspace purge."""
+    raven_log("WARN", "P3", f"workspace.purge.csv_{step}_skipped cleanup step failed, purge continues",
+              error_code="ARYX_WS_CSV_PURGE_SKIPPED",
+              context={"workspace_id": wid, "step": step, "triggering_error": type(exc).__name__,
+                       "attempt": 1, "max_attempts": 1, "backoff_ms": 0, "recovery_selected": "skip_step",
+                       "fallback_target": None, "exit_condition": "skipped", "result": "skipped"})
 
 
 class OracleWorkspaceStore:
@@ -158,20 +168,23 @@ class OracleWorkspaceStore:
             from aryx.csv_bml_ingestion.issue_store import purge_issues  # noqa: PLC0415
 
             purge_issues(self._pool.connection, wid)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.warning("csv ingest issue cleanup skipped (wid=%s)", wid, exc_info=True)
+            _csv_purge_failed("issues", wid, exc)
         try:
             from aryx.csv_bml_ingestion.workspace_tables import drop_workspace_tables  # noqa: PLC0415
 
             drop_workspace_tables(self._pool.connection, wid)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.warning("csv ingest workspace tables cleanup skipped (wid=%s)", wid, exc_info=True)
+            _csv_purge_failed("tables", wid, exc)
         try:
             from aryx.csv_bml_ingestion.workspace_tables import remove_workspace_files  # noqa: PLC0415
 
             remove_workspace_files(wid, whole_workspace=whole_workspace)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.warning("csv ingest rejected-rows file cleanup skipped (wid=%s)", wid, exc_info=True)
+            _csv_purge_failed("files", wid, exc)
 
     def purge_data(self, wid: int) -> dict[str, Any]:
         """Delete all data rows for workspace wid (equivalent to truncating partitions)."""

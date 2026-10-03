@@ -118,6 +118,7 @@ def apply_hiding_rules(
                             rule_type="hiding", rule_id=rule.rule_name,
                             attr=target.variable_name, outcome="hide",
                             bml_tier="dt_whitelist_substitute",
+                            ref_id=getattr(rule, "ref_id", None) or None,
                         )
                         continue
             # Unconfirmed (no workspace_id, no base model yet, no Data
@@ -137,12 +138,14 @@ def apply_hiding_rules(
                 rule_trace.record_fire(
                     rule_type="hiding", rule_id=rule.rule_name,
                     attr=target.variable_name, outcome="hide", bml_tier="script",
+                    ref_id=getattr(rule, "ref_id", None) or None,
                 )
             elif hide is False:
                 hidden_eids.discard(target.entity_id)
                 rule_trace.record_fire(
                     rule_type="hiding", rule_id=rule.rule_name,
                     attr=target.variable_name, outcome="show", bml_tier="script",
+                    ref_id=getattr(rule, "ref_id", None) or None,
                 )
             continue
         if rule.conditions:
@@ -166,12 +169,14 @@ def apply_hiding_rules(
             rule_trace.record_fire(
                 rule_type="hiding", rule_id=rule.rule_name,
                 attr=target.variable_name, outcome="hide",
+                ref_id=getattr(rule, "ref_id", None) or None,
             )
         else:
             hidden_eids.discard(target.entity_id)
             rule_trace.record_fire(
                 rule_type="hiding", rule_id=rule.rule_name,
                 attr=target.variable_name, outcome="show",
+                ref_id=getattr(rule, "ref_id", None) or None,
             )
 
     hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}

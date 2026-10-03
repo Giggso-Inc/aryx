@@ -19,6 +19,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 # OCI Document Understanding inline document size limit (~20 MB base64 → ~15 MB raw).
@@ -58,13 +60,23 @@ class OciDocConnector:
 
         settings = get_settings()
         if not settings.oci_compartment_id:
+            raven_log("ERROR", "P2", "ingest.doc.oci_du compartment missing",
+                      error_code="ARYX_ING_OCI_DU_CONFIG",
+                      context={"filename": self._path.name, "decision": "refuse", "reason_code": "COMPARTMENT_UNSET"})
             raise RuntimeError(
                 "ARYX_OCI_COMPARTMENT_ID must be set when ARYX_PARSE_BACKEND=oci"
             )
 
         client = get_doc_client()
         raw = self._path.read_bytes()
+        raven_log("DEBUG", "P4", "ingest.doc.oci_du size check",
+                  context={"filename": self._path.name, "limit": _OCI_INLINE_MAX_BYTES, "measured": len(raw),
+                           "decision": "refuse" if len(raw) > _OCI_INLINE_MAX_BYTES else "pass"})
         if len(raw) > _OCI_INLINE_MAX_BYTES:
+            raven_log("ERROR", "P2", "ingest.doc.oci_du file over inline limit",
+                      error_code="ARYX_ING_OCI_DU_TOO_LARGE",
+                      context={"filename": self._path.name, "limit": _OCI_INLINE_MAX_BYTES, "measured": len(raw),
+                               "decision": "refuse", "reason_code": "INLINE_LIMIT"})
             raise ValueError(
                 f"{self._path.name!r} is {len(raw) // (1024 * 1024)} MB — "
                 f"OCI Document Understanding inline limit is ~15 MB. "
@@ -87,8 +99,16 @@ class OciDocConnector:
         response = client.analyze_document(analyze_document_details=request)
         if not response.data:
             logger.warning("oci_doc: empty response for %s", self._path.name)
+            raven_log("WARN", "P3", "ingest.doc.oci_du empty response, no pages",
+                      error_code="ARYX_ING_OCI_DU_EMPTY",
+                      context={"filename": self._path.name, "dependency_name": "oci_document_understanding",
+                               "operation": "analyze_document", "result": "empty", "attempt": 1})
             return
         pages_text = _parse_oci_response(response.data)
+        raven_log("DEBUG", "P4", "ingest.doc.oci_du pages parsed",
+                  context={"filename": self._path.name, "pages": len(pages_text),
+                           "selected_option": "per_page" if pages_text else "top_level_text",
+                           "available_options": ["per_page", "top_level_text"], "reason_code": "PAGES_PRESENT"})
 
         if not pages_text:
             # Fall back to top-level text if no per-page structure returned

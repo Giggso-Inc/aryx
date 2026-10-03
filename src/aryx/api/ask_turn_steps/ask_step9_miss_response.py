@@ -23,6 +23,7 @@ from aryx.api.ask_scope_and_pending.ask_change_decline_and_scope_memory import _
 from aryx.api.ask_label_collision.ask_label_collision_detect_and_compose import _compose_disambiguation_question
 from aryx.api.ask_scope_and_pending.ask_scope_reask_responses import _scoped_reask_response
 from aryx.api import ask_core_helpers as _ask_core_helpers_module
+from aryx.raven_log import raven_log
 
 
 def _step9_low_confidence_response(
@@ -32,6 +33,12 @@ def _step9_low_confidence_response(
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
+    raven_log("DEBUG", "P4", "ask.reply.miss low-confidence pick confirmation asked", context={
+        "selected_option": "low_confidence_ask", "reason_code": "LLM_LOW_CONFIDENCE",
+        "pending_field": pending_var, "match_tier": "llm_low_confidence",
+        "candidate_count": len(llm_low_confidence_candidates or []),
+        "reply_len": len(getattr(req, "question", None) or ""),
+        "turn": getattr(session, "turn", None)})
     set_pending_scope(
         session,
         kind="attr_options",
@@ -74,6 +81,17 @@ def _step9_options_miss_response(
         _remember_attr_scope(
             session, pending_attr, pending_constrained, req.question,
         )
+    _has_scope = bool(getattr(session, "pending_scope_candidates", None))
+    raven_log("DEBUG", "P4", "ask.reply.miss invalid answer re-ask chosen", context={
+        "selected_option": "scoped_reask" if _has_scope else "full_options_reask",
+        "available_options": ["scoped_reask", "full_options_reask"],
+        "reason_code": "SCOPE_REMEMBERED" if _has_scope else "NO_SCOPE",
+        "pending_field": pending_var, "match_tier": "none",
+        "scope_attr": getattr(session, "pending_scope_attr_vn", None),
+        "scope_candidate_count": len(getattr(session, "pending_scope_candidates", None) or []),
+        "constrained_count": None if pending_constrained is None else len(pending_constrained),
+        "reply_len": len(getattr(req, "question", None) or ""),
+        "turn": getattr(session, "turn", None)})
     if session.pending_scope_candidates:
         return _scoped_reask_response(
             req, session, req.question,

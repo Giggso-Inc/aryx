@@ -19,6 +19,7 @@ from aryx.cpq.intent_schema.intent_schema_enums import IntentCategory
 from aryx.api.ask_handle import ask_handle_attr_activation as _ask_handle_attr_activation_module
 from aryx.api.ask_handle import ask_handle_attr_clear as _ask_handle_attr_clear_module
 from aryx.api import ask_shadow_classify_and_confirm_intent as _ask_shadow_classify_and_confirm_intent_module
+from aryx.raven_log import raven_log
 
 
 def _step6_activation_and_clear(
@@ -35,11 +36,19 @@ def _step6_activation_and_clear(
         req.question, attrs, session.filled, session.filled_multi,
         hiding_rules, req.workspace_id, catalog_prefix, bml_eval=bml_eval,
     )
-    if _activation_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
+    _activation_ok = _activation_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.ATTR_ACTIVATION,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_activation_match.variable_name,
-    ):
+    )
+    if _activation_match:
+        raven_log("DEBUG", "P4", "ask.change.activation detected, llm confirm result", context={
+            "selected_option": "activation" if _activation_ok else "llm_rejected",
+            "available_options": ["activation", "llm_rejected"],
+            "reason_code": "ACTIVATION_CONFIRMED" if _activation_ok else "ACTIVATION_NOT_CONFIRMED",
+            "variable_name": getattr(_activation_match, "variable_name", None),
+            "turn": getattr(session, "turn", None)})
+    if _activation_ok:
         return _ask_handle_attr_activation_module._handle_attr_activation(
             req, session, attrs, _activation_match,
             hiding_rules, rec_rules, con_rules,
@@ -49,11 +58,19 @@ def _step6_activation_and_clear(
         req.question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
-    if _clear_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
+    _clear_ok = _clear_match and _ask_shadow_classify_and_confirm_intent_module._llm_confirm_deterministic_intent(
         req, session, attrs, IntentCategory.ATTR_CLEAR,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         expected_variable_name=_clear_match.variable_name,
-    ):
+    )
+    if _clear_match:
+        raven_log("DEBUG", "P4", "ask.change.clear detected, llm confirm result", context={
+            "selected_option": "clear" if _clear_ok else "llm_rejected",
+            "available_options": ["clear", "llm_rejected"],
+            "reason_code": "CLEAR_CONFIRMED" if _clear_ok else "CLEAR_NOT_CONFIRMED",
+            "variable_name": getattr(_clear_match, "variable_name", None),
+            "turn": getattr(session, "turn", None)})
+    if _clear_ok:
         return _ask_handle_attr_clear_module._handle_attr_clear(
             req, session, attrs, _clear_match,
             hiding_rules, rec_rules, con_rules,

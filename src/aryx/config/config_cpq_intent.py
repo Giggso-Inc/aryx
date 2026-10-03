@@ -324,6 +324,44 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
         ),
     )
+    cpq_attr_search_enabled: bool = Field(
+        default=False,
+        description=(
+            "Attribute-first product discovery, phase 1: lets the turn-1 "
+            "top-level router (classify_ask_route) return route="
+            "'attribute_search' for a cold-start message that names an "
+            "attribute/value but no product (e.g. 'I want a product that "
+            "has ATT as a carrier'), with the raw attribute_label/"
+            "attribute_value. Off by default -- the router's prompt and "
+            "schema are unchanged when off. When on, run_ask lists the "
+            "products whose Data Table rows offer that value "
+            "(api/ask_attribute_search.py), falling back to the normal "
+            "quote path when the attribute can't be grounded. "
+            "Override with ARYX_CPQ_ATTR_SEARCH_ENABLED."
+        ),
+    )
+    cpq_attr_search_max_choices: int = Field(
+        default=5,
+        description=(
+            "Attribute-first discovery, phase 4: the most product families "
+            "offered as a numbered choice when an attribute search matches "
+            "several. 1 match starts the quote directly; 2..N are offered as "
+            "choices; more than N gets a 'which product family?' question "
+            "instead of a long list. Override with "
+            "ARYX_CPQ_ATTR_SEARCH_MAX_CHOICES."
+        ),
+    )
+    cpq_attr_search_budget_s: float = Field(
+        default=25.0,
+        description=(
+            "Attribute-first discovery: time budget (seconds) for one "
+            "attribute search. A cold catalog cache can take tens of seconds "
+            "to load; past the budget the turn takes the normal quote path "
+            "(never a partial result) while the lookup keeps running to warm "
+            "the cache. Keep it under the deployment's proxy timeout. "
+            "Override with ARYX_CPQ_ATTR_SEARCH_BUDGET_S."
+        ),
+    )
 
     cpq_bml_tilde_split_enabled: bool = Field(
         default=False,
@@ -499,5 +537,165 @@ class CpqIntentSettingsMixin(BaseSettings):
             "bidirectional-substring Product match prefers an exact name "
             "over a longer name that merely contains it. Off by default. "
             "Override with ARYX_CPQ_PRODUCT_MATCH_EXACT_FIRST_ENABLED=true."
+        ),
+    )
+    cpq_rule_governed_hidden_attr_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #373/#374. When on, (a) rule_target_ids "
+            "also includes BmConfigMarkedAttr targets (not only "
+            "BmConfigRuleAction targets), and (b) resolve_array_grid_links "
+            "excludes rule-governed hidden attrs (ConfigAttr."
+            "is_value_rule_target) from its name-substring 'Quantity' "
+            "candidate guess, so they are never surfaced as unanswerable "
+            "'Please provide a value' questions. Side effect: the wider "
+            "rule_target_ids also changes which attrs build_config_attrs "
+            "keeps -- hidden, no-default attrs that are marked-attr-only "
+            "targets used to be dropped and are now retained (Amendment 13 "
+            "rationale); confirm no other consumer surfaces them during "
+            "rollout. Off by default. Override "
+            "with ARYX_CPQ_RULE_GOVERNED_HIDDEN_ATTR_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_free_text_presentable_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #370 (bug 2). When on, apply_answer's "
+            "free-text fallback for an optionless attribute accepts a "
+            "customer's typed answer if it is _presentable() rather than "
+            "_valid(), so a real catalog code such as 'NA' is no longer "
+            "rejected in an endless re-ask loop. Off by default. Override "
+            "with ARYX_CPQ_FREE_TEXT_PRESENTABLE_ENABLED=true."
+        ),
+    )
+    cpq_not_applicable_guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #362/#364/#365. When on, (a) a new first "
+            "auto-fill stage skips and clears (never a customer-confirmed "
+            "'user' value) any non-anchor attribute, and Hardware "
+            "Version, that real Data Table evidence confirms is never "
+            "governed for the device resolved from the customer's "
+            "original wording, so it is no longer blind-filled; and (b) "
+            "run_auto_fill drops such attributes from the pending list so "
+            "shared multi-model layouts stop asking irrelevant questions. "
+            "One-sided: never adds or forces an attribute; a no-op when "
+            "the device is unresolved or ambiguous. Off by default. "
+            "Override with ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true."
+        ),
+    )
+    cpq_basemodel_display_name_resolution_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #341/#351/#365/#366. When on, a customer's "
+            "free-text device mention (e.g. 'APX 900') is resolved through "
+            "the Basemodeltoconfig displayModel -> cpqModel Data Table: "
+            "resolve_product_cpq_models_from_hint tries it before the "
+            "constraint-row scan, and resolve_product_hint gets a new "
+            "first pass (graph, then the RDB when the graph is empty) "
+            "that returns a unique catalog match, refuses when 2+ "
+            "catalogs match, and otherwise falls to the existing passes. "
+            "Off by default. Override with "
+            "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
+        ),
+    )
+    cpq_rdb_call_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 (Part A). When on, CPQ RDB reads bound "
+            "each borrowed connection: Postgres issues SET statement_timeout "
+            "(int literal) and resets it to DEFAULT on release; Oracle sets "
+            "connection.call_timeout and restores the previous value. A "
+            "timeout inside a swallowed rdb error is logged at WARNING. "
+            "Off by default. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rdb_call_timeout_ms: int = Field(
+        default=60000,
+        description=(
+            "Per-call timeout in milliseconds for CPQ RDB reads when "
+            "cpq_rdb_call_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RDB_CALL_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_write_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #363. When on, RuleTraceStore.open_session "
+            "and append_entry are bounded (Postgres SET LOCAL "
+            "statement_timeout; Oracle connection.call_timeout restored "
+            "afterwards) and a per-run circuit breaker stops DB writes "
+            "after repeated consecutive append failures. Off by default. "
+            "Override with ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_rule_trace_write_timeout_ms: int = Field(
+        default=5000,
+        description=(
+            "Timeout in milliseconds for rule-trace DB writes when "
+            "cpq_rule_trace_write_timeout_enabled is on. Override with "
+            "ARYX_CPQ_RULE_TRACE_WRITE_TIMEOUT_MS."
+        ),
+    )
+    cpq_rule_trace_breaker_threshold: int = Field(
+        default=5,
+        description=(
+            "Consecutive append_entry failures for one run_id after which "
+            "rule-trace DB writes for that run stop (local .jsonl is "
+            "unaffected). Override with ARYX_CPQ_RULE_TRACE_BREAKER_THRESHOLD."
+        ),
+    )
+    cpq_tables_cache_lock_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #368 Part B / #371. When on, "
+            "_load_all_tables serialises concurrent cache-miss scans of the "
+            "same (workspace_id, catalog_prefix) behind a per-key "
+            "threading.Lock with a post-lock cache re-check, so a burst of "
+            "concurrent requests runs one scan instead of one each. The "
+            "lock wait is bounded by cpq_tables_cache_lock_timeout_s; on "
+            "timeout a WARNING is logged and the scan runs unlocked. Off by "
+            "default (no lock). Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_ENABLED=true."
+        ),
+    )
+    cpq_tables_cache_lock_timeout_s: float = Field(
+        default=90.0,
+        description=(
+            "Maximum seconds a request waits for another thread's in-flight "
+            "tables-cache scan before scanning unlocked. Only used when "
+            "cpq_tables_cache_lock_enabled is on. Keep it above "
+            "cpq_rdb_call_timeout_ms (so a waiter outlasts a bounded scan) "
+            "and BELOW cpq_post_loop_timeout_s (so the request does not "
+            "504 while its waiters are still blocked). Override with "
+            "ARYX_CPQ_TABLES_CACHE_LOCK_TIMEOUT_S."
+        ),
+    )
+    cpq_post_loop_timeout_enabled: bool = Field(
+        default=False,
+        description=(
+            "Port of dev-rv-msi #371/#372. When on, the post-loop "
+            "auto_fill in _step10_recompute_pending runs in a bounded "
+            "module-level thread pool (context-copied) and raises HTTP 504 "
+            "after cpq_post_loop_timeout_s; the loop and the post-loop "
+            "auto_fill also share one per-turn Data Table cache. Off by "
+            "default (plain synchronous call, no shared cache). Override "
+            "with ARYX_CPQ_POST_LOOP_TIMEOUT_ENABLED=true."
+        ),
+    )
+    cpq_post_loop_timeout_s: float = Field(
+        default=120.0,
+        description=(
+            "Seconds the post-loop auto_fill may run before the request "
+            "fails with HTTP 504. Only used when "
+            "cpq_post_loop_timeout_enabled is on. Must be ABOVE "
+            "cpq_rdb_call_timeout_ms (default 60 s) and above "
+            "cpq_tables_cache_lock_timeout_s (default 90 s); a warning is "
+            "logged once if the ordering is inverted. The pool has a fixed "
+            "number of workers that cannot be cancelled, so when every "
+            "worker is busy (including abandoned timed-out ones) new calls "
+            "are rejected with HTTP 503 instead of queueing. Override with "
+            "ARYX_CPQ_POST_LOOP_TIMEOUT_S."
         ),
     )

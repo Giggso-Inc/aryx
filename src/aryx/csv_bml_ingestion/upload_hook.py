@@ -21,6 +21,7 @@ from aryx.csv_bml_ingestion.errors import CsvBmlIngestionError
 from aryx.csv_bml_ingestion.options import IngestResult
 from aryx.csv_bml_ingestion.ownership import workspace_owner
 from aryx.csv_bml_ingestion.table_naming import physical_table
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 REJECTS_DIR_ENV = "ARYX_CSV_BML_REJECTS_DIR"
@@ -69,6 +70,12 @@ class CsvBmlUploadSession:
                                       reloaded=result.status == "loaded")
         except Exception as exc:  # noqa: BLE001 -- storing issues must never fail the upload itself
             logger.warning("csv_bml_ingestion: could not store issues for %r: %r", result.source, exc)
+            raven_log("WARN", "P3", "ingest.csv_bml.issues_not_stored issue record skipped, upload continues",
+                      error_code="ARYX_ING_CSV_BML_ISSUES_NOT_STORED",
+                      context={"job_id": self.job_id, "workspace_id": self.workspace_id,
+                               "dependency_name": "oracle_adb", "operation": "record_run",
+                               "duration_ms": None, "result": "error", "error_class": type(exc).__name__,
+                               "attempt": 1, "filename": result.source, "status": result.status})
 
     def _ingest(self, data: bytes, filename: str) -> IngestResult:
         safe_name = Path(str(filename)).name or "upload.csv"
@@ -90,5 +97,11 @@ class CsvBmlUploadSession:
             return IngestResult(source=safe_name, status="failed", error_code=exc.code, message=str(exc))
         except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the rest of the upload
             logger.warning("csv_bml_ingestion: upload of %r failed unexpectedly: %r", safe_name, exc)
+            raven_log("ERROR", "P2", "ingest.csv_bml.unexpected one CSV failed unexpectedly, rest of upload continues",
+                      error_code="ARYX_ING_CSV_BML_UNEXPECTED",
+                      context={"job_id": self.job_id, "workspace_id": self.workspace_id, "filename": safe_name,
+                               "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                               "backoff_ms": 0, "recovery_selected": "skip_file", "fallback_target": None,
+                               "exit_condition": "file_failed", "result": "failed"})
             return IngestResult(source=safe_name, status="failed", error_code="CBI_UNEXPECTED",
                                 message=f"unexpected {type(exc).__name__}; see the log for details")

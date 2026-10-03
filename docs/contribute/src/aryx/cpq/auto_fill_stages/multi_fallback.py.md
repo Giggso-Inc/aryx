@@ -1,11 +1,11 @@
 # Attribution — src/aryx/cpq/auto_fill_stages/multi_fallback.py
 
-Last updated: 2026-09-29T11:26:48.887393+00:00
-Total lines: 150
-Lines AI-generated: 16 (10.7%)
+Last updated: 2026-10-03T09:08:41.900165+00:00
+Total lines: 154
+Lines AI-generated: 16 (10.4%)
 Lines human-typed: 0
 Lines joint: 0
-Lines unattributed: 134
+Lines unattributed: 138
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -18,3 +18,4 @@ Owner (most recent author): m.munir@giggso.com
 | 147-147 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-09-29T10:47:27.176179+00:00 |  |
 | 148-149 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T04:05:08.466524+00:00 | pre-commit gap — unattributed by the local hook |
 | 150-150 | m.munir@giggso.com | — | — | — | — | — | 2026-09-29T11:26:48.814236+00:00 | pre-commit gap — unattributed by the local hook |
+| 151-154 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.565191+00:00 | pre-commit gap — unattributed by the local hook |

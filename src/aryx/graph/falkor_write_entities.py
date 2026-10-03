@@ -8,10 +8,15 @@ up by `FalkorStore.__init__`.
 """
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
 from aryx.graph.falkor_sanitize import _INDEX_PROP_RE, _display_name, _lift_props, _safe_labels
+from aryx.raven_log import current_run_id, raven_log, would_log
+
+logger = logging.getLogger(__name__)
 
 
 class _FalkorEntityWriteMixin:
@@ -67,8 +72,17 @@ class _FalkorEntityWriteMixin:
         batch_size: int = 500,
         on_batch: "Callable[[int], None] | None" = None,
         full_rebuild: bool = False,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Write multiple entity nodes in batched UNWIND queries.
+
+        should_stop — checked before each UNWIND batch; on True, stops
+        early and returns the count written so far (same convention as
+        OracleGraphStore.add_entities_batch -- see that method's docstring
+        for why this matters: a cancelled job previously had no way to
+        interrupt this loop). FalkorDB's UNWIND batches are fast enough
+        that this is mostly for Protocol/call-site parity with Oracle
+        rather than addressing an observed FalkorDB-specific hang.
 
         Each item is (entity_id, ontology_type, attributes, labels, iri) —
         same fields as add_entity(). Cypher labels must be static text in
@@ -88,6 +102,7 @@ class _FalkorEntityWriteMixin:
         insert_graph_vertex fast path (docs/ingestion/SPARK_PARALLEL_
         MIGRATION_ANALYSIS_2026-09-23.md Phase 4 Part B follow-up).
         """
+        started = time.monotonic()
         groups: dict[tuple[str, ...], list[tuple[int, str, dict[str, Any], str | None]]] = {}
         for entity_id, ontology_type, attributes, labels, iri in entities:
             chain = [ontology_type] + list(labels or [])
@@ -95,9 +110,23 @@ class _FalkorEntityWriteMixin:
             groups.setdefault(safe, []).append((entity_id, ontology_type, attributes, iri))
 
         written = 0
+        stopped = False
         for safe_labels, rows in groups.items():
+            if stopped:
+                break
             label_clause = "".join(f":{lbl}" for lbl in safe_labels)
             for i in range(0, len(rows), batch_size):
+                if should_stop is not None and should_stop():
+                    stopped = True
+                    logger.warning(
+                        "falkor entities batch cancelled — stopping after %d row(s) written", written,
+                    )
+                    raven_log("WARN", "P3", "ingest.graph.entities_cancelled falkor entity batch stopped by cancel",
+                              error_code="ARYX_ING_CANCELLED",
+                              context={"dependency_name": "falkordb", "operation": "write_entities_batch",
+                                       "selected_option": "stop", "available_options": ["continue", "stop"],
+                                       "reason_code": "SHOULD_STOP_TRUE", "rows_written": written})
+                    break
                 chunk = rows[i : i + batch_size]
                 params = []
                 for entity_id, ontology_type, attributes, iri in chunk:
@@ -119,8 +148,21 @@ class _FalkorEntityWriteMixin:
                     {"rows": params},
                 )
                 written += len(chunk)
+                if would_log("DEBUG"):
+                    raven_log("DEBUG", "P4", "ingest.graph.entities_batch one UNWIND batch written",
+                              context={"dependency_name": "falkordb", "operation": "write_entities_batch",
+                                       "duration_ms": int((time.monotonic() - started) * 1000),
+                                       "result": "ok", "error_class": None, "attempt": 1,
+                                       "trace_id": current_run_id(), "label_set": list(safe_labels),
+                                       "batch_rows": len(chunk), "written_total": written})
                 if on_batch is not None:
                     on_batch(written)
+        raven_log("DEBUG", "P4", "ingest.graph.entities_written entity nodes written",
+                  context={"task_id": current_run_id(), "final_status": "complete",
+                           "duration_ms": int((time.monotonic() - started) * 1000),
+                           "stage": "graph_entities", "result": "ok", "reason_code": "ENTITIES_WRITTEN",
+                           "impact_scope": "graph_nodes", "entities": len(entities),
+                           "written": written, "label_groups": len(groups), "backend": "falkordb"})
         return written
 
     def remove_entity(self, entity_id: int) -> None:

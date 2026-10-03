@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from aryx.raven_log import raven_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,6 +158,7 @@ class _FalkorRelationshipMixin:
         rels: list[tuple[int, int, str]],
         batch_size: int = 500,
         full_rebuild: bool = False,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Write multiple relationships in batched UNWIND queries.
 
@@ -165,9 +168,23 @@ class _FalkorRelationshipMixin:
         full_rebuild — accepted for call-site parity with
         OracleGraphStore.add_relationships_batch, unused here (see
         add_entities_batch's docstring above).
+
+        should_stop — checked before each UNWIND batch; on True, stops
+        early and returns the count written so far (same convention as
+        OracleGraphStore.add_relationships_batch).
         """
         written = 0
         for i in range(0, len(rels), batch_size):
+            if should_stop is not None and should_stop():
+                logger.warning(
+                    "falkor relationships batch cancelled — stopping after %d row(s) written", written,
+                )
+                raven_log("WARN", "P3", "ingest.graph.relationships_cancelled falkor relationship batch stopped by cancel",
+                          error_code="ARYX_ING_CANCELLED",
+                          context={"dependency_name": "falkordb", "operation": "write_relationships_batch",
+                                   "selected_option": "stop", "available_options": ["continue", "stop"],
+                                   "reason_code": "SHOULD_STOP_TRUE", "rows_written": written})
+                break
             chunk = rels[i : i + batch_size]
             params = [{"src": s, "tgt": t, "name": n} for s, t, n in chunk]
             self._graph.query(
