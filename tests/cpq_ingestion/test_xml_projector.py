@@ -113,6 +113,18 @@ def test_edges_reference_only_existing_node_ids():
         assert edge.target_id in node_ids
 
 
+def test_node_list_order_matches_id_order_for_nested_documents():
+    """Regression guard: a node's RawNode is only built once its element
+    *ends* (post-order), but its slot in the returned list is reserved at
+    *start* time (pre-order) and filled in place -- so list order must
+    match id order exactly, same as the old DOM-walk implementation.
+    Without this, group_nodes_by_tag/RawGraphConnector.extract (which
+    replay nodes in list order into the resolve pipeline) would see a
+    different record order than before for any nested (non-flat) document."""
+    projection = project_xml_to_raw_graph(WRAPPED_XML)
+    assert [n.id for n in projection.nodes] == list(range(1, len(projection.nodes) + 1))
+
+
 # ── Large-document scalability ──────────────────────────────────────────────
 # Live incident: a 240MB XML upload stalled for 15+ minutes with near-zero
 # CPU, never logging anything between "read_files start" and the (never

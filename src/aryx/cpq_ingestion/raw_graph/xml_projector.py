@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+from xml.etree.ElementTree import Element
 
 import defusedxml.ElementTree as defused_ET
 
@@ -48,71 +49,108 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
     -- a full in-memory parse that builds the ENTIRE document tree before
     returning anything, holding every element (and the still-undecoded
     source bytes) in memory simultaneously. Live-confirmed: a 240MB XML
-    upload stalled for 15+ minutes with near-zero CPU, never reaching this
-    function's own node/edge-building step at all, let alone the raw-graph
-    write that follows it -- the DOM build itself was the bottleneck, with
-    no way to observe progress or bound memory. ``iterparse`` instead walks
-    the document incrementally, and ``elem.clear()`` discards each
-    element's children/attrib/text as soon as its own node is built, so
-    peak memory is bounded by the tree's DEPTH (how deeply nested elements
-    are), not the document's total size or element count.
+    upload stalled for 15+ minutes with near-zero CPU, never logging
+    anything between function entry and the raw-graph write that follows
+    it. The DOM build is the prime suspect given ``fromstring`` cannot
+    return or log anything until the whole tree is built, but the
+    near-zero-CPU symptom is also consistent with memory-pressure/swap
+    thrashing during that build, not pure CPU-bound parsing; this was not
+    independently confirmed (a ``py-spy`` stack sample of the hung process
+    wasn't obtainable in that environment -- see PR #424's notes), so take
+    "the DOM build was the bottleneck" as the best available explanation,
+    not a proven root cause.
+
+    ``iterparse`` instead walks the document incrementally, clearing each
+    element's children/attrib/text (``elem.clear()``) and detaching it
+    from its own parent as soon as its node is built, so the *parse tree
+    iterparse itself holds open* no longer grows with the document's total
+    size -- only with nesting depth. This removes the DOM's ~30% memory
+    overhead on top of the output and restores progress visibility, but it
+    does **not** change the function's overall memory complexity: every
+    element still becomes one retained ``RawNode``/``RawEdge`` in the
+    returned lists, so peak memory is still O(element count) -- a 240MB
+    upload with millions of elements still produces a multi-GB result
+    either way. For a document large enough that the *output* itself is
+    the memory problem, the fix is to stream batches into the raw-graph
+    writer instead of materializing the whole projection (not done here).
 
     Args:
         data: Raw XML document bytes.
 
     Returns:
         Every node and edge discovered. Node ids are assigned sequentially
-        in the order elements finish parsing (post-order: children before
-        their parent) and are only meaningful within this single
-        projection — they are not stable across runs and are not the same
-        id space as ``aryx_entity.id``. (The previous DOM-walk implementation
-        assigned ids in pre-order instead; nothing downstream depends on
-        a particular ordering -- only on id uniqueness and edges
-        referencing ids that exist, both still guaranteed here.)
+        in document (pre-)order -- the order elements *start* parsing --
+        and are only meaningful within this single projection: they are
+        not stable across runs and are not the same id space as
+        ``aryx_entity.id``. ``nodes[i].id == i + 1`` always holds: although
+        a node's ``RawNode`` is only fully built once its element *ends*
+        (post-order), its slot in the returned list is reserved at *start*
+        time and filled in place, so list order matches id order exactly,
+        the same as the previous DOM-walk implementation. This matters
+        because downstream code (``group_nodes_by_tag`` /
+        ``RawGraphConnector.extract``) replays nodes in list order into
+        the resolve pipeline, where order can affect entity-id assignment
+        and merge tie-breaks for same-tag elements.
     """
-    nodes: list[RawNode] = []
+    nodes: list[RawNode | None] = []
     edges: list[RawEdge] = []
-    # Stack of [node_id, has_children] per currently-open element, pushed on
-    # "start" and popped on "end" -- XML's well-nested structure means this
-    # alone correctly tracks parent/child relationships without needing to
-    # stash anything on the Element itself. has_children starts False and is
-    # flipped by this element's first child's "start" event, mirroring the
-    # original DOM walk's `children = list(elem); if not children: ...`
-    # check for whether a leaf's text becomes a property.
-    stack: list[list[int | bool]] = []
+    # Stack of [node_id, has_children, element] per currently-open element,
+    # pushed on "start" and popped on "end" -- XML's well-nested structure
+    # means this alone correctly tracks parent/child relationships without
+    # needing to stash anything on the Element itself. has_children starts
+    # False and is flipped by this element's first child's "start" event,
+    # mirroring the original DOM walk's `children = list(elem); if not
+    # children: ...` check for whether a leaf's text becomes a property.
+    # The element reference is kept so a finished child can be detached
+    # from its parent's children list (see "end" branch below) -- elem.clear()
+    # alone empties the child itself but leaves an empty shell referenced
+    # from the parent, which would otherwise accumulate for every sibling.
+    stack: list[list[int | bool | Element]] = []
     next_id = 0
+    finished = 0
     start = time.monotonic()
 
     for event, elem in defused_ET.iterparse(io.BytesIO(data), events=("start", "end")):
         if event == "start":
             next_id += 1
             my_id = next_id
+            # Reserve this element's list slot now, at pre-order position
+            # (my_id - 1), so the final list order matches id order exactly
+            # even though the slot is only filled once the element *ends*
+            # (post-order) below -- see the docstring's ordering guarantee.
+            nodes.append(None)
             if stack:
                 parent_id = stack[-1][0]
                 edges.append(RawEdge(source_id=parent_id, target_id=my_id, name=RAW_EDGE_CONTAINS))
                 stack[-1][1] = True
-            stack.append([my_id, False])
+            stack.append([my_id, False, elem])
             continue
         # event == "end": this element and all its descendants are now
         # fully parsed -- safe to read its attrib/text and then clear it.
-        my_id, has_children = stack.pop()
+        my_id, has_children, _elem = stack.pop()
         tag = _strip_ns(elem.tag)
         properties: dict[str, object] = dict(elem.attrib)
         if not has_children:
             text = (elem.text or "").strip()
             if text:
                 properties[RAW_PROP_TEXT] = text
-        nodes.append(RawNode(id=my_id, tag=tag, properties=properties))
+        nodes[my_id - 1] = RawNode(id=my_id, tag=tag, properties=properties)
         elem.clear()
-        if len(nodes) % _PROGRESS_LOG_INTERVAL == 0:
+        if stack:
+            # Detach the now-empty child shell from its parent so the
+            # parent doesn't keep accumulating references to every sibling
+            # it's already finished with.
+            stack[-1][2].remove(elem)
+        finished += 1
+        if finished % _PROGRESS_LOG_INTERVAL == 0:
             logger.info(
                 "project_xml_to_raw_graph: %d element(s) processed, %.1fs elapsed",
-                len(nodes), time.monotonic() - start,
+                finished, time.monotonic() - start,
             )
 
-    if len(nodes) >= _PROGRESS_LOG_INTERVAL:
+    if finished >= _PROGRESS_LOG_INTERVAL:
         logger.info(
             "project_xml_to_raw_graph: done, %d node(s) / %d edge(s), %.1fs elapsed",
             len(nodes), len(edges), time.monotonic() - start,
         )
-    return RawGraphProjection(nodes=nodes, edges=edges)
+    return RawGraphProjection(nodes=nodes, edges=edges)  # type: ignore[arg-type]  # every slot is filled by this point
