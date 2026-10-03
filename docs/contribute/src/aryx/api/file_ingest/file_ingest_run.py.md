@@ -1,6 +1,6 @@
 # Attribution — src/aryx/api/file_ingest/file_ingest_run.py
 
-Last updated: 2026-10-03T10:28:44.417157+00:00
+Last updated: 2026-10-03T10:28:52.424554+00:00
 Total lines: 564
 Lines AI-generated: 74 (13.1%)
 Lines human-typed: 127

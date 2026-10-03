@@ -48,8 +48,8 @@ class _OracleGraphBatchMixin:
 
         should_stop — checked at the top of each chunk (sequential) or in
         the as_completed drain loop (concurrent); on True, stops submitting
-        further chunks and returns the count written so far, following the
-        established should_stop convention (dimension_link.py,
+        further chunks and returns the count ACTUALLY written, following
+        the established should_stop convention (dimension_link.py,
         enrich_relate_isolated.py): break, don't raise, keep whatever is
         already done. This matters here specifically because a cancelled
         job previously had no way to interrupt this loop at all — a 240MB
@@ -62,6 +62,14 @@ class _OracleGraphBatchMixin:
         chunk already executemany'd in this same connection, not just the
         one in flight -- on any exception, so raising here would silently
         discard already-committed-looking work instead of just stopping.
+
+        In the concurrent branch, up to `workers` chunks can already be
+        mid-executemany() when should_stop() is first observed True (they
+        can't be force-killed mid-call, the same real limitation documented
+        at every other should_stop call site in this codebase) -- those are
+        explicitly drained and their rows counted below rather than
+        dropped, so the returned total always reflects every row actually
+        committed, never an undercount.
         """
         sql = load(query_name)
         workers = max(1, get_settings().oracle_graph_batch_workers)
@@ -109,8 +117,10 @@ class _OracleGraphBatchMixin:
         pool = ThreadPoolExecutor(max_workers=workers)
         try:
             futures = [submit_ctx(pool, _write_one, chunk) for chunk in chunks]
+            pending = set(futures)
             completed = 0
             for future in as_completed(futures):
+                pending.discard(future)
                 n = future.result()
                 written += n
                 completed += 1
@@ -122,9 +132,9 @@ class _OracleGraphBatchMixin:
                     on_batch(written)
                 if should_stop is not None and should_stop():
                     logger.warning(
-                        "graph %s cancelled — stopping after %d/%d chunk(s) completed, %d row(s) written "
-                        "(any already-running chunks finish independently -- can't be force-killed mid executemany(),"
-                        " but no further queued chunks start)",
+                        "graph %s cancelled — stopping after %d/%d chunk(s) completed, %d row(s) written so far "
+                        "(any already-running chunk still finishes and is counted below; no further queued "
+                        "chunk starts)",
                         query_name, completed, len(futures), written,
                     )
                     raven_log("WARN", "P3", "ingest.project.chunks_cancelled graph chunk write stopped by cancel",
@@ -132,19 +142,27 @@ class _OracleGraphBatchMixin:
                               context={"stage": "project", "query": query_name, "selected_option": "stop",
                                        "available_options": ["continue", "stop"], "reason_code": "SHOULD_STOP_TRUE",
                                        "chunks_done": completed, "chunks_total": len(futures), "rows_written": written})
-                    # cancel_futures=True drops every not-yet-started queued
-                    # chunk immediately; wait=False means this call doesn't
-                    # block on whichever `workers` chunks are already mid-
-                    # executemany() (those finish on their own, each in its
-                    # own already-committed connection -- see docstring).
-                    # Plain `with ThreadPoolExecutor(...) as pool:` would NOT
-                    # achieve this: its __exit__ calls shutdown(wait=True)
-                    # unconditionally, which blocks until every SUBMITTED
-                    # future finishes regardless of this break -- defeating
-                    # the whole point of stopping early.
-                    pool.shutdown(wait=False, cancel_futures=True)
+                    # future.cancel() drops a not-yet-started queued chunk
+                    # (returns True, it never runs, never counted) but
+                    # returns False for one already mid-executemany() --
+                    # can't be force-killed, so .result() blocks the short
+                    # remaining time until it finishes and its rows are
+                    # added to `written`. This is what makes the returned
+                    # total exact rather than an undercount of up-to-
+                    # `workers` chunks' worth of rows (see docstring).
+                    for pending_future in pending:
+                        if pending_future.cancel():
+                            continue
+                        n = pending_future.result()
+                        written += n
+                        completed += 1
+                        logger.info("graph %s chunk rows=%d done (already running when cancelled)", query_name, n)
                     break
         finally:
+            # By the time should_stop fires, every future is either
+            # cancelled (never ran) or already drained via .result() above
+            # -- this is then a no-op wait, not a hidden block on top of
+            # the explicit draining just done.
             pool.shutdown(wait=True)
         return written
 
@@ -199,7 +217,7 @@ class _OracleGraphBatchMixin:
         chunks = list(_iter_chunks(batch, payload_key="attrs"))
         query_name = "insert_graph_vertex" if full_rebuild else "merge_graph_vertex"
         written = self._write_chunks(chunks, query_name, on_batch, should_stop=should_stop)
-        logger.info("graph vertices batch done count=%d", len(rows))
+        logger.info("graph vertices batch done count=%d requested=%d", written, len(rows))
         return written
 
     def add_provenance_batch(
@@ -268,10 +286,14 @@ class _OracleGraphBatchMixin:
         rows: list[tuple[int, int, str]],
         full_rebuild: bool = False,
         should_stop: "Callable[[], bool] | None" = None,
-    ) -> None:
+    ) -> int:
         """Batch-upsert relationship edges in one Oracle round-trip.
 
-        Each row: (source_id, target_id, name).
+        Each row: (source_id, target_id, name). Returns the count actually
+        written (may be less than ``len(rows)`` after deduplication, or if
+        should_stop fired partway through -- previously this returned None
+        unconditionally, silently discarding the real count _write_chunks
+        already computed).
 
         should_stop — see ``_write_chunks``'s docstring; forwarded as-is.
 
@@ -286,7 +308,7 @@ class _OracleGraphBatchMixin:
         already uses for entity ids).
         """
         if not rows:
-            return
+            return 0
         logger.info("graph edges batch start count=%d", len(rows))
         if full_rebuild:
             seen: dict[tuple, dict] = {}
@@ -302,5 +324,6 @@ class _OracleGraphBatchMixin:
             ]
         chunks = list(_iter_chunks(batch, payload_key="name"))
         query_name = "insert_graph_edge" if full_rebuild else "merge_graph_edge"
-        self._write_chunks(chunks, query_name, on_batch=None, should_stop=should_stop)
-        logger.info("graph edges batch done count=%d", len(rows))
+        written = self._write_chunks(chunks, query_name, on_batch=None, should_stop=should_stop)
+        logger.info("graph edges batch done count=%d requested=%d", written, len(rows))
+        return written

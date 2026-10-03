@@ -1,6 +1,6 @@
 # Attribution — src/aryx/graph/falkor_write_relationships.py
 
-Last updated: 2026-10-03T10:28:44.419364+00:00
+Last updated: 2026-10-03T10:28:52.427317+00:00
 Total lines: 197
 Lines AI-generated: 39 (19.8%)
 Lines human-typed: 1

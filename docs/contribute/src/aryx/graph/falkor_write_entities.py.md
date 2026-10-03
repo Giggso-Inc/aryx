@@ -1,6 +1,6 @@
 # Attribution — src/aryx/graph/falkor_write_entities.py
 
-Last updated: 2026-10-03T10:28:44.418950+00:00
+Last updated: 2026-10-03T10:28:52.426971+00:00
 Total lines: 179
 Lines AI-generated: 50 (27.9%)
 Lines human-typed: 5

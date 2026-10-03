@@ -101,16 +101,31 @@ def project_raw_graph_and_flatten(
                                "result": "degraded", "stem": stem, "workspace_id": workspace_id,
                                "duration_ms": int((time.monotonic() - t0) * 1000)})
         else:
-            raven_log("INFO", "P4", "ingest.raw_graph.written raw graph projected",
-                      context={"stem": stem, "workspace_id": workspace_id, "backend": result.backend,
-                               "nodes": result.nodes_written, "edges": result.edges_written,
-                               "duration_ms": int((time.monotonic() - t0) * 1000)})
-            logger.info(
-                "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
-                "nodes=%d edges=%d",
-                stem, workspace_id, result.backend, result.graph_ref,
-                result.nodes_written, result.edges_written,
-            )
+            cancelled = should_stop is not None and should_stop()
+            if cancelled:
+                logger.warning(
+                    "cpq_ingestion: raw graph write cancelled stem=%s workspace_id=%s backend=%s %s "
+                    "nodes=%d edges=%d written before cancel (graph is partial)",
+                    stem, workspace_id, result.backend, result.graph_ref,
+                    result.nodes_written, result.edges_written,
+                )
+                raven_log("WARN", "P3", "ingest.raw_graph.write_cancelled raw graph write stopped by cancel",
+                          error_code="ARYX_ING_CANCELLED",
+                          context={"stem": stem, "workspace_id": workspace_id, "backend": result.backend,
+                                   "nodes": result.nodes_written, "edges": result.edges_written,
+                                   "result": "partial", "exit_condition": "cancelled",
+                                   "duration_ms": int((time.monotonic() - t0) * 1000)})
+            else:
+                raven_log("INFO", "P4", "ingest.raw_graph.written raw graph projected",
+                          context={"stem": stem, "workspace_id": workspace_id, "backend": result.backend,
+                                   "nodes": result.nodes_written, "edges": result.edges_written,
+                                   "duration_ms": int((time.monotonic() - t0) * 1000)})
+                logger.info(
+                    "cpq_ingestion: raw graph written stem=%s workspace_id=%s backend=%s %s "
+                    "nodes=%d edges=%d",
+                    stem, workspace_id, result.backend, result.graph_ref,
+                    result.nodes_written, result.edges_written,
+                )
     else:
         logger.debug("cpq_ingestion: raw graph disabled (ARYX_CPQ_RAW_GRAPH_ENABLED=false), skipping")
     if should_stop is not None and should_stop():

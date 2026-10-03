@@ -1,6 +1,6 @@
 # Attribution — src/aryx/api/doc_discover/doc_discover_read_job.py
 
-Last updated: 2026-10-03T10:28:44.419771+00:00
+Last updated: 2026-10-03T10:28:52.427664+00:00
 Total lines: 178
 Lines AI-generated: 45 (25.3%)
 Lines human-typed: 29

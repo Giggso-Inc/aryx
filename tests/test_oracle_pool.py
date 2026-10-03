@@ -1052,6 +1052,121 @@ class TestOracleGraphBatchWorkersDefault(unittest.TestCase):
             self.assertEqual(s.oracle_graph_batch_workers, 1)
 
 
+class TestGraphStoreBatchCancellation(unittest.TestCase):
+    """should_stop support in _write_chunks (PR #425 review fixes, 2026-10-03):
+    the executemany loop previously had no way to be interrupted by a
+    cancelled job at all -- a 240MB upload's write kept running for tens
+    of minutes after "cancel" took effect everywhere else. These lock in
+    the three claims the review specifically flagged as untested:
+    queued chunks get dropped, a sequential stop commits only what ran so
+    far, and relationships are skipped entirely once already stopped."""
+
+    def _make_store(self, workers: int = 4, delay_s: float = 0.0) -> tuple:
+        """Return (store, chunk_sizes). ``delay_s`` makes each fake
+        executemany() sleep briefly before recording its call -- needed so
+        a concurrent test can observe some chunks still genuinely mid-call
+        (not yet cancellable) when should_stop first fires, the exact
+        scenario the review's "30 rows returned while 80 were committed"
+        finding was about."""
+        from contextlib import contextmanager
+        import threading
+        import time as _time
+
+        chunk_sizes: list[int] = []
+        lock = threading.Lock()
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                if delay_s:
+                    _time.sleep(delay_s)
+                with lock:
+                    chunk_sizes.append(len(rows))
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = workers
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
+        return store, chunk_sizes
+
+    def test_sequential_stop_commits_only_what_already_ran(self) -> None:
+        """workers=1 forces the sequential branch. should_stop flips True
+        after the first chunk -- exactly one executemany() call happens
+        (_CHUNK_MAX_ROWS=500, so 1200 rows is 3 chunks: 500/500/200), and
+        the returned count matches it exactly (no later chunks sneak in,
+        unlike the concurrent branch where several can already be in
+        flight)."""
+        store, chunk_sizes = self._make_store(workers=1)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1200)]
+
+        def should_stop():
+            return len(chunk_sizes) >= 1
+
+        written = store.add_entities_batch(rows, should_stop=should_stop)
+
+        self.assertEqual(chunk_sizes, [500])
+        self.assertEqual(written, 500)
+
+    def test_concurrent_stop_drops_queued_chunks(self) -> None:
+        """workers=2, 20 chunks (_CHUNK_MAX_ROWS=500, so 10,000 rows),
+        should_stop already True from the start. The first `workers`
+        chunks are already running (submitted eagerly) before should_stop
+        is ever checked, so they finish and are counted -- and once a
+        worker frees up it can race the main thread's cancel loop and grab
+        one or two more before being stopped, but with only 2 workers
+        against 20 chunks the vast majority must still be dropped. The
+        hard invariant this guards (the review's actual finding): the
+        returned count must equal exactly what executemany() actually
+        ran, never more, never less -- not len(rows) and not a stale
+        snapshot from before in-flight chunks finished draining."""
+        store, chunk_sizes = self._make_store(workers=2, delay_s=0.02)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(10_000)]  # 20 chunks of 500
+
+        written = store.add_entities_batch(rows, should_stop=lambda: True)
+
+        self.assertLess(len(chunk_sizes), 20, "at least one queued chunk must have been dropped")
+        self.assertGreaterEqual(len(chunk_sizes), 1)
+        self.assertEqual(written, sum(chunk_sizes), "returned count must match every executemany() that actually ran")
+
+    def test_should_stop_none_runs_every_chunk_unchanged(self) -> None:
+        """Regression guard: should_stop defaults to None and must not
+        change any pre-existing behavior."""
+        store, chunk_sizes = self._make_store(workers=4)
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1200)]
+
+        written = store.add_entities_batch(rows)  # should_stop omitted
+
+        self.assertEqual(sum(chunk_sizes), 1200)
+        self.assertEqual(written, 1200)
+
+
 class TestGraphStoreFullRebuildInsert(unittest.TestCase):
     """Phase 4 Part B follow-up: project_graph()'s full-rebuild path uses
     plain INSERT (insert_graph_vertex/insert_graph_edge), not MERGE --

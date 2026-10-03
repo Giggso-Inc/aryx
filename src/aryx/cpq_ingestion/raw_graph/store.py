@@ -49,7 +49,7 @@ class RawGraphStore(Protocol):
         *,
         full_rebuild: bool = False,
         **kwargs: object,
-    ) -> object: ...
+    ) -> int: ...
 
 
 def get_raw_graph_store(workspace_id: int, source_key: str, *, dsn: str, graph_url: str) -> RawGraphStore:
@@ -135,13 +135,22 @@ def write_raw_graph(
     store.clear()
     entities = [(n.id, n.tag, n.properties, None, None) for n in projection.nodes]
     relationships = [(e.source_id, e.target_id, e.name) for e in projection.edges]
+    nodes_written = 0
+    edges_written = 0
     if entities:
-        store.add_entities_batch(entities, full_rebuild=True, should_stop=should_stop)
+        nodes_written = store.add_entities_batch(entities, full_rebuild=True, should_stop=should_stop)
     if relationships and (should_stop is None or not should_stop()):
-        store.add_relationships_batch(relationships, full_rebuild=True, should_stop=should_stop)
+        edges_written = store.add_relationships_batch(relationships, full_rebuild=True, should_stop=should_stop)
+    # Report what was ACTUALLY written, not len(projection.nodes/edges): a
+    # should_stop hit above leaves nodes_written/edges_written short of the
+    # full projection, and the caller (project_raw_graph_and_flatten) relies
+    # on these being accurate to decide whether to log a success event --
+    # previously this always reported the full counts regardless of a
+    # cancel, so logs for a genuinely partial write claimed "N nodes / M
+    # edges written" for a graph that only had a fraction of that.
     return RawGraphWriteResult(
-        nodes_written=len(projection.nodes),
-        edges_written=len(projection.edges),
+        nodes_written=nodes_written,
+        edges_written=edges_written,
         backend=backend,
         graph_ref=graph_ref,
     )
