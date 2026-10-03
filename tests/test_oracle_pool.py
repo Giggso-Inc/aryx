@@ -1135,23 +1135,31 @@ class TestGraphStoreBatchCancellation(unittest.TestCase):
         self.assertEqual(written, 500)
 
     def test_concurrent_stop_drops_queued_chunks(self) -> None:
-        """workers=2, 20 chunks (_CHUNK_MAX_ROWS=500, so 10,000 rows),
+        """workers=2, 200 chunks (_CHUNK_MAX_ROWS=500, so 100,000 rows),
         should_stop already True from the start. The first `workers`
         chunks are already running (submitted eagerly) before should_stop
-        is ever checked, so they finish and are counted -- and once a
-        worker frees up it can race the main thread's cancel loop and grab
-        one or two more before being stopped, but with only 2 workers
-        against 20 chunks the vast majority must still be dropped. The
-        hard invariant this guards (the review's actual finding): the
-        returned count must equal exactly what executemany() actually
-        ran, never more, never less -- not len(rows) and not a stale
-        snapshot from before in-flight chunks finished draining."""
+        is ever checked, so they finish and are counted. A tight bound
+        (workers + a small margin), not just "fewer than the full
+        backlog", is the actual regression this guards: an earlier version
+        of this fix cancelled pending futures one at a time, blocking on
+        .result() for each already-running one in turn -- while blocked,
+        every OTHER idle worker kept dequeuing and starting MORE of the
+        still-queued backlog. Live-measured at 5-15% of a large backlog
+        (tens of chunks here, hundreds at the real ~11,700-chunk scale)
+        still running after "cancel" -- a weak "< 20 of 20" assertion
+        would not have caught that regression (it was still well under
+        20), hence the much larger backlog and tight bound here."""
         store, chunk_sizes = self._make_store(workers=2, delay_s=0.02)
-        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(10_000)]  # 20 chunks of 500
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(100_000)]  # 200 chunks of 500
 
         written = store.add_entities_batch(rows, should_stop=lambda: True)
 
-        self.assertLess(len(chunk_sizes), 20, "at least one queued chunk must have been dropped")
+        self.assertLessEqual(
+            len(chunk_sizes), 2 + 5,
+            "far more than `workers` chunks ran after cancel -- the two-pass cancel-then-wait "
+            "drain (cancel every pending future first, only then wait on survivors) regressed "
+            "back to an interleaved cancel/wait that lets idle workers grab more queued work",
+        )
         self.assertGreaterEqual(len(chunk_sizes), 1)
         self.assertEqual(written, sum(chunk_sizes), "returned count must match every executemany() that actually ran")
 
@@ -1165,6 +1173,82 @@ class TestGraphStoreBatchCancellation(unittest.TestCase):
 
         self.assertEqual(sum(chunk_sizes), 1200)
         self.assertEqual(written, 1200)
+
+    def test_executemany_failure_drops_queued_chunks_promptly(self) -> None:
+        """No should_stop involved -- a genuine executemany() failure (not
+        a cancel) must still stop the backlog promptly. _write_chunks'
+        `finally: pool.shutdown(wait=True, cancel_futures=True)` matters
+        here specifically: a plain `shutdown(wait=True)` (no
+        cancel_futures) lets every already-queued chunk run to completion
+        before the exception propagates, since it only waits -- it never
+        cancels. Live-measured (PR #425 review) at 10 of 40 chunks still
+        running after the failure and the raise delayed to ~0.9s with the
+        plain version."""
+        from contextlib import contextmanager
+        import threading
+        import time as _time
+
+        chunk_sizes: list[int] = []
+        lock = threading.Lock()
+        calls = {"n": 0}
+
+        class _FailFirstCur:
+            def executemany(self, sql, rows):
+                with lock:
+                    calls["n"] += 1
+                    this_call = calls["n"]
+                _time.sleep(0.02)
+                if this_call == 1:
+                    raise RuntimeError("simulated executemany failure")
+                with lock:
+                    chunk_sizes.append(len(rows))
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FailFirstConn:
+            def cursor(self):
+                return _FailFirstCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FailFirstPool:
+            @contextmanager
+            def connection(self):
+                yield _FailFirstConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FailFirstPool()
+        settings = MagicMock()
+        settings.oracle_graph_batch_workers = 4
+        patcher = patch("aryx.graph.oracle_graph_store_batch.get_settings", return_value=settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        backend_patcher = patch("aryx.queries._backend", return_value="oci")
+        backend_patcher.start()
+        self.addCleanup(backend_patcher.stop)
+
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(20_000)]  # 40 chunks of 500
+        t0 = _time.monotonic()
+        with self.assertRaises(RuntimeError):
+            store.add_entities_batch(rows)
+        elapsed = _time.monotonic() - t0
+
+        self.assertLessEqual(
+            len(chunk_sizes), 4 + 3,
+            "far more than `workers` chunks ran after a failure -- shutdown(wait=True) without "
+            "cancel_futures=True lets the whole remaining backlog run before the exception "
+            "propagates",
+        )
+        self.assertLess(elapsed, 0.5, "the failure must propagate promptly, not after draining the whole backlog")
 
 
 class TestGraphStoreFullRebuildInsert(unittest.TestCase):

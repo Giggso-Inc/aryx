@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_raw_graph_store.py
 
-Last updated: 2026-10-03T11:32:30.138383+00:00
+Last updated: 2026-10-03T11:32:38.371117+00:00
 Total lines: 256
 Lines AI-generated: 34 (13.3%)
 Lines human-typed: 0

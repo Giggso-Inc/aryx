@@ -1,6 +1,6 @@
 # Attribution — src/aryx/cpq_ingestion/raw_graph/store.py
 
-Last updated: 2026-10-03T11:32:30.137980+00:00
+Last updated: 2026-10-03T11:32:38.370766+00:00
 Total lines: 198
 Lines AI-generated: 32 (16.2%)
 Lines human-typed: 24
