@@ -552,9 +552,22 @@ class EntityStore:
         return (str(row[1]), row[2])
 
     def delete_entity(self, entity_id: int) -> bool:
-        """Delete one entity; return True if a row was removed."""
+        """Delete one entity and its aryx_entity_member rows; return True if the entity row was removed.
+
+        Members deleted first, in the same transaction as the entity row
+        (§5 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_
+        2026-10-04.md -- previously left as permanent orphans referencing a
+        now-nonexistent entity_id, consistent across this and the other two
+        delete methods below). Postgres's aryx_entity_member.entity_id has a
+        plain FK to aryx_entity (no ON DELETE CASCADE) -- deleting the
+        entity row first would raise a foreign-key violation while member
+        rows for it still exist, so members must go first regardless of
+        backend (Oracle has no FK here, but the same order keeps both
+        backends' behavior identical).
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(load("delete_entity_members_by_id"), (self._ws, entity_id))
                 cur.execute(load("delete_entity_row"), (entity_id, self._ws))
                 removed = cur.rowcount > 0
         if removed:
@@ -590,6 +603,11 @@ class EntityStore:
             chunk = ids[i:i + self._DELETE_CHUNK_SIZE]
             with self._pool.connection() as conn:
                 with conn.cursor() as cur:
+                    # Members first, same chunk/transaction -- see
+                    # delete_entity()'s docstring for why the order matters.
+                    cur.execute(load("delete_entity_members_by_ids"), {
+                        "workspace_id": self._ws, "entity_ids": chunk,
+                    })
                     cur.execute(load("delete_entities_by_ids"), {
                         "workspace_id": self._ws, "entity_ids": chunk,
                     })
@@ -599,23 +617,28 @@ class EntityStore:
         return removed
 
     def delete_entities_by_type(self, ontology_type: str) -> list[int]:
-        """Delete all entities of a type; return the list of deleted ids."""
+        """Delete all entities of a type and their aryx_entity_member rows; return the list of deleted ids.
+
+        Always selects ids first now (previously only done on the Oracle
+        branch, to work around python-oracledb rejecting fetchall() after a
+        DELETE with DPY-1003 -- see the git history for that rationale).
+        Unified across both backends because member cleanup (§5 of docs/
+        ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md)
+        needs the id list before the entity rows are deleted either way --
+        deleting members by id, same transaction, before the entities
+        themselves, for the same FK-ordering reason as delete_entity()'s
+        docstring. The final DELETE's own RETURNING (Postgres) or lack of
+        one (Oracle) no longer matters since the ids are already in hand.
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if get_settings().effective_db_backend() == "oci":
-                    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9/T11
-                    # follow-up (confirmed live): DELETE ... RETURNING id +
-                    # fetchall() works on psycopg but python-oracledb
-                    # rejects fetchall() after DML with DPY-1003 ("the
-                    # executed statement does not return rows"). Select the
-                    # ids first, then delete by the same predicate --
-                    # avoids RETURNING entirely on this backend.
-                    cur.execute(load("select_entity_ids_by_type"), (self._ws, ontology_type))
-                    ids = [int(r[0]) for r in cur.fetchall()]
-                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
-                else:
-                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
-                    ids = [int(r[0]) for r in cur.fetchall()]
+                cur.execute(load("select_entity_ids_by_type"), (self._ws, ontology_type))
+                ids = [int(r[0]) for r in cur.fetchall()]
+                if ids:
+                    cur.execute(load("delete_entity_members_by_ids"), {
+                        "workspace_id": self._ws, "entity_ids": ids,
+                    })
+                cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
         logger.info("entities deleted ws=%s type=%s count=%d", self._ws, ontology_type, len(ids))
         return ids
 
