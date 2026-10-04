@@ -30,7 +30,7 @@ from aryx.resolution.chunked import resolve_chunked
 from aryx.resolution.review_queue import StoreReviewSink
 from aryx.resolution.run import _materialize
 from aryx.resolution.survivorship import SurvivorshipPolicy
-from aryx.resolve_entities_selectivity import _key_selectivity
+from aryx.resolve_entities_selectivity import _full_uniqueness_ratio, _key_selectivity
 from aryx.store.adjudication_store import AdjudicationStore
 from aryx.store.chunk_backend import PgChunkBackend
 from aryx.store.entity_store import EntityStore
@@ -178,27 +178,41 @@ def resolve_run(
     # that says nothing about whether the key's VALUES are actually
     # unique. A guessed key with low cardinality (e.g. a status/type
     # column) forced into exact mode would merge every record sharing a
-    # value into one entity, silently losing records. Requiring the
-    # SAME selectivity sample that already guards the low_selectivity
-    # path to independently confirm near-total uniqueness turns
-    # force_exact from "trust the caller" into "trust but verify" at
-    # negligible extra cost (the sample is bounded by
-    # er_key_selectivity_sample_size regardless of table size).
+    # value into one entity, silently losing records.
+    #
+    # PR review N1 (2026-10-04), round 2: the FIRST version of this
+    # verification reused `selectivity` above -- a head-sampled estimate
+    # (records[:sample_size]), not a full scan. A repeated placeholder
+    # value (e.g. "N/A") concentrated outside the sampled head would make
+    # the sample look fully unique while the real data isn't, and the
+    # original 0.99 threshold tolerated up to ~1% real duplicates anyway
+    # -- exactly the collisions exact-match merging must not tolerate.
+    # force_exact's verification now runs `_full_uniqueness_ratio()`, a
+    # full O(n) scan ("cheap next to resolve" even at 440K+ short strings,
+    # same reasoning the reviewer gave) over every record, not a sample --
+    # computed only when force_exact is actually requested, so callers
+    # that never set it pay nothing extra.
+    full_uniqueness = (
+        _full_uniqueness_ratio(records)
+        if force_exact and bool(key_attrs) and not name_based_exact
+        else None
+    )
     verified_force_exact = (
-        force_exact and bool(key_attrs) and selectivity is not None
-        and selectivity >= settings.er_force_exact_min_selectivity
+        full_uniqueness is not None
+        and full_uniqueness >= settings.er_force_exact_min_selectivity
     )
     exact_ids = name_based_exact or verified_force_exact
     if force_exact and not verified_force_exact and not name_based_exact:
         logger.info(
             "resolve_run run_id=%s force_exact requested but NOT honored -- "
-            "sampled selectivity=%s below er_force_exact_min_selectivity=%.4f "
+            "full-scan uniqueness=%s below er_force_exact_min_selectivity=%.4f "
             "(match_keys=%s); falling through to the normal fuzzy/chunked path",
-            run_id, selectivity, settings.er_force_exact_min_selectivity, key_attrs,
+            run_id, full_uniqueness, settings.er_force_exact_min_selectivity, key_attrs,
         )
         raven_log("INFO", "P4", "ingest.resolve.force_exact_rejected force_exact requested but not verified",
                   context={"task_id": run_id, "match_keys": list(key_attrs),
-                           "selectivity": selectivity, "threshold": settings.er_force_exact_min_selectivity,
+                           "full_uniqueness": full_uniqueness,
+                           "threshold": settings.er_force_exact_min_selectivity,
                            "selected_option": "fuzzy", "available_options": ["exact_ids", "fuzzy"],
                            "reason_code": "FORCE_EXACT_NOT_VERIFIED"})
     if exact_ids:

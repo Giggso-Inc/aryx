@@ -39,9 +39,10 @@ considered done):
   generic-fallback match key's values were unique, with no actual
   verification — a guessed key with real duplicates (e.g. a status/type
   column) would have silently merged every record sharing a value into
-  one entity. **Fixed:** `force_exact` is now only honored when
-  `_key_selectivity()` independently confirms near-total uniqueness
-  (new `er_force_exact_min_selectivity` setting, default 0.99).
+  one entity. **Fixed (round 1):** `force_exact` is now only honored when
+  `_key_selectivity()` independently confirms near-total uniqueness (new
+  `er_force_exact_min_selectivity` setting). **Tightened further in round
+  2** — see the second update below.
 - `oracle_migrate.py`'s tracking table (§6) could mark a file "applied"
   after a genuine, unexpected failure (not just an "already exists"
   no-op), meaning it would never be retried; and two uvicorn workers
@@ -64,6 +65,61 @@ opt-out settings (`ARYX_CPQ_STRUCTURAL_LEAF_FOLD_ENABLED`,
 was added for `structural_leaf.py` (zero existed before), the embedding
 dedup, and `force_exact`'s verification behavior — all flagged as gaps by
 the same review.
+
+**Update — PR review round 2 (same day, after §3b/§4 landed):** a second
+review pass, against the fuller implementation, found one more real
+correctness bug and three minor-severity follow-ups:
+- **[M1, remaining]** The round-1 heartbeat-sweep fix (scoping to
+  `stage LIKE '%CPQ Ingestion%'`) was necessary but not sufficient: large
+  silent phases existed *inside* that same stage — landing (`discover()`
+  reported nothing between its own 8%/15% bookends for the whole
+  extract+land duration, ~35 min for a 439,946-row tag) and the
+  post-tag-loop phase (`save_relationships`/`project_workspace_graph` got
+  no `on_progress` at all). Combined with round 1's own fix making
+  `make_should_stop()` stop on `'failed'`, this made the failure mode
+  *worse*, not just cosmetic: a perfectly healthy job silent for >10
+  minutes would get swept to `'failed'`, its worker would then raise
+  `PipelineCancelled` at the next checkpoint, and PR #429's cleanup would
+  delete its partial entities — before this round, a stuck sweep only
+  showed a wrong status. **Fixed:** `run_spine()` (the landing loop) now
+  accepts `on_progress`, firing an indeterminate heartbeat at the same
+  cadence as its existing "spine progress" log line, threaded through
+  `discover()` (already wired into `run_pipeline()`). `EntityStore.
+  save_relationships()` now batches (5000 rows/call, configurable) with a
+  real done/total progress checkpoint between batches. Both
+  `save_relationships()` and `project_workspace_graph()` (which already
+  supported `on_progress` internally and simply wasn't being passed one)
+  now receive `resolve_and_relate_raw_graph()`'s `on_progress` at their
+  call sites in `resolve_relate.py`.
+- **[N1]** `_key_selectivity()`'s existing head-sample (`records[:
+  sample_size]`, 2000 by default) was being reused for `force_exact`'s
+  verification — fine for selectivity's original low-stakes purpose (a
+  false negative just means an unnecessary resolve pass), but a biased
+  sample for a correctness-critical merge decision: a repeated placeholder
+  value (e.g. `"N/A"`) concentrated outside the sampled head would look
+  fully unique to the sample while the real data has real duplicates, and
+  the original 0.99 threshold tolerated ~1% real duplicates anyway.
+  **Fixed:** new `_full_uniqueness_ratio()` does a full O(n) scan (no
+  sampling) specifically for `force_exact`'s verification, only when
+  `force_exact` is actually requested; `er_force_exact_min_selectivity`'s
+  default tightened to `1.0` (zero duplicate tolerance).
+- **[N2]** The M4 fix still built `parent_of` (a dict sized to the whole
+  file's edge count) unconditionally in the same pass as `parent_ids`,
+  and `nodes_by_id` still covered every node in the file whenever anything
+  folded. **Fixed:** `parent_of` is now built in a second pass, only when
+  at least one tag actually classifies as a leaf, and restricted to edges
+  targeting those leaf tags' own nodes; `nodes_by_id` is restricted to the
+  distinct parent ids `parent_of` actually references, not every node in
+  `by_tag`.
+- **[N3]** `_EXPECTED_IDEMPOTENT_ORA_CODES` omitted `ORA-01408` (this
+  exact column list already indexed under a different name) — most
+  migration files self-guard it inside their own PL/SQL exception handler
+  so it never reaches Python, but a handful of plain, un-self-guarded DDL
+  statements hit it directly, and without it in the allowlist those files
+  would never be marked applied. **Fixed:** added to the allowlist, with
+  a note that the list isn't exhaustively verified against every file in
+  `migrations_oracle/`.
+
 **Date:** 2026-10-04
 **Trigger:** Live observation of a real Confirm-stage run against the
 240MB `aSTRO25_ConfigData.xml` file (workspace 1005, job

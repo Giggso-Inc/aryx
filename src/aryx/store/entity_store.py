@@ -20,8 +20,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
+
+Progress = Callable[[str, int, str], None]
 
 from psycopg.types.json import Json
 
@@ -280,17 +282,41 @@ class EntityStore:
                     total, len(member_rows), len(conflict_rows))
         return total
 
-    def save_relationships(self, relationships: list[Relationship]) -> None:
-        """Persist inferred relationships between entities (stage 8)."""
+    def save_relationships(self, relationships: list[Relationship], *,
+                          on_progress: Progress | None = None,
+                          batch_size: int = 5000) -> None:
+        """Persist inferred relationships between entities (stage 8).
+
+        on_progress (PR review, 2026-10-04): a large relationship set
+        previously went through ONE unbatched executemany -- no heartbeat
+        for however long that single call took. Combined with §0's
+        heartbeat-sweep watchdog (JobStore.sweep_stale_heartbeat), that
+        silence was long enough to get a perfectly healthy caller (e.g.
+        cpq_ingestion's resolve_and_relate_raw_graph, after its last tag
+        finishes) killed. Chunking into batch_size-row executemany calls
+        with a checkpoint between each gives the same per-batch heartbeat
+        cadence BatchSink's landing writes already have -- default
+        batch_size chosen to match BatchSink's own executemany-cost
+        profile, not because relationship rows are expensive individually.
+        pct is real (done/total), unlike the indeterminate heartbeats
+        elsewhere in this review round, since the total is known upfront.
+        """
         if not relationships:
             return
+        total = len(relationships)
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.executemany(
-                    load("insert_relationship"),
-                    [(self._ws, r.source_entity_id, r.target_entity_id,
-                      r.name, r.confidence) for r in relationships],
-                )
+                for start in range(0, total, batch_size):
+                    batch = relationships[start:start + batch_size]
+                    cur.executemany(
+                        load("insert_relationship"),
+                        [(self._ws, r.source_entity_id, r.target_entity_id,
+                          r.name, r.confidence) for r in batch],
+                    )
+                    if on_progress is not None:
+                        done = min(start + batch_size, total)
+                        on_progress("Relate", int(100 * done / total),
+                                   f"{done}/{total} relationships saved")
 
     def list_entities_typed_sample(self, n_per_type: int) -> list[tuple[int, str, dict]]:
         """Return up to *n_per_type* entities for EACH ontology type in the workspace.

@@ -80,14 +80,25 @@ def fold_structural_leaf_tags(
     "fully folded" (zero folds, zero orphans) and drop it from the resolve
     set with no record of it anywhere.
 
-    Performance (PR review M4): the two full-projection structures this
-    needs -- ``parent_ids`` (classification) and ``parent_of`` (folding) --
-    are built together in ONE pass over ``edges`` regardless of outcome,
-    since classifying every tag requires ``parent_ids`` anyway.
-    ``nodes_by_id``, the expensive one (a dict of every node, same
-    cardinality as the file -- 5.85M entries on the file this was built
-    against), is only built if at least one tag actually classifies as a
-    leaf, and never if ``by_tag`` has nothing foldable.
+    Performance (PR review M4, then N2 round 2, 2026-10-04): classification
+    needs only ``parent_ids`` (which node ids have at least one child) --
+    built in ONE pass over ``edges`` regardless of outcome, since every
+    candidate tag must be classified either way. ``parent_of`` (the
+    child-id -> parent-id map folding actually needs) is NOT built in that
+    same pass -- M4's first fix still built it unconditionally alongside
+    ``parent_ids`` even though most files fold nothing, and even when
+    something does fold, only the leaf tags' own nodes ever need a parent
+    lookup, not every node in the file. ``parent_of`` is now built in a
+    second pass, only when ``leaf_tags`` is non-empty, and restricted to
+    edges whose target is one of the leaf tags' own node ids -- a dict
+    sized to the leaf tags' node count, not the whole file's edge count
+    (e.g. one 439,946-node leaf tag out of 5.85M total edges is ~13x
+    smaller than the unconditional version). ``nodes_by_id`` is likewise
+    only built if at least one tag actually classifies as a leaf, and
+    restricted to the distinct parent ids ``parent_of`` actually
+    references -- not every node in the file (which would also include
+    every other tag's nodes, the leaf nodes themselves, and any node
+    that's nobody's parent).
 
     Takes ``edges`` directly rather than a ``RawGraphProjection`` (§3b,
     2026-10-04) -- this function's only two uses of a projection were
@@ -102,11 +113,7 @@ def fold_structural_leaf_tags(
     if not by_tag:
         return by_tag
 
-    parent_ids: set[int] = set()
-    parent_of: dict[int, int] = {}
-    for edge in edges:
-        parent_ids.add(edge.source_id)
-        parent_of[edge.target_id] = edge.source_id
+    parent_ids: set[int] = {edge.source_id for edge in edges}
 
     leaf_tags = {
         tag: nodes for tag, nodes in by_tag.items()
@@ -115,8 +122,21 @@ def fold_structural_leaf_tags(
     if not leaf_tags:
         return by_tag
 
+    leaf_node_ids: set[int] = {n.id for nodes in leaf_tags.values() for n in nodes}
+    parent_of: dict[int, int] = {
+        edge.target_id: edge.source_id for edge in edges
+        if edge.target_id in leaf_node_ids
+    }
+
+    # nodes_by_id only ever needs to answer "what node is THIS parent id" --
+    # restricting it to the distinct parent ids actually referenced (not
+    # every node in the file, which includes every other tag's nodes, the
+    # leaf nodes themselves, and any node that's nobody's parent) shrinks it
+    # to the number of unique parents being folded onto, not the file size.
+    needed_parent_ids: set[int] = set(parent_of.values())
     nodes_by_id: dict[int, RawNode] = {
         n.id: n for nodes in by_tag.values() for n in nodes
+        if n.id in needed_parent_ids
     }
 
     folded_tags: list[str] = []

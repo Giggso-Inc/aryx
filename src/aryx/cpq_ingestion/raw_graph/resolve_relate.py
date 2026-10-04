@@ -401,13 +401,20 @@ def resolve_and_relate_raw_graph(
             edges, node_id_to_entity_id, log_id=log_id,
         )
         if relationships:
-            estore.save_relationships(relationships)
+            # PR review (2026-10-04): previously no on_progress here at all --
+            # see save_relationships' own docstring for why that's unsafe
+            # now that a heartbeat-sweep watchdog exists.
+            estore.save_relationships(relationships, on_progress=on_progress)
 
         if should_stop is not None and should_stop():
             raise PipelineCancelled(
                 f"job cancelled before final graph projection source_key={source_key}",
             )
-        graph_counts = project_workspace_graph(dsn, graph_url, workspace_id, estore)
+        # Same reasoning: project_workspace_graph() already supports
+        # on_progress (project_auto's own per-batch checkpoints), it just
+        # wasn't being passed from this call site.
+        graph_counts = project_workspace_graph(dsn, graph_url, workspace_id, estore,
+                                               on_progress=on_progress)
     finally:
         estore.close()
 

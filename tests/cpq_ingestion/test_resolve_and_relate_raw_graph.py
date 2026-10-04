@@ -141,6 +141,39 @@ def test_builds_node_id_to_entity_id_map_and_translates_containment_edges():
     assert result["entities"] == 3
 
 
+def test_on_progress_forwarded_into_save_relationships_and_project_workspace_graph():
+    """PR review, 2026-10-04: neither call previously received on_progress
+    at all, leaving the post-tag-loop phase (containment-edge translation,
+    saving relationships, final graph projection) with no heartbeat -- long
+    enough, combined with §0's heartbeat-sweep watchdog, to get a healthy
+    job killed. Both already support on_progress internally; this pins
+    that the call sites actually pass it through now."""
+    run_ids_by_tag = {"PurchaseOrder": 10, "Customer": 11, "LineItem": 12}
+    entity_maps = {
+        10: {"po_file:0": 200}, 11: {"po_file:1": 100}, 12: {"po_file:2": 300},
+    }
+    on_progress = MagicMock()
+
+    def _run_pipeline(**kwargs):
+        run_id = run_ids_by_tag[kwargs["dataset"]]
+        return {"run_id": run_id, "entities": 1, "relationships": 0}
+
+    mock_estore = _mock_estore(lambda run_id: entity_maps[run_id])
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline", side_effect=_run_pipeline), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph",
+               return_value={"entities": 3}) as mock_project:
+        resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, on_progress=on_progress,
+        )
+
+    _, save_kwargs = mock_estore.save_relationships.call_args
+    assert save_kwargs["on_progress"] is on_progress
+    _, project_kwargs = mock_project.call_args
+    assert project_kwargs["on_progress"] is on_progress
+
+
 def test_calls_project_workspace_graph_once_and_merges_its_counts():
     mock_estore = _mock_estore(lambda run_id: {})
     with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
@@ -153,7 +186,11 @@ def test_calls_project_workspace_graph_once_and_merges_its_counts():
             dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
         )
 
-    mock_project.assert_called_once_with(DSN, GRAPH_URL, WORKSPACE_ID, mock_estore)
+    # on_progress=None here since this test's caller doesn't pass one --
+    # see test_project_workspace_graph_receives_on_progress below for the
+    # PR-review fix (heartbeat coverage for the final projection).
+    mock_project.assert_called_once_with(DSN, GRAPH_URL, WORKSPACE_ID, mock_estore,
+                                         on_progress=None)
     assert result["entities"] == 5
     assert result["relationships"] == 4
 

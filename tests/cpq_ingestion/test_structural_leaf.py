@@ -190,3 +190,54 @@ def test_result_is_a_new_dict_not_the_same_object_when_folding_happens():
 
     assert result is not by_tag
     assert by_tag == {"Record": [parent], "id": [leaf]}  # input untouched
+
+
+# ── PR review N2 round 2: parent_of/nodes_by_id scoped to leaf nodes only ────
+
+def test_folding_is_unaffected_by_a_large_unrelated_subtree():
+    """Behavioral check for the N2 round-2 narrowing (parent_of/nodes_by_id
+    restricted to leaf-tag parents only, not every edge/node in the file):
+    a large, deeply-nested unrelated subtree sharing no ids with the leaf
+    tag's parent/child pair must not change the fold outcome at all."""
+    record = RawNode(id=1, tag="Record", properties={})
+    leaf = _leaf(2, "123")  # tag "id", folds onto Record
+    edges = [RawEdge(source_id=1, target_id=2, name="CONTAINS")]
+    by_tag = {"Record": [record], "id": [leaf]}
+
+    # A chain of 500 unrelated nodes/edges, ids well outside 1/2, that are
+    # never a leaf's parent -- must be scanned over harmlessly, never
+    # looked up, never affecting the fold.
+    next_id = 100
+    for _ in range(500):
+        unrelated = RawNode(id=next_id, tag="Unrelated", properties={"x": "y"})
+        by_tag.setdefault("Unrelated", []).append(unrelated)
+        if next_id > 100:
+            edges.append(RawEdge(source_id=next_id - 1, target_id=next_id, name="CONTAINS"))
+        next_id += 1
+
+    result = fold_structural_leaf_tags(edges, by_tag)
+
+    assert "id" not in result
+    assert record.properties["id"] == "123"
+    assert all(n.properties == {"x": "y"} for n in result["Unrelated"])
+
+
+def test_nodes_by_id_excludes_nodes_that_are_never_a_parent():
+    """nodes_by_id must only contain the distinct parent ids parent_of
+    actually references -- not every node in by_tag (which would include
+    the leaf nodes themselves and every unrelated tag's nodes too)."""
+    parent = RawNode(id=1, tag="Record", properties={})
+    leaf = _leaf(2, "123")
+    unrelated = RawNode(id=3, tag="Unrelated", properties={"x": "y"})
+    projection = RawGraphProjection(
+        nodes=[parent, leaf, unrelated],
+        edges=[RawEdge(source_id=1, target_id=2, name="CONTAINS")],
+    )
+    by_tag = {"Record": [parent], "id": [leaf], "Unrelated": [unrelated]}
+
+    fold_structural_leaf_tags(projection.edges, by_tag)
+
+    # Functional check: folding still works correctly (parent got the value)
+    assert parent.properties["id"] == "123"
+    # unrelated node's properties must be untouched -- it was never a parent
+    assert unrelated.properties == {"x": "y"}

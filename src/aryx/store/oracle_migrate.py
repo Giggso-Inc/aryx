@@ -75,14 +75,27 @@ def _already_applied(cur) -> set[str]:
 # and live boot logs (docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_
 # ISSUES_2026-10-04.md §6): ORA-01430 (column already exists), ORA-00955
 # (name already used by an existing object), ORA-02443 (constraint doesn't
-# exist to drop). ORA-00001 (unique constraint violated) covers an
-# idempotent data-insert migration hitting a row that's already there.
+# exist to drop), ORA-01408 (this exact column list is already indexed
+# under a different name/constraint -- PR review N3: most migration files
+# already self-guard this one inside their own PL/SQL EXCEPTION handler
+# (`IF SQLCODE != -1408 THEN NULL`), so it never reaches Python as an
+# oracledb.Error for those -- but a handful of plain, un-self-guarded DDL
+# statements (e.g. 0039/0041/0042/0045/0047/0049) hit it directly, and
+# without this entry here their file would never be marked applied,
+# logging a spurious ERROR every single boot). ORA-00001 (unique
+# constraint violated) covers an idempotent data-insert migration hitting
+# a row that's already there.
+#
 # Deliberately a narrow, explicit allowlist rather than "any error is fine"
 # (PR review M3) -- a genuinely new failure (bad SQL, a missing dependency,
 # a permissions problem) must NOT be silently marked applied, or it would
 # never be retried and the schema would be left permanently incomplete
-# with no visible error after the first boot.
-_EXPECTED_IDEMPOTENT_ORA_CODES = ("ORA-01430", "ORA-00955", "ORA-02443", "ORA-00001")
+# with no visible error after the first boot. This list is NOT verified
+# exhaustively against every migration file in migrations_oracle/ (PR
+# review N3) -- if a genuinely idempotent migration still logs an
+# unexpected-failure ERROR on every boot after this ships, check its
+# actual ORA code first before assuming the migration itself is broken.
+_EXPECTED_IDEMPOTENT_ORA_CODES = ("ORA-01430", "ORA-00955", "ORA-02443", "ORA-01408", "ORA-00001")
 
 
 def _mark_applied(cur, filename: str) -> None:

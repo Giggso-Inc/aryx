@@ -113,7 +113,7 @@ def _settings_stub(**overrides):
     base = dict(
         er_exact_id_match=True, er_chunk_threshold=100_000,
         er_min_key_selectivity=0.01, er_key_selectivity_sample_size=2000,
-        er_force_exact_min_selectivity=0.99,
+        er_force_exact_min_selectivity=1.0,
         id_like_column_names="id,uuid,guid,key",
         rdb_dsn="postgresql://x",
     )
@@ -338,6 +338,74 @@ def test_force_exact_rejected_when_selectivity_does_not_confirm_uniqueness() -> 
     mock_resolve.assert_called_once()
     _, kwargs = mock_resolve.call_args
     assert kwargs["exact_ids"] is False
+
+
+def test_force_exact_catches_a_duplicate_a_head_sample_would_have_missed() -> None:
+    """PR review N1 (2026-10-04): the original fix reused _key_selectivity(),
+    a HEAD sample (records[:sample_size]) -- a duplicate value concentrated
+    outside the sampled head (e.g. a repeated 'N/A' placeholder) would make
+    the sample look fully unique while the real data isn't. force_exact
+    verification must scan every record, not a sample: here, a tiny
+    sample_size of 3 means the first 3 records (all distinct) would have
+    looked selectivity=1.0 to the old sampled check, but records 10 and 15
+    (well outside that sample window) share the exact same text -- the full
+    scan must still catch it and reject force_exact."""
+    records = [ResolutionRecord(record_id=i, text=f"unique-{i}", payload={})
+               for i in range(20)]
+    records[10] = ResolutionRecord(record_id=10, text="N/A", payload={})
+    records[15] = ResolutionRecord(record_id=15, text="N/A", payload={})  # duplicate, outside sample[:3]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.get_settings",
+               return_value=_settings_stub(er_exact_id_match=False,
+                                            er_key_selectivity_sample_size=3,
+                                            er_force_exact_min_selectivity=1.0)), \
+         patch("aryx.resolve_entities.resolve") as mock_resolve, \
+         patch("aryx.resolve_entities.resolve_chunked") as mock_chunked:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+        mock_resolve.return_value = []
+        resolve_run(run_id=1, ontology_type="Thing", key_attrs=["text"],
+                   store=store, broker=broker, workspace_id=1, force_exact=True)
+
+    mock_chunked.assert_not_called()
+    mock_resolve.assert_called_once()
+    _, kwargs = mock_resolve.call_args
+    assert kwargs["exact_ids"] is False  # correctly rejected -- NOT silently merged
+
+
+def test_full_uniqueness_ratio_is_computed_not_the_sampled_selectivity() -> None:
+    """Pins that force_exact's verification calls _full_uniqueness_ratio
+    (full scan), not _key_selectivity (sample) -- a direct regression guard
+    against silently reverting to the sampled check."""
+    records = [ResolutionRecord(record_id=i, text=f"unique-{i}", payload={})
+               for i in range(20)]
+    records[10] = ResolutionRecord(record_id=10, text="N/A", payload={})
+    records[15] = ResolutionRecord(record_id=15, text="N/A", payload={})
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.get_settings",
+               return_value=_settings_stub(er_exact_id_match=False,
+                                            er_key_selectivity_sample_size=3,
+                                            er_force_exact_min_selectivity=1.0)), \
+         patch("aryx.resolve_entities._full_uniqueness_ratio",
+               wraps=__import__("aryx.resolve_entities_selectivity",
+                                fromlist=["_full_uniqueness_ratio"])._full_uniqueness_ratio,
+               ) as mock_full_scan, \
+         patch("aryx.resolve_entities.resolve", return_value=[]), \
+         patch("aryx.resolve_entities.resolve_chunked"):
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+        resolve_run(run_id=1, ontology_type="Thing", key_attrs=["text"],
+                   store=store, broker=broker, workspace_id=1, force_exact=True)
+
+    mock_full_scan.assert_called_once()
+    (scanned_records,), _ = mock_full_scan.call_args
+    assert len(scanned_records) == 20  # the FULL set, not a 3-record sample
 
 
 def test_force_exact_without_key_attrs_never_triggers_exact_mode() -> None:

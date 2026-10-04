@@ -278,6 +278,22 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         )
         self.assertIn("0001_test.sql", inserted)
 
+    def test_ora_01408_is_treated_as_idempotent_noise_not_unexpected(self) -> None:
+        """PR review N3: a plain, un-self-guarded DDL statement hitting
+        ORA-01408 (this exact column list is already indexed under a
+        different name) must still be marked applied -- several real
+        migration files (0039/0041/0042/0045/0047/0049) have a bare
+        CREATE INDEX statement that can legitimately hit this."""
+        def side_effect(sql):
+            raise __import__("oracledb").Error(
+                "ORA-01408: such column list already indexed",
+            )
+
+        _cur, inserted = self._run_with(
+            {"0041_test.sql": "CREATE INDEX idx_t ON t (a, b);"}, side_effect,
+        )
+        self.assertIn("0041_test.sql", inserted)
+
     def test_file_with_an_unexpected_error_is_not_marked_applied(self) -> None:
         def side_effect(sql):
             raise __import__("oracledb").Error(
