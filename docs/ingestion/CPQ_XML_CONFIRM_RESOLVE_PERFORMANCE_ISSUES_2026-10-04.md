@@ -3,21 +3,30 @@
 **Status:** Implemented on branch `fix/cpq-xml-confirm-performance-2026-10-04`
 — every section (§0, §1 all three tiers, §2, §3, §3b, §4, §6, §7, §8) is
 now code, not just a design (each section below has an "Implemented"
-note with the files/tests it touched). Two sections shipped **opt-in**,
-default-off, rather than as default behavior changes, because neither has
-been verified against a real large-file confirm end to end:
+note with the files/tests it touched). §3b and §4's index ship **opt-in**
+(§3b) or as a low-risk additive change (§4's index) rather than as default
+behavior changes. **Update — live verification (2026-10-04, same day,
+against a real dev_oci Oracle ADB instance)** closed most of the
+open-verification gaps below — see that section for what's now actually
+confirmed vs. still open:
 - **§3b** (stream the raw-graph projection instead of materializing the
   whole document) — `ARYX_CPQ_STREAMING_PROJECTION_ENABLED`, default
-  `false`. This remains the most invasive change in the document (touches
-  the XML parser's public contract); shipping it opt-in rather than as
-  its own separate follow-up PR let it land with full test coverage now
-  while keeping the default behavior byte-for-byte unchanged until
-  someone verifies it against a real file.
+  `false`. Still opt-in (not flipped to default-on) because verification
+  so far is at a 3,000-record synthetic scale, not the real 439,946-record
+  file — but the full `resolve_and_relate_raw_graph()` pipeline (not just
+  the parser) has now been run live, end to end, both ways, and produces
+  byte-identical entities/relationships/provenance/graph output. See the
+  live-verification update.
+- **§1 Tier 0** (`ARYX_LANDING_BATCH_SIZE`) — the 500→3000 speedup claim is
+  now live-confirmed (3.84x), not just inferred from one prior incident
+  measurement. See the live-verification update.
 - **§4** (slow Oracle queries) — only the diagnostic tooling (automatic
   `EXPLAIN PLAN` capture on every future slow statement) and one
-  low-risk, unverified index addition shipped as actual fixes. The real
-  root cause (bad plan vs. Oracle ADB contention) still isn't confirmed —
-  see §4's implementation-plan note.
+  low-risk, additive index shipped as actual fixes. The specific root
+  cause of the original 5.8s-31.8s/0-row evidence is still **not**
+  confirmed, but live investigation has ruled out "bad query plan" as the
+  explanation and surfaced a new, previously-unknown risk with the new
+  index itself — see the live-verification update.
 
 **Update — PR review (same day):** a first-pass review caught 4 real
 correctness/safety bugs in the initial implementation, since fixed on the
@@ -1107,3 +1116,159 @@ turned on by default or considered fully closed.
    specifically, and this pass had no live job to profile against.
 9. **✅ §6 (migration tracking table)** — low priority, cosmetic/
    operational cleanliness only, but cheap enough to include.
+
+---
+
+## Update — live verification (2026-10-04, same day, against a real dev_oci Oracle ADB instance)
+
+The three gaps flagged as unverified at the top of this document — §3b's
+parity, §1 Tier 0's actual speedup, and §4's root cause — were revisited
+with access to a real, isolated dev `docker-compose-oci.yml` stack (Oracle
+ADB 26ai, `ARYX_GRAPH_BACKEND=oci_graph`, so the graph projection lives in
+the same Oracle ADB instance as the relational data, not a separate
+FalkorDB). All tests below used synthetic data in disposable, uniquely-
+named workspaces/rows, cleaned up afterward and confirmed removed.
+
+**Caution learned the hard way, recorded here so it isn't repeated:** an
+early attempt to reproduce Oracle connection-pool exhaustion
+(`OraclePool`, `max_size=25`, `wait_timeout=30000` in
+`src/aryx/store/oracle_connection_pool.py`) used 25 threads racing to
+acquire connections simultaneously via a `threading.Barrier`. Several
+threads raised `DPY-4011`/`DPY-4005` before reaching the barrier, which
+never completed, leaving the main thread (and the barrier) permanently
+stuck. Killing the *host-side* process wrapper (equivalent of Ctrl-C on
+the launching shell) did **not** kill the actual Python process running
+inside the container — it kept running, continuing to hammer new Oracle
+connections, and new connection attempts against the instance hung
+indefinitely until that process was found (via `/proc` inside the
+container) and killed directly. The already-running application was
+unaffected throughout (it kept serving real requests off its own
+long-lived pool in under 3ms) — only *new* connection/pool creation was
+blocked. Any future live testing against a shared or long-running
+container should avoid concurrent/threaded connection-acquisition tests
+entirely, or at minimum verify the test process actually exits before
+moving on.
+
+A second lesson: the running `aryx-api-1` container turned out to be a
+**frozen image built before this branch's commits** — `/app/src` is baked
+into the image at build time, not bind-mounted, so editing files on the
+host had no effect on the running container. This was only caught because
+a live `Settings` object was missing fields (`cpq_structural_leaf_fold_
+enabled`, etc.) that this branch added. The image was rebuilt
+(`docker compose -f docker-compose-oci.yml build api` — note: the legacy
+Python `docker-compose` v1 binary on this host fails on BuildKit-built
+images with `KeyError: 'ContainerConfig'`; `docker compose` v2 does not)
+and the container recreated before any of the §3b/§1 results below are
+meaningful. Any future live verification on this host should confirm
+`get_settings()` reflects the branch under test *before* relying on
+results.
+
+### §3b: full-pipeline streaming vs. eager parity — ✅ confirmed at 3,000-record scale
+
+Built a synthetic 3,000-record XML file (`<Root><Record><id>.../id><Name>
+.../Name></Record>...</Root>`, 178,903 bytes) and ran the full
+`resolve_and_relate_raw_graph()` pipeline twice, sequentially, into two
+disposable workspaces — once with `projection=` (eager), once with
+`xml_bytes=` and `ARYX_CPQ_STREAMING_PROJECTION_ENABLED=true` (streaming):
+
+| | eager | streaming |
+|---|---|---|
+| tags resolved | 2 (`Root`, `Record` — `id`/`Name` correctly folded) | 2 |
+| entities | 3,001 | 3,001 |
+| relationships | 3,000 | 3,000 |
+| provenance rows | 3,001 | 3,001 |
+| wall-clock | 60.9s | 60.5s |
+
+Entity payload sets (ontology_type + properties, ignoring entity_id
+numbering, which legitimately differs between runs) were compared
+exhaustively and found **byte-identical**. This is the first time the
+full pipeline — not just the XML parser — has been run both ways and
+compared; prior test coverage (`tests/cpq_ingestion/test_xml_projector.py`)
+only verified parser-level node/edge equivalence, not that folding +
+resolve + relate + graph projection produce the same end state.
+
+**Still open:** this is 3,000 records, not the real file's 439,946 —
+scale was kept deliberately small for a sequential, single-connection live
+test on a shared instance. The *mechanism* that would most plausibly break
+at larger scale (memory growth during the streaming walk itself) is
+already covered by `test_iter_peak_memory_does_not_scale_with_element_
+count` at 20,000 elements; what live testing adds here is pipeline-level
+correctness (folding/resolve/relate/graph-projection parity), which
+doesn't have an obvious scale-dependent failure mode the way memory does.
+Still recommend §3b stay opt-in until someone runs it against the actual
+large file, but the specific "does streaming produce different results"
+risk this document flagged is now directly addressed, not just argued.
+
+### §1 Tier 0: landing batch size — ✅ confirmed 3.84x speedup
+
+Landed 15,000 synthetic records via `BatchSink`/`PostgresStore.
+insert_records` at `batch_size=500` (current default at the time §1 was
+written) vs. `batch_size=3000` (the proposed setting), against the same
+live Oracle ADB instance:
+
+| batch_size | total time | ms/record | round-trips |
+|---|---|---|---|
+| 500 | 30.63s | 2.04 | 30 |
+| 3000 | 7.97s | 0.53 | 5 |
+
+**3.84x speedup**, consistent with the ~2.4s-per-500-rows figure
+`config_core.py`'s own comment cites from the original live incident.
+`ARYX_LANDING_BATCH_SIZE` is already set to `3000` in this dev_oci
+environment.
+
+### §4: slow Oracle queries — partially explained, one new risk found, root cause still open
+
+Captured a real `EXPLAIN PLAN` for `select_datasources.sql` (the
+confirmed source of the `SELECT aryx_datasource` rows in the original
+evidence table) at two scales:
+
+- **At the table's real current size (11 rows):** cost 4, trivial.
+- **At a synthetic 5,003-row scale (one workspace):** cost 16, plan is
+  `INDEX RANGE SCAN` (`ARYX_DATASOURCE_WS_IDX`) → `TABLE ACCESS BY INDEX
+  ROWID BATCHED` → `SORT ORDER BY`. **Not a full table/partition scan** —
+  the "missing index causing a full scan" hypothesis from this section's
+  original root-cause guess does not hold for this query at this scale.
+
+**New finding — the new covering index may not help even when it should.**
+Migration 0049's `idx_datasource_ws_created` was created live against this
+instance (and `DBMS_STATS.GATHER_TABLE_STATS` re-run), but `EXPLAIN PLAN`
+for the exact same query **still chose the old index and still did an
+explicit `SORT ORDER BY`** — it did not switch to the new covering index
+at all. `DBMS_XPLAN`'s own output states *"SQL plan baseline ... used for
+this statement"* for both before and after; `USER_SQL_PLAN_BASELINES`
+is not queryable from this schema (`ORA-00942`, likely an ADB privilege
+restriction), so the baseline's contents couldn't be inspected directly,
+but Oracle's own plan output confirms one is active and pinning the old
+plan. **This means migration 0049's index, as shipped, may provide zero
+actual benefit on an Oracle ADB instance that already has a captured plan
+baseline for this statement** — the baseline would need to be evolved
+(`DBMS_SPM`) before the optimizer would ever consider the new plan. Not
+fixed here (SPM administration needs privileges this schema doesn't have,
+and is a bigger, separate change) — flagging as a known limitation of the
+already-shipped index.
+
+**Fetch time scales with cursor `arraysize`, but this doesn't explain the
+original evidence.** Fetching all 5,003 rows took 16.6s at `arraysize=100`
+(oracledb's low default), 5.3s at `arraysize=500` (production's actual
+setting via `OracleCursorWrapper`), 3.3s at `arraysize=2000`. Real and
+worth knowing, but the original evidence table's three slow
+`SELECT aryx_datasource` entries all returned **0 rows** — round-trip
+count for a large result set cannot explain a 0-row query taking 5.8-31.8
+seconds.
+
+**Contention hypothesis: plausible, not confirmed.** `src/aryx/store/
+oracle_connection_pool.py` already documents a prior live `DPY-4005`
+pool-timeout incident, with `wait_timeout=30000` (30s) — suspiciously
+close to the evidence table's max observed duration (31,862ms). An attempt
+to reproduce this directly (saturate the pool, time a 0-row query's
+acquire-and-execute) was abandoned after the test itself malfunctioned
+(see the caution note above) rather than risk further disruption to the
+shared instance. Also worth noting: `oracle_cursor.py`'s `_t0` timer for
+the `db.oracle.slow_statement` log starts **inside** `execute()`, on an
+already-acquired cursor — so whatever produced the original evidence was
+slow *execution*, not pool-acquisition wait, which points more toward
+Oracle ADB-side session/resource contention (not yet reproducible from
+this schema's privilege level) than the client-side pool. **Root cause
+remains open** — this session narrowed it (ruled out bad query plan,
+identified the plan-baseline risk, ruled out round-trip count for 0-row
+results) but did not conclusively reproduce the original symptom.
