@@ -55,3 +55,60 @@ def test_entity_ids_by_run_passes_run_id_and_workspace_id_to_query():
 
     args, _ = mock_cursor.execute.call_args
     assert args[1] == (42, 7)
+
+
+# ── EntityStore.delete_entities -- bulk cleanup for a cancelled resolve/
+# relate attempt (PR #429 review N1, M1's own cleanup needed one round-trip
+# per id, undermining the "cancel should be prompt" point of this feature) ──
+
+def test_delete_entities_sends_one_delete_for_the_whole_id_list():
+    mock_cursor = MagicMock()
+    mock_cursor.rowcount = 3
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        removed = store.delete_entities([100, 101, 102])
+
+    assert removed == 3
+    mock_cursor.execute.assert_called_once()
+    args, _ = mock_cursor.execute.call_args
+    assert args[1] == {"workspace_id": 7, "entity_ids": [100, 101, 102]}
+
+
+def test_delete_entities_empty_list_is_a_noop():
+    mock_pool = MagicMock()
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        removed = store.delete_entities([])
+
+    assert removed == 0
+    mock_pool.connection.assert_not_called()
+
+
+def test_delete_entities_chunks_large_id_lists(monkeypatch):
+    """PR #429 review N1 (round 2): an unbounded id list means one huge
+    array bind and one long-running DELETE for the largest attempts this
+    PR's cancellation support targets -- chunked so a slow cleanup is
+    bounded per-chunk, not one unbreakable statement."""
+    mock_cursor = MagicMock()
+    mock_cursor.rowcount = 2
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        monkeypatch.setattr(store, "_DELETE_CHUNK_SIZE", 2)
+        removed = store.delete_entities([1, 2, 3, 4, 5])
+
+    assert removed == 6  # 3 chunks * rowcount=2 each (stubbed, not realistic per-chunk)
+    assert mock_cursor.execute.call_count == 3
+    chunks = [call.args[1]["entity_ids"] for call in mock_cursor.execute.call_args_list]
+    assert chunks == [[1, 2], [3, 4], [5]]

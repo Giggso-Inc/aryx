@@ -16,6 +16,7 @@ import pytest
 
 from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
+from aryx.pipeline.orchestrate import PipelineCancelled
 
 WORKSPACE_ID = 879
 DSN = "postgresql://unused"
@@ -170,6 +171,252 @@ def test_estore_closed_even_when_run_pipeline_raises():
             pass
 
     mock_estore.close.assert_called_once()
+
+
+# ── should_stop cancellation (PR #425-style, this confirm path previously
+# had none at all) ───────────────────────────────────────────────────────
+
+def test_should_stop_true_before_any_tag_raises_before_run_pipeline():
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore_cls.return_value = _mock_estore(lambda run_id: {})
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: True,
+            )
+
+    mock_run_pipeline.assert_not_called()
+    mock_project.assert_not_called()
+
+
+def test_should_stop_after_first_tag_stops_before_second_tag_and_projection():
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the pre-first-tag check, True after
+
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}) as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
+            )
+
+    mock_run_pipeline.assert_called_once()  # only the first tag ran
+    mock_project.assert_not_called()  # projection never reached
+    mock_estore.close.assert_called_once()  # finally still runs on cancel
+
+
+def test_cancel_mid_loop_deletes_entities_from_already_resolved_tags():
+    """PR #429 review M1: a mid-loop cancel must delete the orphaned
+    entities from tags that already resolved in THIS attempt -- otherwise
+    they have no relationships yet (those are saved once, after the whole
+    loop) and surface as permanent isolated nodes once project_workspace_
+    graph next rebuilds the graph from the DB."""
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the pre-first-tag check, True after
+
+    # PurchaseOrder's tag resolves to run_id=10, whose one node (id 0) maps
+    # to entity_id 500 -- this is what must get deleted on cancel.
+    mock_estore = _mock_estore(lambda run_id: {"po_file:0": 500} if run_id == 10 else {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 10, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore.delete_entities.return_value = 1
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
+            )
+
+    mock_estore.delete_entities.assert_called_once_with([500])
+    mock_project.assert_not_called()
+    mock_estore.save_relationships.assert_not_called()  # never reached -- no relationships to orphan
+
+
+def test_cancel_from_inside_run_pipeline_also_cleans_up_the_in_flight_tag():
+    """PR #429 review M1/N1 (round 2): run_pipeline()'s own should_stop
+    checks (orchestrate.py's "relate" checkpoint) can raise PipelineCancelled
+    from INSIDE a tag's run_pipeline call, AFTER that tag's own entities are
+    already saved (relate fires right after resolve_cluster) -- this is the
+    most likely real-world cancellation point. orchestrate.py's
+    _check_cancelled now attaches that tag's run_id onto the exception, so
+    the except block here can look up and delete ITS entities too, not just
+    the already-completed PurchaseOrder tag's -- previously the in-flight
+    tag's entities were left behind entirely."""
+    def _run_pipeline_side_effect(**kwargs):
+        if kwargs["dataset"] == "PurchaseOrder":
+            return {"run_id": 10, "entities": 1, "relationships": 0}
+        # Customer: cancelled after resolve_cluster already saved its
+        # entity -- run_id=11 is attached, same as the real
+        # _check_cancelled(should_stop, "relate", run_id=run_id) does.
+        raise PipelineCancelled("cancelled inside run_pipeline for Customer", run_id=11)
+
+    entities_by_run = {10: {"po_file:0": 500}, 11: {"po_file:1": 600}}
+    # should_stop itself never reports True -- the cancellation comes
+    # entirely from inside run_pipeline, proving the pre-tag check alone
+    # would have missed it.
+    mock_estore = _mock_estore(lambda run_id: entities_by_run.get(run_id, {}))
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               side_effect=_run_pipeline_side_effect), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore.delete_entities.return_value = 2
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: False,
+            )
+
+    # Both the already-completed PurchaseOrder entity (500) AND the
+    # in-flight Customer entity (600) must be cleaned up.
+    mock_estore.delete_entities.assert_called_once_with([500, 600])
+    mock_project.assert_not_called()
+
+
+def test_cancel_with_no_run_id_on_the_exception_only_cleans_up_completed_tags():
+    """The explicit should_stop() check at the top of the loop raises
+    PipelineCancelled with no run_id (nothing is in flight at that point) --
+    must behave exactly as before: only already-completed tags' entities
+    are cleaned up, no lookup attempted for a nonexistent in-flight run."""
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    mock_estore = _mock_estore(lambda run_id: {"po_file:0": 500} if run_id == 10 else {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 10, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore.delete_entities.return_value = 1
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
+            )
+
+    mock_estore.delete_entities.assert_called_once_with([500])
+    mock_project.assert_not_called()
+
+
+def test_in_flight_run_id_lookup_failure_still_cleans_up_completed_tags():
+    """A DB hiccup looking up the in-flight tag's entities must not block
+    cleaning up the tags that already fully completed, and must not mask
+    the cancellation."""
+    def _run_pipeline_side_effect(**kwargs):
+        if kwargs["dataset"] == "PurchaseOrder":
+            return {"run_id": 10, "entities": 1, "relationships": 0}
+        raise PipelineCancelled("cancelled inside run_pipeline for Customer", run_id=11)
+
+    def _entity_ids_by_run(run_id):
+        if run_id == 10:
+            return {"po_file:0": 500}
+        raise RuntimeError("db down")
+
+    mock_estore = _mock_estore(_entity_ids_by_run)
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               side_effect=_run_pipeline_side_effect):
+        mock_estore.delete_entities.return_value = 1
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: False,
+            )
+
+    # PurchaseOrder's entity still gets cleaned up despite the failed
+    # lookup for Customer's in-flight run_id.
+    mock_estore.delete_entities.assert_called_once_with([500])
+
+
+def test_cancel_before_any_tag_has_nothing_to_clean_up():
+    """should_stop=True on the very first (pre-first-tag) check means no
+    entities exist yet -- cleanup must be a no-op, not an error."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline:
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: True,
+            )
+
+    mock_run_pipeline.assert_not_called()
+    mock_estore.delete_entities.assert_not_called()
+
+
+def test_cleanup_failure_is_logged_and_does_not_mask_the_cancellation():
+    """A DB hiccup while deleting orphans must not hide the cancel itself
+    behind a different exception -- PipelineCancelled still propagates."""
+    mock_estore = _mock_estore(lambda run_id: {"po_file:0": 500})
+    mock_estore.delete_entities.side_effect = RuntimeError("db unreachable")
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 10, "entities": 1, "relationships": 0}):
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
+            )
+
+
+def test_should_stop_is_forwarded_into_every_run_pipeline_call():
+    def _never_stop() -> bool:
+        return False
+
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_never_stop,
+        )
+
+    assert mock_run_pipeline.call_count == 3
+    for c in mock_run_pipeline.call_args_list:
+        assert c.kwargs["should_stop"] is _never_stop
+
+
+def test_default_should_stop_none_behaves_exactly_as_before():
+    """Regression guard: omitting should_stop entirely (every pre-existing
+    caller) must behave identically to the pre-cancellation-support code."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}) as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph",
+               return_value={"entities": 3}) as mock_project:
+        result = resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    assert mock_run_pipeline.call_count == 3
+    for c in mock_run_pipeline.call_args_list:
+        assert c.kwargs["should_stop"] is None
+    mock_project.assert_called_once()
+    assert result["tags"] == 3
 
 
 def test_no_relationships_saved_when_no_edges_resolve():

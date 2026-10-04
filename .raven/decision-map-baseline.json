@@ -13922,38 +13922,43 @@
       "<try>"
     ],
     [
+      "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
+      81,
+      "<try>"
+    ],
+    [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
       40,
       "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      161,
+      191,
       "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      164,
+      194,
       "count_raw_graph_elements"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      224,
+      254,
       "count_raw_graph_elements"
     ],
     [
       "src/aryx/csv_bml_ingestion/__main__.py",
-      54,
+      55,
       "_load_index"
     ],
     [
       "src/aryx/csv_bml_ingestion/__main__.py",
-      57,
+      58,
       "<try>"
     ],
     [
       "src/aryx/csv_bml_ingestion/__main__.py",
-      65,
+      66,
       "_load_index"
     ],
     [
@@ -14488,7 +14493,7 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      714,
+      721,
       "<if>"
     ],
     [
@@ -14788,7 +14793,12 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      557,
+      573,
+      "delete_entities"
+    ],
+    [
+      "src/aryx/store/entity_store.py",
+      594,
       "delete_entities_by_type"
     ],
     [

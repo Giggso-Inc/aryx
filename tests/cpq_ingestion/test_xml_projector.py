@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 import tracemalloc
 
+import pytest
+
 from aryx.cpq_ingestion.raw_graph.xml_projector import count_raw_graph_elements, project_xml_to_raw_graph
+from aryx.pipeline.orchestrate import PipelineCancelled
 
 WRAPPED_XML = b"""<Accounts>
   <Account Id="001AC">
@@ -270,12 +273,14 @@ def test_large_document_logs_progress_and_done(caplog):
 
 
 def test_should_stop_cancels_the_count_early(monkeypatch):
-    """Unlike project_xml_to_raw_graph (no cancellation support at all,
-    accepted as-is per PR #426 review since a full projection is only built
-    at Confirm time where Oracle write cancellation already exists),
-    count_raw_graph_elements's should_stop is checked at the progress-log
+    """count_raw_graph_elements's should_stop is checked at the progress-log
     cadence -- a cancel must stop the walk with a partial, smaller count
-    rather than running to completion."""
+    rather than running to completion. (project_xml_to_raw_graph, the full
+    projection used at Confirm time, gained the same should_stop support in
+    PR #429 -- see the tests below -- but raises instead of returning a
+    partial result, since a partial RawGraphProjection would be silently
+    wrong input to the resolve pipeline; a partial preview count here is
+    still a reasonable answer.)"""
     from aryx.cpq_ingestion.raw_graph import xml_projector
 
     monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
@@ -301,3 +306,39 @@ def test_should_stop_never_called_when_it_always_returns_false():
     data = _make_flat_xml(10)
     nodes, edges = count_raw_graph_elements(data, should_stop=lambda: False)
     assert (nodes, edges) == (21, 20)
+
+
+# ── project_xml_to_raw_graph's own should_stop (PR #429 review: the
+# Confirm-stage cpq_ingestion loop calls this full projection before
+# resolve_and_relate_raw_graph's per-tag checks can help, so the whole
+# ~40-78s parse was uncancellable until this) ──────────────────────────────
+
+def test_project_raises_pipeline_cancelled_instead_of_returning_partial(monkeypatch):
+    """Unlike count_raw_graph_elements (a preview where a partial answer is
+    fine), a partial RawGraphProjection would be silently wrong input to
+    the resolve pipeline -- cancellation here must raise, not return early."""
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
+    data = _make_flat_xml(50)
+
+    with pytest.raises(PipelineCancelled):
+        project_xml_to_raw_graph(data, should_stop=lambda: True)
+
+
+def test_project_should_stop_false_behaves_exactly_as_before(monkeypatch):
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
+    data = _make_flat_xml(50)
+
+    projection = project_xml_to_raw_graph(data, should_stop=lambda: False)
+    assert len(projection.nodes) == 101
+    assert len(projection.edges) == 100
+
+
+def test_project_default_should_stop_none_is_unaffected():
+    """Regression guard: every pre-existing caller omits should_stop."""
+    projection = project_xml_to_raw_graph(WRAPPED_XML)
+    assert len(projection.nodes) == 14
+    assert len(projection.edges) == 13

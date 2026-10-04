@@ -535,6 +535,43 @@ class EntityStore:
             logger.info("entity deleted ws=%s id=%s", self._ws, entity_id)
         return removed
 
+    _DELETE_CHUNK_SIZE = 20_000
+
+    def delete_entities(self, entity_ids: list[int]) -> int:
+        """Delete several entities in chunked round-trips; returns the count removed.
+
+        cpq_ingestion's raw-graph resolve/relate cancellation cleanup (PR
+        #429 review N1) used to call delete_entity() once per id -- fine for
+        a handful of entities, but a cancel after many tags on a large file
+        could mean many individual round-trips, undermining the whole point
+        of a prompt cancel. One DELETE with an id list, same %(entity_ids)s
+        array-param pattern delete_impacted_entities.sql already uses
+        (source_purge_repair.py), removes that per-id cost.
+
+        Chunked at _DELETE_CHUNK_SIZE (PR #429 review N1 round 2): a single
+        unbounded id list means one huge JSON/array bind and one
+        long-running DELETE for the largest attempts this PR's cancellation
+        support targets (the 5.85M-node upload) -- the same "cancel should
+        be prompt, not eventually" concern driving this whole cleanup in
+        the first place. Each chunk is its own round-trip so a slow cleanup
+        is at least bounded per-chunk, not one unbreakable statement.
+        """
+        if not entity_ids:
+            return 0
+        ids = list(entity_ids)
+        removed = 0
+        for i in range(0, len(ids), self._DELETE_CHUNK_SIZE):
+            chunk = ids[i:i + self._DELETE_CHUNK_SIZE]
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("delete_entities_by_ids"), {
+                        "workspace_id": self._ws, "entity_ids": chunk,
+                    })
+                    removed += cur.rowcount
+        if removed:
+            logger.info("entities deleted ws=%s count=%d", self._ws, removed)
+        return removed
+
     def delete_entities_by_type(self, ontology_type: str) -> list[int]:
         """Delete all entities of a type; return the list of deleted ids."""
         with self._pool.connection() as conn:

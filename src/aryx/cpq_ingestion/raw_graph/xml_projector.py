@@ -37,7 +37,9 @@ def _strip_ns(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
 
-def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
+def project_xml_to_raw_graph(
+    data: bytes, should_stop: Callable[[], bool] | None = None,
+) -> RawGraphProjection:
     """Walk an XML document into raw graph nodes and edges.
 
     Rule: every element becomes one node labeled by its (namespace-stripped)
@@ -93,6 +95,20 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
         ``RawGraphConnector.extract``) replays nodes in list order into
         the resolve pipeline, where order can affect entity-id assignment
         and merge tie-breaks for same-tag elements.
+
+    Raises:
+        PipelineCancelled: if should_stop is given and reports a cancel,
+            checked at the same cadence as progress logging below. Unlike
+            count_raw_graph_elements() (a preview-only counter where a
+            partial count is still a reasonable answer), a partial
+            RawGraphProjection would be silently wrong input to the resolve
+            pipeline that consumes it -- so this raises instead of
+            returning early (PR #429 review: the Confirm-stage cpq_ingestion
+            resolve/relate loop calls this before resolve_and_relate_raw_
+            graph(), and that function's own per-tag should_stop checks
+            can't help with a cancel that lands during THIS parse -- the
+            full parse of a 240MB file took ~40-78s live, all of it
+            previously uncancellable).
     """
     nodes: list[RawNode | None] = []
     edges: list[RawEdge] = []
@@ -149,6 +165,20 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
                 "project_xml_to_raw_graph: %d element(s) processed, %.1fs elapsed",
                 finished, time.monotonic() - start,
             )
+            if should_stop is not None and should_stop():
+                logger.warning("project_xml_to_raw_graph: cancelled after %d element(s)", finished)
+                raven_log("WARN", "P3", "ingest.raw_graph.project_cancelled projection parse stopped by cancel",
+                          error_code="ARYX_ING_CANCELLED",
+                          context={"elements_processed": finished, "result": "cancelled",
+                                   "exit_condition": "cancelled"})
+                # Lazy: orchestrate.py is the whole pipeline-orchestration
+                # module (discover/resolve/relate/project, EntityStore,
+                # OntologyStore, ...) -- this module is a pure, dependency-free
+                # XML walker otherwise, and PipelineCancelled is the only
+                # thing it needs from orchestrate.py, only on this rare
+                # cancellation path (PR #429 review).
+                from aryx.pipeline.orchestrate import PipelineCancelled  # noqa: PLC0415
+                raise PipelineCancelled(f"job cancelled during XML projection after {finished} element(s)")
 
     if finished >= _PROGRESS_LOG_INTERVAL:
         logger.info(

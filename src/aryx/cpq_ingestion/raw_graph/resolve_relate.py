@@ -18,6 +18,7 @@ it remains a write-only provenance artifact.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aryx.broker import Broker
@@ -31,12 +32,70 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     group_nodes_by_tag,
     parse_record_id,
 )
-from aryx.pipeline.orchestrate import project_workspace_graph, run_pipeline
+from aryx.pipeline.orchestrate import PipelineCancelled, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
 from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
+
+
+def _delete_orphaned_entities(
+    estore: EntityStore, node_id_to_entity_id: dict[int, int],
+    *, log_id: str | None, source_key: str,
+) -> None:
+    """Roll back entities already created by earlier tags in THIS attempt
+    when a cancel lands mid-loop (PR #429 review M1).
+
+    Relationships are only saved once, after every tag finishes (see
+    translate_containment_edges/save_relationships below) -- so a cancel
+    here means these entities have no relationships yet and would otherwise
+    sit in the DB as orphans, surfacing as isolated nodes once
+    project_workspace_graph next rebuilds the graph from everything in the
+    DB. Deleting them now means a cancelled attempt leaves nothing behind:
+    the next confirm (re-confirming this same file, or confirming anything
+    else in the workspace) starts from a clean slate for this source file
+    instead of adding to leftover orphans on top of whatever a retry
+    creates.
+
+    This does NOT touch aryx_entity_member rows for the deleted entities --
+    EntityStore.delete_entity()/delete_entities_by_type() (the existing
+    methods this builds on) already have that same limitation for their
+    existing callers, so this is consistent with, not worse than, the rest
+    of the codebase (tracked as N2 in the PR #429 review, not fixed here).
+
+    One round-trip, not one per entity (PR #429 review N1): a cancel after
+    many tags on a large file (the 5.85M-node upload this PR's cancellation
+    support targets) could otherwise mean many individual DELETEs just to
+    clean up -- undermining the "cancel should be prompt" goal this PR
+    exists for. EntityStore.delete_entities() takes the full id list in one
+    DELETE (same array-param pattern as delete_impacted_entities.sql).
+
+    Best-effort: a deletion failure is logged and skipped rather than
+    raised, so a DB hiccup while cleaning up after a cancel never masks the
+    cancellation itself.
+    """
+    if not node_id_to_entity_id:
+        return
+    entity_ids = sorted(set(node_id_to_entity_id.values()))
+    try:
+        deleted = estore.delete_entities(entity_ids)
+    except Exception:  # noqa: BLE001 -- cleanup is best-effort, never mask the cancel
+        logger.warning(
+            "raw_graph resolve_and_relate did=%s source_key=%s: failed to delete "
+            "%d orphaned entity(ies) after cancel", log_id, source_key, len(entity_ids), exc_info=True,
+        )
+        deleted = 0
+    logger.warning(
+        "raw_graph resolve_and_relate did=%s source_key=%s: cancelled -- deleted %d/%d "
+        "orphaned entity(ies) from already-resolved tags",
+        log_id, source_key, deleted, len(entity_ids),
+    )
+    raven_log("WARN", "P3", "ingest.raw_graph.cancel_cleanup orphaned entities deleted after cancel",
+              error_code="ARYX_ING_CANCELLED",
+              context={"log_id": log_id, "source_key": source_key, "entities_attempted": len(entity_ids),
+                       "entities_deleted": deleted, "result": "cancelled",
+                       "exit_condition": "cancelled"})
 
 
 def resolve_and_relate_raw_graph(
@@ -49,6 +108,7 @@ def resolve_and_relate_raw_graph(
     broker: Broker,
     context: str = "",
     log_id: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Resolve every raw-graph tag into curated entities, relate via
     containment, and project the result into the curated graph.
@@ -64,6 +124,85 @@ def resolve_and_relate_raw_graph(
     ``project_workspace_graph`` call at the end performs the one graph
     projection this whole file needs — the same function ``run_pipeline``'s
     own project stage now delegates to (see ``orchestrate.py``).
+
+    should_stop: optional cancellation poll, checked once per tag (before
+    that tag's run_pipeline call starts) and once more before the final
+    project_workspace_graph call -- this confirm path previously had zero
+    cancellation support at all, unlike the Read-stage raw-graph write
+    (PR #425). A multi-tag/multi-file XML confirm's cost is spread across
+    many per-tag run_pipeline calls, so checking between them meaningfully
+    shrinks the cancel-to-stop window. Also forwarded into each
+    run_pipeline call so an already-running tag's own discover/resolve
+    stages observe it too (run_pipeline already supports should_stop).
+    Does NOT make project_workspace_graph's own write interruptible
+    mid-write -- that function is shared by every ingestion path in the
+    system, not just cpq_ingestion XML, and is a separate, larger gap left
+    out of scope here (same as it already is for every other caller).
+
+    Trade-off (PR #429 review): a cancel that lands after the last tag's
+    entities/relationships are already saved but before this final
+    project_workspace_graph call leaves the curated GRAPH stale relative to
+    the DB -- entities/relationships exist, the graph doesn't reflect them
+    yet. Accepted: project_workspace_graph rebuilds the whole workspace
+    graph from the DB every time it runs, so the next real confirm (for
+    this file or any other) in the workspace repairs it; nothing is lost,
+    only delayed.
+
+    Not resumable (PR #429 review M1, after an earlier, wrong claim in this
+    docstring that re-running resolve would merge onto prior entities --
+    verified false): unlike the generic CSV plan loop in ingest_confirmed()
+    (which tracks completed_plans and skips already-done files on a
+    restart), a cancelled cpq XML source file is never marked complete, so
+    re-confirming it redoes every tag from scratch. resolve_run()/resolve()
+    only cluster the records passed to THAT call against each other -- they
+    have no knowledge of entities a previous run already created, and
+    relate=False here means the FK/relate stage that could otherwise catch
+    some duplicates never runs either. EntityStore.save()'s own
+    insert_entity.sql is a plain INSERT (no ON CONFLICT, no existing-entity
+    lookup), confirmed by reading it -- every resolve_run() call for the
+    same data creates brand new entity rows, for every tag, regardless of
+    whether it has a real match key, an LLM-guessed one, or none at all.
+
+    Mitigated, not eliminated (PR #429 review M1, second round -- the first
+    round only caught the should_stop() check at the top of the loop; it
+    missed that run_pipeline() itself can ALSO raise PipelineCancelled from
+    inside a tag, via orchestrate.py's own "relate" checkpoint, which fires
+    unconditionally right after resolve_cluster -- the expensive embedding/
+    entity-resolution stage and the bulk of a tag's cost -- regardless of
+    relate=False here. That is the MOST likely real-world cancellation
+    point, not the pre-tag check, so an except PipelineCancelled now wraps
+    the whole tag loop, catching both paths):
+
+    When caught, _delete_orphaned_entities (below) deletes every entity
+    already created by tags that fully completed BEFORE the one in flight
+    when the cancel landed -- relationships are only saved once, after
+    every tag finishes, so those entities never had any yet and would
+    otherwise sit as permanent orphans once project_workspace_graph next
+    rebuilds the graph from everything in the DB.
+
+    PR #429 review N1 (round 2) closed what was the main remaining gap: a
+    cancel raised from INSIDE run_pipeline() -- the common case, since the
+    "relate" checkpoint fires right after resolve_cluster, i.e. AFTER that
+    tag's own entities are already saved -- used to leave that WHOLE
+    in-flight tag's entities behind uncleaned (node_id_to_entity_id is only
+    populated after run_pipeline returns successfully, so a raise meant
+    this function never learned that tag's run_id). orchestrate.py's
+    _check_cancelled now attaches run_id onto the PipelineCancelled it
+    raises; the except block here looks those entities up via the same
+    entity_ids_by_run() the successful path already uses and folds them
+    into the same cleanup call. So a mid-loop cancel -- whichever of the
+    two paths triggers it -- now cleans up every tag that reached
+    resolve_cluster, in-flight one included, not just the ones that fully
+    finished before it.
+
+    Does NOT prevent duplication across separate confirm attempts that each
+    ran to completion (re-confirming an already-finished file, or a cancel
+    that lands after the last tag but before the final project_workspace_
+    graph call -- see the trade-off note above, where entities+relationships
+    are already correctly saved and nothing needs cleanup). True
+    resumability (skipping already-resolved tags, mirroring the generic CSV
+    path's completed_plans) is a separate, larger feature and still out of
+    scope for this PR.
     """
     total_entities = 0
     relationships: list[Any] = []
@@ -85,27 +224,72 @@ def resolve_and_relate_raw_graph(
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)
     try:
-        for tag, nodes in by_tag.items():
-            inferred = infer_match_keys_for_tag(tag, nodes, context, log_id=log_id)
-            connector = RawGraphConnector(nodes, tag=tag, source_key=source_key)
-            summary = run_pipeline(
-                connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
-                ontology_type=inferred["ontology_type"], match_keys=inferred["match_keys"],
-                graph_url=graph_url, broker=broker, workspace_id=workspace_id,
-                relate=False, skip_graph=True,
-            )
-            total_entities += summary["entities"]
-            for record_id, entity_id in estore.entity_ids_by_run(summary["run_id"]).items():
-                _, node_id = parse_record_id(record_id)
-                node_id_to_entity_id[node_id] = entity_id
-            logger.info(
-                "raw_graph resolve_and_relate did=%s source_key=%s tag=%s run_id=%s entities=%d",
-                log_id, source_key, tag, summary["run_id"], summary["entities"],
-            )
-            raven_log("DEBUG", "P4", "ingest.raw_graph.resolve tag resolved",
-                      context={"log_id": log_id, "source_key": source_key, "tag": tag, "nodes": len(nodes),
-                               "run_id": summary["run_id"], "entities": summary["entities"],
-                               "match_keys": inferred["match_keys"]})
+        try:
+            for tag, nodes in by_tag.items():
+                if should_stop is not None and should_stop():
+                    raise PipelineCancelled(
+                        f"job cancelled before tag={tag} source_key={source_key}",
+                    )
+                inferred = infer_match_keys_for_tag(tag, nodes, context, log_id=log_id)
+                connector = RawGraphConnector(nodes, tag=tag, source_key=source_key)
+                # run_pipeline's own should_stop checks (orchestrate.py's
+                # _check_cancelled) can ALSO raise PipelineCancelled from
+                # inside this call -- its "relate" checkpoint fires
+                # unconditionally right after the resolve_cluster stage,
+                # the expensive embedding/entity-resolution part and the
+                # bulk of a tag's cost, regardless of relate=False here.
+                # That is the MOST likely real-world cancellation point
+                # (PR #429 review M1), not the should_stop() check above,
+                # so it must be caught by the same except below, not left
+                # to propagate uncleaned.
+                summary = run_pipeline(
+                    connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
+                    ontology_type=inferred["ontology_type"], match_keys=inferred["match_keys"],
+                    graph_url=graph_url, broker=broker, workspace_id=workspace_id,
+                    relate=False, skip_graph=True, should_stop=should_stop,
+                )
+                total_entities += summary["entities"]
+                for record_id, entity_id in estore.entity_ids_by_run(summary["run_id"]).items():
+                    _, node_id = parse_record_id(record_id)
+                    node_id_to_entity_id[node_id] = entity_id
+                logger.info(
+                    "raw_graph resolve_and_relate did=%s source_key=%s tag=%s run_id=%s entities=%d",
+                    log_id, source_key, tag, summary["run_id"], summary["entities"],
+                )
+                raven_log("DEBUG", "P4", "ingest.raw_graph.resolve tag resolved",
+                          context={"log_id": log_id, "source_key": source_key, "tag": tag, "nodes": len(nodes),
+                                   "run_id": summary["run_id"], "entities": summary["entities"],
+                                   "match_keys": inferred["match_keys"]})
+        except PipelineCancelled as exc:
+            # Covers both paths above: the explicit should_stop() check at
+            # the top of the loop, and a PipelineCancelled raised from
+            # inside run_pipeline() for the tag currently in flight.
+            #
+            # PR #429 review N1 (round 2): run_pipeline's own
+            # _check_cancelled now attaches the in-flight tag's run_id onto
+            # the exception it raises -- the "relate" checkpoint fires right
+            # after resolve_cluster, i.e. AFTER that tag's entities are
+            # already saved, so without this they'd be undercounted orphans
+            # every time (the common case, not a small one). When present,
+            # look those entities up the same way the tag loop itself does
+            # on success (estore.entity_ids_by_run) and fold them into the
+            # cleanup set alongside the already-completed tags' entities.
+            orphan_ids = dict(node_id_to_entity_id)
+            if exc.run_id is not None:
+                try:
+                    in_flight = estore.entity_ids_by_run(exc.run_id)
+                except Exception:  # noqa: BLE001 -- best-effort, see _delete_orphaned_entities
+                    logger.warning(
+                        "raw_graph resolve_and_relate did=%s source_key=%s: failed to look up "
+                        "in-flight run_id=%s entities for cleanup", log_id, source_key, exc.run_id,
+                        exc_info=True,
+                    )
+                else:
+                    for record_id, entity_id in in_flight.items():
+                        _, node_id = parse_record_id(record_id)
+                        orphan_ids[node_id] = entity_id
+            _delete_orphaned_entities(estore, orphan_ids, log_id=log_id, source_key=source_key)
+            raise
 
         relationships = translate_containment_edges(
             projection.edges, node_id_to_entity_id, log_id=log_id,
@@ -113,6 +297,10 @@ def resolve_and_relate_raw_graph(
         if relationships:
             estore.save_relationships(relationships)
 
+        if should_stop is not None and should_stop():
+            raise PipelineCancelled(
+                f"job cancelled before final graph projection source_key={source_key}",
+            )
         graph_counts = project_workspace_graph(dsn, graph_url, workspace_id, estore)
     finally:
         estore.close()

@@ -316,11 +316,13 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     other run_pipeline() stage kept running server-side regardless, never
     reaching the cancellation support added to _relate_isolated/
     dimension_link. Built once and passed to every run_pipeline() call
-    below (both the per-mention-type loop and _run_one_plan's per-file
-    loop) so both loops observe the same cancellation state. Caller
-    (_confirm_job) must catch PipelineCancelled separately -- it propagates
-    out of run_pipeline() at the next stage boundary after should_stop()
-    starts returning True.
+    below (the per-mention-type loop, _run_one_plan's per-file loop, and
+    -- since this gap existed here too until it was fixed -- the
+    cpq_ingestion raw-graph resolve/relate loop's per-source-file and
+    per-tag checks inside resolve_and_relate_raw_graph()) so all three
+    observe the same cancellation state. Caller (_confirm_job) must catch
+    PipelineCancelled separately -- it propagates out of run_pipeline() at
+    the next stage boundary after should_stop() starts returning True.
     """
     settings = get_settings()
     datasource_store = DatasourceStore(settings.effective_dsn())
@@ -527,6 +529,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                        "reason_code": "CPQ_XML_ACTIVE"})
 
     for source_filename, plan in cpq_ingestion_source_files.items():
+        # Mirrors _run_one_plan's own top-of-iteration should_stop check below --
+        # a job cancelled while a PREVIOUS source file's resolve/relate was still
+        # running, or between files, must not start the next ~100+-minute file.
+        if should_stop():
+            raise PipelineCancelled(f"job cancelled before source_filename={source_filename}")
         from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
         from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
 
@@ -535,11 +542,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                           f"Resolving {source_filename} directly from its raw graph…")
         logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
                     job_id, source_filename)
-        projection = project_xml_to_raw_graph(plan["source_bytes"])
+        projection = project_xml_to_raw_graph(plan["source_bytes"], should_stop=should_stop)
         result = resolve_and_relate_raw_graph(
             projection, workspace_id=workspace_id, source_key=stem,
             dsn=settings.effective_dsn(), graph_url=settings.graph_url,
-            broker=broker, log_id=job_id,
+            broker=broker, log_id=job_id, should_stop=should_stop,
         )
         logger.info("confirm job=%s cpq_ingestion resolve/relate done source_filename=%s result=%s",
                     job_id, source_filename, result)

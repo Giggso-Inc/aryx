@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.models import ResolutionRecord
+from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolve_entities import resolve_run
 
 
@@ -271,3 +271,105 @@ def test_exact_ids_bypasses_the_selectivity_guard_too() -> None:
 
     mock_resolve.assert_called_once()
     mock_chunked.assert_not_called()
+
+
+# ── cross-run duplication risk (PR #429 review N2, cpq_ingestion raw-graph
+# resolve/relate re-confirm after a cancel) ─────────────────────────────────
+#
+# resolve_and_relate_raw_graph()'s docstring originally claimed a re-confirm
+# would "merge onto" entities a cancelled attempt already created. That was
+# wrong: resolve_run()/resolve() only cluster the records passed to THAT
+# call against each other; they never look up entities a PRIOR run already
+# saved. These tests prove it at the resolve_run level -- the same level
+# every confirm and re-confirm in the system goes through -- by calling it
+# twice with identical input and showing each call independently drives its
+# own store.save() with its own freshly "resolved" entity, with no lookup or
+# coordination between the two calls. (EntityStore.save()'s own SQL --
+# insert_entity.sql, a plain INSERT with no ON CONFLICT -- was confirmed
+# separately by reading it to complete the chain: two independent save()
+# calls for the same logical record become two separate database rows.)
+#
+# KNOWN-GAP TESTS, pinning a real architectural invariant, not a bug this
+# file's code is expected to fix (PR #429 review N1): resolve_run() itself
+# will likely NEVER gain cross-run entity lookup -- doing so generically
+# would change matching semantics for every caller in the system, not just
+# cpq_ingestion. The actual mitigation for cpq_ingestion's cancel-then-
+# retry case lives one layer up, in resolve_and_relate_raw_graph()'s
+# _delete_orphaned_entities() (src/aryx/cpq_ingestion/raw_graph/
+# resolve_relate.py): a mid-loop cancel now deletes the entities
+# already-resolved tags created in THAT attempt, so a retry starts clean
+# instead of piling new entities on top of the old ones. These two tests
+# below will keep passing after that fix (and should keep passing after
+# any future one) because they test resolve_run() in isolation, not the
+# cancel-cleanup behavior -- do not take their continued passing as
+# evidence the cpq_ingestion duplication risk is unaddressed; check
+# resolve_relate.py's own tests (test_resolve_and_relate_raw_graph.py) for
+# that instead.
+
+def test_resolve_run_has_no_cross_run_entity_lookup_mechanism():
+    """A second resolve_run() call for IDENTICAL records (as a cpq XML
+    re-confirm after a cancel would produce for an already-resolved tag)
+    drives its own independent store.save() call -- nothing in resolve_run
+    or the mocked resolve() ever consults what a prior run_id already
+    saved. This is true regardless of whether key_attrs is a real match
+    key, empty, or anything else -- the duplication risk is NOT limited to
+    keyless/LLM-guessed tags, contrary to a narrower reading of the
+    original review comment."""
+    records = [ResolutionRecord(record_id=1, text="Acme Corp", payload={"name": "Acme Corp"})]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    same_entity_each_time = [
+        (ResolvedEntity(ontology_type="Company", attributes={"name": "Acme Corp"}),
+         [EntityMember(landed_record_id=1)]),
+    ]
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.resolve", return_value=same_entity_each_time) as mock_resolve:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+
+        # First "confirm attempt" -- run_id=1.
+        resolve_run(run_id=1, ontology_type="Company", key_attrs=["name"],
+                   store=store, broker=broker, workspace_id=1)
+        # A cancelled-and-re-confirmed attempt gets a NEW run_id (run_id=2)
+        # for the exact same source records -- nothing in this call chain
+        # is told run_id=1 already resolved them.
+        resolve_run(run_id=2, ontology_type="Company", key_attrs=["name"],
+                   store=store, broker=broker, workspace_id=1)
+
+    assert mock_resolve.call_count == 2
+    assert store.save.call_count == 2
+    # Both save() calls receive the SAME "resolved" entity payload --
+    # production EntityStore.save() would INSERT it twice (no ON CONFLICT,
+    # no pre-check), i.e. two distinct entity rows for the same data.
+    first_call_results = store.save.call_args_list[0].args[0]
+    second_call_results = store.save.call_args_list[1].args[0]
+    assert first_call_results == second_call_results == same_entity_each_time
+
+
+def test_resolve_run_duplication_risk_is_independent_of_key_attrs():
+    """Same proof as above, but with key_attrs=[] (no match key at all) --
+    the review comment's specific concern. The outcome is identical: two
+    independent resolve_run() calls, two independent store.save() calls,
+    regardless of key_attrs content."""
+    records = [ResolutionRecord(record_id=1, text="some script body", payload={})]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    same_entity_each_time = [
+        (ResolvedEntity(ontology_type="Script", attributes={}), [EntityMember(landed_record_id=1)]),
+    ]
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.resolve", return_value=same_entity_each_time) as mock_resolve:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+
+        resolve_run(run_id=1, ontology_type="Script", key_attrs=[],
+                   store=store, broker=broker, workspace_id=1)
+        resolve_run(run_id=2, ontology_type="Script", key_attrs=[],
+                   store=store, broker=broker, workspace_id=1)
+
+    assert mock_resolve.call_count == 2
+    assert store.save.call_count == 2
