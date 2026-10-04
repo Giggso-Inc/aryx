@@ -55,3 +55,36 @@ def test_entity_ids_by_run_passes_run_id_and_workspace_id_to_query():
 
     args, _ = mock_cursor.execute.call_args
     assert args[1] == (42, 7)
+
+
+# ── EntityStore.delete_entities -- bulk cleanup for a cancelled resolve/
+# relate attempt (PR #429 review N1, M1's own cleanup needed one round-trip
+# per id, undermining the "cancel should be prompt" point of this feature) ──
+
+def test_delete_entities_sends_one_delete_for_the_whole_id_list():
+    mock_cursor = MagicMock()
+    mock_cursor.rowcount = 3
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__.return_value = mock_conn
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        removed = store.delete_entities([100, 101, 102])
+
+    assert removed == 3
+    mock_cursor.execute.assert_called_once()
+    args, _ = mock_cursor.execute.call_args
+    assert args[1] == {"workspace_id": 7, "entity_ids": [100, 101, 102]}
+
+
+def test_delete_entities_empty_list_is_a_noop():
+    mock_pool = MagicMock()
+    with patch("aryx.store.entity_store.get_pool", return_value=mock_pool):
+        store = EntityStore("dsn://irrelevant", workspace_id=7)
+        removed = store.delete_entities([])
+
+    assert removed == 0
+    mock_pool.connection.assert_not_called()

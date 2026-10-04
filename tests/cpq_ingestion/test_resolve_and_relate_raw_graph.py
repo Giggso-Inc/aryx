@@ -233,16 +233,49 @@ def test_cancel_mid_loop_deletes_entities_from_already_resolved_tags():
          patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
                return_value={"run_id": 10, "entities": 1, "relationships": 0}), \
          patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
-        mock_estore.delete_entity.return_value = True
+        mock_estore.delete_entities.return_value = 1
         with pytest.raises(PipelineCancelled):
             resolve_and_relate_raw_graph(
                 _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
                 dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
             )
 
-    mock_estore.delete_entity.assert_called_once_with(500)
+    mock_estore.delete_entities.assert_called_once_with([500])
     mock_project.assert_not_called()
     mock_estore.save_relationships.assert_not_called()  # never reached -- no relationships to orphan
+
+
+def test_cancel_from_inside_run_pipeline_also_triggers_cleanup():
+    """PR #429 review M1 (second round): run_pipeline()'s own should_stop
+    checks (orchestrate.py's "relate" checkpoint, which fires unconditionally
+    right after the expensive resolve_cluster stage) can raise
+    PipelineCancelled from INSIDE a tag's run_pipeline call -- not just the
+    explicit should_stop() check at the top of the loop. This is the most
+    likely real-world cancellation point (most of a tag's cost is inside
+    resolve_cluster), so it must trigger the same cleanup for every tag that
+    already fully completed before it."""
+    def _run_pipeline_side_effect(**kwargs):
+        if kwargs["dataset"] == "PurchaseOrder":
+            return {"run_id": 10, "entities": 1, "relationships": 0}
+        raise PipelineCancelled("cancelled inside run_pipeline for Customer")
+
+    # should_stop itself never reports True -- the cancellation comes
+    # entirely from inside run_pipeline, proving the pre-tag check alone
+    # would have missed it.
+    mock_estore = _mock_estore(lambda run_id: {"po_file:0": 500} if run_id == 10 else {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               side_effect=_run_pipeline_side_effect), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore.delete_entities.return_value = 1
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: False,
+            )
+
+    mock_estore.delete_entities.assert_called_once_with([500])
+    mock_project.assert_not_called()
 
 
 def test_cancel_before_any_tag_has_nothing_to_clean_up():
@@ -258,14 +291,14 @@ def test_cancel_before_any_tag_has_nothing_to_clean_up():
             )
 
     mock_run_pipeline.assert_not_called()
-    mock_estore.delete_entity.assert_not_called()
+    mock_estore.delete_entities.assert_not_called()
 
 
 def test_cleanup_failure_is_logged_and_does_not_mask_the_cancellation():
-    """A DB hiccup while deleting an orphan must not hide the cancel itself
+    """A DB hiccup while deleting orphans must not hide the cancel itself
     behind a different exception -- PipelineCancelled still propagates."""
     mock_estore = _mock_estore(lambda run_id: {"po_file:0": 500})
-    mock_estore.delete_entity.side_effect = RuntimeError("db unreachable")
+    mock_estore.delete_entities.side_effect = RuntimeError("db unreachable")
     calls = {"n": 0}
 
     def _should_stop() -> bool:
