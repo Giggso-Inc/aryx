@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from aryx.pipeline.doc_discovery.doc_discovery import ingest_confirmed
+from aryx.pipeline.orchestrate import PipelineCancelled
 
 XML_BYTES = b"<PurchaseOrder Id='PO-1'><Customer Id='C-1'/></PurchaseOrder>"
 
@@ -158,6 +161,67 @@ def test_job_progress_reports_a_cpq_ingestion_stage():
 
     stages = [c.args[1] for c in result["jobs"].update_stage.call_args_list]
     assert "CPQ Ingestion" in stages
+
+
+# ── should_stop cancellation (this confirm path's cpq loop previously
+# never passed should_stop to the bridge, or checked it between files) ────
+
+def _run_expecting_cancel(*, tabular, approved_files, cpq_active_for, jobs):
+    """Same patch stack as _run(), but ingest_confirmed() is expected to
+    raise PipelineCancelled -- returns the same mocks dict for inspection."""
+    data = {"mentions": [], "tabular": tabular}
+    with patch("aryx.pipeline.doc_discovery.doc_discovery.get_settings") as mock_settings, \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.DatasourceStore", return_value=MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_fk_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery._persist_tabular_sources"), \
+         patch("aryx.cpq_ingestion.routing.cpq_ingestion_pipeline_active",
+               side_effect=lambda fn: fn in cpq_active_for), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph",
+               return_value={"tags": 2, "entities": 2, "relationships": 1}) as mock_bridge, \
+         patch("aryx.cpq_ingestion.raw_graph.xml_projector.project_xml_to_raw_graph",
+               return_value="PROJECTION"):
+        settings_mock = MagicMock()
+        settings_mock.effective_dsn.return_value = "postgresql://x"
+        settings_mock.graph_url = "redis://x"
+        settings_mock.ingest_workers = 1
+        settings_mock.ingest_relate = True
+        mock_settings.return_value = settings_mock
+        with pytest.raises(PipelineCancelled):
+            ingest_confirmed(
+                data, [], approved_files, broker=MagicMock(),
+                jobs=jobs, job_id="job-cpq-cancel", workspace_id=879,
+            )
+    return {"bridge": mock_bridge, "run_pipeline": mock_run_pipeline}
+
+
+def test_should_stop_is_forwarded_into_resolve_and_relate_raw_graph():
+    tabular = [_xml_plan("po_PurchaseOrder.csv", "PurchaseOrder", "po.xml")]
+    result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
+
+    _, kwargs = result["bridge"].call_args
+    assert callable(kwargs["should_stop"])
+
+
+def test_pre_cancelled_job_never_calls_the_bridge_for_any_queued_source_file():
+    """A job already cancelled before the cpq loop starts must not run
+    resolve_and_relate_raw_graph for even the first queued XML source file
+    -- previously should_stop wasn't checked here at all, so a cancel
+    issued between two queued files (or before the first) had no effect
+    until the whole confirm finished."""
+    jobs = MagicMock()
+    jobs.get.return_value = {"status": "cancelled"}
+    tabular = [
+        _xml_plan("a_Type1.csv", "Type1", "a.xml"),
+        _xml_plan("b_Type1.csv", "Type1", "b.xml"),
+    ]
+    result = _run_expecting_cancel(
+        tabular=tabular, approved_files=["a_Type1.csv", "b_Type1.csv"],
+        cpq_active_for={"a.xml", "b.xml"}, jobs=jobs,
+    )
+
+    result["bridge"].assert_not_called()
 
 
 def test_non_xml_plans_without_source_filename_are_unaffected():

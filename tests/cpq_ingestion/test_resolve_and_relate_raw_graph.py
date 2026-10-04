@@ -16,6 +16,7 @@ import pytest
 
 from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
+from aryx.pipeline.orchestrate import PipelineCancelled
 
 WORKSPACE_ID = 879
 DSN = "postgresql://unused"
@@ -170,6 +171,87 @@ def test_estore_closed_even_when_run_pipeline_raises():
             pass
 
     mock_estore.close.assert_called_once()
+
+
+# ── should_stop cancellation (PR #425-style, this confirm path previously
+# had none at all) ───────────────────────────────────────────────────────
+
+def test_should_stop_true_before_any_tag_raises_before_run_pipeline():
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        mock_estore_cls.return_value = _mock_estore(lambda run_id: {})
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=lambda: True,
+            )
+
+    mock_run_pipeline.assert_not_called()
+    mock_project.assert_not_called()
+
+
+def test_should_stop_after_first_tag_stops_before_second_tag_and_projection():
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the pre-first-tag check, True after
+
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}) as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph") as mock_project:
+        with pytest.raises(PipelineCancelled):
+            resolve_and_relate_raw_graph(
+                _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+                dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_should_stop,
+            )
+
+    mock_run_pipeline.assert_called_once()  # only the first tag ran
+    mock_project.assert_not_called()  # projection never reached
+    mock_estore.close.assert_called_once()  # finally still runs on cancel
+
+
+def test_should_stop_is_forwarded_into_every_run_pipeline_call():
+    def _never_stop() -> bool:
+        return False
+
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, should_stop=_never_stop,
+        )
+
+    assert mock_run_pipeline.call_count == 3
+    for c in mock_run_pipeline.call_args_list:
+        assert c.kwargs["should_stop"] is _never_stop
+
+
+def test_default_should_stop_none_behaves_exactly_as_before():
+    """Regression guard: omitting should_stop entirely (every pre-existing
+    caller) must behave identically to the pre-cancellation-support code."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}) as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph",
+               return_value={"entities": 3}) as mock_project:
+        result = resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    assert mock_run_pipeline.call_count == 3
+    for c in mock_run_pipeline.call_args_list:
+        assert c.kwargs["should_stop"] is None
+    mock_project.assert_called_once()
+    assert result["tags"] == 3
 
 
 def test_no_relationships_saved_when_no_edges_resolve():

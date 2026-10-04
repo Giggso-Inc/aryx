@@ -18,6 +18,7 @@ it remains a write-only provenance artifact.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aryx.broker import Broker
@@ -31,7 +32,7 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     group_nodes_by_tag,
     parse_record_id,
 )
-from aryx.pipeline.orchestrate import project_workspace_graph, run_pipeline
+from aryx.pipeline.orchestrate import PipelineCancelled, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
 from aryx.raven_log import raven_log
@@ -49,6 +50,7 @@ def resolve_and_relate_raw_graph(
     broker: Broker,
     context: str = "",
     log_id: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Resolve every raw-graph tag into curated entities, relate via
     containment, and project the result into the curated graph.
@@ -64,6 +66,20 @@ def resolve_and_relate_raw_graph(
     ``project_workspace_graph`` call at the end performs the one graph
     projection this whole file needs — the same function ``run_pipeline``'s
     own project stage now delegates to (see ``orchestrate.py``).
+
+    should_stop: optional cancellation poll, checked once per tag (before
+    that tag's run_pipeline call starts) and once more before the final
+    project_workspace_graph call -- this confirm path previously had zero
+    cancellation support at all, unlike the Read-stage raw-graph write
+    (PR #425). A multi-tag/multi-file XML confirm's cost is spread across
+    many per-tag run_pipeline calls, so checking between them meaningfully
+    shrinks the cancel-to-stop window. Also forwarded into each
+    run_pipeline call so an already-running tag's own discover/resolve
+    stages observe it too (run_pipeline already supports should_stop).
+    Does NOT make project_workspace_graph's own write interruptible
+    mid-write -- that function is shared by every ingestion path in the
+    system, not just cpq_ingestion XML, and is a separate, larger gap left
+    out of scope here (same as it already is for every other caller).
     """
     total_entities = 0
     relationships: list[Any] = []
@@ -86,13 +102,17 @@ def resolve_and_relate_raw_graph(
     estore = EntityStore(dsn, workspace_id)
     try:
         for tag, nodes in by_tag.items():
+            if should_stop is not None and should_stop():
+                raise PipelineCancelled(
+                    f"job cancelled before tag={tag} source_key={source_key}",
+                )
             inferred = infer_match_keys_for_tag(tag, nodes, context, log_id=log_id)
             connector = RawGraphConnector(nodes, tag=tag, source_key=source_key)
             summary = run_pipeline(
                 connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
                 ontology_type=inferred["ontology_type"], match_keys=inferred["match_keys"],
                 graph_url=graph_url, broker=broker, workspace_id=workspace_id,
-                relate=False, skip_graph=True,
+                relate=False, skip_graph=True, should_stop=should_stop,
             )
             total_entities += summary["entities"]
             for record_id, entity_id in estore.entity_ids_by_run(summary["run_id"]).items():
@@ -113,6 +133,10 @@ def resolve_and_relate_raw_graph(
         if relationships:
             estore.save_relationships(relationships)
 
+        if should_stop is not None and should_stop():
+            raise PipelineCancelled(
+                f"job cancelled before final graph projection source_key={source_key}",
+            )
         graph_counts = project_workspace_graph(dsn, graph_url, workspace_id, estore)
     finally:
         estore.close()
