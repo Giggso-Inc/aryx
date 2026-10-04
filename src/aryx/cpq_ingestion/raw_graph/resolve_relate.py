@@ -40,6 +40,56 @@ from aryx.raven_log import raven_log
 logger = logging.getLogger(__name__)
 
 
+def _delete_orphaned_entities(
+    estore: EntityStore, node_id_to_entity_id: dict[int, int],
+    *, log_id: str | None, source_key: str,
+) -> None:
+    """Roll back entities already created by earlier tags in THIS attempt
+    when a cancel lands mid-loop (PR #429 review M1).
+
+    Relationships are only saved once, after every tag finishes (see
+    translate_containment_edges/save_relationships below) -- so a cancel
+    here means these entities have no relationships yet and would otherwise
+    sit in the DB as orphans, surfacing as isolated nodes once
+    project_workspace_graph next rebuilds the graph from everything in the
+    DB. Deleting them now means a cancelled attempt leaves nothing behind:
+    the next confirm (re-confirming this same file, or confirming anything
+    else in the workspace) starts from a clean slate for this source file
+    instead of adding to leftover orphans on top of whatever a retry
+    creates.
+
+    This does NOT touch aryx_entity_member rows for the deleted entities --
+    EntityStore.delete_entity() (reused here, not new) already has that
+    same limitation for its existing callers, so this is consistent with,
+    not worse than, the rest of the codebase. Best-effort: a deletion
+    failure is logged and skipped rather than raised, so a DB hiccup while
+    cleaning up after a cancel never masks the cancellation itself.
+    """
+    if not node_id_to_entity_id:
+        return
+    entity_ids = sorted(set(node_id_to_entity_id.values()))
+    deleted = 0
+    for entity_id in entity_ids:
+        try:
+            if estore.delete_entity(entity_id):
+                deleted += 1
+        except Exception:  # noqa: BLE001 -- cleanup is best-effort, never mask the cancel
+            logger.warning(
+                "raw_graph resolve_and_relate did=%s source_key=%s: failed to delete "
+                "orphaned entity_id=%s after cancel", log_id, source_key, entity_id, exc_info=True,
+            )
+    logger.warning(
+        "raw_graph resolve_and_relate did=%s source_key=%s: cancelled -- deleted %d/%d "
+        "orphaned entity(ies) from already-resolved tags",
+        log_id, source_key, deleted, len(entity_ids),
+    )
+    raven_log("WARN", "P3", "ingest.raw_graph.cancel_cleanup orphaned entities deleted after cancel",
+              error_code="ARYX_ING_CANCELLED",
+              context={"log_id": log_id, "source_key": source_key, "entities_attempted": len(entity_ids),
+                       "entities_deleted": deleted, "result": "cancelled",
+                       "exit_condition": "cancelled"})
+
+
 def resolve_and_relate_raw_graph(
     projection: RawGraphProjection,
     *,
@@ -90,27 +140,38 @@ def resolve_and_relate_raw_graph(
     this file or any other) in the workspace repairs it; nothing is lost,
     only delayed.
 
-    Not resumable, and re-confirming DUPLICATES entities (PR #429 review,
-    corrected from an earlier, wrong claim in this docstring that re-running
-    resolve would merge onto prior entities -- verified false, see below):
-    unlike the generic CSV plan loop in ingest_confirmed() (which tracks
-    completed_plans and skips already-done files on a restart), a cancelled
-    cpq XML source file is never marked complete, so re-confirming it redoes
-    every tag from scratch. resolve_run()/resolve() only cluster the
-    records passed to THAT call against each other -- they have no
-    knowledge of entities a previous run already created, and relate=False
-    here means the FK/relate stage that could otherwise catch some
-    duplicates never runs either. EntityStore.save()'s own insert_entity.sql
-    is a plain INSERT (no ON CONFLICT, no existing-entity lookup), confirmed
-    by reading it -- every resolve_run() call for the same data creates
-    brand new entity rows, for every tag, regardless of whether it has a
-    real match key, an LLM-guessed one, or none at all. So a user cancelling
-    and re-confirming the same cpq XML file WILL create duplicate entities
-    for any tag whose resolve already completed in a prior attempt. True
+    Not resumable (PR #429 review M1, after an earlier, wrong claim in this
+    docstring that re-running resolve would merge onto prior entities --
+    verified false): unlike the generic CSV plan loop in ingest_confirmed()
+    (which tracks completed_plans and skips already-done files on a
+    restart), a cancelled cpq XML source file is never marked complete, so
+    re-confirming it redoes every tag from scratch. resolve_run()/resolve()
+    only cluster the records passed to THAT call against each other -- they
+    have no knowledge of entities a previous run already created, and
+    relate=False here means the FK/relate stage that could otherwise catch
+    some duplicates never runs either. EntityStore.save()'s own
+    insert_entity.sql is a plain INSERT (no ON CONFLICT, no existing-entity
+    lookup), confirmed by reading it -- every resolve_run() call for the
+    same data creates brand new entity rows, for every tag, regardless of
+    whether it has a real match key, an LLM-guessed one, or none at all.
+
+    Mitigated, not eliminated: a cancel mid-loop now deletes (via
+    _delete_orphaned_entities, below) every entity already created by
+    EARLIER tags in THIS attempt, before raising -- relationships are only
+    saved once, after every tag finishes, so a mid-loop cancel's entities
+    never had any yet and would otherwise sit as permanent orphans once
+    project_workspace_graph next rebuilds the graph from everything in the
+    DB. This means a cancelled attempt leaves nothing behind, so the next
+    confirm (of this file or anything else in the workspace) starts clean
+    rather than piling a retry's entities on top of leftover orphans. It
+    does NOT prevent duplication across separate confirm attempts that each
+    ran to completion (re-confirming an already-finished file, or a cancel
+    that lands after the last tag but before the final project_workspace_
+    graph call -- see the trade-off note above, where entities+relationships
+    are already correctly saved and nothing needs cleanup). True
     resumability (skipping already-resolved tags, mirroring the generic CSV
     path's completed_plans) is a separate, larger feature and still out of
-    scope for this PR, but is now a known, documented correctness gap, not
-    a benign trade-off.
+    scope for this PR.
     """
     total_entities = 0
     relationships: list[Any] = []
@@ -134,6 +195,7 @@ def resolve_and_relate_raw_graph(
     try:
         for tag, nodes in by_tag.items():
             if should_stop is not None and should_stop():
+                _delete_orphaned_entities(estore, node_id_to_entity_id, log_id=log_id, source_key=source_key)
                 raise PipelineCancelled(
                     f"job cancelled before tag={tag} source_key={source_key}",
                 )

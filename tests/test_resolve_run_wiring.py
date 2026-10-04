@@ -288,6 +288,23 @@ def test_exact_ids_bypasses_the_selectivity_guard_too() -> None:
 # insert_entity.sql, a plain INSERT with no ON CONFLICT -- was confirmed
 # separately by reading it to complete the chain: two independent save()
 # calls for the same logical record become two separate database rows.)
+#
+# KNOWN-GAP TESTS, pinning a real architectural invariant, not a bug this
+# file's code is expected to fix (PR #429 review N1): resolve_run() itself
+# will likely NEVER gain cross-run entity lookup -- doing so generically
+# would change matching semantics for every caller in the system, not just
+# cpq_ingestion. The actual mitigation for cpq_ingestion's cancel-then-
+# retry case lives one layer up, in resolve_and_relate_raw_graph()'s
+# _delete_orphaned_entities() (src/aryx/cpq_ingestion/raw_graph/
+# resolve_relate.py): a mid-loop cancel now deletes the entities
+# already-resolved tags created in THAT attempt, so a retry starts clean
+# instead of piling new entities on top of the old ones. These two tests
+# below will keep passing after that fix (and should keep passing after
+# any future one) because they test resolve_run() in isolation, not the
+# cancel-cleanup behavior -- do not take their continued passing as
+# evidence the cpq_ingestion duplication risk is unaddressed; check
+# resolve_relate.py's own tests (test_resolve_and_relate_raw_graph.py) for
+# that instead.
 
 def test_resolve_run_has_no_cross_run_entity_lookup_mechanism():
     """A second resolve_run() call for IDENTICAL records (as a cpq XML
