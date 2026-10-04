@@ -208,23 +208,31 @@ def make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -
     decision, never the DB call itself, so a thread blocked on jobs.get()
     can't stall another thread's cheap "no, not yet" return.
     """
-    state = {"last_check": 0.0, "cancelled": False}
+    state = {"last_check": 0.0, "stopped": False}
     lock = threading.Lock()
 
     def should_stop() -> bool:
-        if state["cancelled"]:
+        if state["stopped"]:
             return True
         now = time.monotonic()
         with lock:
-            if state["cancelled"]:
+            if state["stopped"]:
                 return True
             if now - state["last_check"] < min_interval_s:
                 return False
             state["last_check"] = now
         row = jobs.get(job_id)
-        if row is not None and row.get("status") == "cancelled":
+        # "failed" here (2026-10-04, PR review M1) covers a job the
+        # heartbeat sweep (sweep_stale_heartbeat) marked failed out from
+        # under a worker that's still actually running -- without this,
+        # update_job_stage.sql's own "status != 'failed'" guard stops the
+        # row from being resurrected, but the worker itself would carry on
+        # doing real work indefinitely, since this closure previously only
+        # ever recognized a user-initiated 'cancelled' status as a stop
+        # signal.
+        if row is not None and row.get("status") in ("cancelled", "failed"):
             with lock:
-                state["cancelled"] = True
-        return state["cancelled"]
+                state["stopped"] = True
+        return state["stopped"]
 
     return should_stop

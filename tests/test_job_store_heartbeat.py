@@ -72,6 +72,41 @@ class TestSweepStaleHeartbeat(unittest.TestCase):
         assert load("sweep_stale_jobs_heartbeat") != load("sweep_stale_jobs")
         assert "worker lost" in load("sweep_stale_jobs_heartbeat")
 
+    def test_query_scoped_to_running_cpq_ingestion_jobs_only(self) -> None:
+        """PR review M1 (2026-10-04): the heartbeat additions (on_progress
+        threading) only cover the cpq XML raw-graph resolve loop and the
+        chunked resolver -- every other job type/stage (document ingestion,
+        REST/DB ingest, the final graph projection, and a QUEUED job still
+        waiting behind others for a free ARYX_INGEST_WORKERS slot) can
+        legitimately go silent far longer than the 10-minute default without
+        anything being wrong. Sweeping those too would fail healthy jobs.
+        The query must restrict itself to status='running' (never 'queued')
+        AND a stage naming the one path this PR actually instruments."""
+        from aryx.queries import load
+        sql = load("sweep_stale_jobs_heartbeat").lower()
+        assert "status = 'running'" in sql
+        assert "not in" not in sql  # the old, too-broad filter shape
+        assert "cpq ingestion" in sql
+
+
+class TestNoResurrectionGuard(unittest.TestCase):
+    """update_job_stage / finish_job must not revive a job the heartbeat
+    sweep already marked 'failed' (PR review M1) -- otherwise a worker that
+    was swept out from under it, but is still actually running, flips the
+    row straight back to 'running' on its very next progress report, or
+    overwrites 'failed' with 'complete' when it eventually finishes,
+    silently erasing the fact that it was ever flagged."""
+
+    def test_update_job_stage_excludes_failed_rows(self) -> None:
+        from aryx.queries import load
+        sql = load("update_job_stage").lower()
+        assert "status != 'failed'" in sql or "status <> 'failed'" in sql
+
+    def test_finish_job_excludes_failed_rows(self) -> None:
+        from aryx.queries import load
+        sql = load("finish_job").lower()
+        assert "status != 'failed'" in sql or "status <> 'failed'" in sql
+
 
 if __name__ == "__main__":
     unittest.main()

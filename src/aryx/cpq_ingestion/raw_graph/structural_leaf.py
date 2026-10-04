@@ -24,7 +24,7 @@ from aryx.raven_log import raven_log
 logger = logging.getLogger(__name__)
 
 
-def is_structural_leaf_tag(nodes: list[RawNode], projection: RawGraphProjection) -> bool:
+def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
     """True if every node of this tag has no real attributes and no children.
 
     A leaf's own text value is stored under ``RAW_PROP_TEXT`` by
@@ -33,13 +33,22 @@ def is_structural_leaf_tag(nodes: list[RawNode], projection: RawGraphProjection)
     ``properties`` is never actually empty for a true scalar leaf, and a
     naive ``not any(n.properties ...)`` check would never fire. Real
     attributes are anything in ``properties`` other than ``RAW_PROP_TEXT``.
+
+    ``parent_ids``: the set of every node id that is the SOURCE of at least
+    one edge (i.e. has at least one child), precomputed ONCE by the caller
+    from the whole projection's edges. Taking this instead of the full
+    ``RawGraphProjection`` is the PR review M4 fix: the original version
+    rebuilt ``{e.source_id for e in projection.edges if e.source_id in
+    node_ids}`` from scratch for every candidate tag, which is O(tags x
+    edges) -- about 5.85M edges scanned per candidate tag on the file this
+    was built against. A single O(edges) pass up front, reused via a plain
+    set-membership check per tag, removes that multiplier entirely.
     """
     node_ids = {n.id for n in nodes}
     for n in nodes:
         if set(n.properties) - {RAW_PROP_TEXT}:
             return False
-    has_children = {e.source_id for e in projection.edges if e.source_id in node_ids}
-    return not has_children
+    return node_ids.isdisjoint(parent_ids)
 
 
 def fold_structural_leaf_tags(
@@ -64,27 +73,51 @@ def fold_structural_leaf_tags(
     root tag classifying as a leaf, which would be unusual but not
     impossible) is left un-folded and un-removed, falling back to the
     normal resolve path for that tag -- folding onto nothing would lose
-    the value outright, which is worse than the cost this fix saves.
+    the value outright, which is worse than the cost this fix saves. A
+    leaf with no text at all (an empty marker element, e.g. ``<flag/>``)
+    folds as an empty string rather than being silently skipped (PR review
+    N2) -- skipping it entirely would otherwise still count the tag as
+    "fully folded" (zero folds, zero orphans) and drop it from the resolve
+    set with no record of it anywhere.
+
+    Performance (PR review M4): the two full-projection structures this
+    needs -- ``parent_ids`` (classification) and ``parent_of`` (folding) --
+    are built together in ONE pass over ``projection.edges`` regardless of
+    outcome, since classifying every tag requires ``parent_ids`` anyway.
+    ``nodes_by_id``, the expensive one (a dict of every node, same
+    cardinality as the file -- 5.85M entries on the file this was built
+    against), is only built if at least one tag actually classifies as a
+    leaf, and never if ``by_tag`` has nothing foldable.
     """
     if not by_tag:
         return by_tag
-    parent_of: dict[int, int] = {
-        edge.target_id: edge.source_id for edge in projection.edges
+
+    parent_ids: set[int] = set()
+    parent_of: dict[int, int] = {}
+    for edge in projection.edges:
+        parent_ids.add(edge.source_id)
+        parent_of[edge.target_id] = edge.source_id
+
+    leaf_tags = {
+        tag: nodes for tag, nodes in by_tag.items()
+        if is_structural_leaf_tag(nodes, parent_ids)
     }
+    if not leaf_tags:
+        return by_tag
+
     nodes_by_id: dict[int, RawNode] = {n.id: n for n in projection.nodes}
 
     folded_tags: list[str] = []
-    result: dict[str, list[RawNode]] = {}
-    for tag, nodes in by_tag.items():
-        if not is_structural_leaf_tag(nodes, projection):
-            result[tag] = nodes
-            continue
+    result: dict[str, list[RawNode]] = {
+        tag: nodes for tag, nodes in by_tag.items() if tag not in leaf_tags
+    }
+    for tag, nodes in leaf_tags.items():
         folded_count = 0
         orphan_count = 0
         for leaf in nodes:
-            text = leaf.properties.get(RAW_PROP_TEXT)
-            if text is None:
-                continue
+            # None -> no text at all (an empty marker element) folds as ""
+            # rather than being skipped -- see docstring, PR review N2.
+            text = leaf.properties.get(RAW_PROP_TEXT, "")
             parent_id = parent_of.get(leaf.id)
             parent = nodes_by_id.get(parent_id) if parent_id is not None else None
             if parent is None:

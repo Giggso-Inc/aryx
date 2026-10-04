@@ -9,6 +9,52 @@ own follow-up PR (touches the XML parser's public contract, the most
 invasive change in this document), and §4 needs live query profiling
 before a fix can even be chosen, which this pass didn't have the
 opportunity to do.
+
+**Update — PR review (same day):** a first-pass review caught 4 real
+correctness/safety bugs in the initial implementation, since fixed on the
+same branch (not a follow-up PR — these landed before the PR was
+considered done):
+- The heartbeat sweep (§0) would have failed healthy jobs: it swept
+  `queued` jobs (which legitimately sit for a while behind
+  `ARYX_INGEST_WORKERS` busy slots) and every non-cpq job type (document
+  ingestion, REST/DB ingest — none of which got the new `on_progress`
+  heartbeat threading, only the cpq XML path did). **Fixed:** the sweep
+  now only targets `status = 'running'` rows whose `stage` names the cpq
+  ingestion path specifically. Separately, a swept job's still-running
+  worker could resurrect its row back to `'running'` on its next progress
+  report, or overwrite `'failed'` with `'complete'` when it eventually
+  finished. **Fixed:** `update_job_stage`/`finish_job` now refuse to
+  touch a row already `'failed'`, and `make_should_stop()` now also stops
+  on `'failed'`, not just `'cancelled'`.
+- `force_exact` (§1 Tier 2) trusted a caller's assertion that a
+  generic-fallback match key's values were unique, with no actual
+  verification — a guessed key with real duplicates (e.g. a status/type
+  column) would have silently merged every record sharing a value into
+  one entity. **Fixed:** `force_exact` is now only honored when
+  `_key_selectivity()` independently confirms near-total uniqueness
+  (new `er_force_exact_min_selectivity` setting, default 0.99).
+- `oracle_migrate.py`'s tracking table (§6) could mark a file "applied"
+  after a genuine, unexpected failure (not just an "already exists"
+  no-op), meaning it would never be retried; and two uvicorn workers
+  racing to mark the same new migration applied at boot would crash the
+  second one on a primary-key violation. **Fixed:** a file is only marked
+  applied when every block's error (if any) was one of a known-idempotent
+  set; the mark-applied insert now tolerates a concurrent duplicate.
+- `structural_leaf.py` (§1 Tier 1) re-scanned the whole edge list (up to
+  5.85M edges) once per candidate tag, and unconditionally built two
+  full-projection-sized dicts even when nothing was foldable — in a PR
+  about memory pressure. **Fixed:** parent-id classification is computed
+  once for the whole projection; the expensive per-node dict is only
+  built when at least one tag actually qualifies as a leaf. Also fixed in
+  the same pass: an empty marker element (`<flag/>`, no text at all) was
+  silently dropped from the resolve set entirely instead of being folded.
+
+Also addressed: the leaf-fold and `force_exact` behavior changes now have
+opt-out settings (`ARYX_CPQ_STRUCTURAL_LEAF_FOLD_ENABLED`,
+`ARYX_CPQ_FORCE_EXACT_ENABLED`, both default-on), and new test coverage
+was added for `structural_leaf.py` (zero existed before), the embedding
+dedup, and `force_exact`'s verification behavior — all flagged as gaps by
+the same review.
 **Date:** 2026-10-04
 **Trigger:** Live observation of a real Confirm-stage run against the
 240MB `aSTRO25_ConfigData.xml` file (workspace 1005, job

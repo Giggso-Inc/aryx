@@ -70,10 +70,42 @@ def _already_applied(cur) -> set[str]:
     return {row[0] for row in cur.fetchall()}
 
 
+# Oracle error codes this module already knows are "already applied" noise,
+# not a real failure -- confirmed from this project's own migration files
+# and live boot logs (docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_
+# ISSUES_2026-10-04.md §6): ORA-01430 (column already exists), ORA-00955
+# (name already used by an existing object), ORA-02443 (constraint doesn't
+# exist to drop). ORA-00001 (unique constraint violated) covers an
+# idempotent data-insert migration hitting a row that's already there.
+# Deliberately a narrow, explicit allowlist rather than "any error is fine"
+# (PR review M3) -- a genuinely new failure (bad SQL, a missing dependency,
+# a permissions problem) must NOT be silently marked applied, or it would
+# never be retried and the schema would be left permanently incomplete
+# with no visible error after the first boot.
+_EXPECTED_IDEMPOTENT_ORA_CODES = ("ORA-01430", "ORA-00955", "ORA-02443", "ORA-00001")
+
+
 def _mark_applied(cur, filename: str) -> None:
-    cur.execute(
-        "INSERT INTO aryx_schema_migrations (filename) VALUES (:1)", [filename],
-    )
+    """Record a file as applied; tolerates a concurrent duplicate insert.
+
+    aryx-api runs 2 uvicorn workers (docker-compose-oci.yml), both of which
+    call apply_oracle_migrations() at startup. On the first boot after this
+    tracking table ships, or whenever a release adds a new migration file,
+    both workers can see the same file missing from aryx_schema_migrations
+    and both attempt to apply + mark it -- the second INSERT then hits
+    ORA-00001 (PR review M3). Catching it here (not re-raising, not
+    retrying) is correct: the row they're racing to insert is identical
+    (just a filename), so "someone already marked this" and "I'm marking
+    this" have the same end state.
+    """
+    import oracledb  # noqa: PLC0415
+    try:
+        cur.execute(
+            "INSERT INTO aryx_schema_migrations (filename) VALUES (:1)", [filename],
+        )
+    except oracledb.Error as exc:
+        if "ORA-00001" not in str(exc):
+            raise
 
 
 def apply_oracle_migrations(dsn: str) -> None:
@@ -131,14 +163,30 @@ def apply_oracle_migrations(dsn: str) -> None:
                 continue
             raw = path.read_text(encoding="utf-8")
             blocks = _split_blocks(raw)
+            unexpected_error = False
             for block in blocks:
                 try:
                     cur.execute(block)
                 except oracledb.Error as exc:
+                    msg = str(exc)
+                    if not any(code in msg for code in _EXPECTED_IDEMPOTENT_ORA_CODES):
+                        unexpected_error = True
                     logger.warning(
                         "oracle_migrate: block skipped file=%s error=%s",
                         path.name, exc,
                     )
+            if unexpected_error:
+                # PR review M3: do NOT mark this file applied -- a genuine
+                # failure (not just "already exists/dropped") means the
+                # schema is left incomplete for this file, and the only way
+                # to notice and retry is for the next boot to attempt it
+                # again instead of silently skipping it forever.
+                logger.error(
+                    "oracle_migrate: file=%s had an unexpected (non-idempotent) "
+                    "error — NOT marking applied, will retry next boot",
+                    path.name,
+                )
+                continue
             _mark_applied(cur, path.name)
             logger.info("oracle_migrate: applied file=%s blocks=%d",
                         path.name, len(blocks))

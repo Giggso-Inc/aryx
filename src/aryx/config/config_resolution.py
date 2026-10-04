@@ -72,6 +72,25 @@ class ResolutionSettingsMixin(BaseSettings):
             "with ARYX_ER_MIN_KEY_SELECTIVITY."
         ),
     )
+    er_force_exact_min_selectivity: float = Field(
+        default=0.99,
+        description=(
+            "Min sampled distinct-value ratio (0-1) required before a caller's "
+            "force_exact=True request (resolve_run()) is actually honored. "
+            "force_exact exists for match keys whose NAME doesn't look ID-like "
+            "(so they'd never qualify for exact_ids the normal way) but whose "
+            "VALUES the caller believes are unique -- e.g. cpq_ingestion's "
+            "generic 'text' fallback key. A caller's belief alone is not "
+            "proof: source=='default' in infer_match_keys_for_tag means no "
+            "heuristic or LLM named the key, which says nothing about "
+            "uniqueness, and forcing exact mode on a non-unique key would "
+            "merge every record sharing a value into one entity (correctness "
+            "regression, not a performance one). This threshold requires "
+            "_key_selectivity() to independently confirm near-total "
+            "uniqueness before force_exact is allowed to skip fuzzy scoring. "
+            "Override with ARYX_ER_FORCE_EXACT_MIN_SELECTIVITY."
+        ),
+    )
     er_key_selectivity_sample_size: int = Field(
         default=2000,
         description=(

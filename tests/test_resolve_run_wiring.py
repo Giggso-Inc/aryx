@@ -113,6 +113,7 @@ def _settings_stub(**overrides):
     base = dict(
         er_exact_id_match=True, er_chunk_threshold=100_000,
         er_min_key_selectivity=0.01, er_key_selectivity_sample_size=2000,
+        er_force_exact_min_selectivity=0.99,
         id_like_column_names="id,uuid,guid,key",
         rdb_dsn="postgresql://x",
     )
@@ -271,6 +272,97 @@ def test_exact_ids_bypasses_the_selectivity_guard_too() -> None:
 
     mock_resolve.assert_called_once()
     mock_chunked.assert_not_called()
+
+
+# ── force_exact verification (PR review M2, 2026-10-04) ─────────────────────
+# force_exact is a caller's ASSERTION that a match key named too generically
+# to qualify via _id_like_keys() still has unique-enough values to resolve by
+# exact equality. The original implementation trusted that assertion outright
+# -- a real correctness bug: cpq_ingestion's only signal is infer_match_keys_
+# for_tag's source=="default", which fires whenever neither the heuristic nor
+# the LLM could confidently name a key, and says nothing about whether the
+# key's VALUES are unique. These tests pin the fix: force_exact must be
+# independently verified against the same selectivity sample that already
+# guards the low_selectivity path before it's honored.
+
+def test_force_exact_honored_when_selectivity_confirms_uniqueness() -> None:
+    """Every record has a distinct match text (selectivity 1.0) -- force_exact
+    is verified and resolve() must run in exact_ids mode."""
+    records = [ResolutionRecord(record_id=i, text=f"unique-{i}", payload={})
+               for i in range(50)]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.get_settings",
+               return_value=_settings_stub(er_exact_id_match=False,
+                                            er_force_exact_min_selectivity=0.99)), \
+         patch("aryx.resolve_entities.resolve") as mock_resolve, \
+         patch("aryx.resolve_entities.resolve_chunked") as mock_chunked:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+        mock_resolve.return_value = []
+        resolve_run(run_id=1, ontology_type="Thing", key_attrs=["text"],
+                   store=store, broker=broker, workspace_id=1, force_exact=True)
+
+    mock_chunked.assert_not_called()
+    mock_resolve.assert_called_once()
+    _, kwargs = mock_resolve.call_args
+    assert kwargs["exact_ids"] is True
+
+
+def test_force_exact_rejected_when_selectivity_does_not_confirm_uniqueness() -> None:
+    """Only half the sampled values are distinct (selectivity 0.5) -- NOT
+    unique enough to trust force_exact's assertion. Must fall through to the
+    normal fuzzy path (exact_ids=False), not silently merge non-unique
+    records by equality."""
+    records = [ResolutionRecord(record_id=i, text=f"dup-{i % 25}", payload={})
+               for i in range(50)]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.get_settings",
+               return_value=_settings_stub(er_exact_id_match=False,
+                                            er_min_key_selectivity=0.01,
+                                            er_force_exact_min_selectivity=0.99)), \
+         patch("aryx.resolve_entities.resolve") as mock_resolve, \
+         patch("aryx.resolve_entities.resolve_chunked") as mock_chunked:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+        mock_resolve.return_value = []
+        resolve_run(run_id=1, ontology_type="Thing", key_attrs=["text"],
+                   store=store, broker=broker, workspace_id=1, force_exact=True)
+
+    mock_chunked.assert_not_called()
+    mock_resolve.assert_called_once()
+    _, kwargs = mock_resolve.call_args
+    assert kwargs["exact_ids"] is False
+
+
+def test_force_exact_without_key_attrs_never_triggers_exact_mode() -> None:
+    """bool(key_attrs) guard must hold for force_exact too, same as the
+    name-based check -- an empty match-key list must never mean exact mode."""
+    records = [ResolutionRecord(record_id=i, text=f"unique-{i}", payload={})
+               for i in range(50)]
+    store = _store_with_records(records)
+    broker = MagicMock()
+
+    with patch("aryx.resolve_entities.AdjudicationStore"), \
+         patch("aryx.resolve_entities.make_workspace_store") as mock_make_ws, \
+         patch("aryx.resolve_entities.get_settings",
+               return_value=_settings_stub(er_exact_id_match=False)), \
+         patch("aryx.resolve_entities.resolve") as mock_resolve, \
+         patch("aryx.resolve_entities.resolve_chunked") as mock_chunked:
+        mock_make_ws.return_value.get_survivorship.return_value = {}
+        mock_resolve.return_value = []
+        resolve_run(run_id=1, ontology_type="Thing", key_attrs=[],
+                   store=store, broker=broker, workspace_id=1, force_exact=True)
+
+    mock_chunked.assert_not_called()
+    mock_resolve.assert_called_once()
+    _, kwargs = mock_resolve.call_args
+    assert kwargs["exact_ids"] is False
 
 
 # ── cross-run duplication risk (PR #429 review N2, cpq_ingestion raw-graph

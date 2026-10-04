@@ -140,20 +140,6 @@ def resolve_run(
     # list must never trigger exact mode.
     name_based_exact = (settings.er_exact_id_match and bool(key_attrs)
                         and all(k.lower() in _id_like_keys() for k in key_attrs))
-    exact_ids = name_based_exact or (force_exact and bool(key_attrs))
-    if exact_ids:
-        logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s forced=%s",
-                    run_id, key_attrs, not name_based_exact)
-    raven_log("DEBUG", "P4", "ingest.resolve.exact_ids_check exact-id mode decision",
-              context={"task_id": run_id, "ontology_type": ontology_type, "match_keys": list(key_attrs),
-                       "er_exact_id_match": bool(settings.er_exact_id_match), "has_keys": bool(key_attrs),
-                       "selected_option": "exact_ids" if exact_ids else "fuzzy",
-                       "available_options": ["exact_ids", "fuzzy"],
-                       "reason_code": ("ALL_KEYS_ID_LIKE" if name_based_exact
-                                       else "CALLER_FORCED_EXACT" if exact_ids
-                                       else "NOT_ALL_KEYS_ID_LIKE_OR_DISABLED"),
-                       "forced": exact_ids and not name_based_exact,
-                       "policy_fallback": policy_fallback, "review_sink": not sink_unavailable})
 
     _emit("Resolve", 32, f"Loading landed records for run {run_id}")
     records = store.landed_records(run_id, key_attrs)
@@ -172,10 +158,63 @@ def resolve_run(
     # real incident: 308,104 such records ran the full blocking pass (and,
     # separately, an unbatched per-cluster save) before reaching the same
     # all-singleton outcome this check reaches immediately. Not applicable
-    # to exact_ids mode: that path already never runs pairwise scoring.
-    selectivity = None if exact_ids else _key_selectivity(
+    # to name_based_exact mode: that path already never runs pairwise
+    # scoring, so there's nothing to guard and no reason to pay the
+    # sampling cost. A bare force_exact request, by contrast, MUST compute
+    # this — see the verification note below — so only name_based_exact
+    # skips the sample, not exact_ids generally (exact_ids isn't known yet
+    # at this point; see its computation right after).
+    selectivity = None if name_based_exact else _key_selectivity(
         records, settings.er_key_selectivity_sample_size,
     )
+
+    # force_exact (§1 Tier 2) is a caller's ASSERTION, not proof, that a
+    # match key named too genetically to qualify via _id_like_keys() still
+    # has unique-enough values to resolve by exact equality. Taking that
+    # assertion on faith was a real correctness bug (PR review M2,
+    # 2026-10-04): cpq_ingestion's only signal for force_exact is
+    # infer_match_keys_for_tag's source=="default", which fires whenever
+    # neither the heuristic nor the LLM could confidently name a key --
+    # that says nothing about whether the key's VALUES are actually
+    # unique. A guessed key with low cardinality (e.g. a status/type
+    # column) forced into exact mode would merge every record sharing a
+    # value into one entity, silently losing records. Requiring the
+    # SAME selectivity sample that already guards the low_selectivity
+    # path to independently confirm near-total uniqueness turns
+    # force_exact from "trust the caller" into "trust but verify" at
+    # negligible extra cost (the sample is bounded by
+    # er_key_selectivity_sample_size regardless of table size).
+    verified_force_exact = (
+        force_exact and bool(key_attrs) and selectivity is not None
+        and selectivity >= settings.er_force_exact_min_selectivity
+    )
+    exact_ids = name_based_exact or verified_force_exact
+    if force_exact and not verified_force_exact and not name_based_exact:
+        logger.info(
+            "resolve_run run_id=%s force_exact requested but NOT honored -- "
+            "sampled selectivity=%s below er_force_exact_min_selectivity=%.4f "
+            "(match_keys=%s); falling through to the normal fuzzy/chunked path",
+            run_id, selectivity, settings.er_force_exact_min_selectivity, key_attrs,
+        )
+        raven_log("INFO", "P4", "ingest.resolve.force_exact_rejected force_exact requested but not verified",
+                  context={"task_id": run_id, "match_keys": list(key_attrs),
+                           "selectivity": selectivity, "threshold": settings.er_force_exact_min_selectivity,
+                           "selected_option": "fuzzy", "available_options": ["exact_ids", "fuzzy"],
+                           "reason_code": "FORCE_EXACT_NOT_VERIFIED"})
+    if exact_ids:
+        logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s forced=%s",
+                    run_id, key_attrs, not name_based_exact)
+    raven_log("DEBUG", "P4", "ingest.resolve.exact_ids_check exact-id mode decision",
+              context={"task_id": run_id, "ontology_type": ontology_type, "match_keys": list(key_attrs),
+                       "er_exact_id_match": bool(settings.er_exact_id_match), "has_keys": bool(key_attrs),
+                       "selected_option": "exact_ids" if exact_ids else "fuzzy",
+                       "available_options": ["exact_ids", "fuzzy"],
+                       "reason_code": ("ALL_KEYS_ID_LIKE" if name_based_exact
+                                       else "CALLER_FORCED_EXACT_VERIFIED" if exact_ids
+                                       else "NOT_ALL_KEYS_ID_LIKE_OR_DISABLED"),
+                       "forced": exact_ids and not name_based_exact,
+                       "policy_fallback": policy_fallback, "review_sink": not sink_unavailable})
+
     path = "normal"
     if selectivity is not None and selectivity < settings.er_min_key_selectivity:
         path = "low_selectivity"

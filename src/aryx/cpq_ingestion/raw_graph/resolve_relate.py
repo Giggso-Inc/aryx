@@ -22,6 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.cpq_ingestion.raw_graph.containment_relate import translate_containment_edges
 from aryx.cpq_ingestion.raw_graph.match_key_inference import infer_match_keys_for_tag
 from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection
@@ -237,9 +238,13 @@ def resolve_and_relate_raw_graph(
     # so the query lists must be on the entities that resolve/relate builds it from.
     projection = with_query_tables(projection)
     by_tag = group_nodes_by_tag(projection)
-    by_tag = fold_structural_leaf_tags(
-        projection, by_tag, log_id=log_id, source_key=source_key,
-    )
+    # PR review N1: opt-out for a new behavior-changing fix, even one
+    # believed safe (every existing per-caller test keeps passing with the
+    # default True).
+    if get_settings().cpq_structural_leaf_fold_enabled:
+        by_tag = fold_structural_leaf_tags(
+            projection, by_tag, log_id=log_id, source_key=source_key,
+        )
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)
@@ -287,7 +292,8 @@ def resolve_and_relate_raw_graph(
                     graph_url=graph_url, broker=broker, workspace_id=workspace_id,
                     relate=False, skip_graph=True, should_stop=should_stop,
                     on_progress=_tag_progress,
-                    force_exact=inferred.get("source") == "default",
+                    force_exact=(get_settings().cpq_force_exact_enabled
+                                and inferred.get("source") == "default"),
                 )
                 total_entities += summary["entities"]
                 for record_id, entity_id in estore.entity_ids_by_run(summary["run_id"]).items():

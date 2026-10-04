@@ -26,6 +26,34 @@ class CoreSettingsMixin(BaseSettings):
     )
     log_level: str = Field(default="INFO", description="Root log level.")
     batch_size: int = Field(default=500, description="Rows fetched per extract batch.")
+    cpq_structural_leaf_fold_enabled: bool = Field(
+        default=True,
+        description=(
+            "Fold structural-leaf XML tags (§1 Tier 1) onto their parent node "
+            "instead of landing/resolving them as their own dataset. PR review "
+            "N1: new behavior-changing fixes should ship with an opt-out, even "
+            "when believed safe. Set ARYX_CPQ_STRUCTURAL_LEAF_FOLD_ENABLED=false "
+            "to restore the previous behavior (every XML tag lands and resolves "
+            "regardless of shape) if this is ever suspected of dropping or "
+            "misplacing data on some real-world document shape not covered by "
+            "tests/cpq_ingestion/test_structural_leaf.py."
+        ),
+    )
+    cpq_force_exact_enabled: bool = Field(
+        default=True,
+        description=(
+            "Allow resolve_run()'s force_exact override (§1 Tier 2) to take "
+            "effect at all. Independently of this flag, force_exact is only "
+            "ever honored when _key_selectivity() confirms near-total "
+            "uniqueness (er_force_exact_min_selectivity, PR review M2) -- this "
+            "flag is a second, coarser kill switch on top of that check, for "
+            "disabling the mechanism entirely without needing to reason about "
+            "the selectivity threshold. Set "
+            "ARYX_CPQ_FORCE_EXACT_ENABLED=false to restore the previous "
+            "behavior (a generic-fallback match key always uses the normal "
+            "fuzzy/chunked path, same as before this PR)."
+        ),
+    )
     landing_batch_size: int = Field(
         default=500,
         description=(
