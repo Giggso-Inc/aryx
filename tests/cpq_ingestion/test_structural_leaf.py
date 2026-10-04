@@ -59,7 +59,7 @@ def test_leaf_tag_value_folds_onto_parent_and_is_removed_from_by_tag():
     )
     by_tag = {"Record": [parent], "id": [leaf]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert "id" not in result
     assert "Record" in result
@@ -75,7 +75,7 @@ def test_non_leaf_tag_is_left_untouched():
     )
     by_tag = {"Record": [parent], "LineItem": [child]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert result == by_tag
     assert "Sku" not in parent.properties
@@ -83,7 +83,7 @@ def test_non_leaf_tag_is_left_untouched():
 
 def test_empty_by_tag_returns_as_is():
     projection = RawGraphProjection(nodes=[], edges=[])
-    assert fold_structural_leaf_tags(projection, {}) == {}
+    assert fold_structural_leaf_tags(projection.edges, {}) == {}
 
 
 # ── multiple leaf children under one parent (same tag) ───────────────────────
@@ -101,7 +101,7 @@ def test_two_leaves_same_tag_under_one_parent_accumulate_a_list():
     )
     by_tag = {"Record": [parent], "id": [leaf_a, leaf_b]}
 
-    fold_structural_leaf_tags(projection, by_tag)
+    fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert parent.properties["id"] == ["a", "b"]
 
@@ -115,7 +115,7 @@ def test_leaf_folding_onto_a_parent_with_an_existing_same_named_attribute():
     )
     by_tag = {"Record": [parent], "id": [leaf]}
 
-    fold_structural_leaf_tags(projection, by_tag)
+    fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert parent.properties["id"] == ["real-attr", "leaf-value"]
 
@@ -130,7 +130,7 @@ def test_orphan_leaf_tag_is_kept_in_resolve_path_not_dropped():
     projection = RawGraphProjection(nodes=[leaf], edges=[])
     by_tag = {"id": [leaf]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert "id" in result
     assert result["id"] == [leaf]
@@ -151,7 +151,7 @@ def test_leaf_with_no_text_folds_as_empty_string_not_dropped():
     )
     by_tag = {"Record": [parent], "flag": [marker]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert "flag" not in result
     assert parent.properties["flag"] == ""
@@ -172,7 +172,7 @@ def test_no_leaf_tags_returns_input_unchanged_by_identity():
     )
     by_tag = {"Record": [parent], "LineItem": [child]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert result is by_tag
 
@@ -186,7 +186,7 @@ def test_result_is_a_new_dict_not_the_same_object_when_folding_happens():
     )
     by_tag = {"Record": [parent], "id": [leaf]}
 
-    result = fold_structural_leaf_tags(projection, by_tag)
+    result = fold_structural_leaf_tags(projection.edges, by_tag)
 
     assert result is not by_tag
     assert by_tag == {"Record": [parent], "id": [leaf]}  # input untouched

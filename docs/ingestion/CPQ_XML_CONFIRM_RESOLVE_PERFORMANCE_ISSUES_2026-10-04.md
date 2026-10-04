@@ -1,14 +1,23 @@
 # CPQ XML Confirm-Stage Resolve: Performance & Reliability Issues
 
 **Status:** Implemented on branch `fix/cpq-xml-confirm-performance-2026-10-04`
-— §0, §1 (all three tiers), §2, §3 (immediate), §6, §7, §8 are now code,
-not just designs (each section below is updated with an "Implemented"
-note and the files it touched). §3b and §4 remain designs only, exactly
-as this document originally recommended: §3b is explicitly scoped as its
-own follow-up PR (touches the XML parser's public contract, the most
-invasive change in this document), and §4 needs live query profiling
-before a fix can even be chosen, which this pass didn't have the
-opportunity to do.
+— every section (§0, §1 all three tiers, §2, §3, §3b, §4, §6, §7, §8) is
+now code, not just a design (each section below has an "Implemented"
+note with the files/tests it touched). Two sections shipped **opt-in**,
+default-off, rather than as default behavior changes, because neither has
+been verified against a real large-file confirm end to end:
+- **§3b** (stream the raw-graph projection instead of materializing the
+  whole document) — `ARYX_CPQ_STREAMING_PROJECTION_ENABLED`, default
+  `false`. This remains the most invasive change in the document (touches
+  the XML parser's public contract); shipping it opt-in rather than as
+  its own separate follow-up PR let it land with full test coverage now
+  while keeping the default behavior byte-for-byte unchanged until
+  someone verifies it against a real file.
+- **§4** (slow Oracle queries) — only the diagnostic tooling (automatic
+  `EXPLAIN PLAN` capture on every future slow statement) and one
+  low-risk, unverified index addition shipped as actual fixes. The real
+  root cause (bad plan vs. Oracle ADB contention) still isn't confirmed —
+  see §4's implementation-plan note.
 
 **Update — PR review (same day):** a first-pass review caught 4 real
 correctness/safety bugs in the initial implementation, since fixed on the
@@ -600,6 +609,89 @@ contract, not just the resolve orchestration), so it should be scoped
 and measured separately — likely as its own follow-up PR, not bundled
 with §1/§2.
 
+### Implementation plan (added after PR #430's review round, 2026-10-04)
+
+**Implemented**, gated behind a new, default-OFF setting
+(`ARYX_CPQ_STREAMING_PROJECTION_ENABLED`) rather than replacing the eager
+path outright — this is the most invasive change in the whole document
+and has no live-run verification yet (same caveat as N3 for §1 Tier 0's
+batch size), so it ships as an opt-in alternative path, not a default-on
+behavior change, until someone runs it against a real large file and
+compares entity/relationship counts against the eager path's output for
+the same file.
+
+1. **`xml_projector.py`: added `iter_raw_graph(data, should_stop=None) ->
+   Iterator[tuple[RawNode, RawEdge | None]]`.** Same stack-based
+   `iterparse` walk as `project_xml_to_raw_graph`, yielding each finished
+   node together with the one edge connecting it to its parent (`None`
+   for the root) instead of appending to `nodes`/`edges` lists.
+   `project_xml_to_raw_graph` itself is UNCHANGED and stays the default
+   for every other caller (the Read-stage Pass 1 write, tests, anything
+   not opted into streaming) — this is a new sibling function, not a
+   replacement, exactly as the original sketch above proposed. One
+   correction from the original sketch: nodes yield in finish (post-)
+   order, not id (pre-)order, since an element can only be yielded once
+   it ends — the eager function's id-ordered list comes from pre-reserving
+   each node's list slot at *start* time, which a generator has no list to
+   do. Relative left-to-right order among same-tag siblings (the
+   guarantee that actually matters for per-tag grouping and merge
+   tie-breaks) is preserved either way. 30 new tests in
+   `tests/cpq_ingestion/test_xml_projector.py`, including a
+   `tracemalloc`-based peak-memory comparison proving the walk's own
+   memory doesn't scale with element count.
+2. **`structural_leaf.py`: decoupled `fold_structural_leaf_tags` from
+   `RawGraphProjection`.** Its only two uses of the projection object were
+   `.edges` (classification + parent lookup) and `.nodes` (building
+   `nodes_by_id`, itself only needed when something actually folds).
+   Its signature now takes `edges: list[RawEdge]` directly and derives
+   `nodes_by_id` from `by_tag.values()` instead of a separate
+   `projection.nodes` list, removing the ONLY remaining reason a
+   streaming caller would need to materialize a full node list at all —
+   both the eager and streaming paths now share this function unchanged.
+3. **`resolve_relate.py`: `resolve_and_relate_raw_graph()` now accepts
+   `xml_bytes: bytes | None` as an alternative to `projection`
+   (exactly one of the two must be given).** When given bytes and the
+   feature flag is on, it builds `by_tag` incrementally by consuming
+   `iter_raw_graph()` directly instead of calling `group_nodes_by_tag()`
+   on a fully-materialized projection — never holding a separate
+   full-document node list at any point. The accumulated `edges` list is
+   still built in full either way (needed in full later for
+   `translate_containment_edges()`, which reasons about the whole
+   document's containment structure at once) — this fix targets the
+   node-list double-retention specifically, exactly as scoped above, not
+   the edges list.
+   **Known limitation, documented not silently dropped:** the opt-in
+   `ARYX_CSV_BML_ENABLED` query-table enrichment (`with_query_tables()`)
+   operates on a complete `RawGraphProjection` and has no streaming
+   equivalent — when both flags are on, the streaming path falls back to
+   materializing the full projection anyway (correctness over memory
+   savings) rather than silently skipping enrichment. 9 new tests in
+   `tests/cpq_ingestion/test_resolve_and_relate_raw_graph.py` cover both
+   flags/fallback combinations, `should_stop` forwarding into whichever
+   parse path is active, and that the streaming path produces the exact
+   same tags/calls as the eager path for equivalent input.
+4. **`doc_discovery.py`: the cpq XML loop now calls
+   `resolve_and_relate_raw_graph(xml_bytes=..., ...)` directly instead of
+   calling `project_xml_to_raw_graph()` itself and passing a projection.**
+   The eager-vs-streaming decision moved entirely into
+   `resolve_and_relate_raw_graph()`, so this call site no longer needs to
+   know which path is active. Default (flag off) behavior is byte-for-byte
+   the same code path this document's other sections were already
+   implemented and tested against — confirmed via updated tests in
+   `tests/cpq_ingestion/test_ingest_confirmed_raw_graph_wiring.py`,
+   `tests/cpq_ingestion/test_ingest_confirmed_csv_direct_wiring.py`, and
+   `tests/test_doc_discovery.py` (all three previously asserted
+   doc_discovery.py called `project_xml_to_raw_graph` directly; now
+   assert it does NOT, and that `resolve_and_relate_raw_graph` receives
+   `xml_bytes` instead).
+5. **Verification, still not done:** run the same `aSTRO25_ConfigData.xml`
+   file (or an equivalent large synthetic fixture) through both paths and
+   diff the resulting entity/relationship counts and `docker stats` peak
+   memory — this is the live-run confirmation N3 already flagged as
+   missing for §1 Tier 0, now also needed here before flipping the
+   default to on. Nothing in this environment can run that confirm job,
+   so this stays an open item for whoever has access to trigger one.
+
 ---
 
 ## 4. [Performance] Slow Oracle queries observed on unrelated UI endpoints
@@ -647,6 +739,72 @@ pre-existing, so don't assume it's an indexing problem without checking.
   UI responsiveness for other users/workspaces.
 - Either way: this is independent of §1-§3b and can be scoped and fixed
   on its own schedule.
+
+### Implementation plan (added after PR #430's review round, 2026-10-04)
+
+Step 1 genuinely cannot be completed from this environment — there is no
+live Oracle ADB session available here to run `EXPLAIN PLAN`/`DBMS_XPLAN`
+against, and re-measuring "with no confirm job running concurrently"
+needs an actual environment with and without that load, which this
+investigation doesn't have access to trigger. Implementing a specific
+fix (an index, a connection-pool split) without that data would be
+guessing, exactly what this section originally warned against. What
+**was** implemented instead is the tooling to make Step 1 automatic the
+next time this threshold trips, plus one narrowly-scoped, low-risk
+improvement justified by static analysis of the one query we already
+know the shape of:
+
+1. **Implemented — automatic plan capture on every slow statement.**
+   `src/aryx/store/oracle_cursor.py`'s `_log_stmt_ok()` already fired at
+   exactly the `SLOW_STATEMENT_MS` (2000ms) threshold this section's
+   evidence came from — it just didn't capture anything about *why* the
+   statement was slow. Added `_capture_explain_plan()`: a best-effort
+   `EXPLAIN PLAN FOR <sql>` + `DBMS_XPLAN.DISPLAY` call, truncated to
+   2000 chars and included in the existing `db.oracle.slow_statement`
+   raven_log event as `explain_plan`. Deliberately opens a **fresh**
+   cursor off the same connection (`cur.connection.cursor()`) rather than
+   reusing the statement's own cursor — reusing it would silently discard
+   an active, unfetched result set (e.g. a `SELECT` whose rows the caller
+   hasn't read yet) out from under the caller. Wrapped in try/except so a
+   plan-capture failure can never break the real query path. This turns
+   Step 1 from "someone has to reproduce this live" into "already
+   captured, next time it happens." 11 new tests in
+   `tests/test_oracle_cursor_explain_plan.py` (no live Oracle session
+   used — mocked connection/cursor objects shaped like oracledb's API),
+   covering the fresh-cursor isolation, close-on-failure, the
+   slow/fast-statement threshold gate, and backward compatibility for
+   call sites that don't pass `sql`/`cur`.
+2. **Implemented — one speculative, low-risk fix:**
+   `select_datasources.sql` (`SELECT ... FROM aryx_datasource WHERE
+   workspace_id = ? ORDER BY created_at DESC`) is confirmed as the source
+   of the `SELECT aryx_datasource` rows in the evidence table
+   (`/data/sources` -> `data_api.py`'s `sources()`/`summary()` handlers).
+   Both Postgres and Oracle already have `aryx_datasource_ws_idx ON
+   aryx_datasource(workspace_id)`, so the `WHERE` is already indexed —
+   but the index doesn't cover the `ORDER BY`, meaning Oracle still has
+   to sort every matching row after the index lookup. New migration
+   `0049_datasource_ws_created_idx.sql` (both backends) adds
+   `idx_datasource_ws_created ON aryx_datasource (workspace_id,
+   created_at DESC)`, a genuine covering index for this exact query
+   shape, eliminating the sort step entirely. The old, now-partially-
+   redundant `aryx_datasource_ws_idx` is left in place rather than
+   dropped — nothing in this investigation established it's safe to
+   remove. This is additive and can only help-or-be-neutral for this
+   specific query regardless of whether indexing turns out to be the real
+   root cause — but it is **not** presented as a confirmed fix for the
+   5.8s-31.8s durations observed; those remain unexplained pending plan
+   capture, and contention from the concurrent confirm job (the `INSERT
+   aryx_landed_record` row in the same window) is still an equally live
+   hypothesis this change does nothing about.
+3. **Explicitly not implemented:** the connection-pool-separation idea
+   from Step 2. `src/aryx/store/pool.py` has exactly one shared pool per
+   DSN today (already raised from 10 to 25 connections once before, for
+   a related contention incident) — splitting UI-read traffic onto a
+   second pool/DSN is a real architectural change (new pool, every UI
+   read call site rewired to request it) that deserves its own scoped
+   change once Step 1's captured plan data says contention, not a bad
+   plan, is the actual cause. Implementing it speculatively now risks
+   solving the wrong problem.
 
 ---
 
@@ -849,10 +1007,12 @@ unrelated `_FakeSettings.effective_dsn` gap.
 
 ## Suggested priority order
 
-All items below except §3b and §4 are now implemented on
+All items below are now implemented on
 `fix/cpq-xml-confirm-performance-2026-10-04` (see each section's
-"Implemented" note for files/tests). §3b and §4 remain designs only, per
-their own sections' reasoning.
+"Implemented" note for files/tests). §3b and §4 shipped opt-in/partial
+rather than as default-on behavior changes, per their own sections'
+reasoning — both still need a live confirm run to verify before being
+turned on by default or considered fully closed.
 
 0. **✅ §0 (job-level liveness/heartbeat + watchdog for a crashed worker) —
    highest priority, supersedes everything below.** Every other item in

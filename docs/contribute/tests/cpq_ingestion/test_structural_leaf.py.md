@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_structural_leaf.py
 
-Last updated: 2026-10-04T11:55:29.387546+00:00
+Last updated: 2026-10-04T13:52:28.069056+00:00
 Total lines: 192
 Lines AI-generated: 16 (8.3%)
 Lines human-typed: 0

@@ -432,3 +432,162 @@ def test_no_relationships_saved_when_no_edges_resolve():
 
     mock_estore.save_relationships.assert_not_called()
     assert result["relationships"] == 0
+
+
+# ── xml_bytes / streaming path (§3b, 2026-10-04) ─────────────────────────────
+
+XML_EQUIVALENT_TO_PROJECTION = (
+    b'<PurchaseOrder Id="PO-1001">'
+    b'<Customer Id="C-42"/>'
+    b'<LineItem Sku="WIDGET-A"/>'
+    b'</PurchaseOrder>'
+)
+
+
+def _settings_stub(**overrides):
+    base = dict(
+        cpq_structural_leaf_fold_enabled=True,
+        cpq_force_exact_enabled=True,
+        cpq_streaming_projection_enabled=False,
+    )
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+def test_projection_and_xml_bytes_both_given_raises():
+    with pytest.raises(ValueError):
+        resolve_and_relate_raw_graph(
+            _projection(), xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+
+def test_neither_projection_nor_xml_bytes_given_raises():
+    with pytest.raises(ValueError):
+        resolve_and_relate_raw_graph(
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+
+def test_xml_bytes_with_streaming_disabled_falls_back_to_eager_path():
+    """Default (flag off): xml_bytes still works, but via
+    project_xml_to_raw_graph -- not the streaming generator. should_stop
+    must still reach the parse itself (PR #429 review: the full parse runs
+    before resolve_and_relate_raw_graph's own per-tag checks can help, so
+    it needs should_stop too, regardless of which path builds by_tag --
+    this moved here, from doc_discovery.py's own direct call, in §3b)."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    should_stop = lambda: False  # noqa: E731
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=False)), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph") as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_eager.return_value = _projection()
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER, should_stop=should_stop,
+        )
+
+    mock_eager.assert_called_once()
+    mock_stream.assert_not_called()
+    _, eager_kwargs = mock_eager.call_args
+    assert eager_kwargs["should_stop"] is should_stop
+
+
+def test_xml_bytes_with_streaming_enabled_uses_the_generator_not_the_eager_path():
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_eager.assert_not_called()
+    # Same 3 tags as the eager _projection() fixture -- one resolve-only
+    # run_pipeline call each, proving the streaming grouping is equivalent.
+    assert mock_run_pipeline.call_count == 3
+    tags = {c.kwargs["dataset"] for c in mock_run_pipeline.call_args_list}
+    assert tags == {"PurchaseOrder", "Customer", "LineItem"}
+    assert result["tags"] == 3
+
+
+def test_xml_bytes_streaming_forwards_should_stop_into_iter_raw_graph():
+    should_stop = lambda: False  # noqa: E731
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph",
+               return_value=iter(())) as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore"), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline"):
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER, should_stop=should_stop,
+        )
+
+    _, kwargs = mock_stream.call_args
+    assert kwargs["should_stop"] is should_stop
+
+
+def test_xml_bytes_streaming_falls_back_to_eager_when_bml_enabled():
+    """ARYX_CSV_BML_ENABLED's query-table enrichment has no streaming
+    equivalent -- correctness over memory savings when both are on."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=True), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph") as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_eager.return_value = _projection()
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_eager.assert_called_once()
+    mock_stream.assert_not_called()
+
+
+def test_xml_bytes_streaming_empty_generator_returns_zero_summary():
+    """No realistic XML document parses to zero nodes (even an empty root
+    element is one node) -- this exercises the defensive by_tag-empty
+    branch directly by mocking iter_raw_graph to yield nothing, the same
+    way test_empty_projection_returns_zero_summary_without_touching_the_db
+    exercises the eager path's equivalent branch with an explicitly empty
+    RawGraphProjection."""
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph", return_value=iter(())), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline:
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_estore_cls.assert_not_called()
+    mock_run_pipeline.assert_not_called()
+    assert result == {"tags": 0, "entities": 0, "relationships": 0}

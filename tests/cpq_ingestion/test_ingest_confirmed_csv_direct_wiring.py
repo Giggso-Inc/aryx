@@ -219,10 +219,14 @@ def test_xml_and_csv_direct_plans_coexist_in_one_batch():
         )
 
     mock_bridge.assert_called_once()
-    mock_project.assert_called_once()
-    project_args, project_kwargs = mock_project.call_args
-    assert project_args == (b"<PurchaseOrder Id='PO-1'/>",)
-    assert callable(project_kwargs["should_stop"])
+    # §3b (2026-10-04): doc_discovery.py no longer calls project_xml_to_
+    # raw_graph directly -- it hands raw bytes to resolve_and_relate_raw_
+    # graph() via xml_bytes, which decides internally whether to parse
+    # eagerly or stream.
+    mock_project.assert_not_called()
+    _, bridge_kwargs = mock_bridge.call_args
+    assert bridge_kwargs["xml_bytes"] == b"<PurchaseOrder Id='PO-1'/>"
+    assert callable(bridge_kwargs["should_stop"])
     mock_land.assert_called_once()
     land_args, land_kwargs = mock_land.call_args
     assert land_args[1] == "catalog"

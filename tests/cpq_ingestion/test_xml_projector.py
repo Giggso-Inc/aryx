@@ -12,7 +12,11 @@ import tracemalloc
 
 import pytest
 
-from aryx.cpq_ingestion.raw_graph.xml_projector import count_raw_graph_elements, project_xml_to_raw_graph
+from aryx.cpq_ingestion.raw_graph.xml_projector import (
+    count_raw_graph_elements,
+    iter_raw_graph,
+    project_xml_to_raw_graph,
+)
 from aryx.pipeline.orchestrate import PipelineCancelled
 
 WRAPPED_XML = b"""<Accounts>
@@ -342,3 +346,142 @@ def test_project_default_should_stop_none_is_unaffected():
     projection = project_xml_to_raw_graph(WRAPPED_XML)
     assert len(projection.nodes) == 14
     assert len(projection.edges) == 13
+
+
+# ── iter_raw_graph (§3b, 2026-10-04) — equivalence with the eager function ──
+
+def _drain(data: bytes, **kwargs):
+    nodes = []
+    edges = []
+    for node, edge in iter_raw_graph(data, **kwargs):
+        nodes.append(node)
+        if edge is not None:
+            edges.append(edge)
+    return nodes, edges
+
+
+def _as_sorted_by_id(nodes):
+    return sorted(nodes, key=lambda n: n.id)
+
+
+def _as_sorted_edges(edges):
+    return sorted(edges, key=lambda e: e.target_id)
+
+
+def test_iter_matches_eager_nodes_and_edges_for_wrapped_xml():
+    """Same SET of nodes/edges as the eager function -- not the same list
+    ORDER, since iter_raw_graph yields in finish-order (post-order) while
+    project_xml_to_raw_graph's list is id-ordered (pre-order); see
+    iter_raw_graph's docstring for why that's fine for every real caller."""
+    projection = project_xml_to_raw_graph(WRAPPED_XML)
+    nodes, edges = _drain(WRAPPED_XML)
+
+    assert _as_sorted_by_id(nodes) == _as_sorted_by_id(projection.nodes)
+    assert _as_sorted_edges(edges) == _as_sorted_edges(projection.edges)
+
+
+def test_iter_matches_eager_nodes_and_edges_for_nowrap_xml():
+    projection = project_xml_to_raw_graph(NOWRAP_XML)
+    nodes, edges = _drain(NOWRAP_XML)
+
+    assert _as_sorted_by_id(nodes) == _as_sorted_by_id(projection.nodes)
+    assert _as_sorted_edges(edges) == _as_sorted_edges(projection.edges)
+
+
+def test_iter_matches_eager_for_a_large_flat_document():
+    data = _make_flat_xml(500)
+    projection = project_xml_to_raw_graph(data)
+    nodes, edges = _drain(data)
+
+    assert _as_sorted_by_id(nodes) == _as_sorted_by_id(projection.nodes)
+    assert _as_sorted_edges(edges) == _as_sorted_edges(projection.edges)
+
+
+def test_iter_root_node_has_no_edge():
+    """The root is yielded LAST (post-order), not first -- find it by
+    id==1 (always the first element to *start*, regardless of when it's
+    yielded) rather than assuming yield position."""
+    pairs = list(iter_raw_graph(WRAPPED_XML))
+    root_pairs = [(n, e) for n, e in pairs if n.id == 1]
+    assert len(root_pairs) == 1
+    root_node, root_edge = root_pairs[0]
+    assert root_node.tag == "Accounts"
+    assert root_edge is None
+
+
+def test_iter_every_non_root_node_has_exactly_one_edge_to_its_parent():
+    pairs = list(iter_raw_graph(WRAPPED_XML))
+    for node, edge in pairs:
+        if node.id == 1:
+            continue  # root, covered by test_iter_root_node_has_no_edge
+        assert edge is not None
+        assert edge.target_id == node.id
+
+
+def test_iter_preserves_relative_order_among_same_tag_siblings():
+    """The guarantee that actually matters downstream (per-tag grouping
+    order, entity-id assignment / merge tie-breaks): two same-tag
+    elements that are siblings (not nested in each other) must still
+    yield in left-to-right document order, even though overall yield
+    order is post-order, not id-order."""
+    xml = b"""<Root>
+      <Item>first</Item>
+      <Item>second</Item>
+      <Item>third</Item>
+    </Root>"""
+    nodes, _ = _drain(xml)
+    items = [n for n in nodes if n.tag == "Item"]
+    assert [n.properties["text"] for n in items] == ["first", "second", "third"]
+
+
+def test_iter_raises_pipeline_cancelled_like_the_eager_function(monkeypatch):
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
+    data = _make_flat_xml(50)
+
+    with pytest.raises(PipelineCancelled):
+        list(iter_raw_graph(data, should_stop=lambda: True))
+
+
+def test_iter_should_stop_false_behaves_exactly_as_before(monkeypatch):
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
+    data = _make_flat_xml(50)
+
+    nodes, edges = _drain(data, should_stop=lambda: False)
+    assert len(nodes) == 101
+    assert len(edges) == 100
+
+
+def test_iter_peak_memory_does_not_scale_with_element_count():
+    """The whole point of §3b: iter_raw_graph's OWN peak memory (not
+    counting whatever the caller chooses to retain from the yielded
+    stream) must stay roughly constant regardless of document size.
+    Critically, this must DRAIN the generator without accumulating
+    results into a list -- list(iter_raw_graph(...)) would measure the
+    drained list's memory, not the generator's own walk memory, exactly
+    the "whatever the caller chooses to retain" the docstring warns is a
+    separate concern. Mirrors
+    test_peak_memory_does_not_scale_with_element_count for
+    count_raw_graph_elements below, same measurement technique."""
+    small = _make_flat_xml(2_000)
+    large = _make_flat_xml(20_000)
+
+    tracemalloc.start()
+    for _ in iter_raw_graph(small):
+        pass
+    _, small_peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    tracemalloc.start()
+    for _ in iter_raw_graph(large):
+        pass
+    _, large_peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    # 10x more elements must not come anywhere near 10x the peak --
+    # generous bound (not a tight regression test) to avoid flaking on
+    # unrelated interpreter/allocator noise.
+    assert large_peak < small_peak * 5

@@ -21,11 +21,13 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from collections import defaultdict
+
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.cpq_ingestion.raw_graph.containment_relate import translate_containment_edges
 from aryx.cpq_ingestion.raw_graph.match_key_inference import infer_match_keys_for_tag
-from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection
+from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
 from aryx.cpq_ingestion.raw_graph.store import with_query_tables
 from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     SOURCE_SYSTEM,
@@ -34,6 +36,7 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     parse_record_id,
 )
 from aryx.cpq_ingestion.raw_graph.structural_leaf import fold_structural_leaf_tags
+from aryx.cpq_ingestion.raw_graph.xml_projector import iter_raw_graph, project_xml_to_raw_graph
 from aryx.pipeline.orchestrate import PipelineCancelled, Progress, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
@@ -101,8 +104,9 @@ def _delete_orphaned_entities(
 
 
 def resolve_and_relate_raw_graph(
-    projection: RawGraphProjection,
+    projection: RawGraphProjection | None = None,
     *,
+    xml_bytes: bytes | None = None,
     workspace_id: int,
     source_key: str,
     dsn: str,
@@ -115,6 +119,21 @@ def resolve_and_relate_raw_graph(
 ) -> dict[str, Any]:
     """Resolve every raw-graph tag into curated entities, relate via
     containment, and project the result into the curated graph.
+
+    Exactly one of ``projection`` / ``xml_bytes`` must be given.
+    ``xml_bytes`` (§3b, 2026-10-04) opts into the streaming path when
+    ``ARYX_CPQ_STREAMING_PROJECTION_ENABLED`` is on: ``by_tag`` is built
+    incrementally from ``xml_projector.iter_raw_graph()`` instead of a
+    fully-materialized ``RawGraphProjection``, never holding a separate
+    whole-document node list (see ``iter_raw_graph``'s and
+    ``fold_structural_leaf_tags``'s docstrings for the memory argument).
+    Default-off and falls back to the eager ``project_xml_to_raw_graph()``
+    path when the flag is off OR when ``ARYX_CSV_BML_ENABLED``'s
+    query-table enrichment is on (``with_query_tables()`` has no streaming
+    equivalent -- correctness over memory savings when both are enabled).
+    Not yet verified against a real large file end to end (see the
+    planning doc's §3b implementation-plan note) -- ships opt-in, not
+    default-on, until that verification happens.
 
     One resolve-only run per distinct XML tag: a ``RawGraphConnector`` for
     that tag's nodes, with ``ontology_type``/``match_keys`` from
@@ -221,29 +240,69 @@ def resolve_and_relate_raw_graph(
     path's completed_plans) is a separate, larger feature and still out of
     scope for this PR.
     """
+    if (projection is None) == (xml_bytes is None):
+        raise ValueError("resolve_and_relate_raw_graph: exactly one of "
+                         "projection/xml_bytes must be given")
+
     total_entities = 0
     relationships: list[Any] = []
     graph_counts: dict[str, int] = {}
-    if not projection.nodes:
-        logger.info(
-            "raw_graph resolve_and_relate did=%s source_key=%s: no nodes to resolve",
-            log_id, source_key,
-        )
-        raven_log("DEBUG", "P4", "ingest.raw_graph.resolve nothing to resolve",
-                  context={"log_id": log_id, "source_key": source_key, "decision": "early_return",
-                           "reason_code": "NO_NODES"})
-        return {"tags": 0, "entities": 0, "relationships": 0}
+    settings = get_settings()
 
-    # Opt-in (ARYX_CSV_BML_ENABLED): the curated graph is what a CSV upload searches for the BML query,
-    # so the query lists must be on the entities that resolve/relate builds it from.
-    projection = with_query_tables(projection)
-    by_tag = group_nodes_by_tag(projection)
+    # Lazy import (matches with_query_tables' own precedent in store.py)
+    # to avoid an import cycle between csv_bml_ingestion and cpq_ingestion.
+    from aryx.csv_bml_ingestion.config import csv_bml_enabled  # noqa: PLC0415
+
+    # §3b: stream straight from bytes only when opted in AND the BML
+    # query-table enrichment (which needs a complete RawGraphProjection,
+    # no streaming equivalent) isn't also on -- see the docstring.
+    use_streaming = (
+        xml_bytes is not None
+        and settings.cpq_streaming_projection_enabled
+        and not csv_bml_enabled()
+    )
+
+    if use_streaming:
+        by_tag: dict[str, list[RawNode]] = defaultdict(list)
+        edges: list[RawEdge] = []
+        for node, edge in iter_raw_graph(xml_bytes, should_stop=should_stop):
+            by_tag[node.tag].append(node)
+            if edge is not None:
+                edges.append(edge)
+        by_tag = dict(by_tag)
+        if not by_tag:
+            logger.info(
+                "raw_graph resolve_and_relate did=%s source_key=%s: no nodes to resolve",
+                log_id, source_key,
+            )
+            raven_log("DEBUG", "P4", "ingest.raw_graph.resolve nothing to resolve",
+                      context={"log_id": log_id, "source_key": source_key, "decision": "early_return",
+                               "reason_code": "NO_NODES"})
+            return {"tags": 0, "entities": 0, "relationships": 0}
+    else:
+        if projection is None:
+            projection = project_xml_to_raw_graph(xml_bytes, should_stop=should_stop)
+        if not projection.nodes:
+            logger.info(
+                "raw_graph resolve_and_relate did=%s source_key=%s: no nodes to resolve",
+                log_id, source_key,
+            )
+            raven_log("DEBUG", "P4", "ingest.raw_graph.resolve nothing to resolve",
+                      context={"log_id": log_id, "source_key": source_key, "decision": "early_return",
+                               "reason_code": "NO_NODES"})
+            return {"tags": 0, "entities": 0, "relationships": 0}
+        # Opt-in (ARYX_CSV_BML_ENABLED): the curated graph is what a CSV upload searches for the BML query,
+        # so the query lists must be on the entities that resolve/relate builds it from.
+        projection = with_query_tables(projection)
+        by_tag = group_nodes_by_tag(projection)
+        edges = projection.edges
+
     # PR review N1: opt-out for a new behavior-changing fix, even one
     # believed safe (every existing per-caller test keeps passing with the
     # default True).
-    if get_settings().cpq_structural_leaf_fold_enabled:
+    if settings.cpq_structural_leaf_fold_enabled:
         by_tag = fold_structural_leaf_tags(
-            projection, by_tag, log_id=log_id, source_key=source_key,
+            edges, by_tag, log_id=log_id, source_key=source_key,
         )
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
@@ -292,7 +351,7 @@ def resolve_and_relate_raw_graph(
                     graph_url=graph_url, broker=broker, workspace_id=workspace_id,
                     relate=False, skip_graph=True, should_stop=should_stop,
                     on_progress=_tag_progress,
-                    force_exact=(get_settings().cpq_force_exact_enabled
+                    force_exact=(settings.cpq_force_exact_enabled
                                 and inferred.get("source") == "default"),
                 )
                 total_entities += summary["entities"]
@@ -339,7 +398,7 @@ def resolve_and_relate_raw_graph(
             raise
 
         relationships = translate_containment_edges(
-            projection.edges, node_id_to_entity_id, log_id=log_id,
+            edges, node_id_to_entity_id, log_id=log_id,
         )
         if relationships:
             estore.save_relationships(relationships)

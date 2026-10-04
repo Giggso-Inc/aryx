@@ -34,6 +34,54 @@ _VERB_TABLE_RE = re.compile(
     re.I | re.S,
 )
 
+# Max characters of captured plan text kept in the raven_log event -- a
+# compact BASIC-level plan is normally well under this; this is a hard cap
+# against a pathological plan blowing up log record size.
+_EXPLAIN_PLAN_MAX_CHARS = 2000
+
+
+def _capture_explain_plan(cur: Any, sql: str) -> str | None:
+    """Best-effort EXPLAIN PLAN capture for a slow statement (§4, 2026-10-04,
+    docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md).
+
+    Turns "someone has to reproduce this live to get a plan" into "already
+    captured, next time it happens" -- this project had no way to see WHY a
+    statement was slow, only THAT it was (duration_ms alone).
+
+    Always opens a FRESH cursor off the same connection (``cur.connection.
+    cursor()``) rather than reusing the caller's own cursor -- the caller's
+    cursor may still have an active, unfetched result set (e.g. a SELECT
+    whose rows the caller hasn't called fetchone()/fetchall() on yet);
+    running another execute() on THAT cursor would silently discard those
+    results out from under the caller. The fresh cursor is explicitly
+    closed in all cases.
+
+    EXPLAIN PLAN FOR accepts a statement with bind placeholders left as
+    literal ``:1``/``:name`` markers -- Oracle only needs to determine a
+    plan shape, not actual bound values. PLAN_TABLE is a session-scoped
+    global temporary table in modern Oracle (10g+, including ADB), so
+    concurrent sessions explaining different statements don't interfere
+    with each other.
+
+    Never raises: a plan-capture failure (bad bind inference, insufficient
+    privilege, anything) must never break the real query path this wraps,
+    only skip the extra diagnostic.
+    """
+    try:
+        plan_cur = cur.connection.cursor()
+        try:
+            plan_cur.execute(f"EXPLAIN PLAN FOR {sql}")
+            plan_cur.execute(
+                "SELECT PLAN_TABLE_OUTPUT FROM TABLE(DBMS_XPLAN.DISPLAY(NULL, NULL, 'BASIC +PREDICATE'))"
+            )
+            lines = [row[0] for row in plan_cur.fetchall() if row and row[0]]
+            plan_text = "\n".join(lines)
+            return plan_text[:_EXPLAIN_PLAN_MAX_CHARS] if plan_text else None
+        finally:
+            plan_cur.close()
+    except Exception:  # noqa: BLE001 — best-effort, never break the real query path
+        return None
+
 
 def _sql_op(sql: str) -> str:
     """SQL verb and table name only (never text, never binds): 'INSERT entities'."""
@@ -52,14 +100,26 @@ def _ora_code(exc: BaseException) -> str:
     return m.group(0) if m else ""
 
 
-def _log_stmt_ok(op: str, method: str, rows: int, t0: float) -> None:
-    """DEBUG per statement; INFO when slower than SLOW_STATEMENT_MS."""
+def _log_stmt_ok(op: str, method: str, rows: int, t0: float,
+                  sql: str | None = None, cur: Any = None) -> None:
+    """DEBUG per statement; INFO when slower than SLOW_STATEMENT_MS.
+
+    sql/cur: only used to attempt an EXPLAIN PLAN capture (§4, 2026-10-04)
+    when the statement turns out to be slow -- omitted entirely (no plan
+    capture attempted) when either is None, so existing call sites that
+    don't pass them keep working unchanged.
+    """
     ms = int((time.monotonic() - t0) * 1000)
     if ms >= SLOW_STATEMENT_MS:
+        context = {"dependency_name": "oracle_adb", "operation": op, "method": method,
+                   "rows": rows, "duration_ms": ms, "threshold_ms": SLOW_STATEMENT_MS,
+                   "result": "ok"}
+        if sql is not None and cur is not None:
+            plan = _capture_explain_plan(cur, sql)
+            if plan:
+                context["explain_plan"] = plan
         raven_log("INFO", "P4", "db.oracle.slow_statement slow oracle statement",
-                  context={"dependency_name": "oracle_adb", "operation": op, "method": method,
-                           "rows": rows, "duration_ms": ms, "threshold_ms": SLOW_STATEMENT_MS,
-                           "result": "ok"})
+                  context=context)
     elif would_log("DEBUG"):
         raven_log("DEBUG", "P4", "db.oracle.statement oracle statement done",
                   context={"dependency_name": "oracle_adb", "operation": op, "method": method,
@@ -182,7 +242,8 @@ class OracleCursorWrapper:
             _log_stmt_failed(_op, "execute", exc, _t0)
             raise
         else:
-            _log_stmt_ok(_op, "execute", int(getattr(self._cur, "rowcount", 0) or 0), _t0)
+            _log_stmt_ok(_op, "execute", int(getattr(self._cur, "rowcount", 0) or 0), _t0,
+                        sql=oracle_sql, cur=self._cur)
 
     def executemany(self, sql: str, seq: Any) -> None:
         """Execute SQL for a sequence of parameter sets."""
@@ -226,7 +287,8 @@ class OracleCursorWrapper:
             _log_stmt_failed(_op, "executemany", exc, _t0)
             raise
         else:
-            _log_stmt_ok(_op, "executemany", len(oracle_seq), _t0)
+            _log_stmt_ok(_op, "executemany", len(oracle_seq), _t0,
+                        sql=oracle_sql, cur=self._cur)
 
     def executemany_returning(self, sql: str, seq: Any) -> list[Any]:
         """Batch INSERT...RETURNING in one Oracle round-trip; returns scalar list.

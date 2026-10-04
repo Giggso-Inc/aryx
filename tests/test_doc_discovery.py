@@ -393,11 +393,15 @@ def test_ingest_confirmed_routes_cpq_raw_graph_preview_plan_to_resolve_relate(mo
             workspace_id=3,
         )
 
-    mock_project.assert_called_once()
-    project_args, project_kwargs = mock_project.call_args
-    assert project_args == (preview_plan["source_bytes"],)
-    assert callable(project_kwargs["should_stop"])
+    # §3b (2026-10-04): doc_discovery.py no longer calls project_xml_to_
+    # raw_graph directly -- it hands raw bytes to resolve_and_relate_raw_
+    # graph() via xml_bytes, which decides internally whether to parse
+    # eagerly or stream.
+    mock_project.assert_not_called()
     mock_resolve.assert_called_once()
+    _, resolve_kwargs = mock_resolve.call_args
+    assert resolve_kwargs["xml_bytes"] == preview_plan["source_bytes"]
+    assert callable(resolve_kwargs["should_stop"])
     _, resolve_kwargs = mock_resolve.call_args
     assert resolve_kwargs["workspace_id"] == 3
     assert resolve_kwargs["source_key"] == "order"

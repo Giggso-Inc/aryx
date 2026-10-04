@@ -1,0 +1,18 @@
+-- 2026-10-04: §4 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_
+-- ISSUES_2026-10-04.md -- select_datasources.sql (the /data/sources and
+-- /data/summary UI endpoints) filters on workspace_id and sorts by
+-- created_at DESC. aryx_datasource_ws_idx (workspace_id) already covers
+-- the filter, but not the sort, so Oracle still had to sort every matching
+-- row after the index lookup. This composite index covers the exact query
+-- shape end to end, eliminating that sort step.
+--
+-- Speculative, not a confirmed fix: live durations of 5.8s-31.8s were
+-- observed for this query, but EXPLAIN PLAN was never captured live to
+-- confirm a missing sort (vs. Oracle ADB contention from a concurrent
+-- confirm job) was the actual cause -- see §4's implementation-plan note.
+-- This change is additive and can only help-or-be-neutral regardless of
+-- which it turns out to be; aryx_datasource_ws_idx is left in place
+-- (now redundant for this one query, but still a plain reasonable index
+-- on workspace_id) rather than dropped, since nothing else in this
+-- investigation established it's safe to remove.
+CREATE INDEX IF NOT EXISTS idx_datasource_ws_created ON aryx_datasource (workspace_id, created_at DESC);

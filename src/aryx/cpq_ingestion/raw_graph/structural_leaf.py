@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 
 from aryx.cpq_ingestion.constants import RAW_PROP_TEXT
-from aryx.cpq_ingestion.raw_graph.models import RawGraphProjection, RawNode
+from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawNode
 from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
 
 
 def fold_structural_leaf_tags(
-    projection: RawGraphProjection,
+    edges: list[RawEdge],
     by_tag: dict[str, list[RawNode]],
     *, log_id: str | None = None, source_key: str = "",
 ) -> dict[str, list[RawNode]]:
@@ -82,19 +82,29 @@ def fold_structural_leaf_tags(
 
     Performance (PR review M4): the two full-projection structures this
     needs -- ``parent_ids`` (classification) and ``parent_of`` (folding) --
-    are built together in ONE pass over ``projection.edges`` regardless of
-    outcome, since classifying every tag requires ``parent_ids`` anyway.
+    are built together in ONE pass over ``edges`` regardless of outcome,
+    since classifying every tag requires ``parent_ids`` anyway.
     ``nodes_by_id``, the expensive one (a dict of every node, same
     cardinality as the file -- 5.85M entries on the file this was built
     against), is only built if at least one tag actually classifies as a
     leaf, and never if ``by_tag`` has nothing foldable.
+
+    Takes ``edges`` directly rather than a ``RawGraphProjection`` (§3b,
+    2026-10-04) -- this function's only two uses of a projection were
+    ``.edges`` and ``.nodes`` (the latter only to build ``nodes_by_id``,
+    itself derivable from ``by_tag``'s own values, which together already
+    contain every node). Decoupling from the projection type means the
+    streaming `xml_bytes` path in ``resolve_and_relate_raw_graph()`` can
+    call this unchanged, without ever constructing a separate
+    whole-document node list just to satisfy this function's old
+    signature.
     """
     if not by_tag:
         return by_tag
 
     parent_ids: set[int] = set()
     parent_of: dict[int, int] = {}
-    for edge in projection.edges:
+    for edge in edges:
         parent_ids.add(edge.source_id)
         parent_of[edge.target_id] = edge.source_id
 
@@ -105,7 +115,9 @@ def fold_structural_leaf_tags(
     if not leaf_tags:
         return by_tag
 
-    nodes_by_id: dict[int, RawNode] = {n.id: n for n in projection.nodes}
+    nodes_by_id: dict[int, RawNode] = {
+        n.id: n for nodes in by_tag.values() for n in nodes
+    }
 
     folded_tags: list[str] = []
     result: dict[str, list[RawNode]] = {

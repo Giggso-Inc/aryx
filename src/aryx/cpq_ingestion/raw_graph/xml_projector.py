@@ -13,7 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from xml.etree.ElementTree import Element
 
 import defusedxml.ElementTree as defused_ET
@@ -189,6 +189,93 @@ def project_xml_to_raw_graph(
               context={"nodes": len(nodes), "edges": len(edges),
                        "root_tag": nodes[0].tag if nodes else "", "bytes": len(data)})
     return RawGraphProjection(nodes=nodes, edges=edges)  # type: ignore[arg-type]  # every slot is filled by this point
+
+
+def iter_raw_graph(
+    data: bytes, should_stop: Callable[[], bool] | None = None,
+) -> Iterator[tuple[RawNode, RawEdge | None]]:
+    """Same walk as ``project_xml_to_raw_graph``, yielding each finished
+    node (and the one edge connecting it to its parent, ``None`` for the
+    root) instead of appending to whole-document ``nodes``/``edges`` lists.
+
+    §3b (2026-10-04, docs/ingestion/
+    CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md): peak memory
+    for the walk itself becomes O(nesting depth) regardless of document
+    size -- what the caller does with the yielded stream is up to it (see
+    ``resolve_and_relate_raw_graph``'s ``xml_bytes`` path, which groups
+    directly into its per-tag dict without ever building a separate
+    whole-document node list the way ``group_nodes_by_tag(project_xml_to_
+    raw_graph(data))`` would). A sibling to, not a replacement for,
+    ``project_xml_to_raw_graph`` -- every other caller (Read-stage Pass 1,
+    existing tests, anything not opted into the streaming path) keeps
+    using the eager function unchanged.
+
+    Ordering: yields in **finish (post-)order**, not id (pre-)order --
+    an element can only be yielded once it ends, since that's the first
+    point its attributes/text/child-count are known, exactly the same
+    constraint ``project_xml_to_raw_graph`` documents for when a
+    ``RawNode`` is *built*. The eager function additionally re-sorts into
+    id order by pre-reserving each node's list slot at *start* time
+    (``nodes[my_id - 1] = ...``); this generator has no list to pre-reserve
+    a slot in, so it cannot offer that same guarantee without buffering,
+    which would defeat the point. The set of nodes/edges is identical
+    either way, and -- the guarantee that actually matters downstream --
+    **relative left-to-right order among same-tag siblings is preserved**
+    in both orderings, since XML's depth-first traversal finishes one
+    sibling's whole subtree before starting the next regardless of
+    whether you read off start or end events. Callers that need the
+    eager function's exact id-ordered list (e.g. existing tests asserting
+    ``nodes[i].id == i + 1``) should keep using
+    ``project_xml_to_raw_graph``.
+    """
+    stack: list[list[int | bool | Element | None]] = []
+    next_id = 0
+    finished = 0
+    start = time.monotonic()
+
+    for event, elem in defused_ET.iterparse(io.BytesIO(data), events=("start", "end")):
+        if event == "start":
+            next_id += 1
+            my_id = next_id
+            parent_id = stack[-1][0] if stack else None
+            if stack:
+                stack[-1][1] = True
+            stack.append([my_id, False, elem, parent_id])
+            continue
+        my_id, has_children, _elem, parent_id = stack.pop()
+        tag = _strip_ns(elem.tag)
+        properties: dict[str, object] = dict(elem.attrib)
+        if not has_children:
+            text = (elem.text or "").strip()
+            if text:
+                properties[RAW_PROP_TEXT] = text
+        node = RawNode(id=my_id, tag=tag, properties=properties)
+        edge = (RawEdge(source_id=parent_id, target_id=my_id, name=RAW_EDGE_CONTAINS)
+                if parent_id is not None else None)
+        elem.clear()
+        if stack:
+            stack[-1][2].remove(elem)
+        finished += 1
+        if finished % _PROGRESS_LOG_INTERVAL == 0:
+            logger.info(
+                "iter_raw_graph: %d element(s) processed, %.1fs elapsed",
+                finished, time.monotonic() - start,
+            )
+            if should_stop is not None and should_stop():
+                logger.warning("iter_raw_graph: cancelled after %d element(s)", finished)
+                raven_log("WARN", "P3", "ingest.raw_graph.project_cancelled projection parse stopped by cancel",
+                          error_code="ARYX_ING_CANCELLED",
+                          context={"elements_processed": finished, "result": "cancelled",
+                                   "exit_condition": "cancelled"})
+                from aryx.pipeline.orchestrate import PipelineCancelled  # noqa: PLC0415
+                raise PipelineCancelled(f"job cancelled during XML projection after {finished} element(s)")
+        yield node, edge
+
+    if finished >= _PROGRESS_LOG_INTERVAL:
+        logger.info(
+            "iter_raw_graph: done, %d element(s), %.1fs elapsed",
+            finished, time.monotonic() - start,
+        )
 
 
 def count_raw_graph_elements(

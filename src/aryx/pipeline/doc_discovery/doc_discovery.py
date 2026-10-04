@@ -535,7 +535,6 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         if should_stop():
             raise PipelineCancelled(f"job cancelled before source_filename={source_filename}")
         from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
-        from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
 
         step += 1
         stem = Path(source_filename).stem
@@ -555,9 +554,12 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             logger.info("confirm job=%s cpq_ingestion source_filename=%s stage=%s pct=%d %s",
                         job_id, _fname, stage, pct, detail)
 
-        projection = project_xml_to_raw_graph(plan["source_bytes"], should_stop=should_stop)
+        # §3b (2026-10-04): passing xml_bytes directly lets
+        # resolve_and_relate_raw_graph() itself decide eager vs. streaming
+        # (ARYX_CPQ_STREAMING_PROJECTION_ENABLED, default off) -- this call
+        # site no longer needs to know which path is active.
         result = resolve_and_relate_raw_graph(
-            projection, workspace_id=workspace_id, source_key=stem,
+            xml_bytes=plan["source_bytes"], workspace_id=workspace_id, source_key=stem,
             dsn=settings.effective_dsn(), graph_url=settings.graph_url,
             broker=broker, log_id=job_id, should_stop=should_stop,
             on_progress=_progress_cpq,

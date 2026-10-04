@@ -54,6 +54,26 @@ class CoreSettingsMixin(BaseSettings):
             "fuzzy/chunked path, same as before this PR)."
         ),
     )
+    cpq_streaming_projection_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt in to §3b's streaming XML-to-raw-graph path: resolve_and_"
+            "relate_raw_graph(xml_bytes=...) builds its per-tag grouping "
+            "incrementally from xml_projector.iter_raw_graph() instead of a "
+            "fully-materialized RawGraphProjection, removing the double node-"
+            "list retention the eager path has (full projection.nodes AND "
+            "group_nodes_by_tag's regrouping). Default OFF -- this is the "
+            "most invasive change in docs/ingestion/"
+            "CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md (touches "
+            "the XML parser's public contract) and has not yet been verified "
+            "end to end against a real large file (entity/relationship counts "
+            "and peak memory compared against the eager path for the same "
+            "input). Falls back to the eager path automatically when "
+            "ARYX_CSV_BML_ENABLED is also on, since that enrichment has no "
+            "streaming equivalent. Set ARYX_CPQ_STREAMING_PROJECTION_ENABLED"
+            "=true to opt in."
+        ),
+    )
     landing_batch_size: int = Field(
         default=500,
         description=(
