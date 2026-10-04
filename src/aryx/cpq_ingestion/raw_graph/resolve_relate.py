@@ -180,13 +180,20 @@ def resolve_and_relate_raw_graph(
     otherwise sit as permanent orphans once project_workspace_graph next
     rebuilds the graph from everything in the DB.
 
-    Known remaining limit: if run_pipeline() itself raised mid-tag, that
-    IN-FLIGHT tag's own partial entities (if resolve_cluster managed to
-    save any before the cancel) are NOT cleaned up -- node_id_to_entity_id
-    is only populated after run_pipeline returns successfully, and a raise
-    means this function never learns that tag's run_id to look them up.
-    So a cancel can still leave a small number of orphans behind: at most
-    one tag's worth, not the whole attempt's.
+    PR #429 review N1 (round 2) closed what was the main remaining gap: a
+    cancel raised from INSIDE run_pipeline() -- the common case, since the
+    "relate" checkpoint fires right after resolve_cluster, i.e. AFTER that
+    tag's own entities are already saved -- used to leave that WHOLE
+    in-flight tag's entities behind uncleaned (node_id_to_entity_id is only
+    populated after run_pipeline returns successfully, so a raise meant
+    this function never learned that tag's run_id). orchestrate.py's
+    _check_cancelled now attaches run_id onto the PipelineCancelled it
+    raises; the except block here looks those entities up via the same
+    entity_ids_by_run() the successful path already uses and folds them
+    into the same cleanup call. So a mid-loop cancel -- whichever of the
+    two paths triggers it -- now cleans up every tag that reached
+    resolve_cluster, in-flight one included, not just the ones that fully
+    finished before it.
 
     Does NOT prevent duplication across separate confirm attempts that each
     ran to completion (re-confirming an already-finished file, or a cancel
@@ -253,18 +260,35 @@ def resolve_and_relate_raw_graph(
                           context={"log_id": log_id, "source_key": source_key, "tag": tag, "nodes": len(nodes),
                                    "run_id": summary["run_id"], "entities": summary["entities"],
                                    "match_keys": inferred["match_keys"]})
-        except PipelineCancelled:
+        except PipelineCancelled as exc:
             # Covers both paths above: the explicit should_stop() check at
             # the top of the loop, and a PipelineCancelled raised from
-            # inside run_pipeline() for the tag currently in flight. Known
-            # limit (PR #429 review M1): if run_pipeline raised, that
-            # in-flight tag's OWN partial entities (if resolve_cluster
-            # itself managed to save any before the cancel) are NOT in
-            # node_id_to_entity_id yet -- that mapping is only built after
-            # run_pipeline returns successfully, and a raise means we never
-            # get its run_id to look them up. Only entities from tags that
-            # already fully completed before this one are cleaned up here.
-            _delete_orphaned_entities(estore, node_id_to_entity_id, log_id=log_id, source_key=source_key)
+            # inside run_pipeline() for the tag currently in flight.
+            #
+            # PR #429 review N1 (round 2): run_pipeline's own
+            # _check_cancelled now attaches the in-flight tag's run_id onto
+            # the exception it raises -- the "relate" checkpoint fires right
+            # after resolve_cluster, i.e. AFTER that tag's entities are
+            # already saved, so without this they'd be undercounted orphans
+            # every time (the common case, not a small one). When present,
+            # look those entities up the same way the tag loop itself does
+            # on success (estore.entity_ids_by_run) and fold them into the
+            # cleanup set alongside the already-completed tags' entities.
+            orphan_ids = dict(node_id_to_entity_id)
+            if exc.run_id is not None:
+                try:
+                    in_flight = estore.entity_ids_by_run(exc.run_id)
+                except Exception:  # noqa: BLE001 -- best-effort, see _delete_orphaned_entities
+                    logger.warning(
+                        "raw_graph resolve_and_relate did=%s source_key=%s: failed to look up "
+                        "in-flight run_id=%s entities for cleanup", log_id, source_key, exc.run_id,
+                        exc_info=True,
+                    )
+                else:
+                    for record_id, entity_id in in_flight.items():
+                        _, node_id = parse_record_id(record_id)
+                        orphan_ids[node_id] = entity_id
+            _delete_orphaned_entities(estore, orphan_ids, log_id=log_id, source_key=source_key)
             raise
 
         relationships = translate_containment_edges(

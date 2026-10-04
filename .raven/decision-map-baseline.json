@@ -14793,12 +14793,12 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      559,
+      573,
       "delete_entities"
     ],
     [
       "src/aryx/store/entity_store.py",
-      580,
+      594,
       "delete_entities_by_type"
     ],
     [

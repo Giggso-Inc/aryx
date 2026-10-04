@@ -535,8 +535,10 @@ class EntityStore:
             logger.info("entity deleted ws=%s id=%s", self._ws, entity_id)
         return removed
 
+    _DELETE_CHUNK_SIZE = 20_000
+
     def delete_entities(self, entity_ids: list[int]) -> int:
-        """Delete several entities in one round-trip; returns the count removed.
+        """Delete several entities in chunked round-trips; returns the count removed.
 
         cpq_ingestion's raw-graph resolve/relate cancellation cleanup (PR
         #429 review N1) used to call delete_entity() once per id -- fine for
@@ -545,15 +547,27 @@ class EntityStore:
         of a prompt cancel. One DELETE with an id list, same %(entity_ids)s
         array-param pattern delete_impacted_entities.sql already uses
         (source_purge_repair.py), removes that per-id cost.
+
+        Chunked at _DELETE_CHUNK_SIZE (PR #429 review N1 round 2): a single
+        unbounded id list means one huge JSON/array bind and one
+        long-running DELETE for the largest attempts this PR's cancellation
+        support targets (the 5.85M-node upload) -- the same "cancel should
+        be prompt, not eventually" concern driving this whole cleanup in
+        the first place. Each chunk is its own round-trip so a slow cleanup
+        is at least bounded per-chunk, not one unbreakable statement.
         """
         if not entity_ids:
             return 0
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(load("delete_entities_by_ids"), {
-                    "workspace_id": self._ws, "entity_ids": list(entity_ids),
-                })
-                removed = cur.rowcount
+        ids = list(entity_ids)
+        removed = 0
+        for i in range(0, len(ids), self._DELETE_CHUNK_SIZE):
+            chunk = ids[i:i + self._DELETE_CHUNK_SIZE]
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("delete_entities_by_ids"), {
+                        "workspace_id": self._ws, "entity_ids": chunk,
+                    })
+                    removed += cur.rowcount
         if removed:
             logger.info("entities deleted ws=%s count=%d", self._ws, removed)
         return removed
