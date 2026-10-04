@@ -90,17 +90,27 @@ def resolve_and_relate_raw_graph(
     this file or any other) in the workspace repairs it; nothing is lost,
     only delayed.
 
-    Not resumable: unlike the generic CSV plan loop in ingest_confirmed()
-    (which tracks completed_plans and skips already-done files on a
-    restart), a cancelled cpq XML source file is never marked complete, so
-    re-confirming it redoes every tag from scratch -- this loop does not
-    participate in confirm_state's resume mechanism. Re-running resolve for
-    the same tags is expected to MERGE onto the entities a cancelled
-    attempt already created rather than duplicate them, via the same
-    match-key-based entity resolution (resolve_run/resolve_chunked) every
-    other confirm and re-confirm in this system already relies on -- not
-    new or specific to this cancellation support -- but true resumability
-    (skipping already-resolved tags) would be a separate, larger feature.
+    Not resumable, and re-confirming DUPLICATES entities (PR #429 review,
+    corrected from an earlier, wrong claim in this docstring that re-running
+    resolve would merge onto prior entities -- verified false, see below):
+    unlike the generic CSV plan loop in ingest_confirmed() (which tracks
+    completed_plans and skips already-done files on a restart), a cancelled
+    cpq XML source file is never marked complete, so re-confirming it redoes
+    every tag from scratch. resolve_run()/resolve() only cluster the
+    records passed to THAT call against each other -- they have no
+    knowledge of entities a previous run already created, and relate=False
+    here means the FK/relate stage that could otherwise catch some
+    duplicates never runs either. EntityStore.save()'s own insert_entity.sql
+    is a plain INSERT (no ON CONFLICT, no existing-entity lookup), confirmed
+    by reading it -- every resolve_run() call for the same data creates
+    brand new entity rows, for every tag, regardless of whether it has a
+    real match key, an LLM-guessed one, or none at all. So a user cancelling
+    and re-confirming the same cpq XML file WILL create duplicate entities
+    for any tag whose resolve already completed in a prior attempt. True
+    resumability (skipping already-resolved tags, mirroring the generic CSV
+    path's completed_plans) is a separate, larger feature and still out of
+    scope for this PR, but is now a known, documented correctness gap, not
+    a benign trade-off.
     """
     total_entities = 0
     relationships: list[Any] = []

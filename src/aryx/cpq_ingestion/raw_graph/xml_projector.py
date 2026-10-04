@@ -20,7 +20,6 @@ import defusedxml.ElementTree as defused_ET
 
 from aryx.cpq_ingestion.constants import RAW_EDGE_CONTAINS, RAW_PROP_TEXT
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
-from aryx.pipeline.orchestrate import PipelineCancelled
 from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
@@ -172,6 +171,13 @@ def project_xml_to_raw_graph(
                           error_code="ARYX_ING_CANCELLED",
                           context={"elements_processed": finished, "result": "cancelled",
                                    "exit_condition": "cancelled"})
+                # Lazy: orchestrate.py is the whole pipeline-orchestration
+                # module (discover/resolve/relate/project, EntityStore,
+                # OntologyStore, ...) -- this module is a pure, dependency-free
+                # XML walker otherwise, and PipelineCancelled is the only
+                # thing it needs from orchestrate.py, only on this rare
+                # cancellation path (PR #429 review).
+                from aryx.pipeline.orchestrate import PipelineCancelled  # noqa: PLC0415
                 raise PipelineCancelled(f"job cancelled during XML projection after {finished} element(s)")
 
     if finished >= _PROGRESS_LOG_INTERVAL:
