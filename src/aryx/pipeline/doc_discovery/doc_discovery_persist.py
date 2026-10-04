@@ -31,6 +31,13 @@ def _persist_tabular_sources(valid_plans: list[dict[str, Any]], workspace_id: in
     every source as an xml catalog entry mislabeled .xlsx uploads as
     "XML File" in the Data tab and left their generated-asset metadata
     under the wrong catalog key.
+
+    A plan flagged cpq_raw_graph_preview (the Documents-tab cpq_ingestion
+    XML preview — see read_files()'s XML branch) carries a synthetic
+    "<stem>.summary.csv" counts file as its filename/data/ontology_type,
+    not a real derived asset. The parent file is still catalogued (so the
+    original XML remains downloadable), just with no generated-asset entry
+    for that fake CSV.
     """
     grouped: dict[str, dict[str, Any]] = {}
     for plan in valid_plans:
@@ -41,6 +48,8 @@ def _persist_tabular_sources(valid_plans: list[dict[str, Any]], workspace_id: in
         group = grouped.setdefault(
             source_filename, {"source_bytes": source_bytes, "assets": []},
         )
+        if plan.get("cpq_raw_graph_preview"):
+            continue
         is_xlsx = Path(source_filename).suffix.lower() == ".xlsx"
         asset_record = xlsx_asset_record if is_xlsx else xml_asset_record
         group["assets"].append(asset_record(

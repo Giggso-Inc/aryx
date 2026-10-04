@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import tracemalloc
 
-from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph
+from aryx.cpq_ingestion.raw_graph.xml_projector import count_raw_graph_elements, project_xml_to_raw_graph
 
 WRAPPED_XML = b"""<Accounts>
   <Account Id="001AC">
@@ -213,3 +213,91 @@ def test_small_document_does_not_log_progress(caplog):
     with caplog.at_level(logging.INFO, logger=xml_projector.__name__):
         project_xml_to_raw_graph(WRAPPED_XML)
     assert not any("element(s) processed" in r.message for r in caplog.records)
+
+
+# ── count_raw_graph_elements -- the preview-only counter, no materialization ──
+# PR #426 review: preview_raw_graph_counts() only ever used len(nodes)/
+# len(edges) from the full projection, paying its full O(element count)
+# memory cost (5.85M retained RawNode objects for a live 240MB upload) to
+# report two integers. These tests prove the counts stay identical to the
+# full projection's while never building a RawNode/RawEdge.
+
+def test_counts_match_the_full_projection_for_wrapped_and_nowrap_xml():
+    for xml in (WRAPPED_XML, NOWRAP_XML):
+        projection = project_xml_to_raw_graph(xml)
+        nodes, edges = count_raw_graph_elements(xml)
+        assert (nodes, edges) == (len(projection.nodes), len(projection.edges))
+
+
+def test_counts_match_the_full_projection_for_a_large_flat_document():
+    data = _make_flat_xml(50_000)
+    projection = project_xml_to_raw_graph(data)
+    nodes, edges = count_raw_graph_elements(data)
+    assert (nodes, edges) == (len(projection.nodes), len(projection.edges)) == (100_001, 100_000)
+
+
+def test_peak_memory_does_not_scale_with_element_count():
+    """The whole point: unlike project_xml_to_raw_graph (which must grow
+    roughly linearly with element count since every node/edge is returned),
+    a count-only pass holds no per-element output at all -- 10x more
+    elements should cost near-ZERO extra memory, not even the generous
+    allowance test_large_flat_document_peak_memory_scales_with_output_not_a_
+    full_extra_tree gives the full projection."""
+    small = _make_flat_xml(2_000)
+    large = _make_flat_xml(20_000)
+
+    tracemalloc.start()
+    count_raw_graph_elements(small)
+    _, peak_small = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    tracemalloc.start()
+    count_raw_graph_elements(large)
+    _, peak_large = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert peak_large < peak_small * 3
+
+
+def test_large_document_logs_progress_and_done(caplog):
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    data = _make_flat_xml(60_000)  # > _PROGRESS_LOG_INTERVAL (50,000) nodes
+    with caplog.at_level(logging.INFO, logger=xml_projector.__name__):
+        count_raw_graph_elements(data)
+    assert any("element(s) processed" in r.message for r in caplog.records)
+    assert any("done" in r.message for r in caplog.records)
+
+
+def test_should_stop_cancels_the_count_early(monkeypatch):
+    """Unlike project_xml_to_raw_graph (no cancellation support at all,
+    accepted as-is per PR #426 review since a full projection is only built
+    at Confirm time where Oracle write cancellation already exists),
+    count_raw_graph_elements's should_stop is checked at the progress-log
+    cadence -- a cancel must stop the walk with a partial, smaller count
+    rather than running to completion."""
+    from aryx.cpq_ingestion.raw_graph import xml_projector
+
+    monkeypatch.setattr(xml_projector, "_PROGRESS_LOG_INTERVAL", 2)
+    data = _make_flat_xml(50)  # 101 elements total if uninterrupted
+
+    calls = {"n": 0}
+
+    def _should_stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] >= 2  # stop on the second progress checkpoint
+
+    nodes, edges = count_raw_graph_elements(data, should_stop=_should_stop)
+
+    assert calls["n"] >= 2
+    assert nodes < 101
+    assert edges < 100
+
+
+def test_should_stop_never_called_when_it_always_returns_false():
+    """The common (no-cancel) case must still produce the full, correct
+    count -- should_stop being wired in must not change behavior when
+    nothing ever asks to stop."""
+    data = _make_flat_xml(10)
+    nodes, edges = count_raw_graph_elements(data, should_stop=lambda: False)
+    assert (nodes, edges) == (21, 20)

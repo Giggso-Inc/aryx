@@ -15,11 +15,45 @@ from collections.abc import Callable
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.raw_graph.store import project_and_write_raw_graph
+from aryx.cpq_ingestion.raw_graph.xml_projector import count_raw_graph_elements
 from aryx.pipeline.doc_discovery.doc_discovery import _xml_to_csvs
 from aryx.raven_log import raven_log
 from aryx.worker.job_partial import note_hidden
 
 logger = logging.getLogger(__name__)
+
+
+def preview_raw_graph_counts(
+    data: bytes, stem: str, should_stop: Callable[[], bool] | None = None,
+) -> tuple[int, int]:
+    """Parse-only preview for the Documents-tab discovery screen.
+
+    No Oracle write: Confirm time re-parses the same bytes from scratch and
+    writes via resolve_and_relate_raw_graph() regardless of anything Read
+    time did (see resolve_relate.py's module docstring -- Pass 1's stored
+    raw graph is never read back by Pass 2), so writing it here only to
+    show a preview was pure waste -- live-measured at ~100+ minutes for a
+    240MB file's ~11,700-chunk Oracle write, versus ~40s for this parse
+    alone.
+
+    Uses count_raw_graph_elements() rather than project_xml_to_raw_graph()
+    (PR #426 review): only the counts are ever used here, but the full
+    projection still built one RawNode/RawEdge per element to get them --
+    5.85M retained objects for a live 240MB upload, just to report two
+    integers. count_raw_graph_elements() produces the identical totals
+    without materializing either list, and takes an optional should_stop so
+    a cancel during this parse is observed at the same cadence as the full
+    projection's progress logging (previously: not cancellable at all).
+
+    Returns (node_count, edge_count) for the discovery-summary UI.
+    """
+    t0 = time.monotonic()
+    nodes, edges = count_raw_graph_elements(data, should_stop=should_stop)
+    raven_log("DEBUG", "P4", "ingest.raw_graph.preview parsed for discovery-summary counts only",
+              context={"stem": stem, "nodes": nodes, "edges": edges,
+                       "duration_ms": int((time.monotonic() - t0) * 1000)})
+    logger.info("cpq_ingestion: raw graph preview stem=%s nodes=%d edges=%d", stem, nodes, edges)
+    return nodes, edges
 
 
 def project_raw_graph_and_flatten(

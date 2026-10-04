@@ -99,9 +99,11 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     partial progress on long-running (1000+ page) documents.
 
     workspace_id: forwarded to the cpq_ingestion raw-graph writer for XML
-    files when that pipeline is active (ARYX_INGEST_FILE_TYPE/ARYX_INGEST_
-    PIPELINE) — see the XML branch below. Unused otherwise; defaults to 1
-    to match every other call site's pre-existing default.
+    files ONLY when csv_bml_enabled() is true (see the XML branch below) --
+    that's the one case where this Read-stage write still has a real
+    consumer (bml_graph.enrich_projection's bml_tables lookup, read back by
+    csv_bml_ingestion). Otherwise unused: Confirm time re-derives and writes
+    the same data from scratch regardless of anything built here.
 
     layout_items: CPQ layout-export files (see cpq_layout_upload_active())
     already pulled out of the caller's doc/tabular split. Surfaced here as
@@ -110,15 +112,16 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     screen's existing read-then-confirm UX -- nothing is written to
     aryx_cpq_layout_file until ingest_confirmed() actually approves one.
 
-    should_stop: forwarded to the XML branch's cpq_ingestion raw-graph
-    write (project_raw_graph_and_flatten -> write_raw_graph's per-chunk
-    Oracle executemany loop) -- the one part of a read that can run for
-    tens of minutes on a large file and, until this parameter existed, had
-    no way to be interrupted by a cancel at all. NOT checked anywhere else
-    in this function yet (the document-extraction path via
-    DocumentRouterConnector/extract_mentions() still has no should_stop
-    support — a separate, still-open gap, see doc_discover_read_job.py's
-    module docstring).
+    should_stop: forwarded to the XML branch's cpq_ingestion raw-graph write
+    (project_raw_graph_and_flatten -> write_raw_graph's per-chunk Oracle
+    executemany loop) when csv_bml_enabled() is true -- the one case where
+    that write still runs at Read time (see workspace_id above). Otherwise
+    forwarded to preview_raw_graph_counts()'s count-only parse instead, so a
+    cancel during a large file's ~40-78s preview is still observed. Kept
+    since the caller (doc_discover_read_job.py) already builds one and the
+    document-extraction path via DocumentRouterConnector/extract_mentions()
+    may gain should_stop support later (a separate, still-open gap, see
+    doc_discover_read_job.py's module docstring).
     """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
@@ -143,6 +146,15 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     # that _detect_fk_links can wire cross-type relationships automatically.
     # CSV files: apply name-field consolidation for multi-part name columns.
     converted_tabular = []
+    # cpq_ingestion XML files get a parse-only node/edge-count preview
+    # instead of being flattened to per-tag CSVs and run through the
+    # generic _infer_type loop below -- Confirm time re-parses the same
+    # bytes from scratch and writes via resolve_and_relate_raw_graph()
+    # regardless of anything built here (see resolve_relate.py's module
+    # docstring), so neither the Oracle write project_raw_graph_and_flatten
+    # used to do nor a real CSV flatten serve any purpose at Read time for
+    # this pipeline -- just the counts, for the discovery-summary screen.
+    cpq_preview_plans: list[dict] = []
     for d, n in tabular:
         suffix = Path(n).suffix.lower()
         raven_log("DEBUG", "P4", "ingest.read.route tabular file road chosen",
@@ -151,20 +163,52 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                            "available_options": ["xml_flatten", "xlsx_flatten", "csv_consolidate"],
                            "reason_code": "EXTENSION", "suffix": suffix})
         if suffix == ".xml":
-            # Lazy import: aryx.cpq_ingestion.pipeline itself imports
-            # _xml_to_csvs from this module, so a top-level import here
-            # would be circular.
-            from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten  # noqa: PLC0415
             from aryx.cpq_ingestion.routing import cpq_ingestion_pipeline_active  # noqa: PLC0415
 
             if cpq_ingestion_pipeline_active(n):
-                xml_csvs = project_raw_graph_and_flatten(
-                    d, Path(n).stem, workspace_id=workspace_id,
-                    dsn=settings.effective_dsn(), graph_url=settings.graph_url, log_id=did,
-                    should_stop=should_stop,
-                )
-            else:
-                xml_csvs = _xml_to_csvs(d, Path(n).stem, log_id=did)
+                from aryx.csv_bml_ingestion.config import csv_bml_enabled  # noqa: PLC0415
+
+                if csv_bml_enabled():
+                    # csv_bml_ingestion finds scripts by searching the stored
+                    # raw graph for bml_tables (see bml_graph.enrich_projection),
+                    # which only gets added during project_raw_graph_and_flatten's
+                    # Oracle write -- the parse-only preview below never writes
+                    # anything, so an XML uploaded through this path with the
+                    # flag on would leave no bml_tables for any CSV to match
+                    # against. Keep the old write+flatten path alive for this
+                    # one case; every other upload still gets the fast preview.
+                    from aryx.cpq_ingestion.pipeline import project_raw_graph_and_flatten  # noqa: PLC0415
+
+                    xml_csvs = project_raw_graph_and_flatten(
+                        d, Path(n).stem, workspace_id=workspace_id,
+                        dsn=settings.effective_dsn(), graph_url=settings.graph_url,
+                        log_id=did, should_stop=should_stop,
+                    )
+                    for csv_bytes, csv_name in xml_csvs:
+                        converted_tabular.append((csv_bytes, csv_name, n, d))
+                    continue
+
+                # Lazy import: aryx.cpq_ingestion.pipeline itself imports
+                # _xml_to_csvs from this module, so a top-level import here
+                # would be circular.
+                from aryx.cpq_ingestion.pipeline import preview_raw_graph_counts  # noqa: PLC0415
+
+                stem = Path(n).stem
+                nodes, edges = preview_raw_graph_counts(d, stem, should_stop=should_stop)
+                cpq_preview_plans.append({
+                    "filename": f"{stem}.summary.csv",
+                    "data": f"nodes,edges\n{nodes},{edges}\n".encode(),
+                    "ontology_type": f"{nodes:,} nodes / {edges:,} edges",
+                    "match_keys": [],
+                    "source_filename": n,
+                    "source_bytes": d,
+                    # Marks this as a synthetic counts-only plan for
+                    # _persist_tabular_sources: it must not be catalogued as
+                    # a real generated asset (see that function's docstring).
+                    "cpq_raw_graph_preview": True,
+                })
+                continue
+            xml_csvs = _xml_to_csvs(d, Path(n).stem, log_id=did)
             for csv_bytes, csv_name in xml_csvs:
                 converted_tabular.append((csv_bytes, csv_name, n, d))
         elif suffix == ".xlsx":
@@ -211,6 +255,8 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                                "available_options": ["csv_direct", "entity_pipeline"],
                                "reason_code": "CPQ_INGESTION_PIPELINE_ACTIVE" if plan.get("cpq_csv_direct") else "PIPELINE_INACTIVE"})
         tab_plans.append(plan)
+
+    tab_plans.extend(cpq_preview_plans)
 
     for layout_data, layout_name in (layout_items or []):
         tab_plans.append({

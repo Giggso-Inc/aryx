@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+from collections.abc import Callable
 from xml.etree.ElementTree import Element
 
 import defusedxml.ElementTree as defused_ET
@@ -158,3 +159,66 @@ def project_xml_to_raw_graph(data: bytes) -> RawGraphProjection:
               context={"nodes": len(nodes), "edges": len(edges),
                        "root_tag": nodes[0].tag if nodes else "", "bytes": len(data)})
     return RawGraphProjection(nodes=nodes, edges=edges)  # type: ignore[arg-type]  # every slot is filled by this point
+
+
+def count_raw_graph_elements(
+    data: bytes, should_stop: Callable[[], bool] | None = None,
+) -> tuple[int, int]:
+    """Count the (node, edge) totals ``project_xml_to_raw_graph`` would
+    produce, without materializing a single ``RawNode``/``RawEdge``.
+
+    Built for the Documents-tab discovery preview (PR #426 review:
+    ``preview_raw_graph_counts`` only ever used ``len(nodes)``/``len(edges)``
+    from the full projection, yet still paid its full memory cost -- a
+    5.85M-node live upload held 5.85M ``RawNode`` objects just to report two
+    integers). This walks the same ``iterparse`` events but keeps only a
+    stack of currently-open elements (for parent/child edge counting and the
+    same clear()+detach pattern as the full projection, to avoid the DOM
+    re-accumulating under an uncleared root), so peak memory is O(nesting
+    depth) instead of O(element count).
+
+    should_stop: optional cancellation poll, checked at the same cadence as
+    the progress log below -- the full projection has no cancellation
+    support either, and a 240MB file's count-only pass is ~40-78s, but there
+    is no reason a multi-GB file's count should be uninterruptible just
+    because this is "only a preview."
+
+    Returns:
+        (node_count, edge_count) -- identical to
+        ``len(projection.nodes), len(projection.edges)`` for the same bytes.
+    """
+    node_count = 0
+    edge_count = 0
+    stack: list[Element] = []
+    finished = 0
+    start = time.monotonic()
+    for event, elem in defused_ET.iterparse(io.BytesIO(data), events=("start", "end")):
+        if event == "start":
+            node_count += 1
+            if stack:
+                edge_count += 1
+            stack.append(elem)
+            continue
+        elem.clear()
+        stack.pop()
+        if stack:
+            stack[-1].remove(elem)
+        finished += 1
+        if finished % _PROGRESS_LOG_INTERVAL == 0:
+            logger.info(
+                "count_raw_graph_elements: %d element(s) processed, %.1fs elapsed",
+                finished, time.monotonic() - start,
+            )
+            if should_stop is not None and should_stop():
+                logger.warning("count_raw_graph_elements: cancelled after %d element(s)", finished)
+                raven_log("WARN", "P3", "ingest.raw_graph.count_cancelled preview count stopped by cancel",
+                          error_code="ARYX_ING_CANCELLED",
+                          context={"nodes_so_far": node_count, "edges_so_far": edge_count,
+                                   "result": "partial", "exit_condition": "cancelled"})
+                break
+    if finished >= _PROGRESS_LOG_INTERVAL:
+        logger.info(
+            "count_raw_graph_elements: done, %d node(s) / %d edge(s), %.1fs elapsed",
+            node_count, edge_count, time.monotonic() - start,
+        )
+    return node_count, edge_count
