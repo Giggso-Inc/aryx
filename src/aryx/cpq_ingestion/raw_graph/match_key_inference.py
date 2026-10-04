@@ -123,7 +123,7 @@ def infer_match_keys_for_tag(tag: str, sample_nodes: list[RawNode], context: str
     match_keys = [key] if key is not None else []
     if not match_keys:
         source = "none"
-    result = {"ontology_type": tag, "match_keys": match_keys}
+    result = {"ontology_type": tag, "match_keys": match_keys, "source": source}
     logger.info(
         "raw_graph infer_match_key did=%s tag=%s otype=%s match_keys=%s source=%s",
         log_id, tag, result["ontology_type"], result["match_keys"], source,

@@ -76,18 +76,28 @@ def _block_embeddings(
     out: dict[int, list[float]] = {}
     for start in range(0, len(records), cfg.embed_batch_size):
         batch = records[start : start + cfg.embed_batch_size]
+        # Dedupe identical text values before embedding, not after (§2,
+        # 2026-10-04): two records sharing an exact text string (common --
+        # e.g. duplicate names/descriptions within a block) previously each
+        # paid a full embedding call. Each embedding call has fixed latency/
+        # cost regardless of whether the text is "new", so deduping turns
+        # O(records) calls into O(distinct texts) -- zero change to
+        # resolution correctness, every original record still gets its
+        # value's vector, just via a dict lookup instead of a fresh call.
+        unique_texts = list({r.text for r in batch})
+        text_to_vec: dict[str, list[float]] = {}
         try:
-            vectors = broker.embed([r.text for r in batch])
-            logger.debug("resolve run_id=%s embed batch start=%d size=%d vectors=%d",
-                         run_id, start, len(batch), len(vectors) if vectors else 0)
+            vectors = broker.embed(unique_texts)
+            logger.debug("resolve run_id=%s embed batch start=%d size=%d unique=%d vectors=%d",
+                         run_id, start, len(batch), len(unique_texts), len(vectors) if vectors else 0)
             if would_log("DEBUG"):
                 raven_log("DEBUG", "P4", "ingest.resolve.embed_batch embedding batch done",
                           context={"task_id": run_id, "batch_start": start, "batch_size": len(batch),
+                                   "unique_texts": len(unique_texts),
                                    "vectors": len(vectors) if vectors else 0,
                                    "vectors_returned": bool(vectors)})
             if vectors:
-                for r, v in zip(batch, vectors):
-                    out[r.record_id] = v
+                text_to_vec = dict(zip(unique_texts, vectors))
         except Exception as exc:  # noqa: BLE001
             raven_log("WARN", "P3", "ingest.resolve.embed_failed embedding batch failed, string-only scoring",
                       error_code="ARYX_ING_RESOLVE_DEGRADED",
@@ -96,6 +106,9 @@ def _block_embeddings(
                                "recovery_selected": "string_only_scoring", "result": "degraded"})
             logger.warning("resolve run_id=%s embed batch start=%d size=%d failed, "
                            "falling back to string-only: %s", run_id, start, len(batch), exc)
+        for r in batch:
+            if r.text in text_to_vec:
+                out[r.record_id] = text_to_vec[r.text]
     return out
 
 

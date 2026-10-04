@@ -1,11 +1,11 @@
 # Attribution — src/aryx/resolution/run.py
 
-Last updated: 2026-10-03T09:08:41.891203+00:00
-Total lines: 380
-Lines AI-generated: 49 (12.9%)
-Lines human-typed: 64
+Last updated: 2026-10-04T10:55:53.726301+00:00
+Total lines: 393
+Lines AI-generated: 86 (21.9%)
+Lines human-typed: 54
 Lines joint: 0
-Lines unattributed: 267
+Lines unattributed: 253
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -16,11 +16,9 @@ Owner (most recent author): m.munir@giggso.com
 | 37-38 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
 | 39-69 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.590022+00:00 | pre-commit gap — unattributed by the local hook |
 | 70-74 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
-| 75-82 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.590102+00:00 | pre-commit gap — unattributed by the local hook |
-| 83-87 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
-| 88-91 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.590169+00:00 | pre-commit gap — unattributed by the local hook |
-| 92-96 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
-| 97-114 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.590235+00:00 | pre-commit gap — unattributed by the local hook |
+| 75-75 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T10:53:44.516151+00:00 | pre-commit gap — unattributed by the local hook |
+| 76-112 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-04T10:33:37.678844+00:00 |  |
+| 113-114 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T10:53:44.516203+00:00 | pre-commit gap — unattributed by the local hook |
 | 115-124 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
 | 125-125 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.590302+00:00 | pre-commit gap — unattributed by the local hook |
 | 126-126 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
@@ -49,3 +47,4 @@ Owner (most recent author): m.munir@giggso.com
 | 347-371 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.591141+00:00 | pre-commit gap — unattributed by the local hook |
 | 372-379 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.248646+00:00 |  |
 | 380-380 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.591209+00:00 | pre-commit gap — unattributed by the local hook |
+| 381-393 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T10:53:44.516253+00:00 | pre-commit gap — unattributed by the local hook |

@@ -1,11 +1,11 @@
 # Attribution — src/aryx/store/job_store.py
 
-Last updated: 2026-10-03T09:08:41.908960+00:00
-Total lines: 186
-Lines AI-generated: 70 (37.6%)
+Last updated: 2026-10-04T10:55:53.727168+00:00
+Total lines: 230
+Lines AI-generated: 66 (28.7%)
 Lines human-typed: 17
 Lines joint: 0
-Lines unattributed: 99
+Lines unattributed: 147
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -21,5 +21,6 @@ Owner (most recent author): m.munir@giggso.com
 | 64-70 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.592934+00:00 | pre-commit gap — unattributed by the local hook |
 | 71-75 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.295829+00:00 |  |
 | 76-105 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.593005+00:00 | pre-commit gap — unattributed by the local hook |
-| 106-163 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-02T14:39:33.761999+00:00 |  |
-| 164-186 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.593076+00:00 | pre-commit gap — unattributed by the local hook |
+| 106-119 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T10:53:44.516973+00:00 | pre-commit gap — unattributed by the local hook |
+| 120-173 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-04T10:41:19.409399+00:00 |  |
+| 174-230 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T10:53:44.517078+00:00 | pre-commit gap — unattributed by the local hook |

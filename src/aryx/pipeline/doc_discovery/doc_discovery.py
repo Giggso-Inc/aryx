@@ -537,16 +537,30 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
         from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
 
+        step += 1
         stem = Path(source_filename).stem
-        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+        jobs.update_stage(job_id, f"{step}/{total} · CPQ Ingestion", int(step * 90 / total),
                           f"Resolving {source_filename} directly from its raw graph…")
         logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
                     job_id, source_filename)
+
+        def _progress_cpq(stage: str, pct: int, detail: str,
+                           _fname: str = source_filename, _step: int = step) -> None:
+            # Same convention as _progress_otype/_progress_plan: this file's
+            # own 0-100 progress contributes up to 10 points within its step
+            # band so the overall job pct still advances smoothly across
+            # files, not just within one.
+            jobs.update_stage(job_id, f"{_step}/{total} · CPQ Ingestion · {stage}",
+                              int(_step * 90 / total) + pct // 10, detail)
+            logger.info("confirm job=%s cpq_ingestion source_filename=%s stage=%s pct=%d %s",
+                        job_id, _fname, stage, pct, detail)
+
         projection = project_xml_to_raw_graph(plan["source_bytes"], should_stop=should_stop)
         result = resolve_and_relate_raw_graph(
             projection, workspace_id=workspace_id, source_key=stem,
             dsn=settings.effective_dsn(), graph_url=settings.graph_url,
             broker=broker, log_id=job_id, should_stop=should_stop,
+            on_progress=_progress_cpq,
         )
         logger.info("confirm job=%s cpq_ingestion resolve/relate done source_filename=%s result=%s",
                     job_id, source_filename, result)

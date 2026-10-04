@@ -32,7 +32,8 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     group_nodes_by_tag,
     parse_record_id,
 )
-from aryx.pipeline.orchestrate import PipelineCancelled, project_workspace_graph, run_pipeline
+from aryx.cpq_ingestion.raw_graph.structural_leaf import fold_structural_leaf_tags
+from aryx.pipeline.orchestrate import PipelineCancelled, Progress, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
 from aryx.raven_log import raven_log
@@ -109,6 +110,7 @@ def resolve_and_relate_raw_graph(
     context: str = "",
     log_id: str | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_progress: Progress | None = None,
 ) -> dict[str, Any]:
     """Resolve every raw-graph tag into curated entities, relate via
     containment, and project the result into the curated graph.
@@ -124,6 +126,20 @@ def resolve_and_relate_raw_graph(
     ``project_workspace_graph`` call at the end performs the one graph
     projection this whole file needs — the same function ``run_pipeline``'s
     own project stage now delegates to (see ``orchestrate.py``).
+
+    on_progress: optional callback reporting progress across the whole
+    per-tag loop, 0-100 -- previously this function reported nothing at
+    all, so the caller's job-status row sat at a single static "Resolving
+    {source_filename}..." / pct=0 for this file's *entire* duration (which
+    can be 30+ minutes for a single large tag), making a healthy run
+    indistinguishable from a stalled one. Each tag's own run_pipeline()
+    call already supports on_progress (Discover/Resolve/Relate/Project
+    stages, 0-100 internally) -- this wraps that per-tag signal, scaled by
+    which tag (of how many) is in flight, into one combined 0-100 signal
+    for the whole file: ``((tag_index - 1) * 100 + inner_pct) /
+    total_tags``. Callers that want a sub-progress breakdown per tag get
+    one for free via the forwarded ``stage``/``detail`` strings (prefixed
+    with ``"{tag_index}/{total_tags}"``).
 
     should_stop: optional cancellation poll, checked once per tag (before
     that tag's run_pipeline call starts) and once more before the final
@@ -221,17 +237,31 @@ def resolve_and_relate_raw_graph(
     # so the query lists must be on the entities that resolve/relate builds it from.
     projection = with_query_tables(projection)
     by_tag = group_nodes_by_tag(projection)
+    by_tag = fold_structural_leaf_tags(
+        projection, by_tag, log_id=log_id, source_key=source_key,
+    )
+    total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)
     try:
         try:
-            for tag, nodes in by_tag.items():
+            for tag_index, (tag, nodes) in enumerate(by_tag.items(), start=1):
                 if should_stop is not None and should_stop():
                     raise PipelineCancelled(
                         f"job cancelled before tag={tag} source_key={source_key}",
                     )
                 inferred = infer_match_keys_for_tag(tag, nodes, context, log_id=log_id)
                 connector = RawGraphConnector(nodes, tag=tag, source_key=source_key)
+
+                def _tag_progress(stage: str, pct: int, detail: str,
+                                   _idx: int = tag_index, _total: int = total_tags,
+                                   _tag: str = tag) -> None:
+                    if on_progress is None:
+                        return
+                    overall_pct = int(((_idx - 1) * 100 + pct) / _total)
+                    on_progress(f"{_idx}/{_total} · {stage}", overall_pct,
+                                f"[{_tag}] {detail}")
+
                 # run_pipeline's own should_stop checks (orchestrate.py's
                 # _check_cancelled) can ALSO raise PipelineCancelled from
                 # inside this call -- its "relate" checkpoint fires
@@ -242,11 +272,22 @@ def resolve_and_relate_raw_graph(
                 # (PR #429 review M1), not the should_stop() check above,
                 # so it must be caught by the same except below, not left
                 # to propagate uncleaned.
+                # §1 Tier 2 (2026-10-04): infer_match_keys_for_tag's "default"
+                # source means it found a real, observed property but wasn't
+                # confident enough to call it a match key by name (the
+                # heuristic/LLM both passed) -- this is exactly the shape of
+                # cpq_ingestion's generic "text" fallback key, whose values
+                # can still turn out to be fully unique (confirmed live:
+                # 439,946/439,946 unique on a real run). Forcing exact mode
+                # here skips paying for _key_selectivity()'s sampling pass
+                # just to discover the same thing non-deterministically.
                 summary = run_pipeline(
                     connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
                     ontology_type=inferred["ontology_type"], match_keys=inferred["match_keys"],
                     graph_url=graph_url, broker=broker, workspace_id=workspace_id,
                     relate=False, skip_graph=True, should_stop=should_stop,
+                    on_progress=_tag_progress,
+                    force_exact=inferred.get("source") == "default",
                 )
                 total_entities += summary["entities"]
                 for record_id, entity_id in estore.entity_ids_by_run(summary["run_id"]).items():

@@ -26,6 +26,19 @@ class CoreSettingsMixin(BaseSettings):
     )
     log_level: str = Field(default="INFO", description="Root log level.")
     batch_size: int = Field(default=500, description="Rows fetched per extract batch.")
+    landing_batch_size: int = Field(
+        default=500,
+        description=(
+            "Rows per executemany() flush in BatchSink (discover.py's landing write). "
+            "Separate from batch_size (entity writes / CLI tools) because this is "
+            "specifically the write-path batch for aryx_landed_record — a 500-row Oracle "
+            "executemany was measured at ~2.4s in a 2026-10-04 live confirm, implying "
+            "per-round-trip overhead dominates over row-write cost; raise this "
+            "(ARYX_LANDING_BATCH_SIZE) for Oracle deployments to amortize that overhead "
+            "over more rows per call. Default of 500 preserves today's behavior "
+            "everywhere this isn't explicitly raised."
+        ),
+    )
     embed_dim: int = Field(default=768, description="Expected embedding dim; startup check fails on mismatch.")
     chunk_size: int = Field(default=1000, description="Target chunk size in characters.")
     chunk_overlap: int = Field(default=100, description="Overlap in characters between adjacent chunks.")
@@ -33,4 +46,21 @@ class CoreSettingsMixin(BaseSettings):
     max_block_size: int = Field(
         default=5000,
         description="Max records per blocking group in resolution. Groups over this size are logged and skipped.",
+    )
+    job_heartbeat_timeout_minutes: int = Field(
+        default=10,
+        description=(
+            "Minutes of zero job-status updates before a job is presumed to have "
+            "lost its worker and is marked failed (JobStore.sweep_stale_heartbeat, "
+            "ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES). Deliberately much shorter than "
+            "ARYX_JOB_TIMEOUT_MINUTES (default 120) -- that setting tolerates a "
+            "legitimately long-running job; this one detects a crashed/restarted "
+            "worker, which stops producing ANY update, usually within seconds. "
+            "Safe to keep short only because the cpq XML raw-graph resolve path "
+            "(and the chunked entity-resolution path it can route into) now emit "
+            "periodic on_progress heartbeats through their previously-silent "
+            "phases specifically so this check has something recent to compare "
+            "against — see docs/ingestion/"
+            "CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md §0."
+        ),
     )

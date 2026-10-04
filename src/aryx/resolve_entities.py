@@ -63,6 +63,7 @@ def resolve_run(
     broker: Broker,
     on_progress: Progress | None = None,
     workspace_id: int = 1,
+    force_exact: bool = False,
 ) -> int:
     """Resolve one run's landed records into canonical entities.
 
@@ -74,6 +75,20 @@ def resolve_run(
         broker: Model broker (embeddings local, adjudication frontier).
         on_progress: Optional callback (stage, pct, detail).
         workspace_id: Workspace the run belongs to (review queue + survivorship policy).
+        force_exact: Caller-asserted override (§1 Tier 2, 2026-10-04) for
+            when it already knows a tag's values are exact identifiers even
+            though the key's *name* doesn't look ID-like (e.g.
+            cpq_ingestion's generic ``text`` fallback key, whose values
+            turned out to be 100% unique on a real 439,946-record tag).
+            Normally ``exact_ids`` is decided purely by whether the key
+            NAME matches ``_id_like_keys()`` -- a generic-fallback key never
+            qualifies by name, even when the sampled values are fully
+            unique, so without this the caller pays for
+            ``_key_selectivity()``'s sampling pass just to arrive at the
+            same conclusion non-deterministically depending on the sample.
+            Same ``bool(key_attrs)`` guard as the name-based check: an empty
+            match-key list must never trigger exact mode regardless of this
+            flag.
 
     Returns:
         Number of entities created.
@@ -123,16 +138,21 @@ def resolve_run(
 
     # bool(key_attrs) is load-bearing: all([]) is True, and an empty match-key
     # list must never trigger exact mode.
-    exact_ids = (settings.er_exact_id_match and bool(key_attrs)
-                 and all(k.lower() in _id_like_keys() for k in key_attrs))
+    name_based_exact = (settings.er_exact_id_match and bool(key_attrs)
+                        and all(k.lower() in _id_like_keys() for k in key_attrs))
+    exact_ids = name_based_exact or (force_exact and bool(key_attrs))
     if exact_ids:
-        logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s", run_id, key_attrs)
+        logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s forced=%s",
+                    run_id, key_attrs, not name_based_exact)
     raven_log("DEBUG", "P4", "ingest.resolve.exact_ids_check exact-id mode decision",
               context={"task_id": run_id, "ontology_type": ontology_type, "match_keys": list(key_attrs),
                        "er_exact_id_match": bool(settings.er_exact_id_match), "has_keys": bool(key_attrs),
                        "selected_option": "exact_ids" if exact_ids else "fuzzy",
                        "available_options": ["exact_ids", "fuzzy"],
-                       "reason_code": "ALL_KEYS_ID_LIKE" if exact_ids else "NOT_ALL_KEYS_ID_LIKE_OR_DISABLED",
+                       "reason_code": ("ALL_KEYS_ID_LIKE" if name_based_exact
+                                       else "CALLER_FORCED_EXACT" if exact_ids
+                                       else "NOT_ALL_KEYS_ID_LIKE_OR_DISABLED"),
+                       "forced": exact_ids and not name_based_exact,
                        "policy_fallback": policy_fallback, "review_sink": not sink_unavailable})
 
     _emit("Resolve", 32, f"Loading landed records for run {run_id}")
@@ -203,6 +223,7 @@ def resolve_run(
         all_record_ids = [r.record_id for r in records]
         results = list(resolve_chunked(
             run_id, records, all_record_ids, backend, ontology_type, policy=policy,
+            on_progress=_emit,
         ))
     else:
         path = "exact_ids" if exact_ids else "normal"

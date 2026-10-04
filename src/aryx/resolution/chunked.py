@@ -27,7 +27,7 @@ from collections.abc import Iterator
 
 from aryx.config import get_settings
 from aryx.models import EntityMember, ResolvedEntity
-from aryx.resolution.chunked_backend import ChunkBackend, _key_pass
+from aryx.resolution.chunked_backend import ChunkBackend, Progress, _key_pass
 from aryx.raven_log import raven_log, would_log
 from aryx.resolution.stats import bump
 from aryx.resolution.classical import score_pair
@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 MAX_BLOCK = 5000
 
+# How often (in blocks scored) the score pass logs progress — this pass was
+# previously silent between block-oversized warnings, making a run with
+# thousands of blocks look stalled for minutes at a time.
+_SCORE_PASS_LOG_EVERY = 100
+
 # Batch size for the cluster pass's record load. Loading once per CLUSTER
 # instead of once per BATCH is catastrophic when most clusters are
 # singletons (e.g. a table whose blocking keys are too low-cardinality to
@@ -47,9 +52,17 @@ MAX_BLOCK = 5000
 CLUSTER_LOAD_BATCH = 5000
 
 
-def _score_pass(run_id: int, backend: ChunkBackend) -> None:
-    """Pass 2: score each not-yet-done block; auto-merge edges persist."""
+def _score_pass(run_id: int, backend: ChunkBackend, on_progress: Progress | None = None) -> None:
+    """Pass 2: score each not-yet-done block; auto-merge edges persist.
+
+    on_progress: same liveness-heartbeat purpose as `_key_pass`'s — see its
+    docstring. Fired at the same cadence as the progress log lines below.
+    """
     auto = get_settings().er_auto_merge
+    blocks_done = 0
+    edges_total = 0
+    if on_progress is not None:
+        on_progress("Resolve", 50, "chunked score pass starting")
     for key in backend.todo_blocks(run_id):
         ids = backend.block_record_ids(run_id, key)
         if len(ids) > MAX_BLOCK:
@@ -61,6 +74,7 @@ def _score_pass(run_id: int, backend: ChunkBackend) -> None:
                                "selected_option": "skip", "available_options": ["score", "skip"],
                                "reason_code": "BLOCK_OVERSIZED", "path": "chunked"})
             backend.mark_done(run_id, key)
+            blocks_done += 1
             continue
         members = backend.load_records(ids)
         edges = []
@@ -72,11 +86,23 @@ def _score_pass(run_id: int, backend: ChunkBackend) -> None:
                     edges.append((left.record_id, right.record_id, score))
         if edges:
             backend.add_edges(run_id, edges)
+            edges_total += len(edges)
         if would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ingest.resolve.chunk_block_scored chunked block scored",
                       context={"task_id": run_id, "members": len(members), "edges": len(edges),
                                "auto_merge_threshold": auto, "edges_persisted": bool(edges)})
         backend.mark_done(run_id, key)
+        blocks_done += 1
+        if blocks_done % _SCORE_PASS_LOG_EVERY == 0:
+            logger.info("chunked score pass progress run=%s blocks_done=%d edges_persisted=%d",
+                        run_id, blocks_done, edges_total)
+            raven_log("INFO", "P4", "ingest.resolve.chunked_score_progress score pass progress checkpoint",
+                      context={"task_id": run_id, "blocks_done": blocks_done,
+                               "edges_persisted": edges_total, "path": "chunked"})
+            if on_progress is not None:
+                on_progress("Resolve", 50, f"chunked score pass: {blocks_done} blocks scored")
+    logger.info("chunked score pass done run=%s blocks_done=%d edges_persisted=%d",
+                run_id, blocks_done, edges_total)
 
 
 def _cluster_pass(
@@ -168,6 +194,7 @@ def resolve_chunked(
     backend: ChunkBackend,
     ontology_type: str,
     policy: SurvivorshipPolicy | None = None,
+    on_progress: Progress | None = None,
 ) -> Iterator[tuple[ResolvedEntity, list[EntityMember]]]:
     """Resolve a run block-wise with crash-resume via the backend.
 
@@ -178,11 +205,19 @@ def resolve_chunked(
         backend: Persistent chunk state (Postgres in production).
         ontology_type: Canonical type the records resolve into.
         policy: Optional survivorship policy (G3).
+        on_progress: Optional callback (stage, pct, detail) (§0, 2026-10-04).
+            Forwarded into the key and score passes as a liveness heartbeat
+            -- before this, a run routed to the chunked path reported no
+            progress to the caller's job-status row for its ENTIRE duration
+            (confirmed live: 35+ minutes of silence on a 439,946-record
+            tag), making a job-status heartbeat watchdog unsafe to enable
+            (it would false-positive on a healthy chunked run). Not true
+            completion percentage — see `_key_pass`/`_score_pass`.
 
     Yields:
         (entity, members) per cluster — callers persist and release each.
     """
-    _key_pass(run_id, records, backend)
-    _score_pass(run_id, backend)
+    _key_pass(run_id, records, backend, on_progress=on_progress)
+    _score_pass(run_id, backend, on_progress=on_progress)
     yield from _cluster_pass(run_id, backend, all_record_ids,
                              ontology_type, policy)

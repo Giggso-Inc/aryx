@@ -58,7 +58,7 @@ def test_infer_uses_heuristic_without_calling_llm_when_id_present():
         result = infer_match_keys_for_tag("PurchaseOrder", nodes)
 
     mock_llm.assert_not_called()
-    assert result == {"ontology_type": "PurchaseOrder", "match_keys": ["Id"]}
+    assert result == {"ontology_type": "PurchaseOrder", "match_keys": ["Id"], "source": "heuristic"}
 
 
 def test_infer_falls_back_to_llm_when_heuristic_finds_nothing():
@@ -70,7 +70,7 @@ def test_infer_falls_back_to_llm_when_heuristic_finds_nothing():
         result = infer_match_keys_for_tag("LineItem", nodes)
 
     mock_llm.assert_called_once()
-    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"]}
+    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"], "source": "llm"}
 
 
 def test_infer_defaults_to_first_property_when_llm_also_fails():
@@ -81,7 +81,7 @@ def test_infer_defaults_to_first_property_when_llm_also_fails():
                side_effect=RuntimeError("LLM unavailable")):
         result = infer_match_keys_for_tag("LineItem", nodes)
 
-    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"]}
+    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"], "source": "default"}
 
 
 def test_infer_llm_returning_key_not_in_properties_falls_back_to_default():
@@ -92,7 +92,7 @@ def test_infer_llm_returning_key_not_in_properties_falls_back_to_default():
                return_value=['{"match_key":"NotAProperty"}']):
         result = infer_match_keys_for_tag("LineItem", nodes)
 
-    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"]}
+    assert result == {"ontology_type": "LineItem", "match_keys": ["Sku"], "source": "default"}
 
 
 def test_infer_ontology_type_is_always_the_tag_never_llm_derived():
@@ -132,4 +132,4 @@ def test_infer_all_nodes_empty_properties_returns_no_match_keys():
         result = infer_match_keys_for_tag("Marker", nodes)
 
     mock_llm.assert_not_called()
-    assert result == {"ontology_type": "Marker", "match_keys": []}
+    assert result == {"ontology_type": "Marker", "match_keys": [], "source": "none"}

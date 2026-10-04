@@ -162,8 +162,11 @@ def test_job_progress_reports_a_cpq_ingestion_stage():
     tabular = [_xml_plan("po_PurchaseOrder.csv", "PurchaseOrder", "po.xml")]
     result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
 
+    # §8 (2026-10-04): stage label now carries a "{step}/{total}" prefix,
+    # the same convention _progress_otype/_progress_plan already use, so
+    # the UI can distinguish files within a multi-file cpq confirm.
     stages = [c.args[1] for c in result["jobs"].update_stage.call_args_list]
-    assert "CPQ Ingestion" in stages
+    assert any("CPQ Ingestion" in s for s in stages)
 
 
 # ── should_stop cancellation (this confirm path's cpq loop previously
