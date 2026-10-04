@@ -77,7 +77,10 @@ def test_cpq_active_xml_file_routes_through_the_bridge_once_not_per_tag_plan():
                   cpq_active_for={"po.xml"})
 
     result["bridge"].assert_called_once()
-    result["project"].assert_called_once_with(XML_BYTES)
+    result["project"].assert_called_once()
+    args, kwargs = result["project"].call_args
+    assert args == (XML_BYTES,)
+    assert callable(kwargs["should_stop"])
 
 
 def test_cpq_active_plans_never_reach_run_pipeline_or_fk_detection():
@@ -201,6 +204,17 @@ def test_should_stop_is_forwarded_into_resolve_and_relate_raw_graph():
     result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
 
     _, kwargs = result["bridge"].call_args
+    assert callable(kwargs["should_stop"])
+
+
+def test_should_stop_is_forwarded_into_the_projection_parse_too():
+    """PR #429 review: the full XML parse (project_xml_to_raw_graph) runs
+    before resolve_and_relate_raw_graph's own per-tag checks can help, so it
+    needs should_stop too -- not just the bridge call."""
+    tabular = [_xml_plan("po_PurchaseOrder.csv", "PurchaseOrder", "po.xml")]
+    result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
+
+    _, kwargs = result["project"].call_args
     assert callable(kwargs["should_stop"])
 
 

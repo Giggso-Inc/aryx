@@ -393,7 +393,10 @@ def test_ingest_confirmed_routes_cpq_raw_graph_preview_plan_to_resolve_relate(mo
             workspace_id=3,
         )
 
-    mock_project.assert_called_once_with(preview_plan["source_bytes"])
+    mock_project.assert_called_once()
+    project_args, project_kwargs = mock_project.call_args
+    assert project_args == (preview_plan["source_bytes"],)
+    assert callable(project_kwargs["should_stop"])
     mock_resolve.assert_called_once()
     _, resolve_kwargs = mock_resolve.call_args
     assert resolve_kwargs["workspace_id"] == 3

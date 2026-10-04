@@ -542,7 +542,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                           f"Resolving {source_filename} directly from its raw graph…")
         logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
                     job_id, source_filename)
-        projection = project_xml_to_raw_graph(plan["source_bytes"])
+        projection = project_xml_to_raw_graph(plan["source_bytes"], should_stop=should_stop)
         result = resolve_and_relate_raw_graph(
             projection, workspace_id=workspace_id, source_key=stem,
             dsn=settings.effective_dsn(), graph_url=settings.graph_url,

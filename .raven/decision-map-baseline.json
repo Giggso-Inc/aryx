@@ -13923,22 +13923,22 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      40,
+      41,
       "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      161,
+      185,
       "project_xml_to_raw_graph"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      164,
+      188,
       "count_raw_graph_elements"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      224,
+      248,
       "count_raw_graph_elements"
     ],
     [

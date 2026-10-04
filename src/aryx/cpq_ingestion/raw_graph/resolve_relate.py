@@ -80,6 +80,27 @@ def resolve_and_relate_raw_graph(
     mid-write -- that function is shared by every ingestion path in the
     system, not just cpq_ingestion XML, and is a separate, larger gap left
     out of scope here (same as it already is for every other caller).
+
+    Trade-off (PR #429 review): a cancel that lands after the last tag's
+    entities/relationships are already saved but before this final
+    project_workspace_graph call leaves the curated GRAPH stale relative to
+    the DB -- entities/relationships exist, the graph doesn't reflect them
+    yet. Accepted: project_workspace_graph rebuilds the whole workspace
+    graph from the DB every time it runs, so the next real confirm (for
+    this file or any other) in the workspace repairs it; nothing is lost,
+    only delayed.
+
+    Not resumable: unlike the generic CSV plan loop in ingest_confirmed()
+    (which tracks completed_plans and skips already-done files on a
+    restart), a cancelled cpq XML source file is never marked complete, so
+    re-confirming it redoes every tag from scratch -- this loop does not
+    participate in confirm_state's resume mechanism. Re-running resolve for
+    the same tags is expected to MERGE onto the entities a cancelled
+    attempt already created rather than duplicate them, via the same
+    match-key-based entity resolution (resolve_run/resolve_chunked) every
+    other confirm and re-confirm in this system already relies on -- not
+    new or specific to this cancellation support -- but true resumability
+    (skipping already-resolved tags) would be a separate, larger feature.
     """
     total_entities = 0
     relationships: list[Any] = []

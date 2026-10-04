@@ -219,7 +219,10 @@ def test_xml_and_csv_direct_plans_coexist_in_one_batch():
         )
 
     mock_bridge.assert_called_once()
-    mock_project.assert_called_once_with(b"<PurchaseOrder Id='PO-1'/>")
+    mock_project.assert_called_once()
+    project_args, project_kwargs = mock_project.call_args
+    assert project_args == (b"<PurchaseOrder Id='PO-1'/>",)
+    assert callable(project_kwargs["should_stop"])
     mock_land.assert_called_once()
     land_args, land_kwargs = mock_land.call_args
     assert land_args[1] == "catalog"
