@@ -13928,12 +13928,12 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      265,
+      285,
       "<if>"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      428,
+      463,
       "resolve_and_relate_raw_graph"
     ],
     [
@@ -14788,32 +14788,32 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      514,
+      570,
       "<if>"
     ],
     [
       "src/aryx/store/entity_store.py",
-      536,
+      592,
       "create_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      552,
+      608,
       "update_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      575,
+      631,
       "delete_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      617,
+      673,
       "delete_entities"
     ],
     [
       "src/aryx/store/entity_store.py",
-      643,
+      699,
       "delete_entities_by_type"
     ],
     [
@@ -14863,37 +14863,37 @@
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      148,
+      171,
       "__init__"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      187,
+      210,
       "_json_output_handler"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      197,
+      220,
       "execute"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      207,
+      230,
       "<if>"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      248,
+      271,
       "executemany"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      293,
+      316,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      347,
+      370,
       "executemany_returning"
     ],
     [

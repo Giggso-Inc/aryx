@@ -292,7 +292,7 @@ def resolve_run(
 
                           on_block_progress=_on_block_progress)
     _emit("Resolve", 58, f"{len(results)} clusters found — saving entities")
-    created = store.save(results)
+    created = store.save(results, on_progress=_emit)
     logger.info("resolve_run complete run_id=%s entities=%d", run_id, created)
     counts = _pop_stats(run_id)
     degraded = (sink_unavailable or counts.get("adjudication_failed", 0) > 0

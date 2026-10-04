@@ -628,3 +628,48 @@ def test_xml_bytes_streaming_empty_generator_returns_zero_summary():
     mock_estore_cls.assert_not_called()
     mock_run_pipeline.assert_not_called()
     assert result == {"tags": 0, "entities": 0, "relationships": 0}
+
+
+def test_xml_bytes_streaming_restores_id_order_for_self_nesting_tags():
+    """PR review N2 (2026-10-04): iter_raw_graph yields in finish
+    (post-)order -- fine for sibling order (preserved either way), but a
+    tag that recurs at more than one nesting depth in the SAME document
+    (e.g. this self-nesting <Category> tree) comes out child-before-parent
+    in post-order, while the eager path's id-ordered projection.nodes
+    always has the parent (lower id, started first) before the child
+    (higher id, started later). The equivalence tests above all use flat
+    or differently-tagged nesting, so none of them exercise this. Uses the
+    REAL iter_raw_graph (not mocked) against real nested XML, capturing
+    RawGraphConnector's own `nodes` argument -- the actual list order
+    run_pipeline's connector would see."""
+    nested_xml = (
+        b'<Root>'
+        b'<Category Id="outer">'
+        b'<Category Id="inner"/>'
+        b'</Category>'
+        b'</Root>'
+    )
+    captured_nodes: dict[str, list] = {}
+
+    class _CaptureConnector:
+        def __init__(self, nodes, *, tag, source_key):
+            captured_nodes[tag] = nodes
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True,
+                                           cpq_structural_leaf_fold_enabled=False)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.RawGraphConnector", _CaptureConnector), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore"), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 0, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        resolve_and_relate_raw_graph(
+            xml_bytes=nested_xml, workspace_id=WORKSPACE_ID, source_key="f",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    # outer started first (lower id) -- must come before inner regardless
+    # of which one's subtree FINISHED first during the streaming walk.
+    category_ids = [n.properties["Id"] for n in captured_nodes["Category"]]
+    assert category_ids == ["outer", "inner"]

@@ -101,3 +101,26 @@ def test_empty_relationships_short_circuits_before_touching_the_pool() -> None:
 
     assert many_calls == []
     assert calls == []
+
+
+def test_on_progress_failure_does_not_abort_or_roll_back_the_save(caplog) -> None:
+    """PR review N4 (2026-10-04): on_progress used to be called INSIDE the
+    same transaction as the inserts -- a heartbeat failure (e.g. a
+    transient job-row update error on a different connection) would
+    propagate out of the `with self._pool.connection()` block, rolling
+    back every batch already inserted and failing an otherwise-healthy
+    save over a purely observational side effect. Must be swallowed and
+    logged, with every batch still executed."""
+    store, many_calls = _store_with_mock_pool()
+
+    def _flaky_progress(stage, pct, detail):
+        raise RuntimeError("job-row update failed (transient)")
+
+    with patch("aryx.store.entity_store.load", return_value=_DUMMY_SQL):
+        store.save_relationships(_relationships(12_000), batch_size=5000,
+                                 on_progress=_flaky_progress)
+
+    # All 3 batches still ran -- the heartbeat failure never aborted the loop.
+    assert len(many_calls) == 3
+    assert sum(len(c) for c in many_calls) == 12_000
+    assert any("heartbeat failed" in r.message for r in caplog.records)

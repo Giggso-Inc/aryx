@@ -144,3 +144,80 @@ def test_save_returns_zero_for_empty_results_without_touching_db() -> None:
     n = store.save([])
     assert n == 0
     store._pool.connection.assert_not_called()
+
+
+# ── PR review N1/N4 (2026-10-04): save() batching + crash-safe heartbeat ────
+
+def _store_with_mock_pool():
+    """Like _store() but with a real connection/cursor mock chain so save()'s
+    own chunking loop (which opens the pool itself, unlike _save_batch*'s
+    cur-only signature the tests above use) can be exercised end to end.
+    Every test below patches _save_batch_postgres directly, so the cursor
+    itself never needs real id-fetch/executemany behavior."""
+    conn = MagicMock()
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
+    cur = MagicMock()
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    pool = MagicMock()
+    pool.connection.return_value = conn
+    store = _store()
+    store._pool = pool
+    return store, cur
+
+
+def test_save_chunks_large_result_sets_into_multiple_batches() -> None:
+    store, _cur = _store_with_mock_pool()
+    calls = {"n": 0}
+
+    def _fake_save_batch(cur, chunk):
+        calls["n"] += 1
+        return len(chunk)
+
+    with patch("aryx.store.entity_store.get_settings") as mock_settings, \
+         patch.object(EntityStore, "_save_batch_postgres", side_effect=_fake_save_batch):
+        mock_settings.return_value.effective_db_backend.return_value = "postgres"
+        created = store.save(_make_results(12_000), batch_size=5000)
+
+    assert created == 12_000
+    assert calls["n"] == 3  # 5000 + 5000 + 2000
+
+
+def test_save_on_progress_fires_once_per_batch_in_the_58_to_62_band() -> None:
+    store, _cur = _store_with_mock_pool()
+    progress_calls = []
+
+    with patch("aryx.store.entity_store.get_settings") as mock_settings, \
+         patch.object(EntityStore, "_save_batch_postgres", side_effect=lambda cur, chunk: len(chunk)):
+        mock_settings.return_value.effective_db_backend.return_value = "postgres"
+        store.save(_make_results(12_000), batch_size=5000,
+                   on_progress=lambda s, p, d: progress_calls.append((s, p, d)))
+
+    assert len(progress_calls) == 3
+    assert all(s == "Resolve" for s, _, _ in progress_calls)
+    # orchestrate.py reports 58% right before this call and 62% right
+    # after it returns -- every intermediate heartbeat must land inside
+    # that band, never outside it.
+    assert all(58 <= p <= 62 for _, p, _ in progress_calls)
+    assert progress_calls[-1][1] == 62  # last chunk == fully done == band ceiling
+    assert progress_calls[-1][2] == "12000/12000 entities saved"
+
+
+def test_save_on_progress_failure_does_not_abort_or_roll_back_the_save(caplog) -> None:
+    """PR review N4 (2026-10-04): same crash-safety guarantee as
+    save_relationships() -- a heartbeat failure must never abort the save
+    or lose already-saved entities from the returned count."""
+    store, _cur = _store_with_mock_pool()
+
+    def _flaky_progress(stage, pct, detail):
+        raise RuntimeError("job-row update failed (transient)")
+
+    with patch("aryx.store.entity_store.get_settings") as mock_settings, \
+         patch.object(EntityStore, "_save_batch_postgres", side_effect=lambda cur, chunk: len(chunk)):
+        mock_settings.return_value.effective_db_backend.return_value = "postgres"
+        created = store.save(_make_results(12_000), batch_size=5000,
+                             on_progress=_flaky_progress)
+
+    assert created == 12_000  # all 3 chunks still ran despite every heartbeat failing
+    assert any("heartbeat failed" in r.message for r in caplog.records)

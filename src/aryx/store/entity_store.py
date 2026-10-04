@@ -23,8 +23,6 @@ import uuid
 from collections.abc import Callable, Iterator
 from typing import Any
 
-Progress = Callable[[str, int, str], None]
-
 from psycopg.types.json import Json
 
 from aryx.models import (
@@ -40,6 +38,28 @@ from aryx.store.entity_store_ids import _dumps, _fetch_entity_ids
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+Progress = Callable[[str, int, str], None]
+
+
+def _safe_progress(on_progress: Progress | None, stage: str, pct: int, detail: str) -> None:
+    """Call on_progress without letting a heartbeat failure affect the caller.
+
+    PR review N4 (2026-10-04): save_relationships()'s on_progress call used
+    to run INSIDE the same transaction as the inserts it was reporting on --
+    a failure in the heartbeat itself (e.g. a job-row update error from a
+    transient DB hiccup on a DIFFERENT connection/pool) would propagate out
+    of the `with self._pool.connection()` block, rolling back every batch
+    already committed-in-spirit within this call and failing an otherwise
+    healthy save. A heartbeat is purely observational -- it must never be
+    able to do that. Used by both save() and save_relationships().
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(stage, pct, detail)
+    except Exception:  # noqa: BLE001 -- heartbeat is best-effort, never masks real work
+        logger.warning("entity_store: on_progress heartbeat failed, continuing", exc_info=True)
 
 # Diagnostic for the 2026-09-16 confirm-job incident: a documents-source
 # confirm failed with Postgres's "string too long to represent as jsonb
@@ -145,10 +165,28 @@ class EntityStore:
                 rows = cur.fetchall()
         return {source_record_id: entity_id for source_record_id, entity_id in rows}
 
-    def save(self, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
+    def save(self, results: list[tuple[ResolvedEntity, list[EntityMember]]], *,
+              on_progress: Progress | None = None, batch_size: int = 5000) -> int:
         """Persist resolved entities and their provenance members.
 
         Returns the number of entities written.
+
+        on_progress (PR review N1, 2026-10-04): previously one unbatched
+        call regardless of result-set size -- resolve_entities.py reports
+        "Resolve" 58% right before calling this, then nothing until
+        orchestrate.py's own 62% checkpoint once this returns. At the
+        documented ~0.5ms/row landing rate, saving a tag's full 440k
+        entities (the production file this was built against) is several
+        minutes with no heartbeat at all, well inside the 10-minute
+        heartbeat-sweep window this project already has reason to take
+        seriously (see save_relationships' own docstring for the same
+        concern). Chunked into batch_size-row groups -- each chunk still
+        goes through the existing 2-3-round-trip bulk path
+        (_save_batch/_save_batch_postgres), just over fewer rows at a time
+        -- with a real done/total progress checkpoint between chunks,
+        scaled into the 58-62% band orchestrate.py already reserves for
+        this call. See _safe_progress's docstring (N4) for why the
+        heartbeat itself can never fail this call.
         """
         if not results:
             raven_log("DEBUG", "P4", "ingest.resolve.save_skipped no entities to save",
@@ -156,17 +194,26 @@ class EntityStore:
                                "available_options": ["save", "skip"], "reason_code": "EMPTY_RESULTS"})
             return 0
         _backend = get_settings().effective_db_backend()
+        total = len(results)
         raven_log("DEBUG", "P4", "ingest.resolve.save_batch entity save path chosen",
-                  context={"stage": "resolve", "workspace_id": self._ws, "entities": len(results),
+                  context={"stage": "resolve", "workspace_id": self._ws, "entities": total,
                            "members": sum(len(m) for _, m in results),
                            "selected_option": "oracle_batch" if _backend == "oci" else "postgres_batch",
                            "available_options": ["oracle_batch", "postgres_batch"],
                            "reason_code": "EFFECTIVE_DB_BACKEND_" + str(_backend).upper()})
+        created = 0
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if _backend == "oci":
-                    return self._save_batch(cur, results)
-                return self._save_batch_postgres(cur, results)
+                for start in range(0, total, batch_size):
+                    chunk = results[start:start + batch_size]
+                    if _backend == "oci":
+                        created += self._save_batch(cur, chunk)
+                    else:
+                        created += self._save_batch_postgres(cur, chunk)
+                    done = min(start + batch_size, total)
+                    _safe_progress(on_progress, "Resolve", 58 + int(4 * done / total),
+                                   f"{done}/{total} entities saved")
+        return created
 
     def _save_batch(self, cur: Any, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
         """Oracle path: 3 round-trips for any batch size.
@@ -300,6 +347,16 @@ class EntityStore:
         profile, not because relationship rows are expensive individually.
         pct is real (done/total), unlike the indeterminate heartbeats
         elsewhere in this review round, since the total is known upfront.
+
+        PR review N4 (2026-10-04): on_progress used to be called directly,
+        inside the same transaction as the inserts -- a heartbeat failure
+        (e.g. a transient error from the job-row update it typically
+        triggers, on a completely different connection/pool) would
+        propagate out of this method's `with self._pool.connection()`
+        block and roll back every batch already inserted in this call,
+        failing an otherwise-healthy save over a purely observational
+        side effect. Routed through _safe_progress, which never lets an
+        on_progress exception escape.
         """
         if not relationships:
             return
@@ -313,9 +370,8 @@ class EntityStore:
                         [(self._ws, r.source_entity_id, r.target_entity_id,
                           r.name, r.confidence) for r in batch],
                     )
-                    if on_progress is not None:
-                        done = min(start + batch_size, total)
-                        on_progress("Relate", int(100 * done / total),
+                    done = min(start + batch_size, total)
+                    _safe_progress(on_progress, "Relate", int(100 * done / total),
                                    f"{done}/{total} relationships saved")
 
     def list_entities_typed_sample(self, n_per_type: int) -> list[tuple[int, str, dict]]:

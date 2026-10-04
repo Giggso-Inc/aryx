@@ -1,11 +1,11 @@
 # Attribution — tests/cpq_ingestion/test_resolve_and_relate_raw_graph.py
 
-Last updated: 2026-10-04T14:23:29.577493+00:00
-Total lines: 630
-Lines AI-generated: 91 (14.4%)
+Last updated: 2026-10-04T16:06:17.644808+00:00
+Total lines: 675
+Lines AI-generated: 91 (13.5%)
 Lines human-typed: 349
 Lines joint: 0
-Lines unattributed: 190
+Lines unattributed: 235
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -24,3 +24,4 @@ Owner (most recent author): m.munir@giggso.com
 | 529-548 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-04T12:15:56.455601+00:00 |  |
 | 549-593 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T14:10:03.745368+00:00 |  |
 | 594-630 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T14:23:29.350423+00:00 | pre-commit gap — unattributed by the local hook |
+| 631-675 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T15:55:17.803514+00:00 | pre-commit gap — unattributed by the local hook |

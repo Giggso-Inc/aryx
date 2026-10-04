@@ -39,6 +39,27 @@ _VERB_TABLE_RE = re.compile(
 # against a pathological plan blowing up log record size.
 _EXPLAIN_PLAN_MAX_CHARS = 2000
 
+# PR review N5 (2026-10-04): a burst of slow statements for the SAME
+# operation (e.g. many slow executemany calls during one heavy confirm
+# job) would otherwise run the two extra EXPLAIN PLAN/DBMS_XPLAN queries
+# and log up to _EXPLAIN_PLAN_MAX_CHARS of plan text on EVERY occurrence --
+# the plan is very unlikely to change moment to moment, so this adds load
+# and log volume without new information. Rate-limited per operation (not
+# globally), so one noisy operation doesn't suppress capture for a
+# different, independently-slow one.
+_EXPLAIN_PLAN_RATE_LIMIT_SECONDS = 600
+_last_explain_plan_capture: dict[str, float] = {}
+
+
+def _should_capture_explain_plan(op: str) -> bool:
+    """True at most once per `op` per _EXPLAIN_PLAN_RATE_LIMIT_SECONDS."""
+    now = time.monotonic()
+    last = _last_explain_plan_capture.get(op)
+    if last is not None and now - last < _EXPLAIN_PLAN_RATE_LIMIT_SECONDS:
+        return False
+    _last_explain_plan_capture[op] = now
+    return True
+
 
 def _capture_explain_plan(cur: Any, sql: str) -> str | None:
     """Best-effort EXPLAIN PLAN capture for a slow statement (§4, 2026-10-04,
@@ -107,14 +128,16 @@ def _log_stmt_ok(op: str, method: str, rows: int, t0: float,
     sql/cur: only used to attempt an EXPLAIN PLAN capture (§4, 2026-10-04)
     when the statement turns out to be slow -- omitted entirely (no plan
     capture attempted) when either is None, so existing call sites that
-    don't pass them keep working unchanged.
+    don't pass them keep working unchanged. Rate-limited per operation
+    (PR review N5) to at most once per _EXPLAIN_PLAN_RATE_LIMIT_SECONDS --
+    see _should_capture_explain_plan.
     """
     ms = int((time.monotonic() - t0) * 1000)
     if ms >= SLOW_STATEMENT_MS:
         context = {"dependency_name": "oracle_adb", "operation": op, "method": method,
                    "rows": rows, "duration_ms": ms, "threshold_ms": SLOW_STATEMENT_MS,
                    "result": "ok"}
-        if sql is not None and cur is not None:
+        if sql is not None and cur is not None and _should_capture_explain_plan(op):
             plan = _capture_explain_plan(cur, sql)
             if plan:
                 context["explain_plan"] = plan

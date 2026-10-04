@@ -9,11 +9,25 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call
 
+import pytest
+
 from aryx.store.oracle_cursor import (
     SLOW_STATEMENT_MS,
     _capture_explain_plan,
+    _last_explain_plan_capture,
     _log_stmt_ok,
+    _should_capture_explain_plan,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_explain_plan_rate_limit():
+    """_last_explain_plan_capture is module-level state (PR review N5) --
+    reset it around every test so one test's capture doesn't suppress
+    another's that happens to reuse the same `op` string."""
+    _last_explain_plan_capture.clear()
+    yield
+    _last_explain_plan_capture.clear()
 
 
 def _mock_cursor_with_plan(plan_rows):
@@ -166,3 +180,66 @@ def test_slow_statement_plan_capture_failure_omits_key_without_raising(monkeypat
     _log_stmt_ok("SELECT t", "execute", 1, t0, sql="SELECT 1", cur=MagicMock())
 
     assert "explain_plan" not in captured_context
+
+
+# ── PR review N5 (2026-10-04): rate-limit plan capture per operation ────────
+
+def test_should_capture_is_true_the_first_time_for_a_new_operation():
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is True
+
+
+def test_should_capture_is_false_immediately_after_capturing():
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is True
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is False
+
+
+def test_should_capture_rate_limit_is_per_operation_not_global():
+    """A noisy operation being rate-limited must not suppress capture for
+    a DIFFERENT, independently-slow operation."""
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is True
+    assert _should_capture_explain_plan("INSERT aryx_landed_record") is True
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is False
+    assert _should_capture_explain_plan("INSERT aryx_landed_record") is False
+
+
+def test_should_capture_allows_again_after_the_rate_limit_window(monkeypatch):
+    import time as time_module
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(time_module, "monotonic", lambda: fake_now[0])
+
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is True
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is False
+
+    fake_now[0] += 601  # just past the 600s window
+    assert _should_capture_explain_plan("SELECT aryx_datasource") is True
+
+
+def test_log_stmt_ok_second_slow_statement_for_same_op_skips_capture(monkeypatch):
+    """Integration of the rate limit into _log_stmt_ok itself: a burst of
+    slow statements for the SAME op must only trigger one real
+    EXPLAIN PLAN attempt, not one per occurrence."""
+    captured_contexts = []
+
+    def fake_raven_log(level, crit, message, **kwargs):
+        captured_contexts.append(kwargs.get("context", {}))
+
+    capture_calls = []
+    monkeypatch.setattr("aryx.store.oracle_cursor.raven_log", fake_raven_log)
+    monkeypatch.setattr("aryx.store.oracle_cursor._capture_explain_plan",
+                        lambda cur, sql: capture_calls.append(1) or "PLAN")
+    import time
+    t0 = time.monotonic() - (SLOW_STATEMENT_MS / 1000 + 1)
+
+    for _ in range(3):
+        _log_stmt_ok("SELECT aryx_datasource", "execute", 0, t0,
+                    sql="SELECT * FROM aryx_datasource WHERE workspace_id = :1",
+                    cur=MagicMock())
+
+    assert len(capture_calls) == 1  # only the first of the 3 actually captured
+    assert captured_contexts[0].get("explain_plan") == "PLAN"
+    assert "explain_plan" not in captured_contexts[1]
+    assert "explain_plan" not in captured_contexts[2]
+    # All 3 still got their own slow_statement log entry -- only the plan
+    # capture itself is rate-limited, not the slow-statement visibility.
+    assert len(captured_contexts) == 3

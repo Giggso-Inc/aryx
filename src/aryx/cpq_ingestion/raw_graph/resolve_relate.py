@@ -124,16 +124,36 @@ def resolve_and_relate_raw_graph(
     ``xml_bytes`` (§3b, 2026-10-04) opts into the streaming path when
     ``ARYX_CPQ_STREAMING_PROJECTION_ENABLED`` is on: ``by_tag`` is built
     incrementally from ``xml_projector.iter_raw_graph()`` instead of a
-    fully-materialized ``RawGraphProjection``, never holding a separate
-    whole-document node list (see ``iter_raw_graph``'s and
-    ``fold_structural_leaf_tags``'s docstrings for the memory argument).
-    Default-off and falls back to the eager ``project_xml_to_raw_graph()``
-    path when the flag is off OR when ``ARYX_CSV_BML_ENABLED``'s
-    query-table enrichment is on (``with_query_tables()`` has no streaming
-    equivalent -- correctness over memory savings when both are enabled).
-    Not yet verified against a real large file end to end (see the
-    planning doc's §3b implementation-plan note) -- ships opt-in, not
-    default-on, until that verification happens.
+    fully-materialized ``RawGraphProjection``. Default-off and falls back
+    to the eager ``project_xml_to_raw_graph()`` path when the flag is off
+    OR when ``ARYX_CSV_BML_ENABLED``'s query-table enrichment is on
+    (``with_query_tables()`` has no streaming equivalent -- correctness
+    over memory savings when both are enabled).
+
+    Memory benefit, measured (PR review N3, 2026-10-04 -- corrects this
+    docstring's earlier, unmeasured framing): the large DOM-memory problem
+    this module was originally built to fix (a full in-memory element
+    tree) was already solved by ``project_xml_to_raw_graph`` itself
+    switching to ``iterparse`` + ``elem.clear()``, well before this
+    streaming path existed -- it does NOT hold a full tree either, and
+    this path's by_tag/edges dicts retain every node/edge object either
+    way (the node objects and their property dicts are the SAME objects
+    either path produces, not copies). The only memory this path actually
+    removes is ``RawGraphProjection``'s own ``nodes``/``edges`` list
+    overhead -- measured directly: 160.7 MB (eager) vs. 157.5 MB
+    (streaming) for a 400,000-element flat document, a 2.0% difference,
+    ~8.1 bytes/node (matches the ~8-byte pointer-list prediction this
+    review made before the measurement existed). Real, free (no
+    correctness cost once N2 below is fixed), and worth keeping opt-in --
+    but it is a modest, not a dramatic, saving, and should not be confused
+    with the original DOM-tree fix.
+
+    Not yet verified against a real large file end to end for full-pipeline
+    (not just parser-level) correctness at production scale -- see the
+    planning doc's §3b implementation-plan note for what IS verified
+    (live-tested at 3,000-record scale, full pipeline, byte-identical
+    output) -- ships opt-in, not default-on, until the real ~440k-record
+    file is tried.
 
     One resolve-only run per distinct XML tag: a ``RawGraphConnector`` for
     that tag's nodes, with ``ontology_type``/``match_keys`` from
@@ -269,7 +289,22 @@ def resolve_and_relate_raw_graph(
             by_tag[node.tag].append(node)
             if edge is not None:
                 edges.append(edge)
-        by_tag = dict(by_tag)
+        # PR review N2 (2026-10-04): iter_raw_graph yields in finish
+        # (post-)order -- relative order among SIBLINGS matches the eager
+        # path (see its docstring), but a tag that recurs at more than one
+        # nesting depth in the SAME document (e.g. a self-nesting catalog/
+        # category tree) comes out child-before-parent in post-order,
+        # while the eager path's id-ordered projection.nodes always has
+        # the parent (lower id, started first) before the child (higher
+        # id, started later). The equivalence test this shipped with used
+        # a flat file with no such nesting, so it never caught this.
+        # match_key_inference/resolve's merge tie-breaks and entity-id
+        # assignment are order-sensitive per xml_projector's own docstring
+        # -- sorting each tag's list back into id order here restores the
+        # eager path's exact per-tag ordering (O(n log n) over ints,
+        # negligible next to the resolve pass itself) before anything
+        # downstream can observe the difference.
+        by_tag = {tag: sorted(nodes, key=lambda n: n.id) for tag, nodes in by_tag.items()}
         if not by_tag:
             logger.info(
                 "raw_graph resolve_and_relate did=%s source_key=%s: no nodes to resolve",

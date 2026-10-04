@@ -1272,3 +1272,85 @@ this schema's privilege level) than the client-side pool. **Root cause
 remains open** — this session narrowed it (ruled out bad query plan,
 identified the plan-baseline risk, ruled out round-trip count for 0-row
 results) but did not conclusively reproduce the original symptom.
+
+---
+
+## Update — PR review round 3 (2026-10-04, after the §5 fixes landed)
+
+A third review round, scoped to Minor findings (N1-N5) against the fuller
+implementation (round 2 fixes + §5 fixes + live verification). All five
+verified against the actual code before fixing; four were real gaps, one
+(N3) was a documentation-accuracy issue only.
+
+- **N1 (confirmed, real gap):** `src/aryx/resolve_entities.py`'s
+  `store.save(results)` call was the one remaining unbatched, no-heartbeat
+  save in the resolve path — `save_relationships()` got this fix in round
+  2, but the entity-save call right before it (58% → 62%, orchestrate.py)
+  was missed. At the production file's scale (440k entities/tag) this is
+  several minutes of silence inside the same 10-minute heartbeat-sweep
+  window round 1/2 already took seriously. Fixed: `EntityStore.save()`
+  now chunks `results` into `batch_size`-sized groups (default 5000, same
+  as `save_relationships`), each still going through the existing
+  2-3-round-trip bulk path (`_save_batch`/`_save_batch_postgres`), with a
+  real done/total progress checkpoint scaled into the 58-62% band
+  `resolve_entities.py`/`orchestrate.py` already reserve for this call.
+- **N2 (confirmed, real correctness gap):** the streaming path's `by_tag`
+  is populated in `iter_raw_graph`'s finish (post-)order. Sibling order
+  matches the eager path either way (documented, and true), but a tag that
+  recurs at more than one nesting depth in the SAME document (e.g. a
+  self-nesting category/BOM tree) comes out child-before-parent in
+  post-order, while the eager path's id-ordered `projection.nodes` always
+  has the parent (lower id, started first) before the child. The
+  equivalence tests shipped with §3b — and this session's own live
+  verification test — all used flat or non-recurring-tag documents, so
+  none of them caught this. Fixed: each tag's node list is sorted by `id`
+  immediately after draining the stream, restoring the eager path's exact
+  per-tag order before anything downstream (match-key inference, resolve,
+  fold) can observe the difference. New test
+  (`test_xml_bytes_streaming_restores_id_order_for_self_nesting_tags`)
+  uses a real self-nesting `<Category>` tree and the REAL `iter_raw_graph`
+  (not mocked) — verified to actually fail without the fix before
+  confirming it passes with it.
+- **N3 (documentation-accuracy issue, not a bug):** §3b's memory-benefit
+  framing was unmeasured and overstated. The big DOM-memory problem this
+  module was originally built to fix was already solved earlier by
+  `project_xml_to_raw_graph` itself switching to `iterparse` + `elem.
+  clear()` — it does not hold a full tree either, and both paths' `by_tag`
+  dicts retain every node/edge object regardless (same objects, not
+  copies). Measured directly: 160.7 MB (eager) vs. 157.5 MB (streaming)
+  for a 400,000-element flat document — a 2.0% difference, ~8.1
+  bytes/node, matching the reviewer's own ~8-byte pointer-list prediction
+  almost exactly. Real and free, worth keeping opt-in, but modest, not
+  dramatic — `resolve_and_relate_raw_graph`'s docstring corrected to state
+  this precisely instead of implying a bigger win.
+- **N4 (confirmed, real transaction-safety bug):** both `save_
+  relationships()` (round 2) and the new `save()` chunking above called
+  `on_progress` INSIDE the same `with self._pool.connection()` block as
+  the inserts — a heartbeat failure (e.g. a transient error from the
+  job-row update it typically triggers, on a completely different
+  connection/pool) would propagate out of that block and roll back every
+  batch already inserted, failing an otherwise-healthy save over a purely
+  observational side effect. Fixed: both routed through a new
+  `_safe_progress()` helper that catches and logs any `on_progress`
+  exception, never letting it escape. Also moved the `Progress` type
+  alias to after the import block (it was sitting between stdlib and
+  third-party imports).
+- **N5 (acknowledged as "fine for now", improved anyway):**
+  `_capture_explain_plan` ran its two extra queries and logged up to 2,000
+  chars of plan text on every slow statement, uncapped — a burst of slow
+  batches for the same operation would flood logs for a plan that is very
+  unlikely to change moment to moment. Added a simple per-operation rate
+  limit (`_should_capture_explain_plan`, 600s/10min default) — the first
+  slow occurrence of a given operation still captures a plan immediately;
+  subsequent ones within the window skip the extra queries but still get
+  their own `slow_statement` visibility (duration, rows) uncapped.
+
+21 new/updated tests across 5 files, all passing (verified both in
+isolation and against this branch's full relevant-area regression set).
+Confirmed zero new regressions: the only combined-run failures are a
+pre-existing, test-order-dependent `caplog`/logging-propagation flakiness
+already present on this branch before this round's changes (reproduces
+identically with the round-3 diff stashed out) — affects some of this
+round's new tests and two pre-existing, unrelated tests the same way, but
+every affected test passes reliably standalone and in smaller
+combinations.
