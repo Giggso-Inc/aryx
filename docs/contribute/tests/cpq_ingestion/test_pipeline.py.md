@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_pipeline.py
 
-Last updated: 2026-10-03T15:47:32.788917+00:00
+Last updated: 2026-10-03T15:47:40.555830+00:00
 Total lines: 122
 Lines AI-generated: 36 (29.5%)
 Lines human-typed: 0

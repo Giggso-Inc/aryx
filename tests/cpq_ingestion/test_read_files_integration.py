@@ -69,6 +69,31 @@ def test_read_files_routes_xml_through_cpq_ingestion_when_active(monkeypatch):
     assert "nodes" in plan["ontology_type"] and "edges" in plan["ontology_type"]
 
 
+def test_read_files_still_writes_raw_graph_when_csv_bml_enabled(monkeypatch):
+    """csv_bml_ingestion reads bml_tables back off the stored raw graph
+    (bml_graph.enrich_projection), which only gets added by
+    project_raw_graph_and_flatten's Oracle write -- so with
+    ARYX_CSV_BML_ENABLED on, the old write+flatten path must still run
+    instead of the parse-only preview (Raven review finding)."""
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    monkeypatch.setenv("ARYX_CSV_BML_ENABLED", "true")
+    get_cpq_ingestion_settings.cache_clear()
+
+    with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
+        mock_write.return_value = RawGraphWriteResult(
+            nodes_written=2, edges_written=1, backend="falkordb", graph_ref="graph=x",
+        )
+        result = read_files(
+            doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
+            broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=50,
+        )
+
+    mock_write.assert_called_once()
+    assert len(result["tabular"]) >= 1
+    assert all(not p.get("cpq_raw_graph_preview") for p in result["tabular"])
+
+
 def test_read_files_ignores_workspace_id_for_the_cpq_xml_preview(monkeypatch):
     """Regression guard, updated: workspace_id used to be forwarded to the
     raw-graph write (see git history); that write no longer exists for this

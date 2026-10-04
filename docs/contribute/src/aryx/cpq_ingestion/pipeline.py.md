@@ -1,6 +1,6 @@
 # Attribution — src/aryx/cpq_ingestion/pipeline.py
 
-Last updated: 2026-10-03T15:47:32.788503+00:00
+Last updated: 2026-10-03T15:47:40.555486+00:00
 Total lines: 163
 Lines AI-generated: 69 (42.3%)
 Lines human-typed: 24
