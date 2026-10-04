@@ -114,10 +114,10 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
 
     should_stop: forwarded to the XML branch's cpq_ingestion raw-graph write
     (project_raw_graph_and_flatten -> write_raw_graph's per-chunk Oracle
-    executemany loop) ONLY when csv_bml_enabled() is true -- the one case
-    where that write still runs at Read time (see workspace_id above).
-    Otherwise unused: the parse-only preview that replaces it takes ~40s
-    even for a 240MB file, nothing worth cancelling. Kept on the signature
+    executemany loop) when csv_bml_enabled() is true -- the one case where
+    that write still runs at Read time (see workspace_id above). Otherwise
+    forwarded to preview_raw_graph_counts()'s count-only parse instead, so a
+    cancel during a large file's ~40-78s preview is still observed. Kept
     since the caller (doc_discover_read_job.py) already builds one and the
     document-extraction path via DocumentRouterConnector/extract_mentions()
     may gain should_stop support later (a separate, still-open gap, see
@@ -194,7 +194,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                 from aryx.cpq_ingestion.pipeline import preview_raw_graph_counts  # noqa: PLC0415
 
                 stem = Path(n).stem
-                nodes, edges = preview_raw_graph_counts(d, stem)
+                nodes, edges = preview_raw_graph_counts(d, stem, should_stop=should_stop)
                 cpq_preview_plans.append({
                     "filename": f"{stem}.summary.csv",
                     "data": f"nodes,edges\n{nodes},{edges}\n".encode(),

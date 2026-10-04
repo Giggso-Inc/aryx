@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_read_files_integration.py
 
-Last updated: 2026-10-04T03:46:50.294372+00:00
+Last updated: 2026-10-04T03:48:30.450720+00:00
 Total lines: 167
 Lines AI-generated: 4 (2.4%)
 Lines human-typed: 44

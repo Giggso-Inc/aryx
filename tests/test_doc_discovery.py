@@ -353,6 +353,58 @@ def test_ingest_confirmed_stores_approved_layout_plan_via_store_layout_file():
     mock_persist.assert_called_once_with([], 7, "postgresql://fake")
 
 
+def test_ingest_confirmed_routes_cpq_raw_graph_preview_plan_to_resolve_relate(monkeypatch):
+    """Integration-level guard for the Read-stage preview plan's shape
+    (PR #426 review, "no ingest_confirmed-level test"): a cpq_raw_graph_preview
+    plan must (1) reach resolve_and_relate_raw_graph via
+    partition_cpq_ingestion_plans -- never the FK-guessing valid_plans path --
+    and (2) be catalogued by the real _persist_tabular_sources with
+    assets=[], not the fake summary.csv as a real generated asset."""
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
+    get_cpq_ingestion_settings.cache_clear()
+
+    preview_plan = {
+        "filename": "order.summary.csv",
+        "data": b"nodes,edges\n4,3\n",
+        "ontology_type": "4 nodes / 3 edges",
+        "match_keys": [],
+        "source_filename": "order.xml",
+        "source_bytes": b"<Root><Child/></Root>",
+        "cpq_raw_graph_preview": True,
+    }
+    data = {"mentions": [], "tabular": [preview_plan]}
+
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.DatasourceStore"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.upsert_xml_catalog_entry") as mock_upsert, \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.raw_graph.xml_projector.project_xml_to_raw_graph") as mock_project, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph") as mock_resolve, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        mock_resolve.return_value = {"resolved": 4}
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["order.summary.csv"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="cpq-preview-confirm-job",
+            workspace_id=3,
+        )
+
+    mock_project.assert_called_once_with(preview_plan["source_bytes"])
+    mock_resolve.assert_called_once()
+    _, resolve_kwargs = mock_resolve.call_args
+    assert resolve_kwargs["workspace_id"] == 3
+    assert resolve_kwargs["source_key"] == "order"
+
+    mock_upsert.assert_called_once()
+    _, upsert_kwargs = mock_upsert.call_args
+    assert upsert_kwargs["source_filename"] == "order.xml"
+    assert upsert_kwargs["assets"] == []
+
+
 def test_ingest_confirmed_skips_layout_file_too_large_without_failing():
     from aryx.cpq_ingestion.layout_store import CpqLayoutFileTooLarge
 

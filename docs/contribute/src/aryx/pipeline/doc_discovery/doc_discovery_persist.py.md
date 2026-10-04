@@ -1,6 +1,6 @@
 # Attribution — src/aryx/pipeline/doc_discovery/doc_discovery_persist.py
 
-Last updated: 2026-10-04T03:46:50.294820+00:00
+Last updated: 2026-10-04T03:48:30.451129+00:00
 Total lines: 86
 Lines AI-generated: 34 (39.5%)
 Lines human-typed: 0

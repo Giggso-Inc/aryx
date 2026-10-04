@@ -1,6 +1,6 @@
 # Attribution — tests/cpq_ingestion/test_persist_skips_raw_graph_preview_plan.py
 
-Last updated: 2026-10-04T03:46:50.295247+00:00
+Last updated: 2026-10-04T03:48:30.451496+00:00
 Total lines: 47
 Lines AI-generated: 15 (31.9%)
 Lines human-typed: 0
