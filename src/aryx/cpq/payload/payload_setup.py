@@ -124,6 +124,10 @@ def build_context(
         engine, attrs, filled, filled_multi, sources, hidden, display_order,
         workspace_id, catalog_prefix, product_anchor_hint, dt_cache, scope_required_and_edited,
     )
+    if ctx.derived_required_vns is not None:
+        # derived set driving: catalog/rule-forced values are not customer input
+        ctx.rule_forced_active_vns = frozenset()
+        ctx.data_table_forced_vns = frozenset()
     return ctx
 
 

@@ -234,3 +234,13 @@ def test_series_narrowing_runs_before_attr_sequence_is_read_only_when_its_flag_i
 
     assert run(True) == {"a_vn", "c_vn"} and calls == [["M", "N"]]          # model N (with d_vn) was dropped
     assert run(False) == {"a_vn", "c_vn", "d_vn"} and calls == []           # flag off: nothing dropped
+
+
+def test_config_data_sources_are_customer_entered_only_when_the_derived_set_drives():
+    from aryx.cpq.payload.payload_state import PayloadContext, config_data_sources
+    wide = frozenset({"user", "hint", "cascade", "country_derived", "product_anchor"})
+    ctx = PayloadContext.__new__(PayloadContext)
+    ctx.derived_required_vns = None
+    assert config_data_sources(ctx, wide) == wide
+    ctx.derived_required_vns = frozenset({"a"})
+    assert config_data_sources(ctx, wide) == frozenset({"user"})

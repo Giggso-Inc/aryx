@@ -39,3 +39,13 @@ class PayloadContext:
     catalog_prefix: str = ""
     product_anchor_hint: str | None = None
     dt_cache: dict[tuple[int, str], tuple] | None = None
+
+
+CUSTOMER_ENTERED_SOURCES: frozenset[str] = frozenset({"user"})
+
+
+def config_data_sources(ctx: PayloadContext, default: frozenset[str]) -> frozenset[str]:
+    """Sources whose values may enter config_data: with the derived required set
+    driving, only what the customer entered (derived hidden values stay out unless
+    the set itself names them); otherwise the existing wider set."""
+    return default if ctx.derived_required_vns is None else CUSTOMER_ENTERED_SOURCES
