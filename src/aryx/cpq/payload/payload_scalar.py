@@ -126,6 +126,7 @@ def _scope_excluded(engine: Any, ctx: PayloadContext, k: str, attr: Any) -> bool
         gate_attrseq_confirmed_to_active_source=True,
         rule_forced_active_vns=ctx.rule_forced_active_vns,
         data_table_forced_vns=ctx.data_table_forced_vns,
+        required_vns=ctx.derived_required_vns,
         hint_text=ctx.product_anchor_hint, workspace_id=ctx.workspace_id,
         catalog_prefix=ctx.catalog_prefix, _dt_cache=ctx.dt_cache,
     )

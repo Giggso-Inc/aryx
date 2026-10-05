@@ -28,6 +28,8 @@ class PayloadContext:
     exclude_anchor_vns: frozenset[str] = frozenset()
     rule_forced_active_vns: frozenset[str] = frozenset()
     data_table_forced_vns: frozenset[str] = frozenset()
+    # plan F6: the derived required set (None = flag off / not computed)
+    derived_required_vns: frozenset[str] | None = None
     # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — threaded through to
     # engine._is_mandatory_input_attr's Hardware Version applicability check
     # (`_hardware_version_confirmed_not_applicable`); `None`/`""` (the

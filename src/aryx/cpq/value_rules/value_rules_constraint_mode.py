@@ -28,6 +28,7 @@ class ConstraintMode:
     mode: str                 # "ALLOW" or "DISALLOW"
     values: list[str]
     guard_var: str = ""       # variable that must be non-empty for the call to run
+    blank: bool = False       # the literal list contains the empty string (blank itself is allowed/disallowed)
 
 
 def _split_values(raw: list[str]) -> list[str]:
@@ -60,8 +61,9 @@ def parse_constraint_mode(script: str | None) -> ConstraintMode | None:
         return None
     raw = call.group("val")
     literals = [raw.strip('"')] if raw.startswith('"') else _assigned_literals(text, raw)
+    blank = any(not item.strip() for item in (literals or []))
     values = _split_values(literals or [])
-    if not values:
+    if not values and not blank:
         return None
     guard = _GUARD_RE.search(text)
-    return ConstraintMode(call.group("mode").upper(), values, guard.group("var") if guard else "")
+    return ConstraintMode(call.group("mode").upper(), values, guard.group("var") if guard else "", blank)

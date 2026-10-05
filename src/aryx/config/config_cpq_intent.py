@@ -313,6 +313,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "options) instead of the hand-listed tiers. Off by default."
         ),
     )
+    cpq_required_set_guards_assumed_open: bool = Field(
+        default=False,
+        description=(
+            "Plan F6: a blank-disallow action wrapped in `if(<variable> <> \"\")` "
+            "only runs when that session variable has a value. The variable is "
+            "supplied by the host, not by the quote. When true, a guard variable "
+            "that is absent from the quote state is assumed to be populated (as "
+            "in production); when false (default) such a rule does not fire."
+        ),
+    )
     cpq_required_set_shadow_enabled: bool = Field(
         default=False,
         description=(

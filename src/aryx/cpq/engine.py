@@ -2189,9 +2189,13 @@ class CpqEngine:
     def mandatory_tier_c_vns(
         self, filled: dict[str, str] | None, workspace_id: int | None,
         catalog_prefix: str = "", cache: dict[tuple[int, str], tuple] | None = None,
+        **derived_inputs: Any,
     ) -> frozenset[str]:
+        """`derived_inputs` (attrs, filled_source, filled_multi, hidden_vns,
+        display_order, product_hint) are only read when the derived required
+        set is on (plan F6)."""
         return payload_building.mandatory_tier_c_vns(
-            self, filled, workspace_id, catalog_prefix, cache)
+            self, filled, workspace_id, catalog_prefix, cache, **derived_inputs)
 
     def _data_table_resolved_anchor_vns(
         self, filled: dict[str, str] | None, attrs: list["ConfigAttr"] | None,

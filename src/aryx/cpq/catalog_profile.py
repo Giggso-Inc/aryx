@@ -182,6 +182,9 @@ def shadow_check_role_vn(
 # ---------------------------------------------------------------------------
 
 BASE_MODEL_LITERAL = "modelSelectionbaseModel_astro"
+# The platform's standard product-selector attribute (the same name every data-table
+# resolver here already keys on); defined once so new code does not repeat it.
+PRODUCT_LITERAL = "productSelectionProduct_all"
 
 
 def resolve_base_model_vn(

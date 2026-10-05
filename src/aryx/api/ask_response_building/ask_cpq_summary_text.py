@@ -98,7 +98,10 @@ def _cpq_summary_text(
     _cpq_engine = _ask_api_module._cpq_engine
     display_order = _cpq_engine.load_layout_display_order(workspace_id, _catalog_prefix)
     _tc_t0 = time.monotonic()
-    _required_vns = _cpq_engine.mandatory_tier_c_vns(filled, workspace_id, _catalog_prefix)
+    _required_vns = _cpq_engine.mandatory_tier_c_vns(
+        filled, workspace_id, _catalog_prefix,
+        attrs=attrs, filled_source=sources, display_order=display_order,
+        product_hint=product_anchor_hint or product_name)
     _ask_api_module.logger.info(
         "cpq_perf: mandatory_tier_c_vns took %.3fs", time.monotonic() - _tc_t0,
     )

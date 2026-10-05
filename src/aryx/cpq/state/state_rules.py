@@ -164,6 +164,9 @@ class ConstraintRule:
     mode_enabled`); for "DISALLOW" the listed values are removed from the options."""
     guard_attr: str = ""
     """Variable that must hold a value for a mode-carrying action to run at all."""
+    blank: bool = False
+    """The action's literal list contains the empty string: with mode "DISALLOW" the
+    blank value itself is not allowed, i.e. the attribute is required (plan F6)."""
     ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 
 

@@ -99,7 +99,10 @@ def _attach_share_flags(result: dict[str, Any], req: "Any", reader: Any) -> None
     result["json_response"] = payload
     result["json_button_flag"] = True
     _beautify_required_vns = _cpq_engine.mandatory_tier_c_vns(
-        session.filled, req.workspace_id, catalog_prefix)
+        session.filled, req.workspace_id, catalog_prefix,
+        attrs=attrs, filled_source=session.filled_source, filled_multi=session.filled_multi,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        product_hint=session.product_anchor_question or "")
     result["beautify"] = _cpq_engine.beautify_text(
         session.product_name, session.display_filled, attrs, session.filled_source,
         required_vns=_beautify_required_vns,

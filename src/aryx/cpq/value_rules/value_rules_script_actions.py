@@ -36,6 +36,7 @@ def _mode_rule(
         conditions=copy_conditions(inp_list) if inp_list else None,
         mode=parsed.mode,
         guard_attr=parsed.guard_var,
+        blank=parsed.blank,
     ))
     state.script_constraints += 1
     return True

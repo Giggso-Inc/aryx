@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.engine import ConfigAttr, logger
+from aryx.cpq.payload_building.required_set import derive_required_vns, log_shadow_difference
 from aryx.cpq.payload.payload_state import PayloadContext
 
 
@@ -26,6 +28,7 @@ def build_context(
     catalog_prefix: str,
     product_anchor_hint: str | None = None,
     dt_cache: dict[tuple[int, str], tuple] | None = None,
+    display_order: dict[str, int] | None = None,
 ) -> PayloadContext:
     sources = filled_source or {}
     attr_by_vn = {a.variable_name: a for a in (attrs or [])}
@@ -117,4 +120,34 @@ def build_context(
         )
         if scope_required_and_edited else frozenset()
     )
+    ctx.derived_required_vns = _derived_required(
+        engine, attrs, filled, filled_multi, sources, hidden, display_order,
+        workspace_id, catalog_prefix, product_anchor_hint, dt_cache, scope_required_and_edited,
+    )
     return ctx
+
+
+def _derived_required(
+    engine: Any, attrs: list["ConfigAttr"] | None, filled: dict[str, str],
+    filled_multi: dict[str, list[str]] | None, sources: dict[str, str], hidden: set[str],
+    display_order: dict[str, int] | None, workspace_id: int | None, catalog_prefix: str,
+    product_hint: str | None, dt_cache: dict | None, scoped: bool,
+) -> frozenset[str] | None:
+    """Plan F6: the derived required set for config_data scoping, or None when
+    the flag is off. In shadow mode (flag `cpq_required_set_shadow_enabled`) it is
+    only computed and logged against the current classification, never used."""
+    settings = get_settings()
+    if not scoped or not (settings.cpq_required_set_enabled or settings.cpq_required_set_shadow_enabled):
+        return None
+    derived = derive_required_vns(
+        engine, attrs, filled, filled_multi, sources, hidden, display_order,
+        workspace_id, catalog_prefix, product_hint or "", dt_cache)
+    if settings.cpq_required_set_enabled:
+        return derived
+    current = frozenset(
+        vn for vn in filled
+        if engine._is_mandatory_input_attr(
+            vn, (attrs and {a.variable_name: a for a in attrs}.get(vn)), sources.get(vn),
+            active_sources=engine._CONFIG_DATA_ACTIVE_SOURCES))
+    log_shadow_difference("config_data", derived, current)
+    return None
