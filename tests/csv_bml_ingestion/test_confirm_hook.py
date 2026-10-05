@@ -143,6 +143,9 @@ def test_cancelling_the_job_stops_the_remaining_files(hook):
     out = ch.ingest_csv_plans_with_bml([_plan("good.csv"), _plan("nomatch.csv")], workspace_id=7, job_id="j",
                                        should_stop=stop_after_one)
     assert [r.source for r in out] == ["good.csv"] and FakeSession.instances[0].calls == [(BODY, "good.csv")]
+    cancelled = [kw for lvl, _c, _m, kw in hook["raven"] if kw.get("error_code") == "ARYX_ING_CANCELLED"]
+    assert len(cancelled) == 1 and cancelled[0]["context"]["files_skipped"] == ["nomatch.csv"]   # not silent: the skipped file is named
+    assert hook["hidden"] == ["j"]                                               # and the job gets one hidden problem
     out = ch.ingest_csv_plans_with_bml([_plan("good.csv")], workspace_id=7, job_id="j",
                                        should_stop=lambda: (_ for _ in ()).throw(RuntimeError("cancel check failed")))
     assert [r.status for r in out] == ["loaded"]                                 # a broken cancel check never blocks a load

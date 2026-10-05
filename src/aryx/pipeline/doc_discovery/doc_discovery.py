@@ -452,7 +452,6 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         from aryx.csv_bml_ingestion.confirm_hook import bml_csv_plans  # noqa: PLC0415
         bml_csv_plans_to_run = bml_csv_plans(valid_plans)
 
-
     # cpq_ingestion: a plain CSV upload whose plan is active for this
     # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
     # cpq_ingestion) lands directly in Postgres (aryx_landed_record) and

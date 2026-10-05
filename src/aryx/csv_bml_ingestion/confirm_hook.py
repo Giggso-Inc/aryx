@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 CSV_SUFFIX = ".csv"
 LAYOUT_KIND = "cpq_layout"
 STATUS_LOADED = "loaded"
+CANCELLED_CODE = "ARYX_ING_CANCELLED"     # the code the other ingestion stages use when a job is cancelled
 
 
 def bml_csv_plans(plans: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -54,9 +55,10 @@ def ingest_csv_plans_with_bml(
     except Exception as exc:  # noqa: BLE001 -- the confirm job must carry on without this extra step
         logger.warning("csv_bml_ingestion: could not start for workspace %s: %r", workspace_id, exc)
         return results
-    for plan in bml_csv_plans(plans):
+    selected = bml_csv_plans(plans)
+    for index, plan in enumerate(selected):
         if _stopped(should_stop):
-            logger.info("csv_bml_ingestion: job cancelled, %d file(s) not processed", len(bml_csv_plans(plans)) - len(results))
+            _report_cancelled([str(p["filename"]) for p in selected[index:]], job_id, workspace_id)
             break
         name = str(plan["filename"])
         _stage(on_stage, f"Processing {name} (csv_bml_ingestion)")
@@ -69,6 +71,17 @@ def ingest_csv_plans_with_bml(
         results.append(result)
         _report(result, job_id, workspace_id)
     return results
+
+
+def _report_cancelled(skipped: list[str], job_id: str | None, workspace_id: int) -> None:
+    """The job was cancelled mid-way: say which CSVs were left alone (a WARN, and one hidden problem on the job)."""
+    logger.warning("csv_bml_ingestion: job %s cancelled, %d file(s) not processed: %s", job_id, len(skipped), skipped)
+    note_hidden(job_id)
+    raven_log("WARN", "P3", "ingest.csv_bml.cancelled remaining CSV files not processed after the job was cancelled",
+              error_code=CANCELLED_CODE,
+              context={"job_id": job_id, "workspace_id": workspace_id, "files_skipped": skipped,
+                       "recovery_selected": "stop_remaining_files", "fallback_target": None,
+                       "exit_condition": "cancelled", "result": "cancelled"})
 
 
 def _stopped(should_stop: Callable[[], bool] | None) -> bool:
