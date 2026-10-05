@@ -56,7 +56,7 @@ ARYX_LLM_API_KEY=<your Gemini key>
 Then recreate the `api` container. Check that `/api/health` is up and that the log line `cpq_intent_gateway_start` shows `provider=gemini model=gemini-2.5-pro`.
 
 To confirm no OCI LLM calls remain, check every path, not only the intent gateway:
-- `api` container: search the log for `provider=oci` (the LLM call log records provider and model per call); chat, intent classification and Tier-2 BML calls should all show `gemini`.
+- `api` container: do not rely on searching the log for `provider=oci`. The per-call lines in `llm_json.py` and `llm_text.py` are `logger.debug`, and the compose default is `ARYX_LOG_LEVEL=INFO`, so the search finds nothing even if OCI calls are happening. Either set `ARYX_LOG_LEVEL=DEBUG` for the check, or (more reliable) query the `aryx_llm_call` table, where `_log_llm_call` persists `provider` and `model` per call (best effort; a write failure is only logged at debug), for example `SELECT provider, model, COUNT(*) FROM aryx_llm_call GROUP BY provider, model`, and compare the counts before and after the switch. Chat, intent classification and Tier-2 BML calls should show `gemini` after it.
 - OCI Functions ingestion (if `ARYX_WORKER_BACKEND` is `oci_functions`): the function's own log line `ingest.fn.received` records `llm_cheap_backend`; it will still say `oci` until the provisioner follow-up in risk 5 is done.
 - Local worker and other containers: same `provider=oci` search.
 
