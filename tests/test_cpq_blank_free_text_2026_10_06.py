@@ -52,3 +52,16 @@ def test_apply_rules_passes_the_blank_aware_variables_to_condition_scripts():
     cra.apply_rules([rule], {5: target}, {}, {}, Checker(), 1, "", None, constrained, contributions,
                     condition_vars={"freeText": ""})
     assert seen["vars"] == {"freeText": ""} and constrained == {5: ["YES"]}
+
+
+def test_a_declarative_not_equal_condition_on_an_unfilled_free_text_attribute_fires_with_the_flag():
+    from aryx.cpq.bml.bml import evaluate_declarative_conditions
+    from aryx.cpq.hiding_rules.attr_index import _filled_by_rule_id
+
+    conditions = [(1, "SOME-ID", "3")]                 # free-text attribute 1 <> "SOME-ID"
+    with patch.object(bt, "get_settings", _cfg(True)):
+        on = _filled_by_rule_id(ATTRS, bt.with_blank_free_text(ATTRS, {}))
+    with patch.object(bt, "get_settings", _cfg(False)):
+        off = _filled_by_rule_id(ATTRS, bt.with_blank_free_text(ATTRS, {}))
+    assert evaluate_declarative_conditions(conditions, on)[0] is True
+    assert evaluate_declarative_conditions(conditions, off)[0] is None

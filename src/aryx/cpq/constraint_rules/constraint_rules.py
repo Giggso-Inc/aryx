@@ -98,7 +98,8 @@ def apply_constraint_rules(
             return dict(_constraint_cache["result"])
 
     by_rule_id = engine._attr_index(attrs)
-    filled_by_rule_id = engine._filled_by_rule_id(attrs, filled, filled_multi)
+    blank_aware = with_blank_free_text(attrs, filled)
+    filled_by_rule_id = engine._filled_by_rule_id(attrs, blank_aware, filled_multi)
     constrained: dict[int, list[str]] = {}
     # target.entity_id -> [(condition_key, normalized_allowed_values, rule_name)]
     # for every rule that actually fired -- condition_key groups rules
@@ -113,7 +114,7 @@ def apply_constraint_rules(
     apply_rules(
         rules, by_rule_id, filled, filled_by_rule_id, bml_eval, workspace_id,
         catalog_prefix, _dt_cache, constrained, contributions,
-        script_stats, cond_stats, with_blank_free_text(attrs, filled),
+        script_stats, cond_stats, blank_aware,
     )
     resolve_empty_intersections(rules, by_rule_id, constrained, contributions)
     if narrowing_rec_rules:
