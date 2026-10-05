@@ -38,6 +38,7 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
 )
 from aryx.cpq_ingestion.raw_graph.structural_leaf import fold_structural_leaf_tags
 from aryx.cpq_ingestion.raw_graph.xml_projector import iter_raw_graph, project_xml_to_raw_graph
+from aryx.pipeline.doc_discovery.doc_discovery_types import _stem_type
 from aryx.pipeline.orchestrate import PipelineCancelled, Progress, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
@@ -398,9 +399,43 @@ def resolve_and_relate_raw_graph(
                 # 439,946/439,946 unique on a real run). Forcing exact mode
                 # here skips paying for _key_selectivity()'s sampling pass
                 # just to discover the same thing non-deterministically.
+                # Naming parity with the old CSV pipeline (Ask-feature review,
+                # 2026-10-05): infer_match_keys_for_tag's own ontology_type is
+                # the raw XML tag (e.g. "bm_prd_family"), but every CPQ
+                # Ask-feature lookup keyed off a workspace's ingested catalogs
+                # (list_ingested_families, product-hint resolution, catalog
+                # scoping, product-config menus, rule export, model-path
+                # resolution -- see cpq/catalog_naming.py's _catalog_prefix)
+                # expects the OLD _xml_to_csvs()-path convention instead:
+                # PascalCase, source-prefixed, e.g. "ApxNextConfigBmPrdFamily".
+                # That shape falls out of running "{stem}_{tag}.csv" through
+                # _stem_type() (doc_discovery_types.py) on the old path --
+                # reusing the exact same function here (not reimplementing the
+                # title-casing logic) guarantees byte-identical output for the
+                # same (source file, XML tag) pair, which is what lets every
+                # existing _catalog_prefix() consumer keep working unchanged.
+                # Confirmed live: without this, a raw-graph-ingested workspace
+                # (e.g. 1084/"SVX") has zero ontology types _catalog_prefix can
+                # parse a prefix from, so the Ask feature believes nothing was
+                # ever ingested.
+                #
+                # The ".csv" suffix below is NOT cosmetic (PR #435 review,
+                # High): _stem_type calls Path(filename).stem, which strips
+                # everything after the LAST "." in the string. The old
+                # pipeline's input was always "{stem}_{tag}.csv", so .stem
+                # only ever ate the ".csv" extension. Passing
+                # f"{source_key}_{tag}" with no extension means a source
+                # filename containing its own dot (a version number like
+                # "APX Next 2.0 Config", a date like "export_2026.10.05")
+                # gets stripped at ITS last dot instead -- eating part or all
+                # of the tag and collapsing every tag in that file onto one
+                # ontology_type. Verified live: _stem_type("export_2026.10.05
+                # _bm_prd_family") == "Export2026.10" (wrong) vs.
+                # _stem_type("export_2026.10.05_bm_prd_family.csv") ==
+                # "Export2026.10.05BmPrdFamily" (matches the old pipeline).
                 summary = run_pipeline(
                     connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
-                    ontology_type=inferred["ontology_type"], match_keys=inferred["match_keys"],
+                    ontology_type=_stem_type(f"{source_key}_{tag}.csv"), match_keys=inferred["match_keys"],
                     graph_url=graph_url, broker=broker, workspace_id=workspace_id,
                     relate=False, skip_graph=True, should_stop=should_stop,
                     on_progress=_tag_progress,

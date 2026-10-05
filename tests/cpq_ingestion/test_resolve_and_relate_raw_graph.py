@@ -14,8 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from aryx.cpq.catalog_naming import _catalog_prefix
 from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
+from aryx.pipeline.doc_discovery.doc_discovery_types import _stem_type
 from aryx.pipeline.orchestrate import PipelineCancelled
 
 WORKSPACE_ID = 879
@@ -100,15 +102,89 @@ def test_ontology_type_and_match_keys_are_inferred_per_tag():
             dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
         )
 
+    # ontology_type is no longer the raw tag verbatim -- resolve_relate.py
+    # derives it via _stem_type(f"{source_key}_{tag}") for naming parity with
+    # the old CSV pipeline (see that call site's comment). Compute the
+    # expected value the same way rather than hardcoding a second copy of the
+    # transform, so this test can't silently drift from the implementation.
     calls_by_dataset = {c.kwargs["dataset"]: c.kwargs for c in mock_run_pipeline.call_args_list}
-    assert calls_by_dataset["PurchaseOrder"]["ontology_type"] == "PurchaseOrder"
+    assert calls_by_dataset["PurchaseOrder"]["ontology_type"] == _stem_type("po_file_PurchaseOrder")
     assert calls_by_dataset["PurchaseOrder"]["match_keys"] == ["Id"]
-    assert calls_by_dataset["Customer"]["ontology_type"] == "Customer"
+    assert calls_by_dataset["Customer"]["ontology_type"] == _stem_type("po_file_Customer")
     assert calls_by_dataset["Customer"]["match_keys"] == ["Id"]
     # LineItem's "Sku" isn't id-like by default -- falls back to LLM, which
     # isn't mocked here, so it degrades to the default (first property key).
-    assert calls_by_dataset["LineItem"]["ontology_type"] == "LineItem"
+    assert calls_by_dataset["LineItem"]["ontology_type"] == _stem_type("po_file_LineItem")
     assert calls_by_dataset["LineItem"]["match_keys"] == ["Sku"]
+
+
+def test_ontology_type_naming_matches_old_csv_pipelines_catalog_prefix_shape():
+    """The actual regression this covers: the Ask feature's _catalog_prefix()
+    must be able to parse a real prefix back out of a raw-graph-ingested
+    workspace's ontology types, the same way it already does for the old
+    CSV-ingestion pipeline's PascalCase "{Stem}Bm{Tag}" types -- otherwise
+    list_ingested_families() (and every other _catalog_prefix() consumer)
+    silently sees nothing ingested, even though real curated data exists
+    (confirmed live against workspace 1084, "quote for SVX")."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    projection = RawGraphProjection(
+        nodes=[RawNode(id=0, tag="bm_prd_family", properties={"name": "SVX Video"})],
+        edges=[],
+    )
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        resolve_and_relate_raw_graph(
+            projection, workspace_id=WORKSPACE_ID, source_key="ApxNextConfig",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    ontology_type = mock_run_pipeline.call_args.kwargs["ontology_type"]
+    # _stem_type title-cases each "_"-separated word (lowercasing interior
+    # caps the same way str.title() always does), so "ApxNextConfig" ->
+    # "Apxnextconfig" -- not a perfect re-derivation of the original filename,
+    # but it IS byte-identical to what the old CSV pipeline would have
+    # produced for the same source_key, which is the actual contract here.
+    assert _catalog_prefix(ontology_type) == "Apxnextconfig"
+
+
+def test_dotted_source_key_does_not_collapse_the_tag_into_the_stem():
+    """PR #435 review, High: _stem_type does Path(filename).stem, which
+    strips everything after the LAST "." in the string. The old CSV
+    pipeline's input was always "{stem}_{tag}.csv", so .stem only ever ate
+    the ".csv" extension -- a source filename containing its own dot (a
+    version number, a date) never lost anything. Passing f"{source_key}_
+    {tag}" with no extension strips at THAT dot instead, eating part of
+    the tag and collapsing every tag in that file onto one ontology_type.
+    Compares resolve_relate.py's actual derivation directly against the
+    OLD pipeline's own form (_stem_type(f"{stem}_{tag}.csv")) for a
+    dotted source_key -- the two must match byte-for-byte."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    source_key = "export_2026.10.05"
+    projection = RawGraphProjection(
+        nodes=[
+            RawNode(id=0, tag="bm_prd_family", properties={"name": "x"}),
+            RawNode(id=1, tag="bm_catalog", properties={"name": "y"}),
+        ],
+        edges=[],
+    )
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        resolve_and_relate_raw_graph(
+            projection, workspace_id=WORKSPACE_ID, source_key=source_key,
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    ontology_types = {c.kwargs["dataset"]: c.kwargs["ontology_type"] for c in mock_run_pipeline.call_args_list}
+    assert ontology_types["bm_prd_family"] == _stem_type(f"{source_key}_bm_prd_family.csv")
+    assert ontology_types["bm_catalog"] == _stem_type(f"{source_key}_bm_catalog.csv")
+    # The actual failure mode this guards against: without the ".csv", both
+    # tags collapse onto the SAME wrong name ("Export2026.10").
+    assert ontology_types["bm_prd_family"] != ontology_types["bm_catalog"]
+    assert _catalog_prefix(ontology_types["bm_prd_family"]) == _catalog_prefix(ontology_types["bm_catalog"])
 
 
 def test_builds_node_id_to_entity_id_map_and_translates_containment_edges():
