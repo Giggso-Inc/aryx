@@ -1821,3 +1821,134 @@ connection-separation *structure* this fix depends on, not the actual
 Oracle lock-release semantics underneath it, which is textbook Oracle
 behavior (DDL auto-commits) rather than something this environment can
 exercise directly.
+
+## Update — live incident: false-positive heartbeat kill (2026-10-05)
+
+While using the dev_oci stack to live-test this branch against a real
+CPQ XML file (41 tags, confirm job `55751c8b869940429406b57475d874dd`,
+workspace 1082), the confirm job was marked `status=failed`,
+`error="worker lost — no progress reported within the heartbeat window"`
+by `JobStore.sweep_stale_heartbeat` (§0) at 06:10:21 — **while it was
+still actively, continuously resolving** tag 9/41 (`item_text`). Verified
+directly: the live container logs show dense, gap-free per-pair
+`resolution.run` scoring activity straight through the "failure" instant
+and for many minutes after it, with zero tracebacks, zero process
+restarts, and the container reporting `healthy` throughout. This was a
+false positive, not a real crash — confirmed, not assumed.
+
+**Root cause.** `resolution/run.py`'s block-scoring loop only called
+`on_block_progress` (the heartbeat-driving callback, wired all the way
+through to `JobStore.update_stage`'s `updated_at = now()`) every
+`_PROGRESS_EVERY = 25` blocks — a block-COUNT checkpoint with no
+wall-clock ceiling. Block cost is not uniform: a block's pair count
+scales with its member count (candidate cluster size), so a run of large
+near-duplicate blocks (common in `item_text`-style free-text tags with
+many near-identical values) can take many minutes to clear even a
+handful of blocks, let alone 25. On this run, the checkpoint logged
+`scored block 200/1430` at 05:50:09 and the next one logged was
+`725/1430` at 06:12:56 — a **22m47s gap** with no heartbeat update, well
+past the 20-minute `job_heartbeat_timeout_minutes` default (itself raised
+from 10→20 in round 5 specifically to reduce false positives — still not
+enough margin for this shape of data).
+
+**Consequence observed, also worth flagging on its own:** once the sweep
+marks a job `failed`, `update_job_stage.sql`'s `WHERE status != 'failed'`
+guard (the "no resurrection" guard, round 4) means the job row can never
+be revived by the still-running resolve loop's own progress calls — by
+design, correctly. But nothing tells that resolve loop to actually STOP:
+`should_stop()` is only checked at tag *boundaries* in
+`resolve_and_relate_raw_graph()`, never inside the per-block/per-pair
+scoring loop itself (§3b/PR #429's own documented scope). The result is a
+"zombie" resolve that keeps running — and keeps writing real entities/
+relationships to the DB — for a job the UI and database already show as
+failed, until it eventually reaches the next tag boundary. Live-observed:
+the zombie was still active 14+ minutes after the false failure,
+continuously, with the job row frozen the whole time. Not fixed here —
+it's the same already-documented, already-scoped-out limitation from
+PR #429 (should_stop granularity), not something this false-positive
+incident introduces; flagged so it isn't mistaken for a new regression if
+noticed independently.
+
+**Fix (the root cause).** `resolve()`'s block loop now also fires
+`on_block_progress` whenever `_PROGRESS_MAX_SECONDS` (60s) has elapsed
+since the last emission, regardless of block count:
+
+```python
+if on_block_progress is not None and (
+    (block_idx + 1) % _PROGRESS_EVERY == 0
+    or block_idx + 1 == total_blocks
+    or time.monotonic() - _last_progress_emit >= _PROGRESS_MAX_SECONDS
+):
+    on_block_progress(block_idx + 1, total_blocks)
+    _last_progress_emit = time.monotonic()
+```
+
+This bounds the worst-case heartbeat gap to ~60s regardless of how
+expensive any individual block or run of blocks turns out to be — 20x
+margin below the 20-minute sweep threshold, so a future run with even
+more extreme per-block cost than this incident's `item_text` tag still
+has room before risking another false positive.
+
+Two new tests in `tests/test_resolve_block_progress_heartbeat.py`: one
+confirms the time-based path does NOT fire spuriously when blocks are
+fast (only `_PROGRESS_EVERY`/last-block checkpoints fire, as before); the
+other simulates a slow block via a mocked `time.monotonic()` and confirms
+`on_block_progress` fires after block 1 — neither the 25th block nor the
+last — specifically because of the time ceiling. Verified the second test
+fails against the pre-fix code (fails on `AttributeError: module
+'aryx.resolution.run' has no attribute 'time'`, since `time` wasn't even
+imported before this fix) and passes against the fix.
+
+Not fixed: the zombie-task/`should_stop`-granularity issue described
+above. That's a materially larger change (threading a stop-check into the
+hot pair-scoring loop touches the same performance-sensitive path this
+whole investigation is about) and is the same scope PR #429 already and
+deliberately left for a future PR. The heartbeat fix above should make
+this specific trigger (false-positive sweep kills) much rarer, which
+reduces how often the zombie scenario is even reached — but a genuine
+user-initiated cancel or a real worker crash during a long block-scoring
+pass would still take until the next tag boundary to actually stop.
+
+### Follow-up (same day): the first heartbeat fix was still block-boundary-only
+
+**Medium, confirmed and fixed — twice over, same root defect.** The first
+version of this fix only checked `_PROGRESS_MAX_SECONDS` at block
+*boundaries*: end of a block's pair loop, and (missed entirely the first
+time) after the embedding-prefetch loop. Both still had the exact same
+class of gap the whole incident was about — a single long-running
+operation with no internal checkpoint:
+
+- `max_pairs_per_block` defaults to 500, and each pair goes through
+  `score_pair`/`_route_pair`, which can trigger an LLM adjudication call.
+  At seconds per call, ONE block can legitimately run for tens of
+  minutes — past the ceiling never being re-checked until that block
+  finally finishes. The original incident is most consistent with this
+  exact shape (a handful of singleton blocks logged near-instantly, then
+  one or a few large multi-member blocks absorbing the whole 22m47s gap),
+  not literally 500+ small blocks each taking a few seconds.
+- The embedding-prefetch loop (`ThreadPoolExecutor` + `as_completed`,
+  measured in this module's own docstring at ~99% of `resolve()`'s
+  wall-clock time on a realistic dataset) had ZERO `on_block_progress`
+  calls anywhere in it — `_last_progress_emit` is set before entering the
+  loop, and nothing fires until the first multi-member block's pair loop
+  finishes afterward.
+
+Fixed by checking the time ceiling inside both: once per pair in the
+block loop (a `monotonic()` call is negligible next to a scoring/
+adjudication call), and once per completed future in the prefetch loop.
+Both report `block_idx` (not `block_idx + 1`) since the current block/the
+whole prefetch phase hasn't finished yet — `on_block_progress`'s
+`(blocks_done, total_blocks)` contract stays unchanged; only new call
+sites were added, no signature change.
+
+Two new tests isolate each gap specifically (distinguishing "fired during
+prefetch" from "fired mid-block" matters, since both report
+`blocks_done=0` for the first block/first prefetch — otherwise
+ambiguous): the prefetch test only advances a fake clock inside
+`broker.embed()`'s mock (never called again once embeddings are cached
+for the pair loop), so any early heartbeat observed can only have come
+from the prefetch loop; the mid-block test uses one large single block
+(`C(6,2)=15` pairs) with a small per-call clock increment, so crossing
+the ceiling requires several per-pair checks, not one end-of-block check.
+Verified both fail against the previous (block-boundary-only) version of
+this fix and pass against the current one.
