@@ -1578,3 +1578,16 @@ Two items came back after round 5 landed:
   scanner itself (`ast_decision_scanner.analyze_file()`), not just by
   re-running `--write-baseline` — all 5 now report
   `existing_log_status="sufficient"` with zero missing fields.
+
+### Follow-up (same day): M1 — the heartbeat default raise never reached the actual deployment
+
+**Confirmed and fixed.** `config_core.py`'s `job_heartbeat_timeout_minutes`
+default moved from 10 to 20 in round 5 (the heartbeat-sweep-destructiveness
+fix), but `docker-compose-oci.yml` sets
+`ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES=${ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES:-10}`
+on the `api` service — that commit range never touched this file. Since the
+env var is always set to *something* in this container (even just the shell
+fallback), the Python default never applies there; only an environment that
+doesn't pass this var at all (e.g. a bare local run with no compose file)
+was ever picking up the code's new value. Fixed: the compose fallback is now
+`:-20`, matching the code default it's meant to mirror.

@@ -105,8 +105,16 @@ services:
       - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-7200}
       - ARYX_JOB_TIMEOUT_MINUTES=${ARYX_JOB_TIMEOUT_MINUTES:-120}
       # Worker-lost detection (§0): much shorter than the above on purpose —
-      # see JobStore.sweep_stale_heartbeat's docstring.
-      - ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES=${ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES:-10}
+      # see JobStore.sweep_stale_heartbeat's docstring. Default raised 10 ->
+      # 20 (PR review round 5, M1): config_core.py's own default moved to
+      # 20 because a sweep false alarm is destructive (the swept worker
+      # stops itself and PR #429's cleanup deletes its entities), but this
+      # explicit :-10 fallback here meant the OCI deployment never saw that
+      # change -- the env var is always set to something in this container,
+      # so the code's own default never applies. Only an environment that
+      # doesn't pass this var at all (e.g. local, non-compose runs) was
+      # ever picking up the new default.
+      - ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES=${ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES:-20}
       - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_WORKER_THREADS=${ARYX_WORKER_THREADS:-4}
       - ARYX_BATCH_SIZE=${ARYX_BATCH_SIZE:-500}
