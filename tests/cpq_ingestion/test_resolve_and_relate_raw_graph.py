@@ -149,6 +149,44 @@ def test_ontology_type_naming_matches_old_csv_pipelines_catalog_prefix_shape():
     assert _catalog_prefix(ontology_type) == "Apxnextconfig"
 
 
+def test_dotted_source_key_does_not_collapse_the_tag_into_the_stem():
+    """PR #435 review, High: _stem_type does Path(filename).stem, which
+    strips everything after the LAST "." in the string. The old CSV
+    pipeline's input was always "{stem}_{tag}.csv", so .stem only ever ate
+    the ".csv" extension -- a source filename containing its own dot (a
+    version number, a date) never lost anything. Passing f"{source_key}_
+    {tag}" with no extension strips at THAT dot instead, eating part of
+    the tag and collapsing every tag in that file onto one ontology_type.
+    Compares resolve_relate.py's actual derivation directly against the
+    OLD pipeline's own form (_stem_type(f"{stem}_{tag}.csv")) for a
+    dotted source_key -- the two must match byte-for-byte."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    source_key = "export_2026.10.05"
+    projection = RawGraphProjection(
+        nodes=[
+            RawNode(id=0, tag="bm_prd_family", properties={"name": "x"}),
+            RawNode(id=1, tag="bm_catalog", properties={"name": "y"}),
+        ],
+        edges=[],
+    )
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        resolve_and_relate_raw_graph(
+            projection, workspace_id=WORKSPACE_ID, source_key=source_key,
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    ontology_types = {c.kwargs["dataset"]: c.kwargs["ontology_type"] for c in mock_run_pipeline.call_args_list}
+    assert ontology_types["bm_prd_family"] == _stem_type(f"{source_key}_bm_prd_family.csv")
+    assert ontology_types["bm_catalog"] == _stem_type(f"{source_key}_bm_catalog.csv")
+    # The actual failure mode this guards against: without the ".csv", both
+    # tags collapse onto the SAME wrong name ("Export2026.10").
+    assert ontology_types["bm_prd_family"] != ontology_types["bm_catalog"]
+    assert _catalog_prefix(ontology_types["bm_prd_family"]) == _catalog_prefix(ontology_types["bm_catalog"])
+
+
 def test_builds_node_id_to_entity_id_map_and_translates_containment_edges():
     run_ids_by_tag = {"PurchaseOrder": 10, "Customer": 11, "LineItem": 12}
     entity_maps = {

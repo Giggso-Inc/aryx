@@ -418,9 +418,24 @@ def resolve_and_relate_raw_graph(
                 # (e.g. 1084/"SVX") has zero ontology types _catalog_prefix can
                 # parse a prefix from, so the Ask feature believes nothing was
                 # ever ingested.
+                #
+                # The ".csv" suffix below is NOT cosmetic (PR #435 review,
+                # High): _stem_type calls Path(filename).stem, which strips
+                # everything after the LAST "." in the string. The old
+                # pipeline's input was always "{stem}_{tag}.csv", so .stem
+                # only ever ate the ".csv" extension. Passing
+                # f"{source_key}_{tag}" with no extension means a source
+                # filename containing its own dot (a version number like
+                # "APX Next 2.0 Config", a date like "export_2026.10.05")
+                # gets stripped at ITS last dot instead -- eating part or all
+                # of the tag and collapsing every tag in that file onto one
+                # ontology_type. Verified live: _stem_type("export_2026.10.05
+                # _bm_prd_family") == "Export2026.10" (wrong) vs.
+                # _stem_type("export_2026.10.05_bm_prd_family.csv") ==
+                # "Export2026.10.05BmPrdFamily" (matches the old pipeline).
                 summary = run_pipeline(
                     connector=connector, dsn=dsn, system=SOURCE_SYSTEM, dataset=tag,
-                    ontology_type=_stem_type(f"{source_key}_{tag}"), match_keys=inferred["match_keys"],
+                    ontology_type=_stem_type(f"{source_key}_{tag}.csv"), match_keys=inferred["match_keys"],
                     graph_url=graph_url, broker=broker, workspace_id=workspace_id,
                     relate=False, skip_graph=True, should_stop=should_stop,
                     on_progress=_tag_progress,
