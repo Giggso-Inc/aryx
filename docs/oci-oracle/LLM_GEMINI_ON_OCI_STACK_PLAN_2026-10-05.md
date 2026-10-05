@@ -53,7 +53,14 @@ ARYX_LLM_MENIAL_MODEL=gemini-3.5-flash
 ARYX_LLM_REASON_MODEL=gemini-2.5-pro
 ARYX_LLM_API_KEY=<your Gemini key>
 ```
-Then recreate the `api` container. Check that `/api/health` is up, that the log line `cpq_intent_gateway_start` shows `provider=gemini model=gemini-2.5-pro`, and that no `provider=oci` LLM calls appear for chat.
+Then recreate the `api` container. Check that `/api/health` is up and that the log line `cpq_intent_gateway_start` shows `provider=gemini model=gemini-2.5-pro`.
+
+To confirm no OCI LLM calls remain, check every path, not only the intent gateway:
+- `api` container: search the log for `provider=oci` (the LLM call log records provider and model per call); chat, intent classification and Tier-2 BML calls should all show `gemini`.
+- OCI Functions ingestion (if `ARYX_WORKER_BACKEND` is `oci_functions`): the function's own log line `ingest.fn.received` records `llm_cheap_backend`; it will still say `oci` until the provisioner follow-up in risk 5 is done.
+- Local worker and other containers: same `provider=oci` search.
+
+Optional discoverability: add the seven variables above as a commented block to `.env.example.oci` and `.env.example.oci-local` (not done in this PR).
 
 Rollback: remove those lines (or set the two backends and provider back to `oci`) and recreate the container.
 
@@ -63,9 +70,10 @@ Gemini embeddings are 768-dimensional against the 1024-dimensional Cohere vector
 ## 7. Risks and open points
 1. **Data leaves OCI.** With Gemini, prompts (catalog text, questions) go to Google, which the OCI-only setup avoided. Confirm this is acceptable.
 2. **Model names unverified.** `gemini-3.5-flash` and `gemini-2.5-pro` are taken from the plan doc; check them against the account's access and quota before relying on them.
+2a. **API key in plain environment.** The key reaches the container through compose interpolation, so `docker inspect` shows it. That matches how the other keys in this repo are handled today; move it to a Vault or secret mount if Gemini becomes a production dependency.
 3. **Output differences.** Gemini through the OpenAI-compatible endpoint has known JSON quirks that `llm_normalize.py` handles; regressions are possible on paths that were tuned on Cohere. Run the CPQ intent and extraction tests with Gemini before the switch.
 4. **Rate limits and timeouts.** `ARYX_LLM_TIMEOUT` is 900 seconds; free-tier throttling can stall a turn.
-5. **Worker path.** `worker/fn_handler.py:80` uses the OCI broker only when the cheap backend is `oci`; it should follow the setting, but it was not exercised.
+5. **OCI Functions worker does not follow this switch (known limitation).** `worker/oci_functions_provisioner_config.py:37-38` hard-codes `ARYX_LLM_CHEAP_BACKEND` and `ARYX_LLM_FRONTIER_BACKEND` to `oci` in the function's own configuration, and `worker/fn_handler.py:80` picks the OCI broker when the cheap backend is `oci`. So documents processed by the Functions worker keep using OCI GenAI after the `.env` switch and never receive the Gemini key. One deployment can therefore have mixed providers: chat and the intent gateway on Gemini, Functions ingestion on OCI. This PR does not change that. Follow-up: have the provisioner read `settings.effective_llm_*_backend()` and pass the key through a secret mechanism (not plain function config).
 6. **Mixed stack.** Chat on Gemini with OCI embeddings and OCI document parsing is a supported combination in code, but untested here.
 
 ## 8. Not verified
