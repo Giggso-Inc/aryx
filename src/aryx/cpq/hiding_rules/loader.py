@@ -12,6 +12,7 @@ import time
 from aryx.cpq import rule_scope
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.cpq.hiding_rules.master_writers import annotate_hiding_rules
 from aryx.cpq.hiding_rules.type11 import _load_type11_hiding_rules
 from aryx.cpq.state import HidingRule
 
@@ -65,8 +66,9 @@ def load_hiding_rules(
     # across the test suite) — every existing caller of load_hiding_
     # rules() gets the complete set automatically, with zero call-site
     # changes anywhere.
+    rec_rules: list = []
     try:
-        _rec, _con, _val, extra_hiding = engine._load_value_rules(
+        rec_rules, _con, _val, extra_hiding = engine._load_value_rules(
             workspace_id, catalog_prefix)
     except Exception as exc:
         logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
@@ -82,4 +84,8 @@ def load_hiding_rules(
         "cpq_step: load_hiding_rules done elapsed_s=%.3f total_rules=%d",
         time.monotonic() - _t0, len(rules) + len(extra_hiding),
     )
-    return rules + extra_hiding
+    all_rules = rules + extra_hiding
+    # Plan F9 (flag cpq_master_string_hide_enabled): let master-string-reading
+    # hide scripts see the recommendation rules that WRITE their master.
+    annotate_hiding_rules(all_rules, rec_rules)
+    return all_rules

@@ -17,10 +17,20 @@ from aryx.cpq.bml.bml_conditions import (
     _eval_boolean_expr,
     _BoolExpr,
 )
+from aryx.cpq.bml.bml_find import FIND_OP, find_enabled, find_haystack, find_hit, starts_with_if
 from aryx.cpq.bml.bml_hide_idioms import evaluate_hide_master_list, evaluate_hide_master_list_unguarded
 from aryx.cpq.bml.bml_text import _split_on_plus_outside_quotes, _split_statements
 
 logger = logging.getLogger(__name__)
+
+
+def _descend(body: str, variables: dict[str, str]) -> tuple[str | None, bool]:
+    """Matched branch body; when it is itself an if-chain (plan F14, flag
+    `cpq_find_function_enabled`) resolve the nested chain the same way.
+    Flag off or a plain body: `(body, False)` -- unchanged behaviour."""
+    if find_enabled() and starts_with_if(body):
+        return _first_matching_branch(body, variables)
+    return body, False
 
 
 def _first_matching_branch(
@@ -66,7 +76,7 @@ def _first_matching_branch(
         return None, False
     for cond, body in branches:
         if cond is None:
-            return body, False
+            return _descend(body, variables)
         if isinstance(cond, _BoolExpr):
             # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
             # -- this branch's condition mixed AND and OR and needed the
@@ -76,7 +86,7 @@ def _first_matching_branch(
             if result is None:
                 return None, blocked
             if result:
-                return body, False
+                return _descend(body, variables)
             continue
         # The whole chain is uniformly AND or OR (_parse_condition's own
         # contract) — only the first tuple's joiner is "" (a placeholder,
@@ -88,11 +98,13 @@ def _first_matching_branch(
         saw_missing = False
         short_circuited = False
         for joiner, var, op, expected in cond:
-            actual = variables.get(var)
+            actual = find_haystack(variables, var, expected) if op == FIND_OP else variables.get(var)
             if actual is None:
                 saw_missing = True
                 continue
-            if op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
+            if op == FIND_OP:
+                hit = find_hit(actual, expected)
+            elif op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
                 hit = _array_membership_hit(actual, op, expected)
             else:
                 hit = actual.strip().lower() == expected.strip().lower()
@@ -110,7 +122,7 @@ def _first_matching_branch(
         if result is None or (saw_missing and not short_circuited):
             return None, True  # genuinely unresolvable with what's known so far
         if result:
-            return body, False
+            return _descend(body, variables)
     return None, False
 
 # Idiom B — "constant return", no CPQ attribute ever checked: no `if`

@@ -7,6 +7,7 @@ Split out of `cpq/state.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -89,6 +90,10 @@ class HidingRule:
     """True for a declarative rule that has NO condition rows at all: Oracle
     treats it as always true (plan F10, flag `cpq_empty_condition_rule_true_
     enabled`). Never set for scripted rules or rules that have inputs."""
+    master_writers: list[Any] | None = None
+    """Plan F9 (flag `cpq_master_string_hide_enabled`): the recommendation
+    rules whose action WRITES a master string this script reads, attached at
+    load time. None (always, flag off) = old behaviour."""
 
 
 @dataclass

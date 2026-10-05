@@ -13,6 +13,8 @@ from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.catalog_profile import resolve_base_model_vn
 from aryx.cpq.engine import _condition_value_matches
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
+from aryx.cpq.hiding_rules.master_string import hide_with_master_string
+from aryx.cpq.hiding_rules.master_writers import master_hide_enabled
 from aryx.cpq.state import ConfigAttr, HidingRule
 
 
@@ -129,7 +131,15 @@ def apply_hiding_rules(
         if rule.script is not None:
             if bml_eval is None:
                 continue
-            hide = bml_eval.hide_for_script(rule.script, filled)
+            hide = None
+            if getattr(rule, "master_writers", None) and master_hide_enabled():
+                # Plan F9: evaluate with the master string COMPUTED from the
+                # writer rule + attrSequence; None keeps the ordinary path.
+                hide = hide_with_master_string(
+                    rule, attrs, by_rule_id, filled, filled_by_rule_id,
+                    workspace_id, catalog_prefix, dt_cache)
+            if hide is None:
+                hide = bml_eval.hide_for_script(rule.script, filled)
             if hide is True:
                 hidden_eids.add(target.entity_id)
                 messages.append(

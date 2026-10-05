@@ -114,7 +114,7 @@ _HIDE_MASTER_LIST_UNGUARDED_RE = re.compile(
 
 
 def evaluate_hide_master_list_unguarded(
-    script: str, variables: dict[str, str],
+    script: str, variables: dict[str, str], trust_empty_master: bool = False,
 ) -> tuple[bool | None, bool]:
     """Tier 1.5 (Idiom D). Returns (hide, blocked_by_missing_var) — same
     contract as the other Tier-1 evaluators. (None, False) means the
@@ -133,8 +133,10 @@ def evaluate_hide_master_list_unguarded(
     sep = variables.get(m.group("sep"))
     if master is None or sep is None:
         return None, True
-    if master == "":
+    if master == "" and not trust_empty_master:
         return None, True
+    # trust_empty_master (plan F9): the caller COMPUTED the master string, so
+    # "" is authoritative -- the literal is not in it and the script hides.
     if m.group("literal") not in master.split(sep):
         return True, False
     base_model = variables.get(m.group("basemodel"))

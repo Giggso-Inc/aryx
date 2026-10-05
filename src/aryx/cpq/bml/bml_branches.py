@@ -14,6 +14,7 @@ import re
 
 from aryx.config import get_settings
 from aryx.cpq.bml.bml_conditions import _parse_boolean_expr, _parse_condition
+from aryx.cpq.bml.bml_find import find_enabled, is_plain_return, is_tail_return, starts_with_if
 from aryx.cpq.bml.bml_text import _find_block, _strip_block_comments, _strip_line_comments
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,8 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         if block is None:
             return None
         body, after = block
-        if _IF_RE.search(body):
-            return None  # nested if → Tier 2
+        if _IF_RE.search(body) and not (find_enabled() and starts_with_if(body)):
+            return None  # nested if → Tier 2 (plan F14: a body that IS an if-chain is walked)
         if _TIER1_BLOCKERS.search(body):
             return None
         branches.append((cond, body))
@@ -199,12 +200,21 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if block2 is None:
                 return None
             body2, _ = block2
-            if _IF_RE.search(body2):
+            if _IF_RE.search(body2) and not (find_enabled() and starts_with_if(body2)):
                 return None
             if _TIER1_BLOCKERS.search(body2):
                 return None
             branches.append((None, body2))
             break
+        if find_enabled() and is_plain_return(body):
+            # Plan F14: sequential ifs after an unconditionally-returning
+            # body are an else-if chain; a bare literal return is the else.
+            if _IF_RE.match(rest):
+                pos = text.find("if", after)
+                continue
+            if is_tail_return(rest):
+                branches.append((None, rest))
+                break
         # Amendment 19 follow-up (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
         # a single if{...} block with NO `else` keyword at all, followed by
         # exactly one bare `return true;`/`return false;` and nothing else,

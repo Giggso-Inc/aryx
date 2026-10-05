@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import re
 
+from aryx.cpq.bml.bml_find import FIND_OP, find_haystack, find_hit, match_find
 from aryx.cpq.bml.bml_text import _split_top_level, _strip_wrapping_parens
 
 # variable == "value" / variable <> "value" comparisons inside a condition.
@@ -69,6 +70,10 @@ def _match_array_membership(cond: str) -> tuple[str, str, str] | None:
     op = _ARRAY_IN_OP if arrow_op == "<>" else _ARRAY_NOT_IN_OP
     return var, op, f"{sep}{_ARRAY_PACK_SEP}{literal}"
 
+def _match_special(cond: str) -> tuple[str, str, str] | None:
+    """findinArray idiom, or (flag-gated, plan F14) a `find(...) <op> <n>` clause."""
+    return _match_array_membership(cond) or match_find(_strip_wrapping_parens(cond.strip()))
+
 def _array_membership_hit(actual: str, op: str, packed_expected: str) -> bool:
     """Evaluate an ARRAY_IN/ARRAY_NOT_IN clause given `actual` (the raw
     variable value, e.g. "SMARTLOCATE~ICE KIT") and the packed
@@ -116,7 +121,7 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
                     out.append(("" if i == 0 else joiner, m.group(1), m.group(2),
                                 m.group(3) if m.group(3) is not None else m.group(4)))
                     continue
-                arr = _match_array_membership(part_stripped)
+                arr = _match_special(part_stripped)
                 if arr:
                     out.append(("" if i == 0 else joiner, arr[0], arr[1], arr[2]))
                     continue
@@ -126,7 +131,7 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     if m:
         return [("", m.group(1), m.group(2),
                  m.group(3) if m.group(3) is not None else m.group(4))]
-    arr = _match_array_membership(_strip_wrapping_parens(cond))
+    arr = _match_special(_strip_wrapping_parens(cond))
     if arr:
         return [("", arr[0], arr[1], arr[2])]
     return None
@@ -182,7 +187,7 @@ def _parse_boolean_expr(cond: str) -> "_BoolExpr | None":
             kind="cmp", var=m.group(1), op=m.group(2),
             value=m.group(3) if m.group(3) is not None else m.group(4),
         )
-    arr = _match_array_membership(cond)
+    arr = _match_special(cond)
     if arr:
         var, op, packed = arr
         return _BoolExpr(kind="cmp", var=var, op=op, value=packed)
@@ -198,6 +203,9 @@ def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bo
     variable. Only genuinely undetermined when nothing short-circuits AND
     something is missing."""
     if expr.kind == "cmp":
+        if expr.op == FIND_OP:
+            hay = find_haystack(variables, expr.var or "", expr.value or "")
+            return (None, True) if hay is None else (find_hit(hay, expr.value or ""), False)
         actual = variables.get(expr.var)
         if actual is None:
             return None, True
