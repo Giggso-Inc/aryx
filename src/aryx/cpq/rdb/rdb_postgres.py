@@ -384,6 +384,70 @@ class PostgresCpqRdb:
             _read_failed("fetch_rule_inputs")
         return rows
 
+    def fetch_rule_input_indexes(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, str, str, int]]:
+        """BmConfigRuleInput rows with their ``rule_input_index``:
+        (rule_id, condition_attr_id, value1, operator1, index). Used with
+        ``fetch_rule_condition_expressions`` to evaluate a rule's
+        ``condition_expression``; ``fetch_rule_inputs`` is unchanged."""
+        rows: list[tuple[int, int, str, str, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleinput")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(attributes->>'bm_config_rule_id',
+                                        attributes->>'rule_id'),
+                               attributes->>'attribute_id',
+                               attributes->>'value1',
+                               attributes->>'operator1',
+                               attributes->>'rule_input_index'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for rid, aid, val, op, idx in cur.fetchall():
+                        rid_i, aid_i, idx_i = _as_int(rid), _as_int(aid), _as_int(idx)
+                        if rid_i and aid_i and idx_i:
+                            rows.append((rid_i, aid_i, val or "", (op or "").strip(), idx_i))
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
+            logger.debug("cpq rdb: rule-input index fetch failed", exc_info=True)
+            _read_failed("fetch_rule_input_indexes")
+        return rows
+
+    def fetch_rule_condition_expressions(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> dict[int, str]:
+        """BM-native rule id -> ``condition_expression`` (only non-empty)."""
+        out: dict[int, str] = {}
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT attributes->>'id', attributes->>'condition_expression'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for rid, expr in cur.fetchall():
+                        rid_i = _as_int(rid)
+                        if rid_i and isinstance(expr, str) and expr.strip():
+                            out[rid_i] = expr.strip()
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
+            logger.debug("cpq rdb: rule-expression fetch failed", exc_info=True)
+            _read_failed("fetch_rule_condition_expressions")
+        return out
+
     def fetch_rule_actions(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[tuple[int, int, int, str, int, int]]:

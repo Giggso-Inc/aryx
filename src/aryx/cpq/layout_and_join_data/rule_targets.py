@@ -9,6 +9,8 @@ none takes an ``engine`` parameter.
 
 from __future__ import annotations
 
+from aryx.config import get_settings
+
 
 def _resolve_targets(
     rule_key: int,
@@ -78,6 +80,8 @@ def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) ->
     hitting this collision is skipped entirely (same as if it were
     never confirmed) rather than loaded with a guessed combining rule.
     """
+    if getattr(conditions, "expression", "") and get_settings().cpq_condition_expression_enabled:
+        return False    # plan F3: the rule's own expression decides, no operator collision to avoid
     by_attr: dict[int, set[str]] = {}
     for attr_id, _value, operator in conditions:
         by_attr.setdefault(attr_id, set()).add(operator)

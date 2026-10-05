@@ -10,7 +10,7 @@ target only in attr1) in exactly the ways the real util does:
   sequence than the target (an attribute missing from the sequence counts as 0);
 * a filter attribute with no value rejects the row;
 * a filter value may be multi-select, split on ``~`` or ``,``;
-* an ``R`` flag on the target, or any returned value in ``CHECK_VALUES``, removes
+* an ``R`` flag on the target, or any returned value in the library function's own ``checkValues`` list (read from the ingested script), removes
   the blank option (``blank_allowed`` False).
 
 ``None`` means "unknown" (no sequence rows for the model/base model, or no whitelist
@@ -23,9 +23,10 @@ import re
 from typing import Any
 
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.cpq.data_table.data_table_util_library import check_values_for_function
 
-# Read from the util script text (its `checkValues` list).
-CHECK_VALUES = frozenset({"NO CHARGER", "NO MICROPHONE", "N/A"})
+# The library function this module ports; its `checkValues` list is read from the ingested script.
+PORTED_FUNCTION = "getConstraintVals"
 _SPLIT_RE = re.compile(r"[~,]")
 
 
@@ -93,5 +94,6 @@ def get_constraint_vals(
             values.append(returned)
     if not named:
         return None
-    required = flag == "R" or any(v in CHECK_VALUES for v in values)
+    check_values = check_values_for_function(workspace_id, PORTED_FUNCTION)
+    required = flag == "R" or any(v in check_values for v in values)
     return {"values": values, "blank_allowed": not required, "required": required}

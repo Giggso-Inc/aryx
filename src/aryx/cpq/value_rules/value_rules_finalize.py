@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.bml.bml_condition_expression import copy_conditions
 from aryx.cpq.engine import ConstraintRule, HidingRule, RecommendationRule, logger
 from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
@@ -49,7 +50,7 @@ def finalize_rule_actions(
             condition_operator=cond_operator,
             target_attr_id=target_attr_id,
             allowed_values=allowed,
-            conditions=list(inp_list) if condition_script is None else None,
+            conditions=copy_conditions(inp_list) if condition_script is None else None,
             condition_script=condition_script,
         ))
     for target_attr_id, rec_val in recommend_by_target.items():
@@ -63,7 +64,7 @@ def finalize_rule_actions(
             condition_operator=cond_operator,
             target_attr_id=target_attr_id,
             recommended_value=rec_val,
-            conditions=list(inp_list) if condition_script is None else None,
+            conditions=copy_conditions(inp_list) if condition_script is None else None,
             condition_script=condition_script,
         ))
     for target_attr_id in hide_targets:
@@ -78,5 +79,5 @@ def finalize_rule_actions(
             target_attr_id=target_attr_id,
             hide=True,
             script=condition_script,
-            conditions=list(inp_list) if condition_script is None else None,
+            conditions=copy_conditions(inp_list) if condition_script is None else None,
         ))

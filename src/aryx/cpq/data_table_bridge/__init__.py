@@ -14,6 +14,7 @@ from aryx.cpq.data_table_bridge.conflicts import (
     _CONFIRMED_SOURCES,
     _invalidate_inconsistent_paired_values,
     _resolve_narrowed_legal_values,
+    _resolve_multi_defaults,
     _resolve_via_data_tables,
     find_confirmed_data_table_conflicts,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "_CONFIRMED_SOURCES",
     "_invalidate_inconsistent_paired_values",
     "_resolve_narrowed_legal_values",
+    "_resolve_multi_defaults",
     "_resolve_via_data_tables",
     "find_confirmed_data_table_conflicts",
     "_CONFIRMED_DEAD_ATTRS",

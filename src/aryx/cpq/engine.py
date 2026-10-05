@@ -1614,6 +1614,16 @@ class CpqEngine:
         )
 
     @staticmethod
+    def _resolve_multi_defaults(
+        vn: str, filled: dict[str, str], valid_opts: list[MenuOption],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list[MenuOption]:
+        return data_table_bridge._resolve_multi_defaults(
+            vn, filled, valid_opts, workspace_id, catalog_prefix, cache,
+        )
+
+    @staticmethod
     def _resolve_narrowed_legal_values(
         vn: str, filled: dict[str, str], workspace_id: int, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,

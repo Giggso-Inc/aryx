@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+from aryx.config import get_settings
+from aryx.cpq.bml.bml_condition_expression import copy_conditions
 from aryx.cpq.engine import logger
 from aryx.cpq.state import HidingRule
 
@@ -140,6 +142,17 @@ def _load_type11_hiding_rules(
                 continue
             inp_list = inputs.get(key)
             if not inp_list:
+                if get_settings().cpq_empty_condition_rule_true_enabled:
+                    # plan F10: a declarative rule with no condition rows is
+                    # always true (e.g. an "always hide" rule), not unknown
+                    for target_attr_id, action_type in targets:
+                        rules.append(HidingRule(
+                            rule_name=rule_name or str(eid),
+                            condition_attr_id=0, condition_value="",
+                            target_attr_id=target_attr_id,
+                            hide=(int(action_type or 2) == 2), always=True,
+                        ))
+                    continue
                 unresolved += 1
                 continue
             # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
@@ -164,7 +177,7 @@ def _load_type11_hiding_rules(
                     condition_operator=cond_operator,
                     target_attr_id=target_attr_id,
                     hide=(int(action_type or 2) == 2),
-                    conditions=list(inp_list),
+                    conditions=copy_conditions(inp_list),
                 ))
         if _scope:
             rule_scope.tag_ref_ids(rules, _marks)

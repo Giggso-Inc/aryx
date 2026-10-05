@@ -148,7 +148,9 @@ def apply_hiding_rules(
                     ref_id=getattr(rule, "ref_id", None) or None,
                 )
             continue
-        if rule.conditions:
+        if rule.always:
+            pass    # plan F10: no condition rows, always true
+        elif rule.conditions:
             matched, _blocked = evaluate_declarative_conditions(
                 rule.conditions, filled_by_rule_id)
             if matched is not True:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.bml.bml_condition_expression import copy_conditions
 from aryx.cpq.engine import ValidationRule
 from aryx.cpq.value_rules.value_rules_state import RuleLoadState
 
@@ -40,5 +41,5 @@ def append_validation_rules(
                 condition_attr_id=cond_attr_id,
                 condition_value=cond_value,
                 condition_operator=cond_operator,
-                conditions=list(inp_list) if condition_script is None else None,
+                conditions=copy_conditions(inp_list) if condition_script is None else None,
             ))

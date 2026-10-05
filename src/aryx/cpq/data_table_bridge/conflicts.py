@@ -21,7 +21,9 @@ from aryx.cpq.data_table.data_table_resolver import (
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
     resolve_whitelist_values as dt_resolve_whitelist_values,
 )
-from aryx.cpq.data_table.data_table_defaultinattr import resolve_defaultinattr_value
+from aryx.cpq.data_table.data_table_defaultinattr import (
+    resolve_defaultinattr_value, resolve_defaultinattr_values,
+)
 from aryx.cpq.state import MenuOption
 
 # Same three "customer already confirmed this" source tags CpqEngine itself
@@ -243,3 +245,24 @@ def _resolve_narrowed_legal_values(
             return values
     _log_lookup("_resolve_narrowed_legal_values", vn, "none", "NO_TABLE_ROWS", models=_models, legal=None)
     return None
+
+
+def _resolve_multi_defaults(
+    vn: str, filled: dict[str, str], valid_opts: list[MenuOption],
+    workspace_id: int | None, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> list[MenuOption]:
+    """Plan F11 (flag `cpq_multiselect_default_enabled`): the pre-checked set
+    of a multi-select attribute, from the Defaultinattr rows of the RESOLVED
+    base model, limited to values that are real options. Empty (never a
+    guess) when the flag is off, there is no workspace or base model yet, or
+    the table names no valid option. Like `_resolve_via_data_tables` it never
+    runs before the base model is known."""
+    if workspace_id is None or not get_settings().cpq_multiselect_default_enabled:
+        return []
+    base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
+    if not base_model:
+        return []
+    wanted = {v.strip().upper() for v in resolve_defaultinattr_values(
+        base_model, vn, workspace_id, catalog_prefix, cache)}
+    return [o for o in valid_opts if o.item_value.strip().upper() in wanted]

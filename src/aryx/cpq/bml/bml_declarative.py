@@ -6,6 +6,7 @@ Split out of `cpq/bml.py` (Raven Style Compliance Plan, Phase 2a,
 """
 from __future__ import annotations
 
+from aryx.config import get_settings
 
 _NUMERIC_OPERATORS = frozenset({"1", "2", "5"})  # <, <=, >
 _NOT_EQUAL_OPERATOR = "3"
@@ -131,6 +132,13 @@ def evaluate_declarative_conditions(
     """
     if not conditions:
         return None, False
+    if getattr(conditions, "expression", "") and get_settings().cpq_condition_expression_enabled:
+        # plan F3: the rule's own condition_expression over its numbered rows
+        from aryx.cpq.bml.bml_condition_expression import evaluate_condition_expression
+        try:
+            return evaluate_condition_expression(conditions, variables_by_id)
+        except ValueError:
+            pass    # an expression this evaluator does not support: attribute grouping below
     by_attr: dict[int, list[str]] = {}
     op_by_attr: dict[int, str] = {}
     order: list[int] = []

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from aryx.cpq.bml import bml_util_substitution as sub
 from aryx.cpq.data_table import data_table_geo as geo
 from aryx.cpq.data_table import data_table_getconstraintvals as gcv
+from aryx.cpq.data_table import data_table_util_library as ul
 from aryx.cpq.data_table.data_table_shapes import (
     _detect_shape, _is_country_region_shaped, _is_rtte_ta_shaped,
 )
@@ -140,8 +141,11 @@ def test_r_flag_or_a_check_value_removes_the_blank_option():
     seq_r = _seq("M", "B", ("target", 5, "R"))
     got = _run(rows, seq_r, "target", {})
     assert got["required"] and not got["blank_allowed"]
-    chk = [_wl("M", "B", ("target", "NO CHARGER"))]
-    assert _run(chk, SEQ, "target", {})["required"] is True
+    chk = [_wl("M", "B", ("target", "MUST PICK"))]
+    with patch.object(gcv, "check_values_for_function", return_value=frozenset({"MUST PICK"})):
+        assert _run(chk, SEQ, "target", {})["required"] is True
+    with patch.object(gcv, "check_values_for_function", return_value=frozenset()):
+        assert _run(chk, SEQ, "target", {})["required"] is False
 
 
 def test_unknown_cases_return_none_and_not_in_sequence_returns_only_a_blank():
@@ -177,3 +181,24 @@ def test_substitution_uses_the_old_resolver_when_off_and_the_port_when_on():
     assert '"OLD"' in out and (old_calls, new_calls) == (1, 0)
     out, old_calls, new_calls = _subst(True)
     assert '"NEW"' in out and (old_calls, new_calls) == (0, 1)
+
+
+# ── check values are read from the ingested library script ───────────────
+
+def test_check_values_come_from_the_named_library_function_only():
+    two = [
+        (1, {"name": {"en": "portedFn (ENV1)"}, "script_text": 'a=1; checkValues = string[]{"ONE","TWO"};'}),
+        (2, {"name": "otherFn", "script_text": 'checkValues = string[]{"THREE"};'}),
+    ]
+    rdb = MagicMock()
+    rdb.fetch_entities_by_type.return_value = two
+    ul._CACHE.clear()
+    assert ul.check_values_for_function(9, "portedFn", rdb) == frozenset({"ONE", "TWO"})
+    assert ul.check_values_for_function(9, "otherFn", rdb) == frozenset({"THREE"})
+    assert ul.check_values_for_function(9, "missing", rdb) == frozenset()
+    ul._CACHE.clear()
+
+
+def test_parse_check_values_handles_absent_literal():
+    assert ul.parse_check_values("no list here") == frozenset()
+    assert ul.parse_check_values('checkValues = string[]{"A","B C"};') == frozenset({"A", "B C"})

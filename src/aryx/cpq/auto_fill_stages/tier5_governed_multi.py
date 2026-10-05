@@ -79,6 +79,15 @@ def governed_multi(
             ctx.display_filled[state.vn] = dt_match.display_name
             ctx.sources.setdefault(state.vn, "data_table")
             state.filled_multi_now = True
+        elif (defaults := engine._resolve_multi_defaults(
+            state.vn, ctx.filled, state.valid_opts, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
+        )):
+            # plan F11: several Defaultinattr rows are the control's pre-checked set
+            fill_log.log_write(ctx, attr, state.vn, [o.item_value for o in defaults], None, "data_table", "tier5_governed_multi_default", multi=True)
+            ctx.filled_multi[state.vn] = [o.item_value for o in defaults]
+            ctx.display_filled[state.vn] = ", ".join(o.display_name for o in defaults)
+            ctx.sources.setdefault(state.vn, "data_table")
+            state.filled_multi_now = True
         # No confident single match (2+ legal values,
         # or none): NOT handled here -- falls through
         # (filled_multi_now stays False) to the second

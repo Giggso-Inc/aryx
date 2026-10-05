@@ -10,6 +10,7 @@ from typing import Any
 
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
+from aryx.cpq.constraint_rules.constraint_rules_mode import effective_allowed, guard_open
 from aryx.cpq.constraint_rules.constraint_rules_stats import ScriptEvalStats
 from aryx.cpq.engine import (
     _condition_value_matches,
@@ -86,7 +87,7 @@ def apply_rules(
                 bml_eval.condition_holds, rule.condition_script, filled)
             if fires is True:
                 intersect(
-                    constrained, contributions, target, rule.allowed_values,
+                    constrained, contributions, target, effective_allowed(rule, target),
                     frozenset({f"condition_script:{rule.rule_name}"}), rule.rule_name,
                 )
                 rule_trace.record_fire(
@@ -111,8 +112,10 @@ def apply_rules(
             ):
                 continue
             condition_key = frozenset({rule.condition_attr_id})
+        if not guard_open(rule, filled):
+            continue    # plan F2: the mode call sits inside a guard whose variable is empty
         intersect(
-            constrained, contributions, target, rule.allowed_values,
+            constrained, contributions, target, effective_allowed(rule, target),
             condition_key, rule.rule_name,
         )
         rule_trace.record_fire(
