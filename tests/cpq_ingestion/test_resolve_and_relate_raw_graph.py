@@ -874,3 +874,26 @@ def test_locale_wrapper_fold_disabled_keeps_label_as_its_own_tag():
 def test_locale_wrapper_fold_disabled_adds_no_display_fields():
     family = _run_cpq_family_xml(locale_fold_enabled=False)["bm_prd_family"][0]
     assert "name" not in family.properties and "display_label" not in family.properties
+
+
+def test_promoted_display_fields_are_hidden_from_match_key_inference():
+    """Raven review finding 1: name/display_label are synthesized, so they
+    must not be offered to match-key inference (an LLM-fallback pick of
+    `name` would merge distinct records sharing a display text). They are
+    added per tag AFTER the key is chosen; folded wrapper values (label)
+    stay visible, same as _xml_to_csvs's columns."""
+    from aryx.cpq_ingestion.raw_graph import resolve_relate as rr
+
+    seen: dict[str, dict] = {}
+    real_infer = rr.infer_match_keys_for_tag
+
+    def _spy(tag, nodes, context="", log_id=None):
+        seen[tag] = dict(nodes[0].properties)
+        return real_infer(tag, nodes, context, log_id=log_id)
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.infer_match_keys_for_tag", _spy):
+        family = _run_cpq_family_xml(locale_fold_enabled=True)["bm_prd_family"][0]
+    props_at_inference = seen["bm_prd_family"]
+    assert ("name" not in props_at_inference and "display_label" not in props_at_inference
+            and props_at_inference.get("label") == "ASTRO\u00ae25_BOM"
+            and family.properties["name"] == "aSTRO25_bom")

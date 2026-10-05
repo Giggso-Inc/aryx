@@ -9,7 +9,7 @@ many parents via CONTAINS.
 """
 from __future__ import annotations
 
-from aryx.cpq_ingestion.raw_graph.display_backfill import plan_display_backfill
+from aryx.cpq_ingestion.raw_graph.display_backfill import plan_display_backfill, types_fully_removed
 
 FAMILY, CATALOG, ATTR_A, ATTR_B = 1, 2, 3, 4
 LABEL, BM_NAME, NAME_SHARED, DESC_TEXT = 10, 11, 12, 13
@@ -114,3 +114,17 @@ def test_plan_empty_wrapper_entity_in_a_locale_tag_still_folds():
     contains.append((6, 30))
     plan = plan_display_backfill(entities, tag_of, contains)
     assert plan.updates[FAMILY]["label"] == "ASTRO®25_BOM" and 30 in plan.wrapper_entity_ids
+
+
+# ── types_fully_removed (Raven review finding 2: no ghost ontology types) ──
+
+def test_types_fully_removed_lists_type_whose_every_entity_is_deleted():
+    assert types_fully_removed({10: "XLabel", 11: "XLabel", 1: "XFamily"}, [10, 11]) == ["XLabel"]
+
+
+def test_types_fully_removed_skips_type_with_a_surviving_entity():
+    assert types_fully_removed({10: "XLabel", 11: "XLabel"}, [10]) == []
+
+
+def test_types_fully_removed_nothing_removed_is_empty():
+    assert types_fully_removed({10: "XLabel"}, []) == []

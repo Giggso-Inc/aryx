@@ -40,12 +40,17 @@ from psycopg.types.json import Json
 
 from aryx.config import get_settings
 from aryx.cpq_ingestion.constants import RAW_EDGE_CONTAINS
-from aryx.cpq_ingestion.raw_graph.display_backfill import BackfillPlan, plan_display_backfill
+from aryx.cpq_ingestion.raw_graph.display_backfill import (
+    BackfillPlan,
+    plan_display_backfill,
+    types_fully_removed,
+)
 from aryx.pipeline.enrich.enrich import _build_type_ancestors
 from aryx.project.project_full import project_graph
 from aryx.queries import load
 from aryx.raven_log import raven_log
 from aryx.store.entity_store import EntityStore, _dumps
+from aryx.store.ontology_store import OntologyStore
 
 _CHUNK = 5_000
 _GRAPH_CLEAR_CHUNK = 50_000
@@ -91,14 +96,22 @@ def apply_updates(estore: EntityStore, workspace_id: int, plan: BackfillPlan) ->
     return len(rows)
 
 
-def delete_wrappers(estore: EntityStore, workspace_id: int, wrapper_ids: list[int]) -> int:
-    """Drop wrapper entities' relationships, then the entities (both chunked)."""
+def delete_wrappers(estore: EntityStore, dsn: str, workspace_id: int, wrapper_ids: list[int]) -> int:
+    """Drop wrapper entities' relationships, the entities (both chunked), then
+    any ontology type left with no entities (no ghost types in the Ontology tab)."""
+    type_of = {int(eid): ot for eid, ot, _attrs in estore.list_entities()}
+    empty_types = types_fully_removed(type_of, wrapper_ids)
     for i in range(0, len(wrapper_ids), _CHUNK):
         with estore._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("delete_impacted_relationships"),
                             {"workspace_id": workspace_id, "entity_ids": wrapper_ids[i:i + _CHUNK]})
-    return estore.delete_entities(wrapper_ids)
+    deleted = estore.delete_entities(wrapper_ids)
+    ostore = OntologyStore(dsn, workspace_id)
+    for name in empty_types:
+        ostore.delete_type(name)
+    print(f"  removed {len(empty_types)} now-empty ontology type(s): {empty_types}", flush=True)
+    return deleted
 
 
 def _preclear_oracle_graph(estore: EntityStore, workspace_id: int) -> None:
@@ -182,7 +195,7 @@ def main() -> int:
         if not plan.updates and not plan.wrapper_entity_ids:
             print("\nNothing to change -- rebuilding the graph anyway (retry-safe).")
         updated = apply_updates(estore, wid, plan)
-        deleted = 0 if args.keep_wrappers else delete_wrappers(estore, wid, plan.wrapper_entity_ids)
+        deleted = 0 if args.keep_wrappers else delete_wrappers(estore, dsn, wid, plan.wrapper_entity_ids)
         counts = rebuild_graph(estore, dsn, settings, wid)
         raven_log("INFO", "P3", "backfill.display_names.completed backfill finished",
                   context={"task_id": task_id, "workspace_id": wid, "final_status": "done",

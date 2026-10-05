@@ -367,7 +367,6 @@ def resolve_and_relate_raw_graph(
         by_tag = fold_value_wrapper_tags(
             edges, by_tag, log_id=log_id, source_key=source_key,
         )
-        apply_display_fields(by_tag)
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)
@@ -379,6 +378,11 @@ def resolve_and_relate_raw_graph(
                         f"job cancelled before tag={tag} source_key={source_key}",
                     )
                 inferred = infer_match_keys_for_tag(tag, nodes, context, log_id=log_id)
+                # name/display_label are synthesized -- added only AFTER the
+                # match key is chosen, so the LLM fallback can never pick one
+                # and merge distinct records sharing a display text.
+                if settings.cpq_locale_wrapper_fold_enabled:
+                    apply_display_fields({tag: nodes})
                 connector = RawGraphConnector(nodes, tag=tag, source_key=source_key)
 
                 def _tag_progress(stage: str, pct: int, detail: str,

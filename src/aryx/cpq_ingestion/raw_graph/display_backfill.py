@@ -95,3 +95,17 @@ def plan_display_backfill(
             plan.updates[eid] = props
     plan.wrapper_entity_ids = sorted(folded_wrappers)
     return plan
+
+
+def types_fully_removed(ontology_type_of: dict[int, str], removed_ids: list[int]) -> list[str]:
+    """Ontology types left with zero entities once ``removed_ids`` are deleted.
+
+    Their ``aryx_ontology_type`` rows would otherwise linger as empty "ghost"
+    types in the Ontology tab (same concern PR #435's backfill handles).
+    """
+    removed = set(removed_ids)
+    if not removed:
+        return []
+    candidate_types = {ontology_type_of[i] for i in removed if i in ontology_type_of}
+    surviving = {t for eid, t in ontology_type_of.items() if eid not in removed}
+    return sorted(candidate_types - surviving)
