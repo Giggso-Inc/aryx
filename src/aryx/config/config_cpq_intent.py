@@ -323,6 +323,15 @@ class CpqIntentSettingsMixin(BaseSettings):
             "in production); when false (default) such a rule does not fire."
         ),
     )
+    cpq_series_model_narrowing_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F8: before attrSequence/whitelist rows are read for the "
+            "derived required set, drop the CPQ models of series children that "
+            "the ingested series-mapping table does not offer for the quote's "
+            "country/region (an undecidable row keeps the model). Off by default."
+        ),
+    )
     cpq_required_set_shadow_enabled: bool = Field(
         default=False,
         description=(

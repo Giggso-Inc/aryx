@@ -11,8 +11,15 @@ from aryx.cpq.payload_building import required_set as rs
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption, ValidationRule
 
 
+_OFF = ("cpq_getconstraintvals_port_enabled", "cpq_series_model_narrowing_enabled", "cpq_required_set_guards_assumed_open",
+        "cpq_required_set_enabled")
+
+
 def _cfg(**kw):
+    """Settings stand-in: every flag the derivation reads is off unless a test turns it on."""
     m = MagicMock()
+    for k in _OFF:
+        setattr(m.return_value, k, False)
     for k, v in kw.items():
         setattr(m.return_value, k, v)
     return m
@@ -175,3 +182,55 @@ def test_a_quantity_attribute_filled_by_a_script_rule_is_not_required():
     assert _derive(eng, filled={"base_vn": "B1"}) == {"a_vn"}                      # c_vn dropped
     eng.load_recommendation_and_constraint_rules.return_value = ([], [])           # no rule fills it: stays required
     assert _derive(eng, filled={"base_vn": "B1"}) == {"a_vn", "c_vn"}
+
+
+def test_legal_options_use_the_port_when_its_flag_is_on_and_the_base_model_is_known():
+    eng = _engine(narrowed={"a_vn": None})
+    port = {"B1": {"a_vn": {"values": [], "blank_allowed": True, "required": False}}}
+
+    def fake_port(cm, base, vn, filled, ws, prefix, cache):
+        return port.get(base, {}).get(vn)
+
+    def run(flag, filled):
+        with patch.object(rs, "get_constraint_vals", side_effect=fake_port),                 patch.object(rs, "get_settings", _cfg(cpq_getconstraintvals_port_enabled=flag, cpq_required_set_guards_assumed_open=False)):
+            return _derive_with_settings(eng, filled)
+
+    assert run(True, {"base_vn": "B1"}) == {"c_vn"}                 # port: nothing legal yet for a_vn -> not red yet
+    assert run(False, {"base_vn": "B1"}) == {"a_vn", "c_vn"}        # flag off: the old resolver says unknown -> required
+    assert run(True, {}) == {"a_vn", "c_vn"}                        # no base model: the port is not consulted
+
+
+def _derive_with_settings(eng, filled):
+    # derive_required_vns reads get_settings itself; _cfg above already patched rs.get_settings
+    with patch.object(rs, "_load_all_tables", return_value=([], SEQ, [], [], [])),             patch.object(rs, "resolve_base_model_vn", return_value="base_vn"),             patch.object(rs._engine_module, "_cpq_model_candidates", return_value=("M",)):
+        return rs.derive_required_vns(eng, ATTRS, filled, None, None, None, None, 1, "", "P")
+
+
+def test_no_legal_value_treats_missing_port_rows_as_unknown():
+    eng = _engine(narrowed={})
+    with patch.object(rs, "get_constraint_vals", return_value=None),             patch.object(rs, "get_settings", _cfg(cpq_getconstraintvals_port_enabled=True)):
+        assert rs.no_legal_value(eng, "a_vn", {}, ["M"], "B1", 1, "", None) is False
+    with patch.object(rs, "get_constraint_vals", return_value={"values": ["x"], "blank_allowed": True, "required": False}),             patch.object(rs, "get_settings", _cfg(cpq_getconstraintvals_port_enabled=True)):
+        assert rs.no_legal_value(eng, "a_vn", {}, ["M"], "B1", 1, "", None) is False
+
+
+def test_series_narrowing_runs_before_attr_sequence_is_read_only_when_its_flag_is_on():
+    eng = _engine()
+    seq = SEQ + [_seq("N", "B1", "d_vn", "R")]
+    calls = []
+
+    def fake_narrow(models, filled, ws, prefix, cache):
+        calls.append(list(models))
+        return ["M"]
+
+    def run(flag):
+        calls.clear()
+        with patch.object(rs, "_load_all_tables", return_value=([], seq, [], [], [])), \
+                patch.object(rs, "resolve_base_model_vn", return_value="base_vn"), \
+                patch.object(rs, "narrow_models_by_series", side_effect=fake_narrow), \
+                patch.object(rs._engine_module, "_cpq_model_candidates", return_value=("M", "N")), \
+                patch.object(rs, "get_settings", _cfg(cpq_series_model_narrowing_enabled=flag)):
+            return rs.derive_required_vns(eng, ATTRS, {"base_vn": "B1"}, None, None, None, None, 1, "", "P")
+
+    assert run(True) == {"a_vn", "c_vn"} and calls == [["M", "N"]]          # model N (with d_vn) was dropped
+    assert run(False) == {"a_vn", "c_vn", "d_vn"} and calls == []           # flag off: nothing dropped

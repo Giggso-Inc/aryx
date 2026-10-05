@@ -31,7 +31,9 @@ from aryx.cpq import engine as _engine_module
 from aryx.cpq.bml.bml_declarative import evaluate_declarative_conditions
 from aryx.cpq.catalog_profile import PRODUCT_LITERAL, resolve_base_model_vn
 from aryx.cpq.constraint_rules.constraint_rules_mode import guard_open
+from aryx.cpq.data_table.data_table_getconstraintvals import get_constraint_vals
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.cpq.data_table_bridge.series_narrowing import narrow_models_by_series
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,29 @@ def rule_required_vns(
     return out
 
 
+def no_legal_value(
+    engine: Any, vn: str, filled: dict[str, str], models: list[str], base_model: str,
+    workspace_id: int, catalog_prefix: str, cache: dict | None,
+) -> bool:
+    """True when the data tables confirm that no value is legal for `vn` right now.
+
+    With the constraint-values port on (flag `cpq_getconstraintvals_port_enabled`)
+    and a resolved base model, the answer is the port's: every model that has
+    rows for the attribute returns an empty list (an earlier attribute that is
+    not answered yet also empties it, which is why such a field is not red
+    until its predecessors are answered). Otherwise the engine's whitelist
+    resolver decides. Unknown (no rows) is never "no legal value"."""
+    if base_model and get_settings().cpq_getconstraintvals_port_enabled:
+        results = [
+            get_constraint_vals(cm, base_model, vn, filled, workspace_id, catalog_prefix, cache)
+            for cm in models
+        ]
+        known = [r for r in results if r is not None]
+        if known:
+            return all(not r["values"] for r in known)
+    return engine._resolve_narrowed_legal_values(vn, filled, workspace_id, catalog_prefix, cache) == []
+
+
 def _visible(attr: Any, hidden_vns: set[str], display_order: dict[str, int] | None) -> bool:
     if attr.hidden or attr.hide_in_trans or attr.variable_name in hidden_vns:
         return False
@@ -144,9 +169,12 @@ def derive_required_vns(
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     product = filled.get(PRODUCT_LITERAL, "") or product_hint
     candidates: set[str] = set()
+    models: list[str] = []
     if product:
         models = list(_engine_module._cpq_model_candidates(
             product, workspace_id, catalog_prefix, cache, base_model=base_model or ""))
+        if get_settings().cpq_series_model_narrowing_enabled:
+            models = narrow_models_by_series(models, filled, workspace_id, catalog_prefix, cache)    # plan F8
         candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
     rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     candidates |= rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules)
@@ -162,7 +190,7 @@ def derive_required_vns(
         has_value = bool(filled.get(vn) or (filled_multi or {}).get(vn))
         if has_value and sources.get(vn) in CATALOG_FILL_SOURCES:
             continue
-        if engine._resolve_narrowed_legal_values(vn, filled, workspace_id, catalog_prefix, cache) == []:
+        if no_legal_value(engine, vn, filled, models, base_model, workspace_id, catalog_prefix, cache):
             continue    # the data tables confirm no value is legal right now
         out.add(vn)
     return frozenset(out)

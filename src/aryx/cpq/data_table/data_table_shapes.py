@@ -113,10 +113,15 @@ def _is_country_region_shaped(keys: set[str]) -> bool:
     return {"countryCode", "region"} <= keys and "RTTE" not in keys
 
 
+# the per-country flag columns of an RTTE/TA reference table (schema identifiers, shared with
+# the setter-script recogniser in recommendation_and_constraint_rules/table_lookup_script.py)
+RTTE_FLAG_COLUMNS = ("RTTE", "nonRTTE", "TA")
+
+
 def _is_rtte_ta_shaped(keys: set[str]) -> bool:
     # e.g. rtteTAReference.csv -- one Yes flag per country in RTTE / nonRTTE /
     # TA. Standalone loader only (see _is_country_region_shaped).
-    return {"countryCode", "RTTE", "nonRTTE", "TA"} <= keys
+    return {"countryCode", *RTTE_FLAG_COLUMNS} <= keys
 
 
 # Ordered so a more specific shape (sequence) is checked before a more

@@ -28,6 +28,9 @@ def apply_recommendation_rules(
     bml_eval: BmlEvaluator | None = None,
     filled_multi: dict[str, list[str]] | None = None,
     constrained_opts: dict[int, list[str]] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -92,7 +95,7 @@ def apply_recommendation_rules(
         if not target or filled.get(target.variable_name):
             continue
         recommended_value = resolve_recommended_value(
-            rule, filled, filled_by_rule_id, bml_eval)
+            rule, filled, filled_by_rule_id, bml_eval, workspace_id, catalog_prefix, dt_cache)
         if recommended_value is None:
             continue
         matched_display = next(

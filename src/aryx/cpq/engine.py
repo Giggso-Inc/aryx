@@ -1312,9 +1312,13 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict | None = None,
     ) -> dict[str, tuple[str, str]]:
         return rec_con_rules.apply_recommendation_rules(
-            attrs, filled, rules, bml_eval, filled_multi, constrained_opts)
+            attrs, filled, rules, bml_eval, filled_multi, constrained_opts,
+            workspace_id, catalog_prefix, dt_cache)
 
     def resync_stale_recommendations(
         self,

@@ -20,6 +20,9 @@ _RTTE_TA_CACHE: dict[tuple[int, str], tuple[float, list[dict[str, Any]]]] = {}
 _RTTE_TA_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
 _SHAPE_SCAN_CACHES.extend([_COUNTRY_REGION_CACHE, _RTTE_TA_CACHE])
 
+# column -> label when the setter script is not available (kept in column order)
+DEFAULT_RTTE_LABELS: dict[str, str] = {"RTTE": "RTTE", "nonRTTE": "NON RTTE", "TA": "TA"}
+
 
 def _load_rows(
     store: dict, marker: list[float | None], pred: Any, label: str,
@@ -60,10 +63,13 @@ def resolve_country_region(
 
 def resolve_rtte_flag(
     country: str, workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple, Any] | None = None,
+    cache: dict[tuple, Any] | None = None, labels: dict[str, str] | None = None,
 ) -> str | None:
-    """"RTTE", "NON RTTE" or "TA" for `country` from the ingested RTTE table;
-    None when no row names it or none of its three flags is set."""
+    """The label of the first flag column set to Yes for `country`, or None.
+
+    `labels` maps a flag column to the text it stands for (the setter rule's own
+    script defines it; see ``table_lookup_script``). Without it the default
+    mapping below is used."""
     code = _norm(country)
     if not code:
         return None
@@ -74,8 +80,8 @@ def resolve_rtte_flag(
     for row in rows:
         if _norm(str(row.get("countryCode") or "")) != code:
             continue
-        for col, flag in (("RTTE", "RTTE"), ("nonRTTE", "NON RTTE"), ("TA", "TA")):
+        for col, label in (labels or DEFAULT_RTTE_LABELS).items():
             if str(row.get(col) or "").strip().upper() in ("YES", "Y"):
-                return flag
+                return label
         return None
     return None

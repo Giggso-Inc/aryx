@@ -49,6 +49,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
     new_fills = engine.apply_recommendation_rules(
         state.attrs, state.filled, scope.rec_rules, bml_eval=scope.bml_eval,
         filled_multi=state.multi, constrained_opts=state.constrained_opts,
+        workspace_id=scope.workspace_id, catalog_prefix=scope.catalog_prefix, dt_cache=state.dt_cache,
     )
     logger.info(
         "cpq_perf: apply_recommendation_rules took %.3fs pass=%d",

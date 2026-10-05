@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.engine import _condition_value_matches
+from aryx.cpq.recommendation_and_constraint_rules.table_lookup_script import lookup_script_value
 from aryx.cpq.state import RecommendationRule
 
 
@@ -21,6 +22,9 @@ def resolve_recommended_value(
     filled: dict[str, str],
     filled_by_rule_id: dict[int, str],
     bml_eval: BmlEvaluator | None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict | None = None,
 ) -> str | None:
     """The value `rule` currently recommends, or None when it doesn't fire.
 
@@ -33,6 +37,10 @@ def resolve_recommended_value(
     None), so None is an unambiguous sentinel here.
     """
     if rule.script is not None:
+        # plan F5: a script that only looks a flag up in an ingested reference table
+        table_value = lookup_script_value(rule.script, filled, workspace_id, catalog_prefix, dt_cache)
+        if table_value:
+            return table_value
         if bml_eval is None:
             return None
         # Live-confirmed gap (2026-08-25, SVX "Force Set Quantity of
