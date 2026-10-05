@@ -107,7 +107,12 @@ def test_resolve_run_wires_exact_ids_through() -> None:
 
     store = MagicMock()
     store.landed_records.return_value = [_rec(1, "18722401146"), _rec(2, "18722401147")]
-    store.save.side_effect = lambda results: len(results)
+    # PR review round 5 (low): resolve_run() now calls store.save(results,
+    # on_progress=_emit) -- this fake predates that and only accepted the
+    # positional arg, raising TypeError the moment a real on_progress
+    # keyword showed up. EntityStore (the only real implementation)
+    # already accepts it; this was a stale fake, not a production bug.
+    store.save.side_effect = lambda results, on_progress=None: len(results)
 
     with patch("aryx.resolve_entities.AdjudicationStore"), \
          patch("aryx.resolve_entities.make_workspace_store") as ws, \

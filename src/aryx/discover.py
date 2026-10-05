@@ -57,7 +57,7 @@ def discover(
     _t0 = time.monotonic()
     run_id = store.start_run(system, dataset)
     sink = BatchSink(store, run_id)
-    profiles = run_spine(connector, sink=sink)
+    profiles = run_spine(connector, sink=sink, on_progress=on_progress)
     sink.flush()
     raven_log("DEBUG", "P4", "ingest.discover.landed records landed",
               context={"task_id": run_id, "stage": "discover", "records": sink.total,

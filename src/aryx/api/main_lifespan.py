@@ -34,6 +34,21 @@ async def _stale_job_sweep() -> None:
                       error_code="ARYX_ING_SWEEP_FAILED",
                       context={"dependency_name": "job_store", "operation": "sweep_stale", "result": "error",
                                "error_class": type(exc).__name__, "attempt": 1, "reason_code": "SWEEP_ERROR"})
+        # §0 (2026-10-04): a separate, much shorter check for "worker lost"
+        # rather than "job legitimately slow" -- see JobStore.sweep_stale_
+        # heartbeat's docstring for why these can't share one threshold.
+        try:
+            from aryx.config import get_settings
+            from aryx.store.job_store import JobStore
+            heartbeat_min = get_settings().job_heartbeat_timeout_minutes
+            JobStore(get_settings().effective_dsn()).sweep_stale_heartbeat(heartbeat_min)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("heartbeat-sweep error: %s", exc)
+            raven_log("WARN", "P2", "ingest.sweep.heartbeat_failed heartbeat sweep errored",
+                      error_code="ARYX_ING_SWEEP_FAILED",
+                      context={"dependency_name": "job_store", "operation": "sweep_stale_heartbeat",
+                               "result": "error", "error_class": type(exc).__name__,
+                               "attempt": 1, "reason_code": "SWEEP_ERROR"})
 
 
 @asynccontextmanager

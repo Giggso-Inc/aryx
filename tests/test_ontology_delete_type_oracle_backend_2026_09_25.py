@@ -47,38 +47,56 @@ def _make_store():
     return store, cur
 
 
-def test_delete_entities_by_type_postgres_uses_returning_fetchall():
-    store, cur = _make_store()
-    cur.fetchall.return_value = [(1,), (2,)]
-    with patch("aryx.store.entity_store.get_settings") as mock_cfg, \
-         patch("aryx.store.entity_store.load", side_effect=lambda name: name):
-        mock_cfg.return_value.effective_db_backend.return_value = "local"
-        ids = store.delete_entities_by_type("Widget")
-
-    assert ids == [1, 2]
-    assert cur.execute.call_count == 1
-    query_name, params = cur.execute.call_args[0]
-    assert query_name == "delete_entities_by_type"
-    assert params == (1, "Widget")
-
-
-def test_delete_entities_by_type_oracle_selects_ids_then_deletes():
+def test_delete_entities_by_type_selects_ids_deletes_members_then_entities():
+    """Unified across backends (§5 of docs/ingestion/
+    CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md): ids are
+    always selected first now, not just on Oracle -- but (PR review round
+    4, N1) the id list is used ONLY for the return value. Member cleanup
+    deletes via a subquery on the same workspace_id/ontology_type
+    predicate, not the id list -- unchunked ANY(array)/JSON_TABLE over
+    potentially hundreds of thousands of ids was the one delete in this
+    file that didn't chunk like the others, and it also missed entities
+    inserted concurrently between the id SELECT and the delete (still
+    caught by the final type-predicate DELETE, but never in the earlier
+    id list, so their members were silently orphaned). A subquery
+    re-evaluated at DELETE time has neither problem. Backend no longer
+    affects this method's call shape at all, so one test covers both (the
+    DPY-1003 "don't call fetchall() after this DELETE" guard is preserved
+    unconditionally, not just for Oracle)."""
     store, cur = _make_store()
     cur.fetchall.return_value = [(1,), (2,)]  # only used by the select
-    with patch("aryx.store.entity_store.get_settings") as mock_cfg, \
-         patch("aryx.store.entity_store.load", side_effect=lambda name: name):
-        mock_cfg.return_value.effective_db_backend.return_value = "oci"
+    with patch("aryx.store.entity_store.load", side_effect=lambda name: name):
         ids = store.delete_entities_by_type("Widget")
 
     assert ids == [1, 2]
-    assert cur.execute.call_count == 2
-    select_call, delete_call = cur.execute.call_args_list
+    assert cur.execute.call_count == 3
+    select_call, members_call, delete_call = cur.execute.call_args_list
     assert select_call.args[0] == "select_entity_ids_by_type"
     assert select_call.args[1] == (1, "Widget")
+    assert members_call.args[0] == "delete_entity_members_by_type"
+    assert members_call.args[1] == (1, 1, "Widget")
     assert delete_call.args[0] == "delete_entities_by_type"
     assert delete_call.args[1] == (1, "Widget")
-    # DELETE must not read a return value on this backend (DPY-1003 guard).
+    # DELETE must not read a return value (DPY-1003 guard, now unconditional).
     cur.fetchall.assert_called_once()
+
+
+def test_delete_entities_by_type_still_runs_member_delete_when_nothing_matches():
+    """No `if ids:` guard any more -- the subquery is a correct, cheap
+    no-op when nothing matches, and always running it means a type with
+    zero CURRENTLY-selected entities but a concurrently-inserted one still
+    gets its members cleaned (the exact race N1 was about)."""
+    store, cur = _make_store()
+    cur.fetchall.return_value = []
+    with patch("aryx.store.entity_store.load", side_effect=lambda name: name):
+        ids = store.delete_entities_by_type("Widget")
+
+    assert ids == []
+    assert cur.execute.call_count == 3
+    query_names = [c.args[0] for c in cur.execute.call_args_list]
+    assert query_names == [
+        "select_entity_ids_by_type", "delete_entity_members_by_type", "delete_entities_by_type",
+    ]
 
 
 @pytest.fixture

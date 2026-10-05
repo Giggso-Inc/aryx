@@ -141,6 +141,39 @@ def test_builds_node_id_to_entity_id_map_and_translates_containment_edges():
     assert result["entities"] == 3
 
 
+def test_on_progress_forwarded_into_save_relationships_and_project_workspace_graph():
+    """PR review, 2026-10-04: neither call previously received on_progress
+    at all, leaving the post-tag-loop phase (containment-edge translation,
+    saving relationships, final graph projection) with no heartbeat -- long
+    enough, combined with §0's heartbeat-sweep watchdog, to get a healthy
+    job killed. Both already support on_progress internally; this pins
+    that the call sites actually pass it through now."""
+    run_ids_by_tag = {"PurchaseOrder": 10, "Customer": 11, "LineItem": 12}
+    entity_maps = {
+        10: {"po_file:0": 200}, 11: {"po_file:1": 100}, 12: {"po_file:2": 300},
+    }
+    on_progress = MagicMock()
+
+    def _run_pipeline(**kwargs):
+        run_id = run_ids_by_tag[kwargs["dataset"]]
+        return {"run_id": run_id, "entities": 1, "relationships": 0}
+
+    mock_estore = _mock_estore(lambda run_id: entity_maps[run_id])
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline", side_effect=_run_pipeline), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph",
+               return_value={"entities": 3}) as mock_project:
+        resolve_and_relate_raw_graph(
+            _projection(), workspace_id=WORKSPACE_ID, source_key="po_file",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER, on_progress=on_progress,
+        )
+
+    _, save_kwargs = mock_estore.save_relationships.call_args
+    assert save_kwargs["on_progress"] is on_progress
+    _, project_kwargs = mock_project.call_args
+    assert project_kwargs["on_progress"] is on_progress
+
+
 def test_calls_project_workspace_graph_once_and_merges_its_counts():
     mock_estore = _mock_estore(lambda run_id: {})
     with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
@@ -153,7 +186,11 @@ def test_calls_project_workspace_graph_once_and_merges_its_counts():
             dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
         )
 
-    mock_project.assert_called_once_with(DSN, GRAPH_URL, WORKSPACE_ID, mock_estore)
+    # on_progress=None here since this test's caller doesn't pass one --
+    # see test_project_workspace_graph_receives_on_progress below for the
+    # PR-review fix (heartbeat coverage for the final projection).
+    mock_project.assert_called_once_with(DSN, GRAPH_URL, WORKSPACE_ID, mock_estore,
+                                         on_progress=None)
     assert result["entities"] == 5
     assert result["relationships"] == 4
 
@@ -432,3 +469,279 @@ def test_no_relationships_saved_when_no_edges_resolve():
 
     mock_estore.save_relationships.assert_not_called()
     assert result["relationships"] == 0
+
+
+# ── xml_bytes / streaming path (§3b, 2026-10-04) ─────────────────────────────
+
+XML_EQUIVALENT_TO_PROJECTION = (
+    b'<PurchaseOrder Id="PO-1001">'
+    b'<Customer Id="C-42"/>'
+    b'<LineItem Sku="WIDGET-A"/>'
+    b'</PurchaseOrder>'
+)
+
+
+def _settings_stub(**overrides):
+    base = dict(
+        cpq_structural_leaf_fold_enabled=True,
+        cpq_force_exact_enabled=True,
+        cpq_streaming_projection_enabled=False,
+    )
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+def test_projection_and_xml_bytes_both_given_raises():
+    with pytest.raises(ValueError):
+        resolve_and_relate_raw_graph(
+            _projection(), xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+
+def test_neither_projection_nor_xml_bytes_given_raises():
+    with pytest.raises(ValueError):
+        resolve_and_relate_raw_graph(
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+
+def test_xml_bytes_with_streaming_disabled_falls_back_to_eager_path():
+    """Default (flag off): xml_bytes still works, but via
+    project_xml_to_raw_graph -- not the streaming generator. should_stop
+    must still reach the parse itself (PR #429 review: the full parse runs
+    before resolve_and_relate_raw_graph's own per-tag checks can help, so
+    it needs should_stop too, regardless of which path builds by_tag --
+    this moved here, from doc_discovery.py's own direct call, in §3b)."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    should_stop = lambda: False  # noqa: E731
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=False)), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph") as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_eager.return_value = _projection()
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER, should_stop=should_stop,
+        )
+
+    mock_eager.assert_called_once()
+    mock_stream.assert_not_called()
+    _, eager_kwargs = mock_eager.call_args
+    assert eager_kwargs["should_stop"] is should_stop
+
+
+def test_xml_bytes_with_streaming_enabled_uses_the_generator_not_the_eager_path():
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_run_pipeline.return_value = {"run_id": 1, "entities": 1, "relationships": 0}
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_eager.assert_not_called()
+    # Same 3 tags as the eager _projection() fixture -- one resolve-only
+    # run_pipeline call each, proving the streaming grouping is equivalent.
+    assert mock_run_pipeline.call_count == 3
+    tags = {c.kwargs["dataset"] for c in mock_run_pipeline.call_args_list}
+    assert tags == {"PurchaseOrder", "Customer", "LineItem"}
+    assert result["tags"] == 3
+
+
+def test_xml_bytes_streaming_forwards_should_stop_into_iter_raw_graph():
+    should_stop = lambda: False  # noqa: E731
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph",
+               return_value=iter(())) as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore"), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline"):
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER, should_stop=should_stop,
+        )
+
+    _, kwargs = mock_stream.call_args
+    assert kwargs["should_stop"] is should_stop
+
+
+def test_xml_bytes_streaming_falls_back_to_eager_when_bml_enabled():
+    """ARYX_CSV_BML_ENABLED's query-table enrichment has no streaming
+    equivalent -- correctness over memory savings when both are on."""
+    mock_estore = _mock_estore(lambda run_id: {})
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=True), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore", return_value=mock_estore), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_xml_to_raw_graph") as mock_eager, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph") as mock_stream, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_eager.return_value = _projection()
+        resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_eager.assert_called_once()
+    mock_stream.assert_not_called()
+
+
+def test_xml_bytes_streaming_empty_generator_returns_zero_summary():
+    """No realistic XML document parses to zero nodes (even an empty root
+    element is one node) -- this exercises the defensive by_tag-empty
+    branch directly by mocking iter_raw_graph to yield nothing, the same
+    way test_empty_projection_returns_zero_summary_without_touching_the_db
+    exercises the eager path's equivalent branch with an explicitly empty
+    RawGraphProjection."""
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.iter_raw_graph", return_value=iter(())), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline") as mock_run_pipeline:
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=XML_EQUIVALENT_TO_PROJECTION,
+            workspace_id=WORKSPACE_ID, source_key="f", dsn=DSN,
+            graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    mock_estore_cls.assert_not_called()
+    mock_run_pipeline.assert_not_called()
+    assert result == {"tags": 0, "entities": 0, "relationships": 0}
+
+
+def test_xml_bytes_streaming_restores_id_order_for_self_nesting_tags():
+    """PR review N2 (2026-10-04): iter_raw_graph yields in finish
+    (post-)order -- fine for sibling order (preserved either way), but a
+    tag that recurs at more than one nesting depth in the SAME document
+    (e.g. this self-nesting <Category> tree) comes out child-before-parent
+    in post-order, while the eager path's id-ordered projection.nodes
+    always has the parent (lower id, started first) before the child
+    (higher id, started later). The equivalence tests above all use flat
+    or differently-tagged nesting, so none of them exercise this. Uses the
+    REAL iter_raw_graph (not mocked) against real nested XML, capturing
+    RawGraphConnector's own `nodes` argument -- the actual list order
+    run_pipeline's connector would see."""
+    nested_xml = (
+        b'<Root>'
+        b'<Category Id="outer">'
+        b'<Category Id="inner"/>'
+        b'</Category>'
+        b'</Root>'
+    )
+    captured_nodes: dict[str, list] = {}
+
+    class _CaptureConnector:
+        def __init__(self, nodes, *, tag, source_key):
+            captured_nodes[tag] = nodes
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_streaming_projection_enabled=True,
+                                           cpq_structural_leaf_fold_enabled=False)), \
+         patch("aryx.csv_bml_ingestion.config.csv_bml_enabled", return_value=False), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.RawGraphConnector", _CaptureConnector), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore"), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 0, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        resolve_and_relate_raw_graph(
+            xml_bytes=nested_xml, workspace_id=WORKSPACE_ID, source_key="f",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+
+    # outer started first (lower id) -- must come before inner regardless
+    # of which one's subtree FINISHED first during the streaming walk.
+    category_ids = [n.properties["Id"] for n in captured_nodes["Category"]]
+    assert category_ids == ["outer", "inner"]
+
+
+# ── PR review round 7: structural-leaf fold's effect on real resolve shape ───
+
+# A plain entity-like tag (<Customer>Bob</Customer> -- text only, no
+# attributes, no children) and an empty container (<Lines/>) alongside a
+# tag that must survive folding either way (<LineItem Sku="..."/> has a
+# real attribute). Exercises the REAL project_xml_to_raw_graph ->
+# group_nodes_by_tag -> fold_structural_leaf_tags chain (only run_pipeline/
+# EntityStore/project_workspace_graph are mocked) -- unlike
+# tests/cpq_ingestion/test_structural_leaf.py's unit tests, which construct
+# by_tag/edges by hand and never go through a real resolve_and_relate_raw_
+# graph call, so neither suite previously confirmed what the flag actually
+# does to the SET OF TAGS this function resolves (PR review round 7, High:
+# "no test compares entity/relationship counts with the fold on vs off or
+# covers an entity-like tag or an empty container").
+_FOLD_TEST_XML = (
+    b'<PurchaseOrder Id="PO-1">'
+    b'<Customer>Bob</Customer>'
+    b'<Lines></Lines>'
+    b'<LineItem Sku="WIDGET-A"/>'
+    b'</PurchaseOrder>'
+)
+
+
+def _run_fold_test_xml(*, fold_enabled: bool):
+    captured_nodes: dict[str, list] = {}
+
+    class _CaptureConnector:
+        def __init__(self, nodes, *, tag, source_key):
+            captured_nodes[tag] = nodes
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_structural_leaf_fold_enabled=fold_enabled)), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.RawGraphConnector", _CaptureConnector), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_estore_cls.return_value = _mock_estore(lambda run_id: {})
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=_FOLD_TEST_XML, workspace_id=WORKSPACE_ID, source_key="f",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+    return result, captured_nodes
+
+
+def test_structural_leaf_fold_enabled_drops_entity_like_and_empty_container_tags():
+    """Customer (entity-like, text-only) and Lines (empty container) both
+    fold onto PurchaseOrder and are never resolved as their own tag/entity
+    type when the flag is on -- only PurchaseOrder and LineItem remain."""
+    result, captured_nodes = _run_fold_test_xml(fold_enabled=True)
+
+    assert set(captured_nodes) == {"PurchaseOrder", "LineItem"}
+    assert result["tags"] == 2
+    po_node = captured_nodes["PurchaseOrder"][0]
+    assert po_node.properties["Customer"] == "Bob"
+    assert po_node.properties["Lines"] == ""
+
+
+def test_structural_leaf_fold_disabled_keeps_every_tag_as_its_own_entity_type():
+    """Same document, flag off: Customer and Lines each resolve as their
+    own tag/entity type instead of being folded onto PurchaseOrder --
+    confirms the flag is actually load-bearing for tag/entity COUNT, not
+    just a cosmetic no-op in this shape of document."""
+    result, captured_nodes = _run_fold_test_xml(fold_enabled=False)
+
+    assert set(captured_nodes) == {"PurchaseOrder", "Customer", "Lines", "LineItem"}
+    assert result["tags"] == 4
+    po_node = captured_nodes["PurchaseOrder"][0]
+    assert "Customer" not in po_node.properties
+    assert "Lines" not in po_node.properties

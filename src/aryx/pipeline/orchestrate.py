@@ -187,6 +187,7 @@ def run_pipeline(
     resume_run_id: int | None = None,
     skip_graph: bool = False,
     should_stop: ShouldStop | None = None,
+    force_exact: bool = False,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -204,6 +205,10 @@ def run_pipeline(
         max_pairs: Cap on candidate pairs when relate is enabled (default: ARYX_MAX_RELATE_PAIRS).
         resume_run_id: Resume a crashed run — done stages skip, the landed
             data of that run is reused (no re-extract).
+        force_exact: Forwarded to resolve_run() (§1 Tier 2, 2026-10-04) —
+            caller-asserted override for when it already knows the match
+            key's values are exact identifiers even though the key name
+            itself doesn't look ID-like.
 
     Returns:
         Summary of {run_id, entities, relationships} plus graph projection counts.
@@ -249,7 +254,7 @@ def run_pipeline(
             with runner.stage("resolve_cluster"):
                 entities = resolve_run(run_id, ontology_type, match_keys,
                                        estore, broker, on_progress=on_progress,
-                                       workspace_id=workspace_id)
+                                       workspace_id=workspace_id, force_exact=force_exact)
             _emit(on_progress, "Resolve", 62, f"{entities} entities resolved")
         # Register the type in OntologyStore so the schema diagram populates.
         # seed_types is idempotent (ON CONFLICT DO NOTHING).

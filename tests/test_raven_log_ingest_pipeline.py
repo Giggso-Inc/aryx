@@ -372,6 +372,23 @@ def test_discover_logs_tagging_off_and_spine(capsys):
     assert _ev(recs, "ingest.discover.landed")
 
 
+def test_discover_forwards_on_progress_into_run_spine():
+    """PR review, 2026-10-04: landing previously reported nothing between
+    discover()'s own 8%/15% bookends -- the on_progress threading into
+    run_spine() is how that silent gap gets a heartbeat."""
+    from aryx import discover as d
+    store = MagicMock()
+    store.start_run.return_value = 77
+    sink = MagicMock(total=0)
+    on_progress = MagicMock()
+    with patch.object(d, "BatchSink", return_value=sink), \
+         patch.object(d, "run_spine", return_value=[]) as mock_spine:
+        d.discover(MagicMock(), store, "sys", "ds", on_progress=on_progress)
+
+    _, kwargs = mock_spine.call_args
+    assert kwargs["on_progress"] is on_progress
+
+
 def test_no_forbidden_content_in_dynamic_fk_verdict(capsys):
     from aryx.pipeline.dynamic_fk import dynamic_fk as dfk
     cand = {"type_a": "A", "col_a": "x", "type_b": "B", "col_b": "y", "overlap": 0.9,

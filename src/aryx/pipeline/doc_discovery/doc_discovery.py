@@ -288,6 +288,16 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             "summary": {"types": types, "files": files}}
 
 
+# PR review round 4, N3 (2026-10-04): completed_plans mixes two key
+# spaces -- generic tabular plans use p["filename"] (a per-tag-derived
+# name, e.g. "order_PurchaseOrder.csv"), while cpq source files use the
+# raw source_filename (e.g. "order.xml"). A real-world collision is
+# unlikely (different naming conventions, different extensions) but not
+# impossible, and an unprefixed shared set makes it silent if it ever
+# happens. Prefixing every cpq entry disambiguates unconditionally.
+_CPQ_COMPLETED_PREFIX = "cpq:"
+
+
 def _update_confirm_state(discovery_id: str, state: dict) -> None:
     """Persist confirm_state to DB after each plan (crash-safe resume support)."""
     from aryx.store.discovery_store import DiscoveryStore  # noqa: PLC0415 — lazy to avoid circular
@@ -522,9 +532,32 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # meant to be joined on.
     from aryx.cpq_ingestion.routing import partition_cpq_ingestion_plans  # noqa: PLC0415
     cpq_ingestion_source_files, valid_plans = partition_cpq_ingestion_plans(valid_plans)
+
+    # Resume support (§5 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_
+    # PERFORMANCE_ISSUES_2026-10-04.md): keyed by source_filename (via
+    # _CPQ_COMPLETED_PREFIX, PR review round 4 N3), NOT plan["filename"] --
+    # one XML file produces one per-tag plan per entity tag, all sharing
+    # one source_filename, so the generic completed_plans filter above
+    # (which checks p["filename"], the per-tag-derived name) operates on a
+    # different key space and never matches these. Without this, re-
+    # confirming a cpq XML file that already fully completed (not
+    # cancelled) always re-resolved every tag from scratch, duplicating
+    # entities -- the only confirm path that didn't participate in
+    # completed_plans tracking at all.
+    cpq_resume_skipped = [
+        fn for fn in cpq_ingestion_source_files
+        if f"{_CPQ_COMPLETED_PREFIX}{fn}" in completed_plans
+    ]
+    if cpq_resume_skipped:
+        logger.info("confirm job=%s resume: skipping %d completed cpq source file(s): %s",
+                    job_id, len(cpq_resume_skipped), cpq_resume_skipped)
+        cpq_ingestion_source_files = {
+            fn: plan for fn, plan in cpq_ingestion_source_files.items()
+            if f"{_CPQ_COMPLETED_PREFIX}{fn}" not in completed_plans
+        }
     raven_log("DEBUG", "P4", "ingest.confirm.split xml raw-graph plans separated",
               context={"job_id": job_id, "xml_source_files": len(cpq_ingestion_source_files),
-                       "remaining": len(valid_plans),
+                       "remaining": len(valid_plans), "resume_skipped": len(cpq_resume_skipped),
                        "selected_option": "raw_graph_resolve" if cpq_ingestion_source_files else "none",
                        "reason_code": "CPQ_XML_ACTIVE"})
 
@@ -535,21 +568,55 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         if should_stop():
             raise PipelineCancelled(f"job cancelled before source_filename={source_filename}")
         from aryx.cpq_ingestion.raw_graph.resolve_relate import resolve_and_relate_raw_graph  # noqa: PLC0415
-        from aryx.cpq_ingestion.raw_graph.xml_projector import project_xml_to_raw_graph  # noqa: PLC0415
 
+        step += 1
         stem = Path(source_filename).stem
-        jobs.update_stage(job_id, "CPQ Ingestion", int(step * 90 / total),
+        jobs.update_stage(job_id, f"{step}/{total} · CPQ Ingestion", int(step * 90 / total),
                           f"Resolving {source_filename} directly from its raw graph…")
         logger.info("confirm job=%s cpq_ingestion resolve/relate start source_filename=%s",
                     job_id, source_filename)
-        projection = project_xml_to_raw_graph(plan["source_bytes"], should_stop=should_stop)
+
+        def _progress_cpq(stage: str, pct: int, detail: str,
+                           _fname: str = source_filename, _step: int = step) -> None:
+            # Same convention as _progress_otype/_progress_plan: this file's
+            # own 0-100 progress contributes up to 10 points within its step
+            # band so the overall job pct still advances smoothly across
+            # files, not just within one.
+            jobs.update_stage(job_id, f"{_step}/{total} · CPQ Ingestion · {stage}",
+                              int(_step * 90 / total) + pct // 10, detail)
+            logger.info("confirm job=%s cpq_ingestion source_filename=%s stage=%s pct=%d %s",
+                        job_id, _fname, stage, pct, detail)
+
+        # §3b (2026-10-04): passing xml_bytes directly lets
+        # resolve_and_relate_raw_graph() itself decide eager vs. streaming
+        # (ARYX_CPQ_STREAMING_PROJECTION_ENABLED, default off) -- this call
+        # site no longer needs to know which path is active.
         result = resolve_and_relate_raw_graph(
-            projection, workspace_id=workspace_id, source_key=stem,
+            xml_bytes=plan["source_bytes"], workspace_id=workspace_id, source_key=stem,
             dsn=settings.effective_dsn(), graph_url=settings.graph_url,
             broker=broker, log_id=job_id, should_stop=should_stop,
+            on_progress=_progress_cpq,
         )
         logger.info("confirm job=%s cpq_ingestion resolve/relate done source_filename=%s result=%s",
                     job_id, source_filename, result)
+        # Persist progress after each source file so a restart can resume
+        # here, and so re-confirming this discovery later skips it instead
+        # of duplicating entities -- same pattern as _run_one_plan's own
+        # completed_plans persistence below, now extended to this path too.
+        if discovery_id:
+            completed_plans.add(f"{_CPQ_COMPLETED_PREFIX}{source_filename}")
+            _update_confirm_state(discovery_id, {
+                "last_job_id": job_id,
+                "completed_plans": list(completed_plans),
+                "plan_run_ids": plan_run_ids,
+                # PR review round 4, N3: this used to hardcode [], silently
+                # discarding any failed-plan record an EARLIER attempt in
+                # this same confirm run had written. update_confirm_state()
+                # replaces the whole persisted state (no merge), so the
+                # only way to not lose a sibling field is to carry forward
+                # whatever this call's own `state` started with.
+                "failed_plans": state.get("failed_plans", []),
+            })
 
     def _report_fk_stage(pct: int, detail: str) -> None:
         # A transient job-store failure while reporting progress must never
@@ -772,7 +839,11 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                     "last_job_id": job_id,
                     "completed_plans": list(completed_plans),
                     "plan_run_ids": plan_run_ids,
-                    "failed_plans": [],
+                    # PR review round 4, N3: preserve any failed-plan record
+                    # an earlier attempt in this confirm run already wrote --
+                    # update_confirm_state() replaces the whole persisted
+                    # state, so hardcoding [] here silently discarded it.
+                    "failed_plans": state.get("failed_plans", []),
                 })
         finally:
             if tmp_path is not None:

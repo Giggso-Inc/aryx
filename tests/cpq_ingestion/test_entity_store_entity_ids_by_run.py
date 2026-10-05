@@ -75,9 +75,13 @@ def test_delete_entities_sends_one_delete_for_the_whole_id_list():
         removed = store.delete_entities([100, 101, 102])
 
     assert removed == 3
-    mock_cursor.execute.assert_called_once()
-    args, _ = mock_cursor.execute.call_args
-    assert args[1] == {"workspace_id": 7, "entity_ids": [100, 101, 102]}
+    # §5 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md:
+    # aryx_entity_member rows for these ids are now deleted first, same
+    # transaction, before the entity rows themselves.
+    assert mock_cursor.execute.call_count == 2
+    members_call, entities_call = mock_cursor.execute.call_args_list
+    assert members_call.args[1] == {"workspace_id": 7, "entity_ids": [100, 101, 102]}
+    assert entities_call.args[1] == {"workspace_id": 7, "entity_ids": [100, 101, 102]}
 
 
 def test_delete_entities_empty_list_is_a_noop():
@@ -109,6 +113,8 @@ def test_delete_entities_chunks_large_id_lists(monkeypatch):
         removed = store.delete_entities([1, 2, 3, 4, 5])
 
     assert removed == 6  # 3 chunks * rowcount=2 each (stubbed, not realistic per-chunk)
-    assert mock_cursor.execute.call_count == 3
+    # 2 execute calls per chunk now (members, then entities) -- §5 of
+    # docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md.
+    assert mock_cursor.execute.call_count == 6
     chunks = [call.args[1]["entity_ids"] for call in mock_cursor.execute.call_args_list]
-    assert chunks == [[1, 2], [3, 4], [5]]
+    assert chunks == [[1, 2], [1, 2], [3, 4], [3, 4], [5], [5]]

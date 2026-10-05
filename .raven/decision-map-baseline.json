@@ -13923,7 +13923,7 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      81,
+      90,
       "<try>"
     ],
     [
@@ -13938,12 +13938,12 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      194,
+      289,
       "count_raw_graph_elements"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      254,
+      349,
       "count_raw_graph_elements"
     ],
     [
@@ -14493,7 +14493,7 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      721,
+      788,
       "<if>"
     ],
     [
@@ -14678,17 +14678,17 @@
     ],
     [
       "src/aryx/resolve_entities.py",
-      105,
+      125,
       "<try>"
     ],
     [
       "src/aryx/resolve_entities.py",
-      187,
+      265,
       "<if>"
     ],
     [
       "src/aryx/resolve_entities.py",
-      242,
+      321,
       "resolve_run"
     ],
     [
@@ -14773,32 +14773,32 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      488,
+      570,
       "<if>"
     ],
     [
       "src/aryx/store/entity_store.py",
-      510,
+      592,
       "create_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      526,
+      608,
       "update_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      536,
+      631,
       "delete_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      573,
+      673,
       "delete_entities"
     ],
     [
       "src/aryx/store/entity_store.py",
-      594,
+      706,
       "delete_entities_by_type"
     ],
     [
@@ -14848,48 +14848,58 @@
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      88,
+      179,
       "__init__"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      127,
+      218,
       "_json_output_handler"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      137,
+      228,
       "execute"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      147,
+      238,
       "<if>"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      187,
+      279,
       "executemany"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      231,
+      324,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      285,
+      378,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      45,
+      78,
+      "_ensure_lock_row"
+    ],
+    [
+      "src/aryx/store/oracle_migrate.py",
+      219,
       "apply_oracle_migrations"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      70,
+      269,
       "<try>"
+    ],
+    [
+      "src/aryx/store/oracle_migrate.py",
+      410,
+      "accept_checksum_drift"
     ],
     [
       "src/aryx/store/oracle_param_coerce.py",

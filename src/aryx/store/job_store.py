@@ -126,6 +126,50 @@ class JobStore:
                                "count": count, "timeout_min": timeout_minutes})
         return count
 
+    def sweep_stale_heartbeat(self, heartbeat_minutes: int) -> int:
+        """Mark jobs with no progress update in heartbeat_minutes as failed.
+
+        Added 2026-10-04 (§0, docs/ingestion/
+        CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md) after a
+        uvicorn worker silently crashed mid-confirm: the job it owned (an
+        in-process background_task, no durable queue underneath it) was
+        never marked failed by anything, staying "running" with a frozen
+        updated_at forever -- no error surfaced anywhere in the system.
+
+        Deliberately separate from sweep_stale()/ARYX_JOB_TIMEOUT_MINUTES,
+        which answers a different question ("has this job run longer than
+        any job should ever legitimately take" -- default 120 minutes, long
+        enough to tolerate a real multi-hour confirm) rather than this
+        method's question ("has this job's worker stopped reporting ANY
+        progress recently, which is a much stronger and faster signal that
+        something died"). Using one threshold for both would force a choice
+        between slow crash detection (threshold high enough to tolerate
+        legitimately slow jobs) or false-positives on healthy slow jobs
+        (threshold low enough for fast crash detection) -- a much shorter
+        heartbeat_minutes is only safe here because callers along the
+        previously-silent cpq XML / chunked-resolve paths now emit periodic
+        on_progress heartbeats specifically so this check has something
+        recent to compare against (see resolve_relate.py's on_progress
+        wiring and resolution/chunked.py's on_progress threading).
+
+        Excludes 'cancelled' (unlike sweep_stale()) since a user-initiated
+        cancel already writes a fresh updated_at/finished_at itself --
+        nothing stale about it.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("sweep_stale_jobs_heartbeat"), (heartbeat_minutes,))
+                count = cur.rowcount
+        if count:
+            logger.warning("swept %d jobs with no heartbeat (heartbeat_timeout=%d min)",
+                           count, heartbeat_minutes)
+            raven_log("WARN", "P2", "ingest.job.swept_stale_heartbeat worker-lost jobs marked failed",
+                      error_code="ARYX_ING_JOB_WORKER_LOST",
+                      context={"object_id": "jobs", "previous_state": "running|queued", "final_state": "failed",
+                               "trigger": "heartbeat_sweep", "result": "swept", "reason_code": "WORKER_LOST",
+                               "count": count, "heartbeat_timeout_min": heartbeat_minutes})
+        return count
+
     def close(self) -> None:
         """No-op: connections are managed by the shared pool (G12)."""
 
@@ -164,23 +208,31 @@ def make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -
     decision, never the DB call itself, so a thread blocked on jobs.get()
     can't stall another thread's cheap "no, not yet" return.
     """
-    state = {"last_check": 0.0, "cancelled": False}
+    state = {"last_check": 0.0, "stopped": False}
     lock = threading.Lock()
 
     def should_stop() -> bool:
-        if state["cancelled"]:
+        if state["stopped"]:
             return True
         now = time.monotonic()
         with lock:
-            if state["cancelled"]:
+            if state["stopped"]:
                 return True
             if now - state["last_check"] < min_interval_s:
                 return False
             state["last_check"] = now
         row = jobs.get(job_id)
-        if row is not None and row.get("status") == "cancelled":
+        # "failed" here (2026-10-04, PR review M1) covers a job the
+        # heartbeat sweep (sweep_stale_heartbeat) marked failed out from
+        # under a worker that's still actually running -- without this,
+        # update_job_stage.sql's own "status != 'failed'" guard stops the
+        # row from being resurrected, but the worker itself would carry on
+        # doing real work indefinitely, since this closure previously only
+        # ever recognized a user-initiated 'cancelled' status as a stop
+        # signal.
+        if row is not None and row.get("status") in ("cancelled", "failed"):
             with lock:
-                state["cancelled"] = True
-        return state["cancelled"]
+                state["stopped"] = True
+        return state["stopped"]
 
     return should_stop

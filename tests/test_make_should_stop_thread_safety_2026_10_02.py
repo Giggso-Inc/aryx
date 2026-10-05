@@ -63,13 +63,35 @@ def test_should_stop_returns_true_when_job_is_cancelled():
 
 def test_should_stop_sticky_true_never_rechecks_after_cancelled():
     """Once cancelled is observed, every subsequent call must short-circuit
-    on state["cancelled"] -- confirmed by counting jobs.get() calls across
+    on state["stopped"] -- confirmed by counting jobs.get() calls across
     several more should_stop() calls, even with min_interval_s=0.0 (which
     would otherwise re-check the DB every time)."""
     jobs = _FakeJobStore(status="cancelled")
     should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
 
     assert should_stop() is True
+    assert should_stop() is True
+    assert should_stop() is True
+    assert jobs.get_calls == 1
+
+
+def test_should_stop_returns_true_when_job_is_failed():
+    """PR review M1 (2026-10-04): a job the heartbeat sweep
+    (sweep_stale_heartbeat) marked 'failed' out from under a still-running
+    worker must also stop that worker -- not just a user-initiated
+    'cancelled'. Without this, update_job_stage.sql's own guard stops the
+    DB row from being resurrected, but the worker itself keeps running
+    indefinitely, duplicating or conflicting with whatever retry/re-confirm
+    the operator starts after seeing the job marked failed."""
+    jobs = _FakeJobStore(status="failed")
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
+    assert should_stop() is True
+
+
+def test_should_stop_sticky_true_never_rechecks_after_failed():
+    jobs = _FakeJobStore(status="failed")
+    should_stop = make_should_stop(jobs, "job-1", min_interval_s=0.0)
+
     assert should_stop() is True
     assert should_stop() is True
     assert jobs.get_calls == 1

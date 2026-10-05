@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from psycopg.types.json import Json
@@ -38,6 +38,28 @@ from aryx.store.entity_store_ids import _dumps, _fetch_entity_ids
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+Progress = Callable[[str, int, str], None]
+
+
+def _safe_progress(on_progress: Progress | None, stage: str, pct: int, detail: str) -> None:
+    """Call on_progress without letting a heartbeat failure affect the caller.
+
+    PR review N4 (2026-10-04): save_relationships()'s on_progress call used
+    to run INSIDE the same transaction as the inserts it was reporting on --
+    a failure in the heartbeat itself (e.g. a job-row update error from a
+    transient DB hiccup on a DIFFERENT connection/pool) would propagate out
+    of the `with self._pool.connection()` block, rolling back every batch
+    already committed-in-spirit within this call and failing an otherwise
+    healthy save. A heartbeat is purely observational -- it must never be
+    able to do that. Used by both save() and save_relationships().
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(stage, pct, detail)
+    except Exception:  # noqa: BLE001 -- heartbeat is best-effort, never masks real work
+        logger.warning("entity_store: on_progress heartbeat failed, continuing", exc_info=True)
 
 # Diagnostic for the 2026-09-16 confirm-job incident: a documents-source
 # confirm failed with Postgres's "string too long to represent as jsonb
@@ -143,10 +165,28 @@ class EntityStore:
                 rows = cur.fetchall()
         return {source_record_id: entity_id for source_record_id, entity_id in rows}
 
-    def save(self, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
+    def save(self, results: list[tuple[ResolvedEntity, list[EntityMember]]], *,
+              on_progress: Progress | None = None, batch_size: int = 5000) -> int:
         """Persist resolved entities and their provenance members.
 
         Returns the number of entities written.
+
+        on_progress (PR review N1, 2026-10-04): previously one unbatched
+        call regardless of result-set size -- resolve_entities.py reports
+        "Resolve" 58% right before calling this, then nothing until
+        orchestrate.py's own 62% checkpoint once this returns. At the
+        documented ~0.5ms/row landing rate, saving a tag's full 440k
+        entities (the production file this was built against) is several
+        minutes with no heartbeat at all, well inside the 10-minute
+        heartbeat-sweep window this project already has reason to take
+        seriously (see save_relationships' own docstring for the same
+        concern). Chunked into batch_size-row groups -- each chunk still
+        goes through the existing 2-3-round-trip bulk path
+        (_save_batch/_save_batch_postgres), just over fewer rows at a time
+        -- with a real done/total progress checkpoint between chunks,
+        scaled into the 58-62% band orchestrate.py already reserves for
+        this call. See _safe_progress's docstring (N4) for why the
+        heartbeat itself can never fail this call.
         """
         if not results:
             raven_log("DEBUG", "P4", "ingest.resolve.save_skipped no entities to save",
@@ -154,17 +194,26 @@ class EntityStore:
                                "available_options": ["save", "skip"], "reason_code": "EMPTY_RESULTS"})
             return 0
         _backend = get_settings().effective_db_backend()
+        total = len(results)
         raven_log("DEBUG", "P4", "ingest.resolve.save_batch entity save path chosen",
-                  context={"stage": "resolve", "workspace_id": self._ws, "entities": len(results),
+                  context={"stage": "resolve", "workspace_id": self._ws, "entities": total,
                            "members": sum(len(m) for _, m in results),
                            "selected_option": "oracle_batch" if _backend == "oci" else "postgres_batch",
                            "available_options": ["oracle_batch", "postgres_batch"],
                            "reason_code": "EFFECTIVE_DB_BACKEND_" + str(_backend).upper()})
+        created = 0
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if _backend == "oci":
-                    return self._save_batch(cur, results)
-                return self._save_batch_postgres(cur, results)
+                for start in range(0, total, batch_size):
+                    chunk = results[start:start + batch_size]
+                    if _backend == "oci":
+                        created += self._save_batch(cur, chunk)
+                    else:
+                        created += self._save_batch_postgres(cur, chunk)
+                    done = min(start + batch_size, total)
+                    _safe_progress(on_progress, "Resolve", 58 + int(4 * done / total),
+                                   f"{done}/{total} entities saved")
+        return created
 
     def _save_batch(self, cur: Any, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
         """Oracle path: 3 round-trips for any batch size.
@@ -280,17 +329,50 @@ class EntityStore:
                     total, len(member_rows), len(conflict_rows))
         return total
 
-    def save_relationships(self, relationships: list[Relationship]) -> None:
-        """Persist inferred relationships between entities (stage 8)."""
+    def save_relationships(self, relationships: list[Relationship], *,
+                          on_progress: Progress | None = None,
+                          batch_size: int = 5000) -> None:
+        """Persist inferred relationships between entities (stage 8).
+
+        on_progress (PR review, 2026-10-04): a large relationship set
+        previously went through ONE unbatched executemany -- no heartbeat
+        for however long that single call took. Combined with §0's
+        heartbeat-sweep watchdog (JobStore.sweep_stale_heartbeat), that
+        silence was long enough to get a perfectly healthy caller (e.g.
+        cpq_ingestion's resolve_and_relate_raw_graph, after its last tag
+        finishes) killed. Chunking into batch_size-row executemany calls
+        with a checkpoint between each gives the same per-batch heartbeat
+        cadence BatchSink's landing writes already have -- default
+        batch_size chosen to match BatchSink's own executemany-cost
+        profile, not because relationship rows are expensive individually.
+        pct is real (done/total), unlike the indeterminate heartbeats
+        elsewhere in this review round, since the total is known upfront.
+
+        PR review N4 (2026-10-04): on_progress used to be called directly,
+        inside the same transaction as the inserts -- a heartbeat failure
+        (e.g. a transient error from the job-row update it typically
+        triggers, on a completely different connection/pool) would
+        propagate out of this method's `with self._pool.connection()`
+        block and roll back every batch already inserted in this call,
+        failing an otherwise-healthy save over a purely observational
+        side effect. Routed through _safe_progress, which never lets an
+        on_progress exception escape.
+        """
         if not relationships:
             return
+        total = len(relationships)
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.executemany(
-                    load("insert_relationship"),
-                    [(self._ws, r.source_entity_id, r.target_entity_id,
-                      r.name, r.confidence) for r in relationships],
-                )
+                for start in range(0, total, batch_size):
+                    batch = relationships[start:start + batch_size]
+                    cur.executemany(
+                        load("insert_relationship"),
+                        [(self._ws, r.source_entity_id, r.target_entity_id,
+                          r.name, r.confidence) for r in batch],
+                    )
+                    done = min(start + batch_size, total)
+                    _safe_progress(on_progress, "Relate", int(100 * done / total),
+                                   f"{done}/{total} relationships saved")
 
     def list_entities_typed_sample(self, n_per_type: int) -> list[tuple[int, str, dict]]:
         """Return up to *n_per_type* entities for EACH ontology type in the workspace.
@@ -526,9 +608,22 @@ class EntityStore:
         return (str(row[1]), row[2])
 
     def delete_entity(self, entity_id: int) -> bool:
-        """Delete one entity; return True if a row was removed."""
+        """Delete one entity and its aryx_entity_member rows; return True if the entity row was removed.
+
+        Members deleted first, in the same transaction as the entity row
+        (§5 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_
+        2026-10-04.md -- previously left as permanent orphans referencing a
+        now-nonexistent entity_id, consistent across this and the other two
+        delete methods below). Postgres's aryx_entity_member.entity_id has a
+        plain FK to aryx_entity (no ON DELETE CASCADE) -- deleting the
+        entity row first would raise a foreign-key violation while member
+        rows for it still exist, so members must go first regardless of
+        backend (Oracle has no FK here, but the same order keeps both
+        backends' behavior identical).
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(load("delete_entity_members_by_id"), (self._ws, entity_id))
                 cur.execute(load("delete_entity_row"), (entity_id, self._ws))
                 removed = cur.rowcount > 0
         if removed:
@@ -564,6 +659,11 @@ class EntityStore:
             chunk = ids[i:i + self._DELETE_CHUNK_SIZE]
             with self._pool.connection() as conn:
                 with conn.cursor() as cur:
+                    # Members first, same chunk/transaction -- see
+                    # delete_entity()'s docstring for why the order matters.
+                    cur.execute(load("delete_entity_members_by_ids"), {
+                        "workspace_id": self._ws, "entity_ids": chunk,
+                    })
                     cur.execute(load("delete_entities_by_ids"), {
                         "workspace_id": self._ws, "entity_ids": chunk,
                     })
@@ -573,23 +673,35 @@ class EntityStore:
         return removed
 
     def delete_entities_by_type(self, ontology_type: str) -> list[int]:
-        """Delete all entities of a type; return the list of deleted ids."""
+        """Delete all entities of a type and their aryx_entity_member rows; return the list of deleted ids.
+
+        Always selects ids first now (previously only done on the Oracle
+        branch, to work around python-oracledb rejecting fetchall() after a
+        DELETE with DPY-1003 -- see the git history for that rationale).
+        The id list is used only for the RETURN VALUE -- member cleanup
+        (§5, then PR review round 4 N1, 2026-10-04) deletes by a subquery
+        on the same workspace_id/ontology_type predicate instead of an id
+        list, for two reasons the id-list approach got wrong: (1) a type
+        with hundreds of thousands of entities meant one huge, unchunked
+        ANY(array)/JSON_TABLE bind -- every other multi-id delete in this
+        file chunks at _DELETE_CHUNK_SIZE for exactly this reason, and this
+        was the one exception; (2) an entity of this type inserted
+        concurrently, between the id SELECT above and the delete, would
+        still match the final `DELETE ... WHERE ontology_type = ...` below
+        (same predicate, evaluated fresh) but was never in the id list, so
+        its members would have been silently left as orphans. A subquery
+        re-evaluated at DELETE time against the live predicate has neither
+        problem. Deleting members BEFORE the entities themselves, same
+        transaction, for the same FK-ordering reason as delete_entity()'s
+        docstring.
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if get_settings().effective_db_backend() == "oci":
-                    # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T9/T11
-                    # follow-up (confirmed live): DELETE ... RETURNING id +
-                    # fetchall() works on psycopg but python-oracledb
-                    # rejects fetchall() after DML with DPY-1003 ("the
-                    # executed statement does not return rows"). Select the
-                    # ids first, then delete by the same predicate --
-                    # avoids RETURNING entirely on this backend.
-                    cur.execute(load("select_entity_ids_by_type"), (self._ws, ontology_type))
-                    ids = [int(r[0]) for r in cur.fetchall()]
-                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
-                else:
-                    cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
-                    ids = [int(r[0]) for r in cur.fetchall()]
+                cur.execute(load("select_entity_ids_by_type"), (self._ws, ontology_type))
+                ids = [int(r[0]) for r in cur.fetchall()]
+                cur.execute(load("delete_entity_members_by_type"),
+                           (self._ws, self._ws, ontology_type))
+                cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
         logger.info("entities deleted ws=%s type=%s count=%d", self._ws, ontology_type, len(ids))
         return ids
 

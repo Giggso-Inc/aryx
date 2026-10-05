@@ -72,6 +72,31 @@ class ResolutionSettingsMixin(BaseSettings):
             "with ARYX_ER_MIN_KEY_SELECTIVITY."
         ),
     )
+    er_force_exact_min_selectivity: float = Field(
+        default=1.0,
+        description=(
+            "Min FULL-SCAN distinct-value ratio (0-1) required before a "
+            "caller's force_exact=True request (resolve_run()) is actually "
+            "honored. force_exact exists for match keys whose NAME doesn't "
+            "look ID-like (so they'd never qualify for exact_ids the normal "
+            "way) but whose VALUES the caller believes are unique -- e.g. "
+            "cpq_ingestion's generic 'text' fallback key. A caller's belief "
+            "alone is not proof: source=='default' in infer_match_keys_for_tag "
+            "means no heuristic or LLM named the key, which says nothing "
+            "about uniqueness, and forcing exact mode on a non-unique key "
+            "would merge every record sharing a value into one entity "
+            "(correctness regression, not a performance one). Default 1.0 "
+            "(zero tolerance) rather than a looser threshold (PR review N1, "
+            "2026-10-04): a repeated placeholder value (e.g. 'N/A') is "
+            "exactly the kind of real-world duplicate exact-match merging "
+            "must not tolerate, so any duplicate at all should reject the "
+            "request -- this is checked via _full_uniqueness_ratio() (a full "
+            "scan over every record, not a sample) specifically because a "
+            "sampled check could miss duplicates concentrated outside the "
+            "sample. Override with ARYX_ER_FORCE_EXACT_MIN_SELECTIVITY only "
+            "if a deployment genuinely needs to tolerate some duplicate rate."
+        ),
+    )
     er_key_selectivity_sample_size: int = Field(
         default=2000,
         description=(

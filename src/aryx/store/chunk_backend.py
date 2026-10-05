@@ -41,6 +41,7 @@ class PgChunkBackend:
             with conn.cursor() as cur:
                 cur.executemany(load("insert_block_member"),
                                 [(run_id, key, rid) for key, rid in rows])
+        logger.debug("PgChunkBackend.add_members run=%s rows=%d", run_id, len(rows))
 
     def todo_blocks(self, run_id: int) -> Iterator[str]:
         """Distinct block keys without a done marker, stable order."""
@@ -82,6 +83,7 @@ class PgChunkBackend:
             with conn.cursor() as cur:
                 cur.executemany(load("insert_match_edge"),
                                 [(run_id, l, r, s) for l, r, s in edges])
+        logger.debug("PgChunkBackend.add_edges run=%s edges=%d", run_id, len(edges))
 
     def mark_done(self, run_id: int, key: str) -> None:
         """Mark one block scored (the resume checkpoint)."""

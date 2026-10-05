@@ -77,9 +77,15 @@ def test_cpq_active_xml_file_routes_through_the_bridge_once_not_per_tag_plan():
                   cpq_active_for={"po.xml"})
 
     result["bridge"].assert_called_once()
-    result["project"].assert_called_once()
-    args, kwargs = result["project"].call_args
-    assert args == (XML_BYTES,)
+    # §3b (2026-10-04): doc_discovery.py no longer calls project_xml_to_
+    # raw_graph itself -- it hands raw bytes to resolve_and_relate_raw_
+    # graph(), which decides internally whether to parse eagerly or stream
+    # (ARYX_CPQ_STREAMING_PROJECTION_ENABLED). This mock staying uncalled
+    # is a deliberate regression guard that the old direct-call code path
+    # is gone from this layer, not an oversight.
+    result["project"].assert_not_called()
+    _, kwargs = result["bridge"].call_args
+    assert kwargs["xml_bytes"] == XML_BYTES
     assert callable(kwargs["should_stop"])
 
 
@@ -162,8 +168,11 @@ def test_job_progress_reports_a_cpq_ingestion_stage():
     tabular = [_xml_plan("po_PurchaseOrder.csv", "PurchaseOrder", "po.xml")]
     result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
 
+    # §8 (2026-10-04): stage label now carries a "{step}/{total}" prefix,
+    # the same convention _progress_otype/_progress_plan already use, so
+    # the UI can distinguish files within a multi-file cpq confirm.
     stages = [c.args[1] for c in result["jobs"].update_stage.call_args_list]
-    assert "CPQ Ingestion" in stages
+    assert any("CPQ Ingestion" in s for s in stages)
 
 
 # ── should_stop cancellation (this confirm path's cpq loop previously
@@ -207,14 +216,19 @@ def test_should_stop_is_forwarded_into_resolve_and_relate_raw_graph():
     assert callable(kwargs["should_stop"])
 
 
-def test_should_stop_is_forwarded_into_the_projection_parse_too():
-    """PR #429 review: the full XML parse (project_xml_to_raw_graph) runs
-    before resolve_and_relate_raw_graph's own per-tag checks can help, so it
-    needs should_stop too -- not just the bridge call."""
+def test_should_stop_is_forwarded_as_a_single_kwarg_not_duplicated():
+    """PR #429 review's original concern (the full XML parse needs
+    should_stop too, not just the bridge call) still holds -- it's just
+    resolve_and_relate_raw_graph()'s job now, not doc_discovery.py's,
+    since §3b (2026-10-04) moved the parse inside the bridge call itself.
+    See test_resolve_and_relate_raw_graph.py's
+    test_xml_bytes_with_streaming_disabled_falls_back_to_eager_path and
+    its should_stop-forwarding coverage for that layer."""
     tabular = [_xml_plan("po_PurchaseOrder.csv", "PurchaseOrder", "po.xml")]
     result = _run(tabular=tabular, approved_files=["po_PurchaseOrder.csv"], cpq_active_for={"po.xml"})
 
-    _, kwargs = result["project"].call_args
+    result["project"].assert_not_called()
+    _, kwargs = result["bridge"].call_args
     assert callable(kwargs["should_stop"])
 
 

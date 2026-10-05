@@ -104,9 +104,26 @@ services:
       - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-900}
       - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-7200}
       - ARYX_JOB_TIMEOUT_MINUTES=${ARYX_JOB_TIMEOUT_MINUTES:-120}
+      # Worker-lost detection (§0): much shorter than the above on purpose —
+      # see JobStore.sweep_stale_heartbeat's docstring. Default raised 10 ->
+      # 20 (PR review round 5, M1): config_core.py's own default moved to
+      # 20 because a sweep false alarm is destructive (the swept worker
+      # stops itself and PR #429's cleanup deletes its entities), but this
+      # explicit :-10 fallback here meant the OCI deployment never saw that
+      # change -- the env var is always set to something in this container,
+      # so the code's own default never applies. Only an environment that
+      # doesn't pass this var at all (e.g. local, non-compose runs) was
+      # ever picking up the new default.
+      - ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES=${ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES:-20}
       - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_WORKER_THREADS=${ARYX_WORKER_THREADS:-4}
       - ARYX_BATCH_SIZE=${ARYX_BATCH_SIZE:-500}
+      # Landing write batch (BatchSink -> aryx_landed_record executemany).
+      # Raised for Oracle ADB here: a 500-row batch was measured at ~2.4s
+      # in a 2026-10-04 live confirm (docs/ingestion/
+      # CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md §1 Tier 0),
+      # implying per-round-trip overhead dominates over row-write cost.
+      - ARYX_LANDING_BATCH_SIZE=${ARYX_LANDING_BATCH_SIZE:-3000}
       - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
       - ARYX_RELATE_WORKERS=${ARYX_RELATE_WORKERS:-4}
       - ARYX_RELATE_MAX_ATTRS=${ARYX_RELATE_MAX_ATTRS:-15}
@@ -207,7 +224,13 @@ services:
     networks:
       - aryx-net
     restart: unless-stopped
-    mem_limit: 3g
+    # Raised from 3g (docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md
+    # §3/§0): a single 240MB XML confirm job measured at ~90% (2.7GiB/3GiB)
+    # of this limit, and a 2026-10-04 live run saw one of this service's 2
+    # uvicorn workers (--workers 2, shared budget) silently die mid-job under
+    # that pressure. Mitigation only -- the real fix is §3b (stream the raw
+    # graph projection instead of holding it all in memory at once).
+    mem_limit: 8g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 15s

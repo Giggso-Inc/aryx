@@ -393,11 +393,15 @@ def test_ingest_confirmed_routes_cpq_raw_graph_preview_plan_to_resolve_relate(mo
             workspace_id=3,
         )
 
-    mock_project.assert_called_once()
-    project_args, project_kwargs = mock_project.call_args
-    assert project_args == (preview_plan["source_bytes"],)
-    assert callable(project_kwargs["should_stop"])
+    # §3b (2026-10-04): doc_discovery.py no longer calls project_xml_to_
+    # raw_graph directly -- it hands raw bytes to resolve_and_relate_raw_
+    # graph() via xml_bytes, which decides internally whether to parse
+    # eagerly or stream.
+    mock_project.assert_not_called()
     mock_resolve.assert_called_once()
+    _, resolve_kwargs = mock_resolve.call_args
+    assert resolve_kwargs["xml_bytes"] == preview_plan["source_bytes"]
+    assert callable(resolve_kwargs["should_stop"])
     _, resolve_kwargs = mock_resolve.call_args
     assert resolve_kwargs["workspace_id"] == 3
     assert resolve_kwargs["source_key"] == "order"
@@ -406,6 +410,132 @@ def test_ingest_confirmed_routes_cpq_raw_graph_preview_plan_to_resolve_relate(mo
     _, upsert_kwargs = mock_upsert.call_args
     assert upsert_kwargs["source_filename"] == "order.xml"
     assert upsert_kwargs["assets"] == []
+
+
+def _cpq_preview_plan(filename="order.summary.csv", source_filename="order.xml"):
+    return {
+        "filename": filename,
+        "data": b"nodes,edges\n4,3\n",
+        "ontology_type": "4 nodes / 3 edges",
+        "match_keys": [],
+        "source_filename": source_filename,
+        "source_bytes": b"<Root><Child/></Root>",
+        "cpq_raw_graph_preview": True,
+    }
+
+
+def test_ingest_confirmed_cpq_source_file_marks_complete_and_persists_state(monkeypatch):
+    """§5 of docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_
+    2026-10-04.md: the cpq_ingestion loop previously never participated in
+    completed_plans tracking at all, unlike the generic CSV/_run_one_plan
+    path -- a discovery_id was given, but a crash mid-run (or a later
+    re-confirm) always re-resolved every tag from scratch. Now it must
+    persist state exactly like _run_one_plan does."""
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
+    get_cpq_ingestion_settings.cache_clear()
+
+    preview_plan = _cpq_preview_plan()
+    data = {"mentions": [], "tabular": [preview_plan]}
+
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.DatasourceStore"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.upsert_xml_catalog_entry"), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph") as mock_resolve, \
+         patch.object(doc_discovery, "_update_confirm_state") as mock_update_state, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        mock_resolve.return_value = {"resolved": 4}
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["order.summary.csv"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="cpq-resume-confirm-job",
+            workspace_id=3, discovery_id="disc-1",
+        )
+
+    mock_resolve.assert_called_once()
+    mock_update_state.assert_called_once()
+    disc_id, state = mock_update_state.call_args[0]
+    assert disc_id == "disc-1"
+    # PR review round 4, N3: cpq entries are prefixed ("cpq:...") to keep
+    # them out of the generic tabular plan["filename"] key space.
+    assert state["completed_plans"] == ["cpq:order.xml"]
+
+
+def test_ingest_confirmed_skips_already_completed_cpq_source_file_on_resume(monkeypatch):
+    """Resuming a discovery whose confirm_state already lists this XML
+    file's prefixed source_filename as completed must skip it entirely --
+    not re-resolve it and duplicate every entity. The "cpq:" prefix (PR
+    review round 4, N3) keeps this out of the generic tabular
+    plan["filename"] key space, which uses a different, per-tag-derived
+    name and would never collide, but a shared unprefixed set made that
+    guarantee implicit rather than explicit."""
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
+    get_cpq_ingestion_settings.cache_clear()
+
+    preview_plan = _cpq_preview_plan()
+    data = {"mentions": [], "tabular": [preview_plan]}
+
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.DatasourceStore"), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph") as mock_resolve, \
+         patch.object(doc_discovery, "_update_confirm_state") as mock_update_state, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["order.summary.csv"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="cpq-resume-confirm-job-2",
+            workspace_id=3, discovery_id="disc-1",
+            confirm_state={"completed_plans": ["cpq:order.xml"]},
+        )
+
+    mock_resolve.assert_not_called()
+    # Nothing new to persist -- the file was already done before this run started.
+    mock_update_state.assert_not_called()
+
+
+def test_ingest_confirmed_cpq_completion_preserves_earlier_failed_plans(monkeypatch):
+    """PR review round 4, N3: update_confirm_state() replaces the WHOLE
+    persisted state (no merge) -- this write used to hardcode
+    failed_plans: [], silently discarding any failed-plan record an
+    earlier attempt in this same confirm run had already written. Must
+    carry forward whatever this call's own incoming confirm_state had."""
+    monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
+    monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
+    from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
+    get_cpq_ingestion_settings.cache_clear()
+
+    preview_plan = _cpq_preview_plan()
+    data = {"mentions": [], "tabular": [preview_plan]}
+
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettingsWithDsn()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.DatasourceStore"), \
+         patch("aryx.pipeline.doc_discovery.doc_discovery_persist.upsert_xml_catalog_entry"), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph") as mock_resolve, \
+         patch.object(doc_discovery, "_update_confirm_state") as mock_update_state, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        mock_resolve.return_value = {"resolved": 4}
+        ingest_confirmed(
+            data=data,
+            approved_types=[], approved_files=["order.summary.csv"],
+            broker=MagicMock(), jobs=MagicMock(), job_id="cpq-resume-confirm-job-3",
+            workspace_id=3, discovery_id="disc-1",
+            confirm_state={"completed_plans": [], "failed_plans": ["earlier_bad_file.csv"]},
+        )
+
+    _disc_id, state = mock_update_state.call_args[0]
+    assert state["failed_plans"] == ["earlier_bad_file.csv"]
 
 
 def test_ingest_confirmed_skips_layout_file_too_large_without_failing():
