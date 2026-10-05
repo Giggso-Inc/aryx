@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Any, Iterator
 
@@ -49,16 +50,23 @@ _EXPLAIN_PLAN_MAX_CHARS = 2000
 # different, independently-slow one.
 _EXPLAIN_PLAN_RATE_LIMIT_SECONDS = 600
 _last_explain_plan_capture: dict[str, float] = {}
+# PR review round 5 (nit): aryx-api runs multiple uvicorn workers/threads
+# sharing this module -- without a lock, two threads could both read a
+# stale `last` for the same op before either writes, letting both capture
+# a plan in the same window (harmless -- at most one redundant capture,
+# never a correctness issue -- but cheap enough to just close).
+_explain_plan_capture_lock = threading.Lock()
 
 
 def _should_capture_explain_plan(op: str) -> bool:
     """True at most once per `op` per _EXPLAIN_PLAN_RATE_LIMIT_SECONDS."""
     now = time.monotonic()
-    last = _last_explain_plan_capture.get(op)
-    if last is not None and now - last < _EXPLAIN_PLAN_RATE_LIMIT_SECONDS:
-        return False
-    _last_explain_plan_capture[op] = now
-    return True
+    with _explain_plan_capture_lock:
+        last = _last_explain_plan_capture.get(op)
+        if last is not None and now - last < _EXPLAIN_PLAN_RATE_LIMIT_SECONDS:
+            return False
+        _last_explain_plan_capture[op] = now
+        return True
 
 
 def _capture_explain_plan(cur: Any, sql: str) -> str | None:

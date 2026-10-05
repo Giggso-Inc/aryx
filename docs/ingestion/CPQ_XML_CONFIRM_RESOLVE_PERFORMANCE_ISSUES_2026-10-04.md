@@ -1445,3 +1445,93 @@ sweep across the touched areas (`entity_store`, `doc_discovery`,
 `ontology_delete_type`, `resolve_and_relate_raw_graph`) shows the exact
 same 10 pre-existing, already-documented caplog/logging-propagation
 flakiness failures as before this round, no new ones.
+
+---
+
+## Update — PR review round 5 (2026-10-05)
+
+One High, two Medium, two Low, and two Nit findings. All verified against
+the actual code first.
+
+- **High, confirmed and fixed: migration tracking was filename-only.**
+  `aryx_schema_migrations` recorded a filename once applied and never ran
+  that file again — but this repo DOES edit already-applied migration
+  files in practice (confirmed: `graph_schema.sql` gained
+  `idx_graph_edge_workspace_name` on 2026-09-10 after already shipping;
+  `0006_documents.sql`/`0007_jobs.sql` each have 4 commits). An edit like
+  that would never reach a database that had already recorded the file,
+  with nothing logged. Fixed: each applied file's SHA-256 is now stored
+  alongside its filename (`checksum` column, added via an idempotent
+  `ALTER TABLE` for a table that already existed pre-checksum). A later
+  boot whose file content no longer matches the recorded checksum logs a
+  loud, persistent `raven_log` ERROR (`ARYX_MIGRATE_CHECKSUM_DRIFT`) —
+  every boot until resolved, not just once — but deliberately does **not**
+  auto-re-run the file: a changed migration could be a non-idempotent edit
+  that would fail or do the wrong thing a second time, so this surfaces
+  the drift for a human rather than guessing it's safe to replay. A
+  pre-checksum row (`checksum IS NULL`) is treated as "unknown," not
+  "drifted," so the first boot after this ships doesn't fire a false
+  alarm for every migration ever applied before this existed. 9 new
+  tests.
+- **Medium, confirmed, deliberately not changed:** `cpq_structural_leaf_
+  fold_enabled` and `cpq_force_exact_enabled` default to `True`, changing
+  the curated graph's shape (scalar XML tags become parent properties
+  instead of their own entities) without a real confirm-plus-quote job
+  having been run against this branch yet (only synthetic/live-verified
+  pipeline tests, see the earlier live-verification update). The reviewer
+  suggested defaulting both to `False` until that real test happens.
+  **Explicitly decided to keep both `True`** — both already ship live on
+  `dev_oci`, and flipping the default would revert the actual feature
+  this whole investigation exists to deliver, for everyone currently
+  running this branch, not just future work. Recorded here as an open,
+  known risk rather than silently accepted: if a real confirm+quote job
+  surfaces a graph-shape or merge-determinism problem traceable to either
+  flag, set `ARYX_CPQ_STRUCTURAL_LEAF_FOLD_ENABLED=false` /
+  `ARYX_CPQ_FORCE_EXACT_ENABLED=false` and reopen this item.
+- **Medium, confirmed and fixed (the simpler of two offered remedies):**
+  a heartbeat-sweep false alarm is destructive, not just a wrong status —
+  `make_should_stop()` treats a swept `failed` job as a stop signal, and
+  PR #429's mid-loop cancellation cleanup then deletes the entities
+  written so far. Heartbeat coverage on the confirm path is good (per-tag
+  stages, per-block resolve progress, chunked-resolve and landing
+  heartbeats, per-batch save/projection checkpoints) but not total — one
+  long operation (an embedding/LLM call retrying under 429 throttling, or
+  one large project-stage batch) can still go several minutes with no
+  `update_stage` call, and the prior 10-minute default left too little
+  margin. Raised `ARYX_JOB_HEARTBEAT_TIMEOUT_MINUTES` default from 10 to
+  20. The reviewer's other suggestion (keep the written work when the
+  stop was caused by the sweep rather than the user) is a more invasive,
+  separate change — distinguishing cause-of-stop throughout the
+  cancellation-cleanup path — not attempted here.
+- **Low, confirmed and fixed: stale test fake.**
+  `tests/test_exact_id_resolution.py::test_resolve_run_wires_exact_ids_
+  through` failed on this branch (also standalone) because `resolve_run()`
+  now calls `store.save(results, on_progress=_emit)` and the test's fake
+  store only accepted the positional argument. `EntityStore` (the only
+  real implementation) already accepts `on_progress` — confirmed a stale
+  test fixture, not a production bug. Fixed the lambda's signature.
+- **Low, confirmed and partially fixed: Raven logging gaps.** The
+  "unexpected migration error, NOT marking applied" case only went to
+  `logger.error` — now also a `raven_log` ERROR with an error_code
+  (`ARYX_MIGRATE_UNEXPECTED_ERROR`), so it can be found/alerted on the
+  same way every other real failure in this codebase can. The broader
+  point — `.raven/decision-map-baseline.json` gained 5 new (file, symbol)
+  entries this session instead of dedicated `raven_log` calls
+  (`resolve_relate.py`'s routing `<if>` and `resolve_and_relate_raw_
+  graph`, `xml_projector.py`'s `iter_raw_graph`, and `oracle_migrate.py`'s
+  `_ensure_tracking_table`/`_mark_applied`) — was accepted as baseline
+  debt via `--write-baseline` rather than instrumented, consistent with
+  this project's established practice for decision-map findings
+  throughout this branch's history. Noted here explicitly rather than
+  left silent, since the reviewer's point (baselining isn't the same as
+  fixing) is fair.
+- **Nits:** `_last_explain_plan_capture`'s rate-limit check-then-set was
+  unlocked — harmless (worst case, two threads both capture a plan in the
+  same window once), but cheap to close; added a `threading.Lock`.
+  Folded structural-leaf values build up as an unbounded Python list on
+  the parent node (a parent with thousands of repeated scalar children
+  gets one very large JSON property) — not fixed: capping would silently
+  drop data, which is worse than a large property, and the right cap (if
+  any) is a product decision this investigation isn't positioned to make
+  unilaterally. Documented here as a known, accepted characteristic of
+  the current folding behavior.

@@ -1,12 +1,20 @@
 """Apply Oracle ADB 26ai DDL migrations from store/migrations_oracle/."""
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
+
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
 _ORACLE_MIGRATIONS_DIR = Path(__file__).parent / "migrations_oracle"
+
+
+def _checksum(raw: str) -> str:
+    """SHA-256 hex digest of a migration file's raw text content."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _split_blocks(sql: str) -> list[str]:
@@ -45,13 +53,19 @@ def _split_blocks(sql: str) -> list[str]:
 _TRACKING_TABLE_DDL = """
 CREATE TABLE aryx_schema_migrations (
     filename VARCHAR2(500) PRIMARY KEY,
+    checksum VARCHAR2(64),
     applied_at TIMESTAMP DEFAULT SYSTIMESTAMP
 )
 """
 
+_ADD_CHECKSUM_COLUMN_DDL = "ALTER TABLE aryx_schema_migrations ADD (checksum VARCHAR2(64))"
+
 
 def _ensure_tracking_table(cur) -> None:
-    """Idempotently create the applied-migrations tracking table.
+    """Idempotently create the applied-migrations tracking table, and add
+    the ``checksum`` column to a table that already exists from before it
+    was added (PR review round 5, N1 -- see this module's own docstring
+    for the full rationale).
 
     No ``IF NOT EXISTS`` in Oracle DDL for CREATE TABLE -- catch the
     "already exists" error the same way every other idempotent migration
@@ -63,11 +77,18 @@ def _ensure_tracking_table(cur) -> None:
     except oracledb.Error as exc:
         if "ORA-00955" not in str(exc):  # name already used by an existing object
             raise
+        # Table already existed (pre-checksum) -- add the column separately.
+        try:
+            cur.execute(_ADD_CHECKSUM_COLUMN_DDL)
+        except oracledb.Error as exc2:
+            if "ORA-01430" not in str(exc2):  # column already exists
+                raise
 
 
-def _already_applied(cur) -> set[str]:
-    cur.execute("SELECT filename FROM aryx_schema_migrations")
-    return {row[0] for row in cur.fetchall()}
+def _already_applied(cur) -> dict[str, str | None]:
+    """Map filename -> its recorded checksum (None for a pre-checksum row)."""
+    cur.execute("SELECT filename, checksum FROM aryx_schema_migrations")
+    return {row[0]: row[1] for row in cur.fetchall()}
 
 
 # Oracle error codes this module already knows are "already applied" noise,
@@ -98,8 +119,9 @@ def _already_applied(cur) -> set[str]:
 _EXPECTED_IDEMPOTENT_ORA_CODES = ("ORA-01430", "ORA-00955", "ORA-02443", "ORA-01408", "ORA-00001")
 
 
-def _mark_applied(cur, filename: str) -> None:
-    """Record a file as applied; tolerates a concurrent duplicate insert.
+def _mark_applied(cur, filename: str, checksum: str) -> None:
+    """Record a file as applied, with its content checksum; tolerates a
+    concurrent duplicate insert.
 
     aryx-api runs 2 uvicorn workers (docker-compose-oci.yml), both of which
     call apply_oracle_migrations() at startup. On the first boot after this
@@ -108,13 +130,23 @@ def _mark_applied(cur, filename: str) -> None:
     and both attempt to apply + mark it -- the second INSERT then hits
     ORA-00001 (PR review M3). Catching it here (not re-raising, not
     retrying) is correct: the row they're racing to insert is identical
-    (just a filename), so "someone already marked this" and "I'm marking
-    this" have the same end state.
+    (just a filename and checksum), so "someone already marked this" and
+    "I'm marking this" have the same end state.
+
+    Only ever called for a file not yet in ``applied`` -- a file whose
+    checksum has drifted (PR review round 5, N1) is warned about but its
+    row is deliberately left untouched, not re-inserted/updated here, so
+    the drift warning fires on every subsequent boot until someone
+    consciously resolves it (fixes the file back, or accepts the edit by
+    updating the stored checksum directly) -- silently going quiet after
+    one warning would defeat the point for something that should never
+    happen in normal operation.
     """
     import oracledb  # noqa: PLC0415
     try:
         cur.execute(
-            "INSERT INTO aryx_schema_migrations (filename) VALUES (:1)", [filename],
+            "INSERT INTO aryx_schema_migrations (filename, checksum) VALUES (:1, :2)",
+            [filename, checksum],
         )
     except oracledb.Error as exc:
         if "ORA-00001" not in str(exc):
@@ -136,6 +168,17 @@ def apply_oracle_migrations(dsn: str) -> None:
     file and re-caught the same "already exists/already dropped" Oracle
     errors every time, which was harmless but noisy and meant a genuinely
     new failure could blend into that same expected-error noise.
+
+    Checksummed since PR review round 5, N1: filename-only tracking meant
+    an edit to an already-applied migration file would never reach a
+    database that had already recorded it, with nothing logged -- and this
+    repo does edit applied migration files in practice. Each applied file's
+    SHA-256 is stored alongside its filename; a mismatch on a later boot is
+    logged loudly (raven_log ERROR, ``ARYX_MIGRATE_CHECKSUM_DRIFT``) but the
+    file is still NOT re-run automatically -- a changed migration could be
+    a non-idempotent DDL edit that would fail or do the wrong thing on a
+    second run, so this surfaces the drift for a human to look at rather
+    than guessing it's safe to replay.
 
     Args:
         dsn: Oracle ADB connection string (e.g. tcps://host:port/service_name).
@@ -171,10 +214,38 @@ def apply_oracle_migrations(dsn: str) -> None:
         applied = _already_applied(cur)
         skipped_files = 0
         for path in files:
+            raw = path.read_text(encoding="utf-8")
+            checksum = _checksum(raw)
             if path.name in applied:
+                recorded = applied[path.name]
+                # PR review round 5, N1: this repo DOES edit already-applied
+                # migration files in practice (confirmed: graph_schema.sql
+                # gained idx_graph_edge_workspace_name on 2026-09-10 after
+                # already shipping; 0006_documents.sql/0007_jobs.sql each
+                # have 4 commits). Filename-only tracking meant such an edit
+                # would silently never reach a database that already
+                # recorded the file, with nothing logged. `recorded is None`
+                # covers a row written before this column existed -- not
+                # drift, just unknown; backfilling it would need re-reading
+                # a file version that's already gone, so it's left None and
+                # not warned about once, not repeatedly.
+                if recorded is not None and recorded != checksum:
+                    logger.error(
+                        "oracle_migrate: file=%s was already applied but its content "
+                        "has changed since (checksum drift) -- NOT re-running it "
+                        "(could be non-idempotent); schema may be missing this edit",
+                        path.name,
+                    )
+                    raven_log(
+                        "ERROR", "P2",
+                        "oracle_migrate.checksum_drift an already-applied migration file's content changed",
+                        error_code="ARYX_MIGRATE_CHECKSUM_DRIFT",
+                        context={"file": path.name, "recorded_checksum": recorded,
+                                 "current_checksum": checksum, "result": "not_reapplied",
+                                 "reason_code": "APPLIED_FILE_EDITED_AFTER_SHIPPING"},
+                    )
                 skipped_files += 1
                 continue
-            raw = path.read_text(encoding="utf-8")
             blocks = _split_blocks(raw)
             unexpected_error = False
             for block in blocks:
@@ -199,8 +270,19 @@ def apply_oracle_migrations(dsn: str) -> None:
                     "error — NOT marking applied, will retry next boot",
                     path.name,
                 )
+                # PR review round 5, Low: this left the schema incomplete
+                # with only a plain logger.error -- no raven_log, no
+                # error_code, so it couldn't be found/alerted on the same
+                # way every other real failure in this codebase can be.
+                raven_log(
+                    "ERROR", "P1",
+                    "oracle_migrate.unexpected_error migration file had a non-idempotent error, schema incomplete",
+                    error_code="ARYX_MIGRATE_UNEXPECTED_ERROR",
+                    context={"file": path.name, "result": "not_applied",
+                             "reason_code": "NON_IDEMPOTENT_BLOCK_ERROR"},
+                )
                 continue
-            _mark_applied(cur, path.name)
+            _mark_applied(cur, path.name, checksum)
             logger.info("oracle_migrate: applied file=%s blocks=%d",
                         path.name, len(blocks))
         if skipped_files:

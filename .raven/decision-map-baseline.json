@@ -14863,57 +14863,57 @@
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      171,
+      179,
       "__init__"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      210,
+      218,
       "_json_output_handler"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      220,
+      228,
       "execute"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      230,
+      238,
       "<if>"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      271,
+      279,
       "executemany"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      316,
+      324,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_cursor.py",
-      370,
+      378,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      53,
+      64,
       "_ensure_tracking_table"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      101,
+      122,
       "_mark_applied"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      124,
+      156,
       "apply_oracle_migrations"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      158,
+      201,
       "<try>"
     ],
     [

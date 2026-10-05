@@ -212,7 +212,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         )
 
     def _run_with(self, migration_files: dict[str, str], execute_side_effect, *,
-                  already_applied: set[str] | None = None):
+                  already_applied: set[str] | dict[str, str | None] | None = None):
         """Write migration_files into a temp dir, run apply_oracle_migrations
         against a mocked connection, return the mock cursor for assertions.
 
@@ -220,6 +220,10 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         every cur.execute() call EXCEPT the tracking-table bootstrap/select/
         insert statements, which are handled here so each test only has to
         think about its own migration files' block content.
+
+        already_applied: a set means "already applied, no recorded checksum"
+        (None -- the pre-checksum-column row shape); a dict maps filename to
+        an explicit recorded checksum string, for checksum-drift tests.
         """
         import tempfile
         from pathlib import Path
@@ -228,7 +232,10 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         import oracledb
 
         cfg_mod.get_settings.cache_clear()
-        already_applied = already_applied or set()
+        if already_applied is None:
+            already_applied = {}
+        elif isinstance(already_applied, set):
+            already_applied = {f: None for f in already_applied}
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -254,7 +261,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
                 execute_side_effect(sql)
 
             mock_cur.execute.side_effect = execute
-            mock_cur.fetchall.return_value = [(f,) for f in already_applied]
+            mock_cur.fetchall.return_value = list(already_applied.items())
 
             mock_conn = MagicMock()
             mock_conn.cursor.return_value = mock_cur
@@ -330,7 +337,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         mock_cur.execute.side_effect = oracledb.Error(
             "ORA-00001: unique constraint violated",
         )
-        _mark_applied(mock_cur, "0001_test.sql")  # must not raise
+        _mark_applied(mock_cur, "0001_test.sql", "deadbeef")  # must not raise
 
     def test_non_duplicate_error_in_mark_applied_still_raises(self) -> None:
         from aryx.store.oracle_migrate import _mark_applied
@@ -341,7 +348,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
             "ORA-00942: table or view does not exist",
         )
         with self.assertRaises(oracledb.Error):
-            _mark_applied(mock_cur, "0001_test.sql")
+            _mark_applied(mock_cur, "0001_test.sql", "deadbeef")
 
     def test_already_applied_file_is_skipped_entirely_no_execute(self) -> None:
         def side_effect(sql):
@@ -353,6 +360,152 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
             already_applied={"0001_test.sql"},
         )
         self.assertEqual(inserted, [])  # not re-inserted either
+
+    # ── PR review round 5, N1: checksum tracking ────────────────────────────
+
+    def test_marks_applied_file_with_its_content_checksum(self) -> None:
+        """A newly-applied file's INSERT must carry a real SHA-256 checksum,
+        not a placeholder -- the whole point is detecting a later edit."""
+        from aryx.store.oracle_migrate import _checksum
+
+        content = "ALTER TABLE t ADD (z NUMBER);"
+        captured_params = {}
+
+        def side_effect(sql):
+            return
+
+        import aryx.store.oracle_migrate as mod
+        import tempfile
+        from pathlib import Path
+        import aryx.config as cfg_mod
+        import oracledb
+
+        cfg_mod.get_settings.cache_clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "0001_test.sql").write_text(content, encoding="utf-8")
+            mock_cur = MagicMock()
+
+            def execute(sql, params=None):
+                if "CREATE TABLE aryx_schema_migrations" in sql:
+                    return
+                if sql.strip().upper().startswith("SELECT FILENAME"):
+                    return
+                if sql.strip().upper().startswith("INSERT INTO ARYX_SCHEMA_MIGRATIONS"):
+                    captured_params["filename"], captured_params["checksum"] = params
+                    return
+                side_effect(sql)
+
+            mock_cur.execute.side_effect = execute
+            mock_cur.fetchall.return_value = []
+            mock_conn = MagicMock()
+            mock_conn.cursor.return_value = mock_cur
+
+            with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
+                 patch.object(oracledb, "connect", return_value=mock_conn), \
+                 patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
+                mod.apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+        self.assertEqual(captured_params["filename"], "0001_test.sql")
+        self.assertEqual(captured_params["checksum"], _checksum(content))
+
+    def test_unchanged_already_applied_file_skips_quietly_no_drift_warning(self) -> None:
+        """Checksum matches the recorded one -- same skip-without-execute
+        behavior as before, no drift warning raised."""
+        from aryx.store.oracle_migrate import _checksum
+
+        content = "ALTER TABLE t ADD (z NUMBER);"
+
+        def side_effect(sql):
+            raise AssertionError(f"should not execute block SQL for an unchanged file: {sql}")
+
+        with patch("aryx.store.oracle_migrate.raven_log") as mock_raven_log:
+            _cur, inserted = self._run_with(
+                {"0001_test.sql": content}, side_effect,
+                already_applied={"0001_test.sql": _checksum(content)},
+            )
+        self.assertEqual(inserted, [])
+        drift_calls = [c for c in mock_raven_log.call_args_list
+                      if "CHECKSUM_DRIFT" in str(c)]
+        self.assertEqual(drift_calls, [])
+
+    def test_checksum_drift_on_already_applied_file_warns_but_does_not_rerun(self) -> None:
+        """PR review round 5, N1: an already-applied file whose content has
+        since changed must be loudly warned about (raven_log ERROR,
+        ARYX_MIGRATE_CHECKSUM_DRIFT) but NOT re-executed -- re-running an
+        edited migration automatically could be wrong if it isn't
+        idempotent."""
+        def side_effect(sql):
+            raise AssertionError(f"must not execute blocks for a drifted file: {sql}")
+
+        with patch("aryx.store.oracle_migrate.raven_log") as mock_raven_log:
+            _cur, inserted = self._run_with(
+                {"0001_test.sql": "ALTER TABLE t ADD (z NUMBER);"},  # current content
+                side_effect,
+                already_applied={"0001_test.sql": "stale-checksum-from-before-the-edit"},
+            )
+
+        self.assertEqual(inserted, [])  # not re-inserted
+        drift_calls = [c for c in mock_raven_log.call_args_list
+                      if c.kwargs.get("error_code") == "ARYX_MIGRATE_CHECKSUM_DRIFT"]
+        self.assertEqual(len(drift_calls), 1)
+        self.assertEqual(drift_calls[0].kwargs["context"]["file"], "0001_test.sql")
+
+    def test_pre_checksum_row_with_none_recorded_is_not_treated_as_drift(self) -> None:
+        """A row written before the checksum column existed has
+        recorded=None -- must skip quietly like before, not fire a false
+        drift warning for every pre-existing migration on the first boot
+        after this ships."""
+        def side_effect(sql):
+            raise AssertionError("should not execute blocks for an already-applied file")
+
+        with patch("aryx.store.oracle_migrate.raven_log") as mock_raven_log:
+            _cur, inserted = self._run_with(
+                {"0001_test.sql": "ALTER TABLE t ADD (z NUMBER);"}, side_effect,
+                already_applied={"0001_test.sql": None},
+            )
+
+        self.assertEqual(inserted, [])
+        drift_calls = [c for c in mock_raven_log.call_args_list
+                      if "CHECKSUM_DRIFT" in str(c)]
+        self.assertEqual(drift_calls, [])
+
+    def test_ensure_tracking_table_adds_checksum_column_to_pre_existing_table(self) -> None:
+        """_ensure_tracking_table must fall back to ALTER TABLE ADD
+        (checksum) when CREATE TABLE fails because the table already
+        exists from before the checksum column was added."""
+        from aryx.store.oracle_migrate import _ensure_tracking_table
+        import oracledb
+
+        calls = []
+        mock_cur = MagicMock()
+
+        def execute(sql, params=None):
+            calls.append(sql)
+            if "CREATE TABLE aryx_schema_migrations" in sql:
+                raise oracledb.Error("ORA-00955: name is already used by an existing object")
+            # ALTER TABLE ADD (checksum ...) succeeds this time
+            return
+
+        mock_cur.execute.side_effect = execute
+        _ensure_tracking_table(mock_cur)
+
+        self.assertTrue(any("ALTER TABLE aryx_schema_migrations" in c for c in calls))
+
+    def test_ensure_tracking_table_tolerates_checksum_column_already_present(self) -> None:
+        """A boot after the column was already added by an earlier boot
+        must not raise on ORA-01430 (column already exists)."""
+        from aryx.store.oracle_migrate import _ensure_tracking_table
+        import oracledb
+
+        def execute(sql, params=None):
+            if "CREATE TABLE aryx_schema_migrations" in sql:
+                raise oracledb.Error("ORA-00955: name is already used by an existing object")
+            raise oracledb.Error("ORA-01430: column being added already exists in table")
+
+        mock_cur = MagicMock()
+        mock_cur.execute.side_effect = execute
+        _ensure_tracking_table(mock_cur)  # must not raise
 
 
 if __name__ == "__main__":

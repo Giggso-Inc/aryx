@@ -96,7 +96,7 @@ class CoreSettingsMixin(BaseSettings):
         description="Max records per blocking group in resolution. Groups over this size are logged and skipped.",
     )
     job_heartbeat_timeout_minutes: int = Field(
-        default=10,
+        default=20,
         description=(
             "Minutes of zero job-status updates before a job is presumed to have "
             "lost its worker and is marked failed (JobStore.sweep_stale_heartbeat, "
@@ -104,11 +104,18 @@ class CoreSettingsMixin(BaseSettings):
             "ARYX_JOB_TIMEOUT_MINUTES (default 120) -- that setting tolerates a "
             "legitimately long-running job; this one detects a crashed/restarted "
             "worker, which stops producing ANY update, usually within seconds. "
-            "Safe to keep short only because the cpq XML raw-graph resolve path "
-            "(and the chunked entity-resolution path it can route into) now emit "
-            "periodic on_progress heartbeats through their previously-silent "
-            "phases specifically so this check has something recent to compare "
-            "against — see docs/ingestion/"
-            "CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md §0."
+            "The cpq XML raw-graph resolve path (and the chunked entity-resolution "
+            "path it can route into) emit periodic on_progress heartbeats through "
+            "their previously-silent phases specifically so this check has "
+            "something recent to compare against — see docs/ingestion/"
+            "CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md §0. Raised "
+            "from 10 to 20 (PR review round 5): a sweep false alarm is destructive, "
+            "not just a wrong status -- make_should_stop() treats a swept 'failed' "
+            "job as a stop signal, and PR #429's cancellation cleanup then deletes "
+            "the entities the worker had already written. Heartbeat coverage is "
+            "good but not total -- one long operation (an embedding/LLM call "
+            "retrying under 429 throttling, or one large project-stage batch) can "
+            "still go several minutes with no update_stage call, and 10 minutes "
+            "left too little margin against that happening twice in a row."
         ),
     )
