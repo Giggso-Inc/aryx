@@ -22,6 +22,7 @@ from typing import Any
 from aryx.api.ask_model_leaf.ask_model_leaf_bind import (
     bind_turn_model_context,
     pick_top_text_match,
+    prefix_tie_leaves,
     seed_model_vn_from_resolution,
 )
 from aryx.api.ask_model_leaf.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
@@ -129,6 +130,12 @@ def _resolve_model_leaf(
             leaf for leaf in _leaf_candidates
             if len(_norm_leaf(leaf)) >= 5 and _norm_leaf(leaf) in _combined_norm
         ]
+        # F16 (cpq_model_prefix_tie_ask_enabled, default off): the wording
+        # names a model that is a strict prefix of another sellable model on a
+        # different node -> ask which one instead of silently taking it.
+        _tie_leaves = prefix_tie_leaves(_leaf_candidates)
+        if _tie_leaves:
+            return _build_model_leaf_ask_prompt(req, session, _tie_leaves)
         if len(_text_matches) == 1:
             _resolved_leaf = _text_matches[0]
         else:

@@ -113,3 +113,26 @@ def pick_top_text_match(text_matches: list[str]) -> str | None:
         pick, text_matches, node,
     )
     return pick
+
+
+def prefix_tie_leaves(leaf_candidates: list[str]) -> list[str]:
+    """F16 (`cpq_model_prefix_tie_ask_enabled`, default off): the catalog's own
+    leaf names for the resolved model and every model it prefix-ties with, in
+    that order, or [] when the flag is off, nothing is bound, there is no tie,
+    or fewer than two of the tied nodes are real leaf candidates (so the
+    prompt only ever lists leaves the pending-reply handler can resolve)."""
+    if not get_settings().cpq_model_prefix_tie_ask_enabled:
+        return []
+    ctx = _model_resolution.get_turn()
+    res = ctx.resolution if ctx is not None else None
+    if res is None or res.chosen is None or not res.prefix_tie:
+        return []
+    out: list[str] = []
+    for cand in (res.chosen, *res.prefix_tie):
+        leaf = next(
+            (lf for lf in leaf_candidates if cand.node_name and _norm_leaf(lf) == _norm_leaf(cand.node_name)),
+            None,
+        )
+        if leaf and leaf not in out:
+            out.append(leaf)
+    return out if len(out) >= 2 else []

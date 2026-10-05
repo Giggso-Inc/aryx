@@ -31,6 +31,7 @@ from aryx.cpq.model_resolution_catalog import (
     catalog_node_count,
     load_catalog,
 )
+from aryx.cpq.model_resolution_tie import compute_prefix_tie
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -103,6 +104,9 @@ class ModelResolution:
     deciding_step: str
     source: str  # "hint" | "unresolved"
     scope_node_ids: frozenset[str]
+    # Sellable models on other nodes whose name extends the chosen model's
+    # matched text (see model_resolution_tie); () unless the flag is on.
+    prefix_tie: tuple[ModelCandidate, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -161,14 +165,9 @@ def resolve_model(
     data problems — an unresolvable wording returns source='unresolved'."""
     data = load_catalog(workspace_id, catalog_prefix, rdb)
     hint_norm = _norm(hint_text)
-    cands: list[ModelCandidate] = []
-    for cpq, m in data.models.items():
-        matched = _match_kind(m["display"] | {cpq}, hint_norm)
-        if matched is None:
-            continue
-        kind, match_len = matched
+    def build(cpq: str, m: dict, kind: str = "partial", match_len: int = 0) -> ModelCandidate:
         node_id = m["node_id"]
-        cands.append(ModelCandidate(
+        return ModelCandidate(
             cpq_model=cpq,
             display_names=frozenset(m["display"]),
             node_name=data.nodes_by_id[node_id][0] if node_id else None,
@@ -178,12 +177,20 @@ def resolve_model(
             is_upgrade=cpq in data.upgrade_models or (node_id in data.upgrade_node_ids),
             soft_deleted=bool(_SOFT_DELETED_RE.search(cpq)),
             match_len=match_len,
-        ))
+        )
+
+    cands: list[ModelCandidate] = []
+    for cpq, m in data.models.items():
+        matched = _match_kind(m["display"] | {cpq}, hint_norm)
+        if matched is None:
+            continue
+        cands.append(build(cpq, m, matched[0], matched[1]))
     chosen, alternatives, step = rank_candidates(sorted(cands, key=lambda c: c.cpq_model))
     scope = frozenset(_ancestors(chosen.node_id, data.nodes_by_id)) if chosen else frozenset()
     return ModelResolution(
         chosen=chosen, alternatives=alternatives, deciding_step=step,
         source="hint" if chosen else "unresolved", scope_node_ids=scope,
+        prefix_tie=compute_prefix_tie(chosen, hint_norm, data, build),
     )
 
 
