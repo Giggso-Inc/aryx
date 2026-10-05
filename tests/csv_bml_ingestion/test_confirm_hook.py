@@ -121,6 +121,7 @@ def test_the_confirm_step_sends_approved_csvs_to_the_bml_pipeline_when_enabled(m
     plans = bml.call_args.args[0]
     assert [p["filename"] for p in plans] == ["whitelist.csv"]
     assert (bml.call_args.kwargs["workspace_id"], bml.call_args.kwargs["job_id"]) == (879, "job-docs")
+    assert callable(bml.call_args.kwargs["should_stop"])                         # the job's cancellation check is passed in
     land.assert_called_once()                                                    # additive: the existing landing still runs
     bml.call_args.kwargs["on_stage"]("Processing whitelist.csv (csv_bml_ingestion)")
     assert jobs.update_stage.call_args.args[:2] == ("job-docs", "CSV BML Ingestion")
@@ -131,3 +132,45 @@ def test_the_confirm_step_does_not_touch_the_bml_pipeline_when_the_switch_is_off
                             approved=["whitelist.csv"])
     bml.assert_not_called()
     land.assert_called_once()                                                    # behaviour unchanged
+
+
+def test_cancelling_the_job_stops_the_remaining_files(hook):
+    asked = []
+
+    def stop_after_one():
+        asked.append(1)
+        return len(asked) > 1                                                    # ok for the first file, stop for the second
+    out = ch.ingest_csv_plans_with_bml([_plan("good.csv"), _plan("nomatch.csv")], workspace_id=7, job_id="j",
+                                       should_stop=stop_after_one)
+    assert [r.source for r in out] == ["good.csv"] and FakeSession.instances[0].calls == [(BODY, "good.csv")]
+    out = ch.ingest_csv_plans_with_bml([_plan("good.csv")], workspace_id=7, job_id="j",
+                                       should_stop=lambda: (_ for _ in ()).throw(RuntimeError("cancel check failed")))
+    assert [r.status for r in out] == ["loaded"]                                 # a broken cancel check never blocks a load
+
+
+def test_in_a_mixed_batch_the_xml_is_confirmed_before_the_csvs_are_looked_up(monkeypatch):
+    """XML + CSV approved together: the CSV is searched in the curated graph, so the XML's Confirm must come first."""
+    monkeypatch.setenv("ARYX_CSV_BML_ENABLED", "true")
+    order = []
+    xml_plan = {"filename": "po_Order.csv", "ontology_type": "Order", "match_keys": ["_text"], "data": b"Id\nPO-1\n",
+                "source_filename": "po.xml", "source_bytes": b"<PurchaseOrder Id='PO-1'/>"}
+    base = "aryx.pipeline.doc_discovery.doc_discovery."
+    with patch(base + "get_settings") as gs, patch(base + "DatasourceStore", return_value=MagicMock()), \
+         patch(base + "run_pipeline"), patch(base + "OntologyStore", return_value=MagicMock()), \
+         patch(base + "_detect_fk_links", return_value=[]), patch(base + "_detect_script_data_flow_links", return_value=[]), \
+         patch(base + "_detect_fk_links_workspace", return_value=[]), patch(base + "_persist_tabular_sources"), \
+         patch(base + "restore_generic_source_entry"), patch(base + "detect_dynamic_fk_links", return_value=[]), \
+         patch("aryx.cpq_ingestion.routing.cpq_ingestion_pipeline_active", side_effect=lambda fn: fn == "po.xml"), \
+         patch("aryx.cpq_ingestion.csv_land.land_csv_directly", return_value={"run_id": 1, "source_key": "x", "rows_landed": 1}), \
+         patch("aryx.cpq_ingestion.raw_graph.xml_projector.project_xml_to_raw_graph", return_value="PROJECTION"), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.resolve_and_relate_raw_graph",
+               side_effect=lambda *a, **k: (order.append("xml"), {"tags": 1, "entities": 1, "relationships": 0})[1]), \
+         patch("aryx.csv_bml_ingestion.confirm_hook.ingest_csv_plans_with_bml",
+               side_effect=lambda plans, **k: order.append(("csv", [p["filename"] for p in plans]))):
+        s = MagicMock()
+        s.effective_dsn.return_value, s.graph_url, s.ingest_workers, s.ingest_relate = "dsn", "url", 1, True
+        gs.return_value = s
+        ingest_confirmed({"mentions": [], "tabular": [xml_plan, _plan("whitelist.csv", cpq_csv_direct=True)]}, [],
+                         ["po_Order.csv", "whitelist.csv"], broker=MagicMock(), jobs=MagicMock(), job_id="job-mixed",
+                         workspace_id=879)
+    assert order == ["xml", ("csv", ["whitelist.csv"])]                          # the XML plan itself is never sent to BML

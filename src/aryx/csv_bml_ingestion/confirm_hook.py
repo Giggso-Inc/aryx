@@ -41,8 +41,13 @@ def ingest_csv_plans_with_bml(
     workspace_id: int,
     job_id: str | None,
     on_stage: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[IngestResult]:
-    """Run each plain CSV plan through ``CsvBmlUploadSession``; returns one result per file. Never raises."""
+    """Run each plain CSV plan through ``CsvBmlUploadSession``; returns one result per file. Never raises.
+
+    ``should_stop`` is the job's cancellation check, asked before each file: once it says stop, the remaining files
+    are left alone (a load can involve LLM SQL authoring and be slow, so cancelling must not wait for all of them).
+    """
     results: list[IngestResult] = []
     try:
         session = CsvBmlUploadSession(workspace_id, job_id)
@@ -50,6 +55,9 @@ def ingest_csv_plans_with_bml(
         logger.warning("csv_bml_ingestion: could not start for workspace %s: %r", workspace_id, exc)
         return results
     for plan in bml_csv_plans(plans):
+        if _stopped(should_stop):
+            logger.info("csv_bml_ingestion: job cancelled, %d file(s) not processed", len(bml_csv_plans(plans)) - len(results))
+            break
         name = str(plan["filename"])
         _stage(on_stage, f"Processing {name} (csv_bml_ingestion)")
         try:
@@ -61,6 +69,16 @@ def ingest_csv_plans_with_bml(
         results.append(result)
         _report(result, job_id, workspace_id)
     return results
+
+
+def _stopped(should_stop: Callable[[], bool] | None) -> bool:
+    if should_stop is None:
+        return False
+    try:
+        return bool(should_stop())
+    except Exception as exc:  # noqa: BLE001 -- a failing cancel check must not stop or break the ingestion
+        logger.debug("csv_bml_ingestion: cancel check failed: %r", exc)
+        return False
 
 
 def _stage(on_stage: Callable[[str], None] | None, detail: str) -> None:

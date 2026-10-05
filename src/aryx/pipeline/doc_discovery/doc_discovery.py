@@ -443,15 +443,15 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                                "exit_condition": "skipped", "result": "skipped"})
 
     # Opt-in (ARYX_CSV_BML_ENABLED): every plain CSV the user approved is also loaded into its own workspace table
-    # (ws<id>_<file stem>) by the BML-driven pipeline -- additive, so the landing below is unchanged. The plans are not
-    # removed from valid_plans; best effort, a skipped/failed file is stored as an issue and never fails this job.
+    # (ws<id>_<file stem>) by the BML-driven pipeline -- additive, the landing below is unchanged. Captured here, before
+    # the partitions below take them out of valid_plans, but run AFTER the XML source-file loop: a CSV is looked up in
+    # the curated graph, so an XML and its CSVs approved in one batch must find the graph that XML's Confirm builds.
     from aryx.csv_bml_ingestion.config import csv_bml_enabled  # noqa: PLC0415
+    bml_csv_plans_to_run: list[dict[str, Any]] = []
     if csv_bml_enabled():
-        from aryx.csv_bml_ingestion.confirm_hook import ingest_csv_plans_with_bml  # noqa: PLC0415
-        ingest_csv_plans_with_bml(
-            valid_plans, workspace_id=workspace_id, job_id=job_id,
-            on_stage=lambda detail: jobs.update_stage(job_id, "CSV BML Ingestion", int(step * 90 / total), detail),
-        )
+        from aryx.csv_bml_ingestion.confirm_hook import bml_csv_plans  # noqa: PLC0415
+        bml_csv_plans_to_run = bml_csv_plans(valid_plans)
+
 
     # cpq_ingestion: a plain CSV upload whose plan is active for this
     # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
@@ -602,6 +602,13 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 # whatever this call's own `state` started with.
                 "failed_plans": state.get("failed_plans", []),
             })
+
+    if bml_csv_plans_to_run:
+        from aryx.csv_bml_ingestion.confirm_hook import ingest_csv_plans_with_bml  # noqa: PLC0415
+        ingest_csv_plans_with_bml(
+            bml_csv_plans_to_run, workspace_id=workspace_id, job_id=job_id, should_stop=should_stop,
+            on_stage=lambda detail: jobs.update_stage(job_id, "CSV BML Ingestion", int(step * 90 / total), detail),
+        )
 
     def _report_fk_stage(pct: int, detail: str) -> None:
         # A transient job-store failure while reporting progress must never
