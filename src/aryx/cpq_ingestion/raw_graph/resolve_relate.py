@@ -37,6 +37,7 @@ from aryx.cpq_ingestion.raw_graph.resolve_adapter import (
     parse_record_id,
 )
 from aryx.cpq_ingestion.raw_graph.structural_leaf import fold_structural_leaf_tags
+from aryx.cpq_ingestion.raw_graph.value_wrapper import apply_display_fields, fold_value_wrapper_tags
 from aryx.cpq_ingestion.raw_graph.xml_projector import iter_raw_graph, project_xml_to_raw_graph
 from aryx.pipeline.doc_discovery.doc_discovery_types import _stem_type
 from aryx.pipeline.orchestrate import PipelineCancelled, Progress, project_workspace_graph, run_pipeline
@@ -358,6 +359,15 @@ def resolve_and_relate_raw_graph(
         by_tag = fold_structural_leaf_tags(
             edges, by_tag, log_id=log_id, source_key=source_key,
         )
+    # Pass 2 + display fields (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05): fold
+    # value-only locale wrappers (<label><en>) onto their parent and restore
+    # _xml_to_csvs's name promotion, so CPQ entities carry name/display_label
+    # instead of surfacing as numeric ids in Ask. Own opt-out, PR #429 N1.
+    if settings.cpq_locale_wrapper_fold_enabled:
+        by_tag = fold_value_wrapper_tags(
+            edges, by_tag, log_id=log_id, source_key=source_key,
+        )
+        apply_display_fields(by_tag)
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)

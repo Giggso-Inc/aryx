@@ -560,6 +560,7 @@ XML_EQUIVALENT_TO_PROJECTION = (
 def _settings_stub(**overrides):
     base = dict(
         cpq_structural_leaf_fold_enabled=True,
+        cpq_locale_wrapper_fold_enabled=True,
         cpq_force_exact_enabled=True,
         cpq_streaming_projection_enabled=False,
     )
@@ -821,3 +822,55 @@ def test_structural_leaf_fold_disabled_keeps_every_tag_as_its_own_entity_type():
     po_node = captured_nodes["PurchaseOrder"][0]
     assert "Customer" not in po_node.properties
     assert "Lines" not in po_node.properties
+
+
+# ── locale-wrapper fold + display fields (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05) ──
+# Real Oracle CPQ shape, confirmed live on workspace 1126: the family's human
+# name lives in <label><en>, its variable name in a scalar leaf child.
+_CPQ_FAMILY_XML = (
+    b'<bm_prd_family id="17691416877">'
+    b'<variable_name>aSTRO25_bom</variable_name>'
+    b'<label><en>ASTRO\xc2\xae25_BOM</en></label>'
+    b'</bm_prd_family>'
+)
+
+
+def _run_cpq_family_xml(*, locale_fold_enabled: bool):
+    captured_nodes: dict[str, list] = {}
+
+    class _CaptureConnector:
+        def __init__(self, nodes, *, tag, source_key):
+            captured_nodes[tag] = nodes
+
+    settings = _settings_stub(cpq_locale_wrapper_fold_enabled=locale_fold_enabled)
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings", return_value=settings), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.RawGraphConnector", _CaptureConnector), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_estore_cls.return_value = _mock_estore(lambda run_id: {})
+        resolve_and_relate_raw_graph(
+            xml_bytes=_CPQ_FAMILY_XML, workspace_id=WORKSPACE_ID, source_key="f",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+    return captured_nodes
+
+
+def test_locale_wrapper_fold_enabled_resolves_only_the_family_tag():
+    assert set(_run_cpq_family_xml(locale_fold_enabled=True)) == {"bm_prd_family"}
+
+
+def test_locale_wrapper_fold_enabled_family_gets_label_name_and_display_label():
+    family = _run_cpq_family_xml(locale_fold_enabled=True)["bm_prd_family"][0]
+    assert (family.properties["label"], family.properties["name"],
+            family.properties["display_label"]) == ("ASTRO\u00ae25_BOM", "aSTRO25_bom", "ASTRO\u00ae25_BOM")
+
+
+def test_locale_wrapper_fold_disabled_keeps_label_as_its_own_tag():
+    assert "label" in _run_cpq_family_xml(locale_fold_enabled=False)
+
+
+def test_locale_wrapper_fold_disabled_adds_no_display_fields():
+    family = _run_cpq_family_xml(locale_fold_enabled=False)["bm_prd_family"][0]
+    assert "name" not in family.properties and "display_label" not in family.properties

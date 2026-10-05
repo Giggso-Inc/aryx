@@ -1,7 +1,7 @@
 # CPQ XML ingestion — display names (locale-wrapper folding) — plan
 
 Date: 2026-10-05 · Branch: `fix/cpq-xml-locale-wrapper-names-2026-10-05` (from `origin/dev_oci` @ `8bdb1c8e`)
-Status: **plan only — no code yet**
+Status: **implemented on this branch** — see "Implementation notes" at the end
 
 ## Problem
 
@@ -148,3 +148,38 @@ separate pending-scope bug — re-test after §1–§3.
    rebuild it too, or it keeps producing unprefixed, unfolded types).
 2. Run backfill dry-run → apply on 1126, verify Ask end-to-end, then 1097.
 3. New ingests verified on a fresh workspace with the same APX_NEXT files.
+
+## Implementation notes (2026-10-05)
+
+What shipped, and where it differs from the plan above:
+
+- **`raw_graph/value_wrapper.py`** — pass 2 (`fold_value_wrapper_tags`) +
+  `apply_display_fields`, wired into `resolve_relate.py` right after pass 1
+  behind `ARYX_CPQ_LOCALE_WRAPPER_FOLD_ENABLED` (default true).
+  - Found during the 1126 dry run: empty wrapper nodes (`<label/>`, 667 of
+    798 `<description>`s) must fold as `""`, or the whole tag is skipped.
+  - A tag only qualifies if ≥1 node carries a locale key — a purely
+    text-only tag stays pass 1's call, so `ARYX_CPQ_STRUCTURAL_LEAF_FOLD_ENABLED=false`
+    keeps meaning what it says (caught by an existing test).
+- **`name` promotion is a straight port of `_xml_to_csvs._alias_name`**
+  (`variable_name` … `bm_variable_name`, skipping `0/1/2/true/false`) rather
+  than the narrower rule sketched in §2 — this is what every CPQ lookup
+  (`ingested_product_alias_map`, `model_leaves`, `catalog_naming`) was built
+  on. `display_label` = `label` → `bm_name`, only when one exists.
+- **`_NAME_KEYS` unchanged** — with `name` always promoted, the graph vertex
+  name is already readable; reordering would only add risk.
+- **Ask**: `ingested_family_labels` (display-only map) used by the family
+  prompt; pending-scope candidates stay the real names so a numbered reply
+  resolves to the same identity. `_match_family_name` also matches
+  `display_label` (™/® already stripped by its `[^a-z0-9]` normalization).
+  `list_ingested_families` itself is unchanged (attribute search keys on it).
+- **Not done — follow-up**: the model-choice prompt ("did you want the X or
+  Y model?") lists model *variable names* from `model_leaves`, which are
+  also the `_bm_model_variable_name` value — after this fix it reads
+  `aPXNext_BOM` / `aPXN70_BOM` instead of ids, but not the "APX™ NEXT"
+  label. Needs the prompt site (likely LLM-phrased) to map variable → label.
+- **Backfill**: `raw_graph/display_backfill.py` (pure planner, unit-tested) +
+  `scripts/backfill_cpq_display_names.py`. Dry run on ws 1126:
+  8 wrapper tags, 26,591 entity updates, 3,461 wrapper entities removed;
+  family → `aSTRO25_bom` / "ASTRO®25_BOM", models → `aPXNext_BOM` /
+  "APX™ NEXT", `aPXN70_BOM` / "APX™ N70"; config attrs distinct names 2 → 407.

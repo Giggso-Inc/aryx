@@ -36,6 +36,18 @@ def _build_product_family_prompt_or_resolve(
     _cpq_engine = _ask_api_module._cpq_engine
     session.pending_anchor = "product"
     families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
+    # Display-only labels (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05): prompts show
+    # "ASTRO®25_BOM", pending-scope candidates keep the real names so a
+    # numbered reply still resolves to the identity Ask keys on.
+    try:
+        _labels = _cpq_engine.ingested_family_labels(reader, req.workspace_id) or {}
+    except Exception as exc:  # noqa: BLE001 -- display-only, never block the prompt
+        _labels = {}
+        raven_log("WARN", "P4", "ask.anchor.family_labels_unavailable label lookup failed, showing names",
+                  error_code="ARYX_ASK_FAMILY_LABELS_FAILED",
+                  context={"triggering_error": type(exc).__name__, "recovery_selected": "show_names",
+                           "fallback_target": "family_names", "result": "degraded", "attempt": 1,
+                           "max_attempts": 1})
     # PROMPT 7: pet names / typos ("Asr"/"asty") → did you mean, with
     # pending_scope so the next reply is matched in-scope.
     _alias = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
@@ -99,7 +111,7 @@ def _build_product_family_prompt_or_resolve(
             asked_turn=session.turn,
         )
         answer = format_did_you_mean(
-            req.question, suggestions, scope_label="product family",
+            req.question, [_labels.get(x, x) for x in suggestions], scope_label="product family",
         )
         raven_log("INFO", "P4", "ask.anchor.family_prompt did-you-mean asked from suggestions", context={
             "selected_option": "did_you_mean_suggestions", "available_options": _FAMILY_OPTIONS,
@@ -133,7 +145,7 @@ def _build_product_family_prompt_or_resolve(
             asked_turn=session.turn,
         )
         answer = format_did_you_mean(
-            req.question, list(families), scope_label="product family",
+            req.question, [_labels.get(x, x) for x in families], scope_label="product family",
         )
     else:
         answer = (
