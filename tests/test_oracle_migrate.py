@@ -507,6 +507,103 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
         mock_cur.execute.side_effect = execute
         _ensure_tracking_table(mock_cur)  # must not raise
 
+    # ── PR review round 6 ────────────────────────────────────────────────
+
+    def test_unexpected_migration_error_logs_at_p2_not_p1(self) -> None:
+        """N1: the ORA-code allowlist is explicitly not verified against
+        every migration file, so a benign-but-unlisted code must not page
+        at P1 every boot -- P2 still surfaces it without that urgency."""
+        captured_criticality = []
+
+        def fake_raven_log(level, crit, message, **kwargs):
+            if kwargs.get("error_code") == "ARYX_MIGRATE_UNEXPECTED_ERROR":
+                captured_criticality.append(crit)
+
+        def side_effect(sql):
+            raise __import__("oracledb").Error("ORA-00942: table or view does not exist")
+
+        import aryx.store.oracle_migrate as mod
+        with patch.object(mod, "raven_log", side_effect=fake_raven_log):
+            self._run_with({"0002_test.sql": "ALTER TABLE missing_table ADD (x NUMBER);"}, side_effect)
+
+        self.assertEqual(captured_criticality, ["P2"])
+
+    def test_accept_checksum_drift_updates_stored_checksum(self) -> None:
+        """N2: the documented, supported way to clear a drift warning for
+        an intentional migration edit -- updates the stored checksum to
+        match the file's current content, without re-running the file."""
+        from aryx.store.oracle_migrate import accept_checksum_drift, _checksum
+        import tempfile
+        from pathlib import Path
+        import aryx.config as cfg_mod
+        import aryx.store.oracle_migrate as mod
+        import oracledb
+
+        cfg_mod.get_settings.cache_clear()
+        new_content = "ALTER TABLE t ADD (z NUMBER); -- edited"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "0001_test.sql").write_text(new_content, encoding="utf-8")
+
+            update_params = []
+            mock_cur = MagicMock()
+
+            def execute(sql, params=None):
+                if sql.strip().upper().startswith("SELECT CHECKSUM"):
+                    return
+                if sql.strip().upper().startswith("UPDATE ARYX_SCHEMA_MIGRATIONS"):
+                    update_params.append(params)
+                    return
+
+            mock_cur.execute.side_effect = execute
+            mock_cur.fetchone.return_value = ("stale-checksum",)
+            mock_conn = MagicMock()
+            mock_conn.cursor.return_value = mock_cur
+
+            with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
+                 patch.object(oracledb, "connect", create=True, return_value=mock_conn), \
+                 patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
+                accept_checksum_drift("tcps://adb.test:1522/db_high", "0001_test.sql")
+
+        self.assertEqual(update_params, [[_checksum(new_content), "0001_test.sql"]])
+
+    def test_accept_checksum_drift_raises_for_missing_file(self) -> None:
+        from aryx.store.oracle_migrate import accept_checksum_drift
+        import tempfile
+        from pathlib import Path
+        import aryx.store.oracle_migrate as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(mod, "_ORACLE_MIGRATIONS_DIR", Path(tmp)):
+                with self.assertRaises(FileNotFoundError):
+                    accept_checksum_drift("tcps://adb.test:1522/db_high", "does_not_exist.sql")
+
+    def test_accept_checksum_drift_raises_when_never_applied(self) -> None:
+        """Nothing to accept a drift FOR if the file was never recorded as
+        applied in the first place."""
+        from aryx.store.oracle_migrate import accept_checksum_drift
+        import tempfile
+        from pathlib import Path
+        import aryx.config as cfg_mod
+        import aryx.store.oracle_migrate as mod
+        import oracledb
+
+        cfg_mod.get_settings.cache_clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "0001_test.sql").write_text("ALTER TABLE t ADD (z NUMBER);", encoding="utf-8")
+
+            mock_cur = MagicMock()
+            mock_cur.fetchone.return_value = None  # never applied
+            mock_conn = MagicMock()
+            mock_conn.cursor.return_value = mock_cur
+
+            with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
+                 patch.object(oracledb, "connect", create=True, return_value=mock_conn), \
+                 patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
+                with self.assertRaises(ValueError):
+                    accept_checksum_drift("tcps://adb.test:1522/db_high", "0001_test.sql")
+
 
 if __name__ == "__main__":
     unittest.main()

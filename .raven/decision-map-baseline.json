@@ -14888,8 +14888,13 @@
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      236,
+      241,
       "<try>"
+    ],
+    [
+      "src/aryx/store/oracle_migrate.py",
+      345,
+      "accept_checksum_drift"
     ],
     [
       "src/aryx/store/oracle_param_coerce.py",

@@ -1,11 +1,11 @@
 # Attribution — tests/test_oracle_migrate.py
 
-Last updated: 2026-10-05T03:51:34.013325+00:00
-Total lines: 512
-Lines AI-generated: 254 (49.6%)
+Last updated: 2026-10-05T04:13:21.861524+00:00
+Total lines: 609
+Lines AI-generated: 198 (32.5%)
 Lines human-typed: 191
 Lines joint: 0
-Lines unattributed: 67
+Lines unattributed: 220
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -17,5 +17,6 @@ Owner (most recent author): m.munir@giggso.com
 | 281-297 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-04T14:18:45.227259+00:00 |  |
 | 298-335 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T14:23:29.350772+00:00 | pre-commit gap — unattributed by the local hook |
 | 336-351 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-05T03:36:17.752551+00:00 |  |
-| 352-352 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T14:23:29.350772+00:00 | pre-commit gap — unattributed by the local hook |
-| 353-512 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-05T03:36:42.718261+00:00 |  |
+| 352-359 | m.munir@giggso.com | — | — | — | — | — | 2026-10-04T14:23:29.350772+00:00 | pre-commit gap — unattributed by the local hook |
+| 360-505 | m.munir@giggso.com | — | — | — | — | — | 2026-10-05T04:13:21.611904+00:00 | pre-commit gap — unattributed by the local hook |
+| 506-609 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-05T04:12:18.059135+00:00 |  |

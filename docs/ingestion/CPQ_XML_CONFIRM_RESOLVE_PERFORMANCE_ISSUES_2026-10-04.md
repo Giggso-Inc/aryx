@@ -1591,3 +1591,51 @@ fallback), the Python default never applies there; only an environment that
 doesn't pass this var at all (e.g. a bare local run with no compose file)
 was ever picking up the code's new value. Fixed: the compose fallback is now
 `:-20`, matching the code default it's meant to mirror.
+
+---
+
+## Update — PR review round 6 (2026-10-05)
+
+- **N1, confirmed and fixed:** the unexpected-migration-error `raven_log`
+  (added in round 5) used `P1`, but `_EXPECTED_IDEMPOTENT_ORA_CODES` is
+  explicitly, by its own docstring, not verified against every migration
+  file. A benign code that simply isn't on the list yet would page at P1
+  every single boot, on every worker, until the list is fixed — too
+  aggressive for a known-incomplete allowlist. Downgraded to `P2`: still a
+  real, surfaced schema-incomplete condition, without the on-call urgency
+  the current verification state doesn't support. New test confirms the
+  `ARYX_MIGRATE_UNEXPECTED_ERROR` raven_log fires at P2.
+- **N2, confirmed and fixed:** checksum drift (round 5, N1) logged a
+  persistent P2 ERROR every boot with no supported way to clear it short
+  of hand-editing `aryx_schema_migrations` directly — and this repo does
+  edit shipped migrations in practice, so that's a real, not theoretical,
+  need. Added `accept_checksum_drift(dsn, filename)` — updates the stored
+  checksum to the file's current content (does NOT re-run the file's SQL;
+  that's a separate concern, a new migration if the edit's *effect* needs
+  applying too) and logs a `WARN P3` `ARYX_MIGRATE_CHECKSUM_DRIFT_ACCEPTED`
+  audit trail entry so the acceptance itself is visible, not just the
+  original drift. Exposed via a documented CLI entry point:
+  `python3 -m aryx.store.oracle_migrate --accept-drift <filename>`.
+  3 new tests (updates the checksum; raises `FileNotFoundError` for a
+  missing file; raises `ValueError` if the file was never recorded as
+  applied in the first place — nothing to accept a drift for).
+- **N3, acknowledged, process action item, not a code change:** the
+  reviewer's ask — run one real confirm followed by a quote against this
+  branch before merging, since neither `cpq_structural_leaf_fold_enabled`
+  nor `cpq_force_exact_enabled` has been checked end to end against real
+  production-shaped data (only synthetic/live-verified pipeline tests, see
+  the earlier live-verification update) — is correct and can't be
+  satisfied by more work in this environment: it specifically requires a
+  real customer quote document and a real confirm+quote-generation cycle,
+  which this investigation has no access to. Recorded here as an explicit
+  **pre-merge checklist item**, not silently deferred: someone with access
+  to a real CPQ environment should run one full confirm-then-quote cycle
+  against this branch before it merges, and reopen the "keep both True"
+  decision above if that surfaces a graph-shape or merge-determinism
+  problem.
+
+4 new tests (31 total in `test_oracle_migrate.py`), all passing. Verified
+zero new regressions against the same previously-problematic combined test
+set (`test_oracle_migrate.py` + the `oracledb`-stubbing files) — still
+the same 64 pre-existing, unrelated failures, zero `oracle_migrate`
+failures.

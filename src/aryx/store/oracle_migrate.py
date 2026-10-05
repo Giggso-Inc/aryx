@@ -213,7 +213,12 @@ def apply_oracle_migrations(dsn: str) -> None:
     file is still NOT re-run automatically -- a changed migration could be
     a non-idempotent DDL edit that would fail or do the wrong thing on a
     second run, so this surfaces the drift for a human to look at rather
-    than guessing it's safe to replay.
+    than guessing it's safe to replay. The warning repeats every boot
+    until a human clears it with ``accept_checksum_drift()`` (or
+    ``python3 -m aryx.store.oracle_migrate --accept-drift <filename>``,
+    PR review round 6, N2) -- the documented, supported way to say "yes,
+    I know, this edit is intentional" instead of hand-editing
+    ``aryx_schema_migrations`` directly.
 
     Args:
         dsn: Oracle ADB connection string (e.g. tcps://host:port/service_name).
@@ -309,8 +314,16 @@ def apply_oracle_migrations(dsn: str) -> None:
                 # with only a plain logger.error -- no raven_log, no
                 # error_code, so it couldn't be found/alerted on the same
                 # way every other real failure in this codebase can be.
+                # P2, not P1 (PR review round 6, N1): _EXPECTED_IDEMPOTENT_
+                # ORA_CODES is explicitly NOT verified against every
+                # migration file (see its own docstring) -- a benign code
+                # that just isn't on the list yet would page at P1 every
+                # single boot, on every worker, until the list is fixed.
+                # P2 still surfaces it (this is a real schema-incomplete
+                # condition, not nothing) without the on-call urgency a
+                # known-incomplete allowlist doesn't deserve.
                 raven_log(
-                    "ERROR", "P1",
+                    "ERROR", "P2",
                     "oracle_migrate.unexpected_error migration file had a non-idempotent error, schema incomplete",
                     error_code="ARYX_MIGRATE_UNEXPECTED_ERROR",
                     context={"file": path.name, "result": "not_applied",
@@ -329,6 +342,67 @@ def apply_oracle_migrations(dsn: str) -> None:
         conn.close()
 
 
+def accept_checksum_drift(dsn: str, filename: str) -> None:
+    """Deliberately accept an already-applied migration file's current
+    content as the new baseline, clearing the ARYX_MIGRATE_CHECKSUM_DRIFT
+    warning for it (PR review round 6, N2).
+
+    This repo does edit shipped migrations (round 5's own N1 finding cited
+    real examples) -- the drift warning is supposed to make that visible,
+    not make it permanently un-clearable short of hand-editing
+    aryx_schema_migrations directly. This is the documented, supported way
+    to say "yes, I know, this edit is intentional" instead.
+
+    Does NOT re-run the file's SQL -- only updates the stored checksum to
+    match its current content. If the edit needs its *effect* applied too
+    (not just acknowledged), that is a new migration file, same as any
+    other schema change; this function is purely about silencing a warning
+    for an edit that was already applied by hand or doesn't need
+    re-applying (e.g. a comment-only change, or one where the SQL effect
+    was already achieved some other way).
+
+    Raises FileNotFoundError if the migration file doesn't exist, and
+    ValueError if it was never recorded as applied in the first place
+    (nothing to accept a drift for).
+    """
+    import oracledb  # noqa: PLC0415
+    from aryx.config import get_settings  # noqa: PLC0415
+
+    path = _ORACLE_MIGRATIONS_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(f"oracle_migrate: no such migration file: {filename}")
+    checksum = _checksum(path.read_text(encoding="utf-8"))
+
+    settings = get_settings()
+    conn = oracledb.connect(user=settings.db_user, password=settings.db_password, dsn=dsn)
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT checksum FROM aryx_schema_migrations WHERE filename = :1", [filename])
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(
+                f"oracle_migrate: {filename} was never recorded as applied -- "
+                "nothing to accept a drift for (run apply_oracle_migrations first)"
+            )
+        old_checksum = row[0]
+        cur.execute(
+            "UPDATE aryx_schema_migrations SET checksum = :1 WHERE filename = :2",
+            [checksum, filename],
+        )
+        logger.warning(
+            "oracle_migrate: accepted checksum drift for file=%s (old=%s new=%s)",
+            filename, old_checksum, checksum,
+        )
+        raven_log(
+            "WARN", "P3", "oracle_migrate.checksum_drift_accepted operator accepted an edited migration's new content",
+            context={"file": filename, "old_checksum": old_checksum, "new_checksum": checksum,
+                     "result": "ok", "reason_code": "OPERATOR_ACCEPTED_DRIFT"},
+        )
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s",
@@ -337,6 +411,15 @@ if __name__ == "__main__":
     s = get_settings()
     if not s.oci_adb_dsn:
         sys.exit("ARYX_OCI_ADB_DSN is not set — check your .env file")
+    # --accept-drift <filename>: clear a checksum-drift warning for an
+    # intentionally-edited, already-applied migration file (PR review
+    # round 6, N2) -- documented here since it's the one entry point this
+    # module has.
+    if len(sys.argv) == 3 and sys.argv[1] == "--accept-drift":
+        logger.info("oracle_migrate: accepting checksum drift for file=%s", sys.argv[2])
+        accept_checksum_drift(s.oci_adb_dsn, sys.argv[2])
+        logger.info("oracle_migrate: done — drift accepted.")
+        sys.exit(0)
     logger.info("oracle_migrate: connecting  user=%s  dsn=***", s.db_user)
     apply_oracle_migrations(s.oci_adb_dsn)
     logger.info("oracle_migrate: done — all migrations applied.")
