@@ -403,9 +403,15 @@ def _branch_values(body: str) -> list[str] | None:
 #     else { return true; }
 _BOOL_RETURN_RE = re.compile(r'\breturn\s+(true|false)\b', re.IGNORECASE)
 
+_BOOL_ASSIGN_RE = re.compile(r'\s*\w+\s*=\s*(true|false)\s*;\s*\Z', re.IGNORECASE)
+
+
 def _branch_bool(body: str) -> bool | None:
     """Extract a literal true/false from a hide/show branch body."""
     m = _BOOL_RETURN_RE.search(body)
+    if not m and find_enabled():
+        # flag `cpq_find_function_enabled`: `retVal = TRUE;` with the script's own `return retVal;` after the chain
+        m = _BOOL_ASSIGN_RE.match(body)
     if not m:
         return None
     return m.group(1).lower() == "true"
