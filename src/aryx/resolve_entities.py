@@ -94,8 +94,13 @@ def resolve_run(
         Number of entities created.
     """
     def _emit(stage: str, pct: int, detail: str) -> None:
-        if on_progress is not None:
+        if on_progress is None:
+            return
+        try:
             on_progress(stage, pct, detail)
+        except Exception as exc:  # noqa: BLE001 — a heartbeat failure must never abort the resolve
+            logger.warning("resolve_run run_id=%s on_progress callback failed, "
+                           "continuing resolve: %s", run_id, exc)
 
     settings = get_settings()
     _t0 = time.monotonic()

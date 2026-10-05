@@ -8,6 +8,7 @@ dependency and no patch exposure of its own (confirmed via grep). See
 from __future__ import annotations
 
 from aryx.models import ResolutionRecord
+from aryx.resolution.blocking import normalize
 
 
 def _key_selectivity(records: list[ResolutionRecord], sample_size: int) -> float:
@@ -47,9 +48,19 @@ def _full_uniqueness_ratio(records: list[ResolutionRecord]) -> float:
     own framing), so there is no sampling tradeoff worth making for a
     decision this consequential — only called when force_exact is
     actually requested, not on every resolve_run() call.
+
+    Uses the SAME ``normalize()`` that ``run_exact.py``'s ``_resolve_exact``
+    actually groups records by (PR review round 7, Medium) — this function
+    used to do its own ``.strip().lower()``, which does not collapse
+    internal whitespace the way ``normalize()`` does. Two values differing
+    only by internal whitespace (e.g. ``"AB  12"`` vs ``"AB 12"``) would
+    count as 2 distinct values here, making a key look uniquely verified
+    enough to force_exact, while actually merging into ONE group in
+    ``_resolve_exact`` — the exact inverse of what this check exists to
+    catch.
     """
     if not records:
         return 1.0
     total = len(records)
-    distinct = len({r.text.strip().lower() for r in records if r.text})
+    distinct = len({normalize(r.text) for r in records if r.text})
     return distinct / total

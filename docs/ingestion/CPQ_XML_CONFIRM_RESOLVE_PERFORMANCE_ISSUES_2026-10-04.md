@@ -1639,3 +1639,145 @@ zero new regressions against the same previously-problematic combined test
 set (`test_oracle_migrate.py` + the `oracledb`-stubbing files) — still
 the same 64 pre-existing, unrelated failures, zero `oracle_migrate`
 failures.
+
+## Update — PR review round 7 (2026-10-05)
+
+High:
+
+- **Postgres heartbeat sweep never actually runs — confirmed and fixed.**
+  `sweep_stale_jobs_heartbeat.sql` has `stage LIKE '%CPQ Ingestion%'`
+  alongside a real `%s` bind for the timeout. psycopg's own
+  placeholder parser (`psycopg._queries._split_query`) scans the WHOLE
+  query text for `%X` sequences, not just the genuine placeholder —
+  reproduced directly against the installed psycopg 3.3.4:
+  `ProgrammingError: only '%s', '%b', '%t' are allowed as placeholders,
+  got '%C'`. `main_lifespan._stale_job_sweep()`'s broad `except Exception`
+  around the sweep call means this failed silently on every tick, on
+  every Postgres deployment, since the heartbeat sweep shipped — the one
+  mechanism added specifically to catch a worker that silently died
+  mid-confirm never ran at all. Fixed by doubling the literal `%` to `%%`
+  (`'%%CPQ Ingestion%%'`), the standard psycopg escape. New regression
+  test re-implements psycopg's own acceptance rule directly against the
+  file's real text (not the mocked-cursor path the existing 6 tests use,
+  none of which ever executes real query text) — confirmed it fails
+  against the un-escaped query and passes against the fix. Deliberately
+  does not import `psycopg._queries` itself: several other test files in
+  this suite (`test_oci_backends.py`, `test_datasource_store.py`,
+  `test_discovery_store.py`) replace `sys.modules['psycopg']` with a bare
+  module at **import time**, not inside a fixture — the same collection-
+  order hazard round 5 hit with `oracledb` — so depending on the real
+  submodule being importable at test-run time would be a coin flip
+  depending on which files pytest already collected.
+- **Structural-leaf fold ships on by default — not changed, same decision
+  as before.** This is the same ask as an earlier round's suggestion to
+  flip `cpq_structural_leaf_fold_enabled`/`cpq_force_exact_enabled` to
+  `False` by default, which the developer explicitly declined ("keep both
+  True") — that decision stands, not revisited here. What IS new and
+  actionable in this round's framing: "no test compares entity/
+  relationship counts with the fold on vs off or covers an entity-like
+  tag or an empty container." Confirmed true — `test_structural_leaf.py`'s
+  existing unit tests construct `by_tag`/`edges` by hand and never call
+  `resolve_and_relate_raw_graph()`; `test_resolve_and_relate_raw_graph.py`
+  mocks `run_pipeline` in every existing test, so `by_tag`'s actual
+  *contents* after folding were never asserted anywhere. Added two new
+  integration-style tests exercising the REAL `project_xml_to_raw_graph`
+  → `group_nodes_by_tag` → `fold_structural_leaf_tags` chain (only
+  `run_pipeline`/`EntityStore`/`project_workspace_graph` mocked) against a
+  document with an entity-like tag (`<Customer>Bob</Customer>` — text
+  only, no attributes/children) and an empty container (`<Lines></Lines>`)
+  alongside a tag that must survive either way (`<LineItem Sku="..."/>`
+  has a real attribute): confirms the flag actually changes the resolved
+  tag/entity count (4 tags fold-off vs. 2 fold-on for this document), not
+  just a cosmetic no-op.
+
+Medium:
+
+- **`_emit` in `resolve_entities.py`'s chunked resolver was unguarded —
+  confirmed and fixed.** A transient failure in the caller's
+  `on_progress` (the job-row heartbeat update) raised straight out of
+  `_emit` and aborted the whole `resolve_run()` call — exactly the
+  scenario `_safe_progress` was added to `entity_store.py` for in round 3,
+  just never applied here. `_emit` now catches and logs any `on_progress`
+  exception instead of propagating it.
+- **`oracle_migrate` has no lock between the two uvicorn workers —
+  confirmed and fixed.** `docker-compose-oci.yml` runs `--workers 2`,
+  each running its own FastAPI lifespan and its own
+  `apply_oracle_migrations()` call at startup, against the same Oracle
+  DB, with no coordination between them. DDL mostly survives a race via
+  `_EXPECTED_IDEMPOTENT_ORA_CODES` catching the slower worker's
+  "already exists" error, but a migration file whose body is
+  non-idempotent DML (a one-time data backfill with no unique constraint
+  to collide on) could silently double-apply with no error at all.
+  `DBMS_LOCK` (a session-level named lock) isn't available here — Oracle
+  ADB restricts `EXECUTE` on it for normal schema users — so instead a
+  sentinel row (`__aryx_migration_lock__`) is inserted into
+  `aryx_schema_migrations` once, then locked with
+  `SELECT ... FOR UPDATE` for the duration of a migration run (autocommit
+  off for that span, committed — and the lock released — at the end).
+  The already-applied snapshot is re-fetched only AFTER acquiring the
+  lock, so a worker that was blocked waiting sees what the other worker
+  just committed instead of a stale pre-lock view, and never redundantly
+  re-runs a file the first worker just applied.
+- **`force_exact` uniqueness verified with a different normalization than
+  the actual exact-merge grouping — confirmed and fixed.**
+  `_full_uniqueness_ratio()` (round 5's `force_exact` verification gate)
+  used `.strip().lower()`; the actual merge in `run_exact.py`'s
+  `_resolve_exact()` groups on `blocking.normalize()`, which additionally
+  collapses internal whitespace. Two values differing only by internal
+  whitespace (e.g. `"AB  12"` vs. `"AB 12"`) counted as 2 distinct values
+  in the verification check — making a key look safely unique enough to
+  force exact mode — while actually merging into ONE group at resolve
+  time: the exact inverse of what the check exists to catch. Fixed by
+  having `_full_uniqueness_ratio()` use the same `normalize()` the real
+  merge uses.
+
+Low:
+
+- **`_delete_orphaned_entities`'s docstring was stale — confirmed and
+  fixed.** It said deleting orphaned entities after a cancel does NOT
+  touch `aryx_entity_member` rows, matching `delete_entity()`/
+  `delete_entities_by_type()`'s limitation at the time it was written —
+  that limitation was closed for all three delete methods back in §5
+  (member cleanup). `delete_entities()` (what this function actually
+  calls) has deleted members before entities in the same transaction ever
+  since; the docstring now says so.
+- **Embedding dedupe order was non-deterministic — confirmed and fixed.**
+  `resolution/run.py`'s per-batch dedupe used `list({r.text for r in
+  batch})` — correctness is unaffected (the `zip()` pairing with
+  `broker.embed()`'s return is still positionally correct regardless of
+  set iteration order), but which order texts are actually sent to the
+  broker varied by Python's per-process hash randomization, making the
+  exact embedding-call sequence non-reproducible across runs for anyone
+  inspecting it (tests, debugging, a broker-side log). Changed to
+  `list(dict.fromkeys(...))` — same O(n) dedupe cost, deterministic
+  first-occurrence order.
+- `delete_entities_by_type`'s SELECT-then-DELETE race (a concurrent insert
+  is deleted but missing from the returned id list) and the re-confirm
+  duplication/0049-index-not-online notes are already accurately
+  documented in their respective docstrings from earlier rounds — no
+  stale claims found, no action needed.
+- **Pre-merge checklist, extended:** `ARYX_LANDING_BATCH_SIZE=3000` and
+  `mem_limit: 9g` (api)/`8g` (the other service bumped earlier) are
+  unmeasured against real host headroom with 2 workers under real load —
+  added alongside the existing round-6 N3 item (a real confirm+quote
+  cycle against production-shaped data) as something to check before this
+  branch merges, not something further work in this environment can
+  verify.
+
+New/changed tests: `test_job_store_heartbeat.py` (+1, the psycopg
+placeholder-parsing regression guard),
+`tests/cpq_ingestion/test_resolve_and_relate_raw_graph.py` (+2, fold
+on/off tag-count integration tests). All affected suites re-run together
+(`test_job_store_heartbeat.py`, `test_oracle_migrate.py`,
+`test_resolve_and_relate_raw_graph.py`, `test_structural_leaf.py`,
+`test_exact_id_resolution.py`, `test_resolve_run_wiring.py`,
+`test_resolution_logging.py`, `test_chunked_resolution.py`) — 125 passed,
+zero failures, zero new regressions.
+
+Also separately confirmed: `test_discovery_store.py::
+test_put_upsert_is_idempotent` fails when run alongside
+`test_oci_backends.py`/`test_datasource_store.py` (both of which replace
+`sys.modules['psycopg']` at module-import time) regardless of any change
+in this round — reproduced with none of this round's files in the mix,
+so this is a pre-existing test-isolation issue, not a regression from
+round 7.

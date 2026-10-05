@@ -61,6 +61,33 @@ CREATE TABLE aryx_schema_migrations (
 
 _ADD_CHECKSUM_COLUMN_DDL = "ALTER TABLE aryx_schema_migrations ADD (checksum VARCHAR2(64))"
 
+# Sentinel row locked with SELECT ... FOR UPDATE to serialize the two
+# uvicorn workers' migration runs (PR review round 7, High): ADB restricts
+# EXECUTE on DBMS_LOCK for normal schema users, so a session-level named
+# lock isn't available here -- a row lock on a row we already own needs no
+# extra privilege. Without this, both workers could see the same
+# not-yet-applied file and run its blocks concurrently; DDL mostly survives
+# that via _EXPECTED_IDEMPOTENT_ORA_CODES, but a migration file whose body
+# is non-idempotent DML (a one-time data backfill with no unique
+# constraint to collide on) could silently double-apply with no error at
+# all. The row is a real tracking-table row, never matched by any real
+# migration filename, so it sorts and reads like any other row.
+_LOCK_ROW_FILENAME = "__aryx_migration_lock__"
+
+
+def _ensure_lock_row(cur) -> None:
+    """Idempotently insert the sentinel row that ``apply_oracle_migrations``
+    locks with ``SELECT ... FOR UPDATE`` for the duration of a migration run."""
+    import oracledb  # noqa: PLC0415
+    try:
+        cur.execute(
+            "INSERT INTO aryx_schema_migrations (filename) VALUES (:1)",
+            [_LOCK_ROW_FILENAME],
+        )
+    except oracledb.Error as exc:
+        if "ORA-00001" not in str(exc):  # already inserted by an earlier boot
+            raise
+
 
 def _ensure_tracking_table(cur) -> None:
     """Idempotently create the applied-migrations tracking table, and add
@@ -140,14 +167,15 @@ def _mark_applied(cur, filename: str, checksum: str) -> None:
     concurrent duplicate insert.
 
     aryx-api runs 2 uvicorn workers (docker-compose-oci.yml), both of which
-    call apply_oracle_migrations() at startup. On the first boot after this
-    tracking table ships, or whenever a release adds a new migration file,
-    both workers can see the same file missing from aryx_schema_migrations
-    and both attempt to apply + mark it -- the second INSERT then hits
-    ORA-00001 (PR review M3). Catching it here (not re-raising, not
-    retrying) is correct: the row they're racing to insert is identical
-    (just a filename and checksum), so "someone already marked this" and
-    "I'm marking this" have the same end state.
+    call apply_oracle_migrations() at startup. The ``_LOCK_ROW_FILENAME``
+    row lock (PR review round 7, High) now serializes their runs, so in the
+    normal case only one worker is ever inside this loop at a time and this
+    duplicate-insert race shouldn't occur. This catch stays as a defensive
+    fallback for any caller that reaches this function outside that lock
+    (e.g. a future script, a lock acquired on a dropped/recreated
+    connection) -- the row they'd be racing to insert is identical (just a
+    filename and checksum), so "someone already marked this" and "I'm
+    marking this" have the same end state either way.
 
     Only ever called for a file not yet in ``applied`` -- a file whose
     checksum has drifted (PR review round 5, N1) is warned about but its
@@ -251,6 +279,20 @@ def apply_oracle_migrations(dsn: str) -> None:
     try:
         cur = conn.cursor()
         _ensure_tracking_table(cur)
+        _ensure_lock_row(cur)
+        # Serialize the two uvicorn workers' migration runs (PR review round
+        # 7, High) behind a row lock held for the whole run, not just the
+        # tracking-table bookkeeping -- autocommit must be off for the lock
+        # to survive past this one statement. Re-fetch `applied` only AFTER
+        # acquiring the lock: a worker that was blocked here must see what
+        # the other worker just committed, not a stale pre-lock snapshot,
+        # or it would redundantly re-run a file the first worker just
+        # applied.
+        conn.autocommit = False
+        cur.execute(
+            "SELECT filename FROM aryx_schema_migrations WHERE filename = :1 FOR UPDATE",
+            [_LOCK_ROW_FILENAME],
+        )
         applied = _already_applied(cur)
         skipped_files = 0
         for path in files:
@@ -339,6 +381,12 @@ def apply_oracle_migrations(dsn: str) -> None:
                 "aryx_schema_migrations)", skipped_files,
             )
     finally:
+        # Commits whatever progress this run made (and releases the lock
+        # row) even on an exception path -- matches the old per-statement
+        # autocommit behaviour of persisting completed files rather than
+        # losing them because a later file in the same run hit an
+        # unexpected error.
+        conn.commit()
         conn.close()
 
 

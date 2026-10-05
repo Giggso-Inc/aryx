@@ -13923,7 +13923,7 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      87,
+      90,
       "<try>"
     ],
     [
@@ -14678,17 +14678,17 @@
     ],
     [
       "src/aryx/resolve_entities.py",
-      120,
+      125,
       "<try>"
     ],
     [
       "src/aryx/resolve_entities.py",
-      260,
+      265,
       "<if>"
     ],
     [
       "src/aryx/resolve_entities.py",
-      316,
+      321,
       "resolve_run"
     ],
     [
@@ -14883,17 +14883,22 @@
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      191,
+      78,
+      "_ensure_lock_row"
+    ],
+    [
+      "src/aryx/store/oracle_migrate.py",
+      219,
       "apply_oracle_migrations"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      241,
+      269,
       "<try>"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      345,
+      393,
       "accept_checksum_drift"
     ],
     [

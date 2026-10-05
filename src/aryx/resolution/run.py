@@ -84,7 +84,15 @@ def _block_embeddings(
         # O(records) calls into O(distinct texts) -- zero change to
         # resolution correctness, every original record still gets its
         # value's vector, just via a dict lookup instead of a fresh call.
-        unique_texts = list({r.text for r in batch})
+        # dict.fromkeys, not a set (PR review round 7, Low): both dedupe to
+        # the same distinct values, but a set's iteration order depends on
+        # Python's per-process hash randomization -- the same batch could
+        # send its texts to broker.embed() in a different order from one
+        # run to the next. Harmless for the zip() pairing below (still
+        # positionally correct either way), but needlessly non-deterministic
+        # for anything inspecting what was actually sent (tests, debugging,
+        # a broker-side log). First-occurrence order costs nothing extra.
+        unique_texts = list(dict.fromkeys(r.text for r in batch))
         text_to_vec: dict[str, list[float]] = {}
         try:
             vectors = broker.embed(unique_texts)

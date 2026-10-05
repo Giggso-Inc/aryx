@@ -88,6 +88,45 @@ class TestSweepStaleHeartbeat(unittest.TestCase):
         assert "not in" not in sql  # the old, too-broad filter shape
         assert "cpq ingestion" in sql
 
+    def test_query_text_survives_psycopg_placeholder_parsing(self) -> None:
+        """PR review round 7, High: psycopg's %-style parameter parser
+        scans the WHOLE query text for '%' sequences, not just the real
+        %s placeholder -- a literal '%CPQ Ingestion%' LIKE pattern with
+        single '%' is indistinguishable to it from an unrecognized
+        placeholder ('%C' is not '%s'/'%b'/'%t'), and execute() raises
+        ProgrammingError before ever reaching Postgres. The 6 mocked-cursor
+        tests above never execute the real query text, so none of them
+        caught this: the heartbeat sweep silently never ran on Postgres
+        until main_lifespan's own broad except swallowed the error. Single
+        '%' inside a LIKE literal must be escaped as '%%'.
+
+        Re-implements psycopg._queries's own acceptance rule (every bare
+        '%' must be followed by '%', '(name)s'/'b'/'t', or a plain
+        's'/'b'/'t') rather than importing psycopg._queries directly --
+        several other test files in this suite (test_oci_backends.py,
+        test_datasource_store.py, test_discovery_store.py) replace
+        sys.modules['psycopg'] with a bare types.ModuleType at module
+        import time (not inside a fixture), the same class of
+        collection-order test-isolation hazard round 5 hit with oracledb
+        (see test_oracle_migrate.py's create=True fix) -- importing the
+        real submodule here would be a coin flip depending on which test
+        files pytest already collected first. Reads the file directly
+        (not through aryx.queries.load()) since this dev environment's own
+        settings default effective_db_backend() to 'oci', which load()
+        would route to the Oracle override instead of this file."""
+        import re
+        from pathlib import Path
+
+        import aryx.queries as queries_mod
+
+        sql = (Path(queries_mod.__file__).parent / "sweep_stale_jobs_heartbeat.sql").read_text()
+        for m in re.finditer(r"%(?:\([^)]+\))?.", sql):
+            placeholder = m.group(0)
+            assert placeholder == "%%" or placeholder[-1] in "sbt", (
+                f"invalid psycopg placeholder {placeholder!r} -- a literal '%' "
+                "in the query text must be escaped as '%%'"
+            )
+
 
 class TestNoResurrectionGuard(unittest.TestCase):
     """update_job_stage / finish_job must not revive a job the heartbeat

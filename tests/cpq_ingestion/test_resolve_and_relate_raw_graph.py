@@ -673,3 +673,75 @@ def test_xml_bytes_streaming_restores_id_order_for_self_nesting_tags():
     # of which one's subtree FINISHED first during the streaming walk.
     category_ids = [n.properties["Id"] for n in captured_nodes["Category"]]
     assert category_ids == ["outer", "inner"]
+
+
+# ── PR review round 7: structural-leaf fold's effect on real resolve shape ───
+
+# A plain entity-like tag (<Customer>Bob</Customer> -- text only, no
+# attributes, no children) and an empty container (<Lines/>) alongside a
+# tag that must survive folding either way (<LineItem Sku="..."/> has a
+# real attribute). Exercises the REAL project_xml_to_raw_graph ->
+# group_nodes_by_tag -> fold_structural_leaf_tags chain (only run_pipeline/
+# EntityStore/project_workspace_graph are mocked) -- unlike
+# tests/cpq_ingestion/test_structural_leaf.py's unit tests, which construct
+# by_tag/edges by hand and never go through a real resolve_and_relate_raw_
+# graph call, so neither suite previously confirmed what the flag actually
+# does to the SET OF TAGS this function resolves (PR review round 7, High:
+# "no test compares entity/relationship counts with the fold on vs off or
+# covers an entity-like tag or an empty container").
+_FOLD_TEST_XML = (
+    b'<PurchaseOrder Id="PO-1">'
+    b'<Customer>Bob</Customer>'
+    b'<Lines></Lines>'
+    b'<LineItem Sku="WIDGET-A"/>'
+    b'</PurchaseOrder>'
+)
+
+
+def _run_fold_test_xml(*, fold_enabled: bool):
+    captured_nodes: dict[str, list] = {}
+
+    class _CaptureConnector:
+        def __init__(self, nodes, *, tag, source_key):
+            captured_nodes[tag] = nodes
+
+    with patch("aryx.cpq_ingestion.raw_graph.resolve_relate.get_settings",
+               return_value=_settings_stub(cpq_structural_leaf_fold_enabled=fold_enabled)), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.RawGraphConnector", _CaptureConnector), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.EntityStore") as mock_estore_cls, \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.run_pipeline",
+               return_value={"run_id": 1, "entities": 1, "relationships": 0}), \
+         patch("aryx.cpq_ingestion.raw_graph.resolve_relate.project_workspace_graph", return_value={}):
+        mock_estore_cls.return_value = _mock_estore(lambda run_id: {})
+        result = resolve_and_relate_raw_graph(
+            xml_bytes=_FOLD_TEST_XML, workspace_id=WORKSPACE_ID, source_key="f",
+            dsn=DSN, graph_url=GRAPH_URL, broker=BROKER,
+        )
+    return result, captured_nodes
+
+
+def test_structural_leaf_fold_enabled_drops_entity_like_and_empty_container_tags():
+    """Customer (entity-like, text-only) and Lines (empty container) both
+    fold onto PurchaseOrder and are never resolved as their own tag/entity
+    type when the flag is on -- only PurchaseOrder and LineItem remain."""
+    result, captured_nodes = _run_fold_test_xml(fold_enabled=True)
+
+    assert set(captured_nodes) == {"PurchaseOrder", "LineItem"}
+    assert result["tags"] == 2
+    po_node = captured_nodes["PurchaseOrder"][0]
+    assert po_node.properties["Customer"] == "Bob"
+    assert po_node.properties["Lines"] == ""
+
+
+def test_structural_leaf_fold_disabled_keeps_every_tag_as_its_own_entity_type():
+    """Same document, flag off: Customer and Lines each resolve as their
+    own tag/entity type instead of being folded onto PurchaseOrder --
+    confirms the flag is actually load-bearing for tag/entity COUNT, not
+    just a cosmetic no-op in this shape of document."""
+    result, captured_nodes = _run_fold_test_xml(fold_enabled=False)
+
+    assert set(captured_nodes) == {"PurchaseOrder", "Customer", "Lines", "LineItem"}
+    assert result["tags"] == 4
+    po_node = captured_nodes["PurchaseOrder"][0]
+    assert "Customer" not in po_node.properties
+    assert "Lines" not in po_node.properties

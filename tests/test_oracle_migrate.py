@@ -252,6 +252,11 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
                     return
                 if sql.strip().upper().startswith("INSERT INTO ARYX_SCHEMA_MIGRATIONS"):
                     filename = params[0]
+                    if filename == mod._LOCK_ROW_FILENAME:
+                        # PR review round 7 lock -- harness furniture, not a
+                        # migration file; keep it out of tests' own `inserted`
+                        # assertions the same way CREATE TABLE is a no-op above.
+                        return
                     if filename in inserted:
                         raise oracledb.Error(
                             "ORA-00001: unique constraint violated",
@@ -392,6 +397,8 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
                 if sql.strip().upper().startswith("SELECT FILENAME"):
                     return
                 if sql.strip().upper().startswith("INSERT INTO ARYX_SCHEMA_MIGRATIONS"):
+                    if params[0] == mod._LOCK_ROW_FILENAME:
+                        return
                     captured_params["filename"], captured_params["checksum"] = params
                     return
                 side_effect(sql)

@@ -64,11 +64,14 @@ def _delete_orphaned_entities(
     instead of adding to leftover orphans on top of whatever a retry
     creates.
 
-    This does NOT touch aryx_entity_member rows for the deleted entities --
-    EntityStore.delete_entity()/delete_entities_by_type() (the existing
-    methods this builds on) already have that same limitation for their
-    existing callers, so this is consistent with, not worse than, the rest
-    of the codebase (tracked as N2 in the PR #429 review, not fixed here).
+    Stale note corrected (PR review round 7, Low): this used to say member
+    rows were left as orphans, matching EntityStore.delete_entity()/
+    delete_entities_by_type()'s then-limitation -- that limitation was
+    closed for all three delete methods (§5, 2026-10-04): delete_entities()
+    (which this function actually calls) now deletes each chunk's
+    aryx_entity_member rows before the entity rows themselves, same
+    transaction, same FK-ordering reason as delete_entity()'s own
+    docstring. Nothing is left orphaned here any more.
 
     One round-trip, not one per entity (PR #429 review N1): a cancel after
     many tags on a large file (the 5.85M-node upload this PR's cancellation
