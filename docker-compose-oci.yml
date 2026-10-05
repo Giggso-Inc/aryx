@@ -92,9 +92,15 @@ services:
       - ARYX_OCI_RDF_BUCKET=${ARYX_OCI_RDF_BUCKET:-aryx-rdf-exports}
       # Embed → OCI GenAI Cohere Embed v3
       - ARYX_EMBED_BACKEND=oci
-      # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
-      - ARYX_LLM_CHEAP_BACKEND=oci
-      - ARYX_LLM_FRONTIER_BACKEND=oci
+      # LLM → OCI GenAI by default. To use Gemini instead, set in .env:
+      #   ARYX_LLM_CHEAP_BACKEND=local, ARYX_LLM_FRONTIER_BACKEND=local, ARYX_LLM_PROVIDER=gemini,
+      #   ARYX_LLM_BASE_URL, ARYX_LLM_MENIAL_MODEL, ARYX_LLM_REASON_MODEL, ARYX_LLM_API_KEY
+      # (see docs/oci-oracle/LLM_GEMINI_ON_OCI_STACK_PLAN_2026-10-05.md).
+      - ARYX_LLM_CHEAP_BACKEND=${ARYX_LLM_CHEAP_BACKEND:-oci}
+      - ARYX_LLM_FRONTIER_BACKEND=${ARYX_LLM_FRONTIER_BACKEND:-oci}
+      - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
+      - ARYX_LLM_API_KEY=${ARYX_LLM_API_KEY:-}
+      - ARYX_CPQ_INTENT_GEMINI_MODEL=${ARYX_CPQ_INTENT_GEMINI_MODEL:-gemini-2.5-pro}
       # OCI API auth — env-var mode (no ~/.oci/config mount needed)
       - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
       - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
