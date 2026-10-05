@@ -69,29 +69,27 @@ def test_read_files_routes_xml_through_cpq_ingestion_when_active(monkeypatch):
     assert "nodes" in plan["ontology_type"] and "edges" in plan["ontology_type"]
 
 
-def test_read_files_still_writes_raw_graph_when_csv_bml_enabled(monkeypatch):
-    """csv_bml_ingestion reads bml_tables back off the stored raw graph
-    (bml_graph.enrich_projection), which only gets added by
-    project_raw_graph_and_flatten's Oracle write -- so with
-    ARYX_CSV_BML_ENABLED on, the old write+flatten path must still run
-    instead of the parse-only preview (Raven review finding)."""
+def test_read_files_is_the_same_fast_preview_whether_csv_bml_is_enabled_or_not(monkeypatch):
+    """ARYX_CSV_BML_ENABLED must not change how an XML upload is read: the query lists the CSV step searches are
+    added at Confirm time onto the curated graph, so Read never needs the raw-graph write (which took minutes on a
+    large file). Same result with the switch on and off: no write, one synthetic counts-only preview plan."""
     monkeypatch.setenv("ARYX_INGEST_FILE_TYPE", "xml")
     monkeypatch.setenv("ARYX_INGEST_PIPELINE", "cpq_ingestion")
-    monkeypatch.setenv("ARYX_CSV_BML_ENABLED", "true")
-    get_cpq_ingestion_settings.cache_clear()
-
-    with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write:
-        mock_write.return_value = RawGraphWriteResult(
-            nodes_written=2, edges_written=1, backend="falkordb", graph_ref="graph=x",
-        )
-        result = read_files(
-            doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
-            broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=50,
-        )
-
-    mock_write.assert_called_once()
-    assert len(result["tabular"]) >= 1
-    assert all(not p.get("cpq_raw_graph_preview") for p in result["tabular"])
+    results = {}
+    for switch in ("true", "false"):
+        monkeypatch.setenv("ARYX_CSV_BML_ENABLED", switch)
+        get_cpq_ingestion_settings.cache_clear()
+        with patch("aryx.cpq_ingestion.pipeline.project_and_write_raw_graph") as mock_write, \
+             patch("aryx.cpq_ingestion.pipeline.project_raw_graph_and_flatten") as mock_flatten:
+            results[switch] = read_files(
+                doc_paths=[], tabular=[(SAMPLE_XML, "sample.xml")],
+                broker=Broker.__new__(Broker), context="", did="test-did", workspace_id=50,
+            )
+        mock_write.assert_not_called()
+        mock_flatten.assert_not_called()
+        (plan,) = results[switch]["tabular"]
+        assert plan["cpq_raw_graph_preview"] is True and plan["source_filename"] == "sample.xml"
+    assert results["true"]["tabular"] == results["false"]["tabular"]
 
 
 def test_read_files_ignores_workspace_id_for_the_cpq_xml_preview(monkeypatch):
