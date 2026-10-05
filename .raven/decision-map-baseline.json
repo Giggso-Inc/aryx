@@ -13923,7 +13923,7 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      90,
+      91,
       "<try>"
     ],
     [
@@ -13960,6 +13960,16 @@
       "src/aryx/csv_bml_ingestion/__main__.py",
       66,
       "_load_index"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/confirm_hook.py",
+      65,
+      "<try>"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/confirm_hook.py",
+      73,
+      "ingest_csv_plans_with_bml"
     ],
     [
       "src/aryx/csv_bml_ingestion/db.py",
@@ -14483,17 +14493,17 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      230,
+      204,
       "<try>"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      287,
+      261,
       "read_files"
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      788,
+      779,
       "<if>"
     ],
     [
