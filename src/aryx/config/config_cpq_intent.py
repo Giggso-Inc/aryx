@@ -348,6 +348,14 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ask which one instead of silently picking A. Off by default."
         ),
     )
+    cpq_blank_free_text_in_conditions_enabled: bool = Field(
+        default=False,
+        description=(
+            "BML reads an unset text variable as an empty string. When on, constraint-rule "
+            "condition scripts see every unfilled free-text attribute (no menu options) as "
+            "'' instead of unknown, e.g. a customer type nobody entered counts as not federal."
+        ),
+    )
     cpq_layout_variants_enabled: bool = Field(
         default=False,
         description=(

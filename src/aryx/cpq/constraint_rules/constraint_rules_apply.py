@@ -32,6 +32,7 @@ def apply_rules(
     contributions: dict[int, list[tuple[frozenset, list[str], str]]],
     script_stats: ScriptEvalStats | None = None,
     condition_stats: ScriptEvalStats | None = None,
+    condition_vars: dict[str, str] | None = None,
 ) -> None:
     """Evaluate every rule in `rules`, intersecting each firing rule's
     allowed values into `constrained`/`contributions` in place.
@@ -84,7 +85,8 @@ def apply_rules(
             if bml_eval is None:
                 continue
             fires = _condition_stats.timed(
-                bml_eval.condition_holds, rule.condition_script, filled)
+                bml_eval.condition_holds, rule.condition_script,
+                filled if condition_vars is None else condition_vars)
             if fires is True:
                 intersect(
                     constrained, contributions, target, effective_allowed(rule, target),

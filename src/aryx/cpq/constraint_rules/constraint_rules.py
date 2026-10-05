@@ -18,6 +18,7 @@ from typing import Any
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.constraint_rules.constraint_rules_apply import apply_rules
+from aryx.cpq.constraint_rules.constraint_rules_blank_text import with_blank_free_text
 from aryx.cpq.constraint_rules.constraint_rules_dt_narrowing import apply_data_table_narrowing
 from aryx.cpq.constraint_rules.constraint_rules_fallback import resolve_empty_intersections
 from aryx.cpq.constraint_rules.constraint_rules_narrowing import apply_narrowing_rec_rules
@@ -112,7 +113,7 @@ def apply_constraint_rules(
     apply_rules(
         rules, by_rule_id, filled, filled_by_rule_id, bml_eval, workspace_id,
         catalog_prefix, _dt_cache, constrained, contributions,
-        script_stats, cond_stats,
+        script_stats, cond_stats, with_blank_free_text(attrs, filled),
     )
     resolve_empty_intersections(rules, by_rule_id, constrained, contributions)
     if narrowing_rec_rules:
