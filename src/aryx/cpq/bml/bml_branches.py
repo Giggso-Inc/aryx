@@ -94,6 +94,12 @@ _RETURN_STR_RE = re.compile(r'\breturn\s+"([^"]*)"\s*;?')
 
 # if (...) { ... } chain scanner
 _IF_RE = re.compile(r'\bif\s*\(', re.IGNORECASE)
+# Lenient twin (flag `cpq_find_function_enabled`): BML also spells an else-if as `elif(`.
+_IF_RE_ELIF = re.compile(r'(?:\bel)?if\s*\(', re.IGNORECASE)
+
+
+def _if_re() -> "re.Pattern[str]":
+    return _IF_RE_ELIF if find_enabled() else _IF_RE
 
 # Constructs that put a script beyond Tier 1 (function calls, nesting hints).
 _TIER1_BLOCKERS = re.compile(
@@ -121,7 +127,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
     """
     script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
-    m = _IF_RE.search(script)
+    m = _if_re().search(script)
     if not m:
         # No if/else at all — a common, genuinely trivial idiom: the WHOLE
         # script is just one unconditional `return <value>;` (confirmed
@@ -153,7 +159,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
     pos = m.start()
     text = script
     while True:
-        m = _IF_RE.search(text, pos)
+        m = _if_re().search(text, pos)
         if not m:
             break
         paren_start = m.end() - 1
@@ -188,7 +194,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         if block is None:
             return None
         body, after = block
-        if _IF_RE.search(body) and not (find_enabled() and starts_with_if(body)):
+        if _if_re().search(body) and not (find_enabled() and starts_with_if(body)):
             return None  # nested if → Tier 2 (plan F14: a body that IS an if-chain is walked)
         if _TIER1_BLOCKERS.search(body):
             return None
@@ -200,6 +206,11 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if rest2.lower().startswith("if"):
                 pos = text.find("if", after)
                 continue
+        if find_enabled() and rest.lower().startswith("elif") and _if_re().match(rest):
+            pos = text.find("elif", after)
+            continue
+        if rest.lower().startswith("else"):
+            rest2 = rest[4:].lstrip()
             brace2 = text.find("{", after)
             if brace2 == -1:
                 return None
@@ -207,7 +218,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if block2 is None:
                 return None
             body2, _ = block2
-            if _IF_RE.search(body2) and not (find_enabled() and starts_with_if(body2)):
+            if _if_re().search(body2) and not (find_enabled() and starts_with_if(body2)):
                 return None
             if _TIER1_BLOCKERS.search(body2):
                 return None
@@ -216,8 +227,8 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         if find_enabled() and is_plain_return(body):
             # Plan F14: sequential ifs after an unconditionally-returning
             # body are an else-if chain; a bare literal return is the else.
-            if _IF_RE.match(rest):
-                pos = text.find("if", after)
+            if _if_re().match(rest):
+                pos = text.find("elif" if rest.lower().startswith("elif") else "if", after)
                 continue
             if is_tail_return(rest):
                 branches.append((None, rest))
@@ -242,7 +253,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         # condition_false. Booleans have no such "empty means nothing"
         # ambiguity, so this is safe to infer; quoted-string returns are
         # not, and are intentionally left untouched.
-        if len(branches) == 1 and not _IF_RE.search(rest):
+        if len(branches) == 1 and not _if_re().search(rest):
             m_tail = re.match(r'return\s+(true|false)\s*;\s*$', rest, re.IGNORECASE)
             if m_tail:
                 branches.append((None, rest))
