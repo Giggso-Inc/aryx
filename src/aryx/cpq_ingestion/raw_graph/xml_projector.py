@@ -20,7 +20,7 @@ import defusedxml.ElementTree as defused_ET
 
 from aryx.cpq_ingestion.constants import RAW_EDGE_CONTAINS, RAW_PROP_TEXT
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
-from aryx.raven_log import raven_log
+from aryx.raven_log import current_run_id, raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +263,18 @@ def iter_raw_graph(
             )
             if should_stop is not None and should_stop():
                 logger.warning("iter_raw_graph: cancelled after %d element(s)", finished)
+                # PR review round 5 (Raven logging, N4): this call was
+                # missing every field the decision-map tool requires for a
+                # [Dependency] log (the iterparse() call this wraps) --
+                # baselined rather than fixed in an earlier round.
                 raven_log("WARN", "P3", "ingest.raw_graph.project_cancelled projection parse stopped by cancel",
                           error_code="ARYX_ING_CANCELLED",
                           context={"elements_processed": finished, "result": "cancelled",
-                                   "exit_condition": "cancelled"})
+                                   "exit_condition": "cancelled",
+                                   "dependency_name": "defusedxml.iterparse", "operation": "iter_raw_graph",
+                                   "duration_ms": int((time.monotonic() - start) * 1000),
+                                   "error_class": "PipelineCancelled", "attempt": 1,
+                                   "trace_id": current_run_id()})
                 from aryx.pipeline.orchestrate import PipelineCancelled  # noqa: PLC0415
                 raise PipelineCancelled(f"job cancelled during XML projection after {finished} element(s)")
         yield node, edge

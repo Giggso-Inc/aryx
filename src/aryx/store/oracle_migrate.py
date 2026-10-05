@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from pathlib import Path
 
-from aryx.raven_log import raven_log
+from aryx.raven_log import current_run_id, raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -71,18 +72,33 @@ def _ensure_tracking_table(cur) -> None:
     "already exists" error the same way every other idempotent migration
     block in this file already does.
     """
+    # PR review round 5 (Raven logging, N4): no raven_log call existed here
+    # at all -- baselined rather than fixed in an earlier round.
     import oracledb  # noqa: PLC0415
+    _t0 = time.monotonic()
     try:
         cur.execute(_TRACKING_TABLE_DDL)
     except oracledb.Error as exc:
         if "ORA-00955" not in str(exc):  # name already used by an existing object
+            raven_log("ERROR", "P2", "oracle_migrate.ensure_tracking_table_failed unexpected error creating tracking table",
+                      context={"dependency_name": "oracle_adb", "operation": "ensure_tracking_table",
+                               "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "error",
+                               "error_class": type(exc).__name__, "attempt": 1, "trace_id": current_run_id()})
             raise
         # Table already existed (pre-checksum) -- add the column separately.
         try:
             cur.execute(_ADD_CHECKSUM_COLUMN_DDL)
         except oracledb.Error as exc2:
             if "ORA-01430" not in str(exc2):  # column already exists
+                raven_log("ERROR", "P2", "oracle_migrate.ensure_tracking_table_failed unexpected error adding checksum column",
+                          context={"dependency_name": "oracle_adb", "operation": "ensure_tracking_table",
+                                   "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "error",
+                                   "error_class": type(exc2).__name__, "attempt": 1, "trace_id": current_run_id()})
                 raise
+    raven_log("DEBUG", "P4", "oracle_migrate.ensure_tracking_table_ok tracking table ready",
+              context={"dependency_name": "oracle_adb", "operation": "ensure_tracking_table",
+                       "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "ok",
+                       "error_class": "", "attempt": 1, "trace_id": current_run_id()})
 
 
 def _already_applied(cur) -> dict[str, str | None]:
@@ -142,7 +158,10 @@ def _mark_applied(cur, filename: str, checksum: str) -> None:
     one warning would defeat the point for something that should never
     happen in normal operation.
     """
+    # PR review round 5 (Raven logging, N4): no raven_log call existed here
+    # at all -- baselined rather than fixed in an earlier round.
     import oracledb  # noqa: PLC0415
+    _t0 = time.monotonic()
     try:
         cur.execute(
             "INSERT INTO aryx_schema_migrations (filename, checksum) VALUES (:1, :2)",
@@ -150,7 +169,23 @@ def _mark_applied(cur, filename: str, checksum: str) -> None:
         )
     except oracledb.Error as exc:
         if "ORA-00001" not in str(exc):
+            raven_log("ERROR", "P2", "oracle_migrate.mark_applied_failed unexpected error marking file applied",
+                      context={"dependency_name": "oracle_adb", "operation": "mark_applied",
+                               "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "error",
+                               "error_class": type(exc).__name__, "attempt": 1, "trace_id": current_run_id(),
+                               "file": filename})
             raise
+        raven_log("DEBUG", "P4", "oracle_migrate.mark_applied_race concurrent duplicate insert tolerated",
+                  context={"dependency_name": "oracle_adb", "operation": "mark_applied",
+                           "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "ok",
+                           "error_class": type(exc).__name__, "attempt": 1, "trace_id": current_run_id(),
+                           "file": filename})
+        return
+    raven_log("DEBUG", "P4", "oracle_migrate.mark_applied_ok file marked applied",
+              context={"dependency_name": "oracle_adb", "operation": "mark_applied",
+                       "duration_ms": int((time.monotonic() - _t0) * 1000), "result": "ok",
+                       "error_class": "", "attempt": 1, "trace_id": current_run_id(),
+                       "file": filename})
 
 
 def apply_oracle_migrations(dsn: str) -> None:

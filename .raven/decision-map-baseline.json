@@ -13923,18 +13923,8 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      86,
+      87,
       "<try>"
-    ],
-    [
-      "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      285,
-      "<if>"
-    ],
-    [
-      "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      463,
-      "resolve_and_relate_raw_graph"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
@@ -13948,17 +13938,12 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      194,
-      "iter_raw_graph"
-    ],
-    [
-      "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      281,
+      289,
       "count_raw_graph_elements"
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/xml_projector.py",
-      341,
+      349,
       "count_raw_graph_elements"
     ],
     [
@@ -14898,22 +14883,12 @@
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      64,
-      "_ensure_tracking_table"
-    ],
-    [
-      "src/aryx/store/oracle_migrate.py",
-      122,
-      "_mark_applied"
-    ],
-    [
-      "src/aryx/store/oracle_migrate.py",
-      156,
+      191,
       "apply_oracle_migrations"
     ],
     [
       "src/aryx/store/oracle_migrate.py",
-      201,
+      236,
       "<try>"
     ],
     [

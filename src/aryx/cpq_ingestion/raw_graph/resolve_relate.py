@@ -18,6 +18,7 @@ it remains a write-only provenance artifact.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -40,7 +41,7 @@ from aryx.cpq_ingestion.raw_graph.xml_projector import iter_raw_graph, project_x
 from aryx.pipeline.orchestrate import PipelineCancelled, Progress, project_workspace_graph, run_pipeline
 from aryx.store.entity_store import EntityStore
 
-from aryx.raven_log import raven_log
+from aryx.raven_log import current_run_id, raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,7 @@ def resolve_and_relate_raw_graph(
         raise ValueError("resolve_and_relate_raw_graph: exactly one of "
                          "projection/xml_bytes must be given")
 
+    _t0 = time.monotonic()
     total_entities = 0
     relationships: list[Any] = []
     graph_counts: dict[str, int] = {}
@@ -282,6 +284,19 @@ def resolve_and_relate_raw_graph(
         and not csv_bml_enabled()
     )
 
+    # PR review round 5 (Raven logging, N4): this routing decision had no
+    # dedicated raven_log entry at all -- flagged by the decision-map tool
+    # and previously just baselined rather than fixed. Logged once per
+    # call so it's possible to tell, after the fact, which path a given
+    # source file actually took.
+    raven_log("DEBUG", "P4", "ingest.raw_graph.path_chosen streaming vs. eager projection path",
+              context={"log_id": log_id, "source_key": source_key,
+                       "selected_option": "streaming" if use_streaming else "eager",
+                       "available_options": ["streaming", "eager"],
+                       "reason_code": "CPQ_STREAMING_PROJECTION_ENABLED" if use_streaming
+                                      else "STREAMING_DISABLED_OR_BML_ENABLED",
+                       "policy_version": "cpq_streaming_route_v1",
+                       "trace_id": current_run_id()})
     if use_streaming:
         by_tag: dict[str, list[RawNode]] = defaultdict(list)
         edges: list[RawEdge] = []
@@ -457,7 +472,15 @@ def resolve_and_relate_raw_graph(
               "relationships": len(relationships), **graph_counts}
     logger.info("raw_graph resolve_and_relate complete did=%s source_key=%s %s",
                 log_id, source_key, result)
+    # PR review round 5 (Raven logging, N4): this was previously missing
+    # every field the decision-map tool requires for an [Outcome] log
+    # (task_id/final_status/duration_ms/stage/result/impact_scope) --
+    # baselined rather than fixed in an earlier round. Added here instead.
     raven_log("INFO", "P4", "ingest.raw_graph.resolved raw graph resolved into curated graph",
               context={"log_id": log_id, "source_key": source_key, "workspace_id": workspace_id,
-                       "tags": len(by_tag), "entities": total_entities, "relationships": len(relationships)})
+                       "tags": len(by_tag), "entities": total_entities, "relationships": len(relationships),
+                       "task_id": log_id, "final_status": "complete", "stage": "resolve_and_relate",
+                       "result": "ok", "reason_code": "OK",
+                       "duration_ms": int((time.monotonic() - _t0) * 1000),
+                       "impact_scope": result})
     return result

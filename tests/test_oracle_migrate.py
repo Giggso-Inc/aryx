@@ -163,7 +163,7 @@ class TestApplyOracleMigrationsConnect(unittest.TestCase):
         cfg_mod.get_settings.cache_clear()
         with patch.object(cfg_mod, "get_settings",
                           return_value=self._patch_settings()), \
-             patch.object(oracledb, "connect",
+             patch.object(oracledb, "connect", create=True,
                           side_effect=Exception("ORA-12541: TNS no listener")):
             with self.assertRaises(RuntimeError, msg="connection failed"):
                 apply_oracle_migrations("tcps://adb.test:1522/db_high")
@@ -178,7 +178,7 @@ class TestApplyOracleMigrationsConnect(unittest.TestCase):
         mock_conn.cursor.return_value = MagicMock()
         with patch.object(cfg_mod, "get_settings",
                           return_value=self._patch_settings()), \
-             patch.object(oracledb, "connect", return_value=mock_conn) as mock_connect:
+             patch.object(oracledb, "connect", create=True, return_value=mock_conn) as mock_connect:
             apply_oracle_migrations("tcps://adb.test:1522/db_high")
 
         mock_connect.assert_called_once_with(
@@ -267,7 +267,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
             mock_conn.cursor.return_value = mock_cur
 
             with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
-                 patch.object(oracledb, "connect", return_value=mock_conn), \
+                 patch.object(oracledb, "connect", create=True, return_value=mock_conn), \
                  patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
                 mod.apply_oracle_migrations("tcps://adb.test:1522/db_high")
 
@@ -402,7 +402,7 @@ class TestMigrationTrackingCorrectness(unittest.TestCase):
             mock_conn.cursor.return_value = mock_cur
 
             with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
-                 patch.object(oracledb, "connect", return_value=mock_conn), \
+                 patch.object(oracledb, "connect", create=True, return_value=mock_conn), \
                  patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
                 mod.apply_oracle_migrations("tcps://adb.test:1522/db_high")
 

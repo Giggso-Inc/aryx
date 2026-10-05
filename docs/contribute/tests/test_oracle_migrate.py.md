@@ -1,6 +1,6 @@
 # Attribution — tests/test_oracle_migrate.py
 
-Last updated: 2026-10-05T03:40:03.361060+00:00
+Last updated: 2026-10-05T03:51:34.013325+00:00
 Total lines: 512
 Lines AI-generated: 254 (49.6%)
 Lines human-typed: 191

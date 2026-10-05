@@ -1535,3 +1535,46 @@ the actual code first.
   any) is a product decision this investigation isn't positioned to make
   unilaterally. Documented here as a known, accepted characteristic of
   the current folding behavior.
+
+### Follow-up (same day): both ⚠️ items actually fixed, not just baselined
+
+Two items came back after round 5 landed:
+
+- **Test regression, confirmed and fixed.** `tests/test_oracle_migrate.py`
+  passed standalone but 4 of its new checksum tests (plus 6 *pre-existing*
+  ones, confirmed via a before/after worktree comparison) failed when run
+  alongside `test_oracle_pool.py`/`test_datasource_store.py`/etc. Root
+  cause: `test_oracle_pool.py` installs a fake `oracledb` module into
+  `sys.modules` at **module import time** (a bare top-level call, not
+  inside a fixture) — pytest imports every test file during collection,
+  before running any of them, so this stub permanently replaces the real
+  `oracledb` package for the rest of the process the moment that file is
+  collected, regardless of which file runs first. The fake module has no
+  `.connect` attribute, so every `patch.object(oracledb, "connect", ...)`
+  in `test_oracle_migrate.py` raised `AttributeError` the instant it was
+  stubbed. Fixed narrowly, in-scope: added `create=True` to all 4
+  `patch.object(oracledb, "connect", ...)` call sites in
+  `test_oracle_migrate.py` (tolerates the attribute not existing yet,
+  same as a real `connect()` patch would need on a module that hasn't
+  been fully stubbed). This didn't just fix the 4 new tests — it also
+  fixed the 6 pre-existing ones broken by the same bug before round 5
+  ever landed. The actual root cause (`test_oracle_pool.py`'s irreversible
+  global stub) is a pre-existing, broader test-isolation issue outside
+  this file's scope — not touched here.
+- **Raven logging, confirmed and actually fixed this time.** The 5
+  decision-map findings accepted as baseline debt in round 5 are now
+  properly instrumented instead: `resolve_relate.py`'s streaming/eager
+  routing `<if>` and `resolve_and_relate_raw_graph`'s terminal `raven_log`
+  now carry every field their decision class (`Routing`/`Outcome`)
+  requires (`policy_version`/`trace_id` for the former;
+  `task_id`/`final_status`/`duration_ms`/`stage`/`result`/`impact_scope`
+  for the latter — tracked via a new `_t0 = time.monotonic()` at function
+  entry). `xml_projector.py`'s `iter_raw_graph` cancellation log and
+  `oracle_migrate.py`'s `_ensure_tracking_table`/`_mark_applied` (which
+  had **no** `raven_log` call at all before this) now carry the
+  `Dependency` class's required fields
+  (`dependency_name`/`operation`/`duration_ms`/`result`/`error_class`/
+  `attempt`/`trace_id`). Verified directly against the decision-map
+  scanner itself (`ast_decision_scanner.analyze_file()`), not just by
+  re-running `--write-baseline` — all 5 now report
+  `existing_log_status="sufficient"` with zero missing fields.
