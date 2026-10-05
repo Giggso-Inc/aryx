@@ -28,7 +28,6 @@ must stay put for the same reason.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -53,21 +52,6 @@ logger = logging.getLogger(__name__)
 # (embedding + adjudication calls), so this needs to be frequent enough that
 # a long-running resolve doesn't look stuck to the job-status UI.
 _PROGRESS_EVERY = 25
-
-# Wall-clock ceiling (seconds) on the gap between on_block_progress calls,
-# independent of _PROGRESS_EVERY (live incident, 2026-10-05): block COUNT is
-# not a reliable proxy for block COST -- a block's pair count scales with its
-# member count (candidate cluster size), so a run of large near-duplicate
-# blocks (e.g. many records sharing one blocking key) can take many minutes
-# to clear even 1-2 blocks, let alone 25. On a real CPQ file this produced a
-# 22m47s gap between heartbeat checkpoints (block 200 -> 725 of 1430) while
-# the resolve loop was continuously active the whole time -- well past
-# JobStore.sweep_stale_heartbeat's 20-minute WORKER_LOST threshold
-# (job_heartbeat_timeout_minutes), which then killed a perfectly healthy job.
-# This ceiling bounds the worst case to this many seconds regardless of how
-# expensive any individual block or run of blocks turns out to be, with
-# generous margin below the 20-minute default heartbeat timeout.
-_PROGRESS_MAX_SECONDS = 60
 
 
 def _block_embeddings(
@@ -267,13 +251,8 @@ def resolve(
         exact_ids: Merge on exact match-text equality only — for sources
             whose match keys are opaque identifiers (see _resolve_exact).
         on_block_progress: Optional callback(blocks_done, total_blocks), fired
-            every _PROGRESS_EVERY blocks OR every _PROGRESS_MAX_SECONDS of
-            wall-clock time, whichever comes first, so long-running runs (LLM
-            adjudication per pair) surface progress instead of looking stuck
-            -- the time ceiling matters because block count alone is not a
-            reliable proxy for elapsed time: a run of large near-duplicate
-            blocks can blow past the heartbeat sweep's timeout even while
-            actively working (see _PROGRESS_MAX_SECONDS's own comment).
+            every _PROGRESS_EVERY blocks so long-running runs (LLM adjudication
+            per pair) surface progress instead of looking stuck.
 
     Returns:
         (entity, members) pairs, one per cluster.
@@ -313,7 +292,6 @@ def resolve(
     block_items = list(blocks.items())
     total_blocks = len(block_items)
     total_merged = 0
-    _last_progress_emit = time.monotonic()
     logger.info("resolve run_id=%s blocks=%d records=%d", run_id, total_blocks, len(records))
 
     # Prefetch every multi-member block's embeddings concurrently (2026-09-23,
@@ -393,12 +371,9 @@ def resolve(
             pairs_evaluated, block_merges, total_merged,
         )
         if on_block_progress is not None and (
-            (block_idx + 1) % _PROGRESS_EVERY == 0
-            or block_idx + 1 == total_blocks
-            or time.monotonic() - _last_progress_emit >= _PROGRESS_MAX_SECONDS
+            (block_idx + 1) % _PROGRESS_EVERY == 0 or block_idx + 1 == total_blocks
         ):
             on_block_progress(block_idx + 1, total_blocks)
-            _last_progress_emit = time.monotonic()
 
     pair_scores_by_root = _partition_pair_scores(union, pair_scores)
     results = [
