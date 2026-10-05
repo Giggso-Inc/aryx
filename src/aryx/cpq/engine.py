@@ -1543,8 +1543,11 @@ class CpqEngine:
         return gov_sibling.is_recognized_country(value)
 
     @staticmethod
-    def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
-        return gov_sibling.derive_region(country, attr)
+    def derive_region(
+        country: str, attr: ConfigAttr, workspace_id: int | None = None,
+        catalog_prefix: str = "", cache: "dict | None" = None,
+    ) -> tuple[str, str] | None:
+        return gov_sibling.derive_region(country, attr, workspace_id, catalog_prefix, cache)
 
     @staticmethod
     def _apply_series_mapping_exclusions(

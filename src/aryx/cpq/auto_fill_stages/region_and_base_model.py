@@ -33,7 +33,7 @@ def stage_region_and_base_model(
     # country resolves to one of this attr's real options — country
     # itself is untouched, still always asked (D1).
     if not state.value and "region" in state.vn_flat and scope.country and attr.options:
-        derived = engine.derive_region(scope.country, attr)
+        derived = engine.derive_region(scope.country, attr, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache)
         if derived:
             state.value, state.display = derived
             state.source = "country_derived"

@@ -105,6 +105,20 @@ def _is_defaultinattr_shaped(keys: set[str]) -> bool:
     )
 
 
+def _is_country_region_shaped(keys: set[str]) -> bool:
+    # e.g. newCountryRegion.csv -- countryCode -> region (plus descriptive
+    # columns). Deliberately NOT in _SHAPE_DETECTORS: consumed by its own
+    # standalone loader (data_table_geo), so _load_all_tables' 5-tuple is
+    # untouched. Disjoint from rtte_ta (no RTTE/TA columns here).
+    return {"countryCode", "region"} <= keys and "RTTE" not in keys
+
+
+def _is_rtte_ta_shaped(keys: set[str]) -> bool:
+    # e.g. rtteTAReference.csv -- one Yes flag per country in RTTE / nonRTTE /
+    # TA. Standalone loader only (see _is_country_region_shaped).
+    return {"countryCode", "RTTE", "nonRTTE", "TA"} <= keys
+
+
 # Ordered so a more specific shape (sequence) is checked before a more
 # general one, in case a future table's keys could satisfy both.
 _SHAPE_DETECTORS: tuple[tuple[str, "callable"], ...] = (
