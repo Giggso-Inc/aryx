@@ -79,9 +79,25 @@ def _fires(conditions: Any, filled_by_rule_id: dict[int, str]) -> bool:
     return matched is True
 
 
+def script_filled_quantity_vns(engine: Any, attrs: list[Any], rec_rules: list[Any]) -> set[str]:
+    """Per-option quantity attributes (array-grid members) that an active
+    script-backed recommendation rule fills. Real CPQ prefills them, so they are
+    never red even though the engine's grid flow asks for them (plan F15)."""
+    by_id = _attr_index(attrs)
+    filled_by_rule = {
+        by_id[r.target_attr_id].variable_name
+        for r in rec_rules if r.script is not None and r.target_attr_id in by_id
+    }
+    quantity: set[str] = set()
+    for per_option in engine.resolve_array_grid_links(attrs).values():
+        quantity.update(per_option.values())
+    return quantity & filled_by_rule
+
+
 def rule_required_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str],
     filled_multi: dict[str, list[str]] | None, workspace_id: int, catalog_prefix: str,
+    rules: tuple[list[Any], list[Any]] | None = None,
 ) -> set[str]:
     """Targets of a firing blank-disallow constraint action or a firing
     message-only validation rule."""
@@ -89,7 +105,7 @@ def rule_required_vns(
     by_rule_id = _filled_by_rule_id(attrs, filled, filled_multi)
     assume_open = get_settings().cpq_required_set_guards_assumed_open
     out: set[str] = set()
-    _rec, con_rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
+    _rec, con_rules = rules or engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     for rule in con_rules:
         if str(getattr(rule, "mode", "")).upper() != "DISALLOW" or not getattr(rule, "blank", False):
             continue
@@ -132,7 +148,9 @@ def derive_required_vns(
         models = list(_engine_module._cpq_model_candidates(
             product, workspace_id, catalog_prefix, cache, base_model=base_model or ""))
         candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
-    candidates |= rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix)
+    rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
+    candidates |= rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules)
+    candidates -= script_filled_quantity_vns(engine, attrs, rules[0])
     by_vn = {a.variable_name: a for a in attrs}
     sources = filled_source or {}
     hidden = hidden_vns or set()

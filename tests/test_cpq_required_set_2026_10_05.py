@@ -45,6 +45,7 @@ def _engine(con=(), val=(), narrowed=None):
     eng = MagicMock()
     eng.load_recommendation_and_constraint_rules.return_value = ([], list(con))
     eng.load_validation_rules.return_value = list(val)
+    eng.resolve_array_grid_links.return_value = {}
     eng._resolve_narrowed_legal_values.side_effect = lambda vn, *a, **k: (narrowed or {}).get(vn)
     return eng
 
@@ -163,3 +164,14 @@ def test_shadow_difference_is_logged_and_nothing_is_returned(caplog):
     with caplog.at_level("INFO", logger=rs.logger.name):
         assert rs.log_shadow_difference("t", frozenset({"a", "b"}), {"b", "c"}) is None
     assert "only_derived=['a']" in caplog.text and "only_current=['c']" in caplog.text
+
+
+def test_a_quantity_attribute_filled_by_a_script_rule_is_not_required():
+    from aryx.cpq.state import RecommendationRule
+    eng = _engine()
+    eng.resolve_array_grid_links.return_value = {"sel_vn": {"opt": "c_vn"}}       # c_vn is a per-option quantity
+    script_rule = RecommendationRule(rule_name="q", condition_attr_id=0, condition_value="", target_attr_id=1003, script="loop")
+    eng.load_recommendation_and_constraint_rules.return_value = ([script_rule], [])
+    assert _derive(eng, filled={"base_vn": "B1"}) == {"a_vn"}                      # c_vn dropped
+    eng.load_recommendation_and_constraint_rules.return_value = ([], [])           # no rule fills it: stays required
+    assert _derive(eng, filled={"base_vn": "B1"}) == {"a_vn", "c_vn"}
