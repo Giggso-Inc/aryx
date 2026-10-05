@@ -14508,7 +14508,7 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery/doc_discovery.py",
-      768,
+      788,
       "<if>"
     ],
     [
@@ -14813,7 +14813,7 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      699,
+      706,
       "delete_entities_by_type"
     ],
     [

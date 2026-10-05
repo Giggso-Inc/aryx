@@ -873,22 +873,51 @@ know the shape of:
 
 ---
 
-## 5. [Known, already-documented, explicitly out of scope — carried from PR #429]
+## 5. [Known, carried from PR #429 — two since fixed, one still open]
 
-Not new findings — listed here only so this document is a complete
-record of open issues in this area, per request:
+Originally three items, carried here only so this document stays a
+complete record of open issues in this area. Two have since been fixed
+(this session); the third remains open and is now better understood
+(PR review round 4, N2, 2026-10-04):
 
+- ~~Re-confirming a cpq XML file that already fully completed duplicates
+  entities~~ — **fixed**: the cpq loop now participates in the same
+  `completed_plans`/`discovery_id` resume tracking the generic CSV path
+  already had, keyed by `source_filename` (prefixed `cpq:...` since round
+  4 N3, to keep it out of the generic path's `plan["filename"]` key
+  space).
+- ~~`aryx_entity_member` rows are not cleaned up on entity delete~~ —
+  **fixed**: all three delete methods now clean up members first, same
+  transaction. `delete_entities_by_type()` was further corrected in round
+  4 (N1): deletes via a subquery on the `workspace_id`/`ontology_type`
+  predicate rather than the earlier id list, closing both an unchunked-
+  large-array risk and a race where a concurrently-inserted entity of the
+  same type was caught by the final type-predicate delete but never made
+  it into the member cleanup.
+- **Still open, narrowed (PR review round 4, N2):** the fix above only
+  covers a file that already **fully completed**. A hard crash
+  **partway through** a file — the exact case the heartbeat-sweep
+  watchdog (§0) exists to catch — runs no cleanup: `resolve_and_relate_
+  raw_graph()`'s own orphan-cleanup (`_delete_orphaned_entities`) only
+  fires on a graceful `PipelineCancelled` exception (an explicit
+  `should_stop()` check or run_pipeline's own cancellation checkpoint); a
+  hard process kill means no Python exception handler ever runs at all.
+  Re-confirming after such a crash re-resolves every tag from scratch,
+  creating duplicates alongside whatever partial entities the killed
+  attempt already wrote. A fuller fix needs either (a) deleting the
+  previous attempt's partial entities for that source file before
+  re-resolving (requires a reliable way to identify "entities from the
+  last attempt at this file," which nothing currently tracks across a
+  process restart), or (b) per-tag completion tracking so a resume only
+  redoes the tags that were genuinely incomplete, mirroring the
+  per-tag-level resumability `resolve_and_relate_raw_graph()`'s own
+  docstring already calls out as "a separate, larger feature... out of
+  scope for this PR." Not attempted this round — same reasoning as
+  `project_workspace_graph` cancellation below: a real, scoped feature on
+  its own, not a drive-by fix.
 - `project_workspace_graph` (the final curated-graph write) is still not
   cancellable mid-write — same-magnitude fix as PR #425, affects every
   ingestion path in the system, not just cpq_ingestion XML.
-- Re-confirming a cpq XML file that already **fully completed** (not
-  cancelled) still fully re-resolves every tag from scratch and
-  duplicates entities — no resumability/idempotent-skip mechanism exists
-  for this path (the generic CSV confirm path has `completed_plans`
-  tracking; this path does not participate in it).
-- `aryx_entity_member` rows are not cleaned up when entities are deleted
-  via `delete_entity()` / `delete_entities()` / `delete_entities_by_type()`
-  — consistent limitation across all three, tracked but not fixed.
 
 ---
 
@@ -1354,3 +1383,65 @@ identically with the round-3 diff stashed out) — affects some of this
 round's new tests and two pre-existing, unrelated tests the same way, but
 every affected test passes reliably standalone and in smaller
 combinations.
+
+---
+
+## Update — PR review round 4 (2026-10-04, after the §5 fixes landed)
+
+Three Minor findings against round 3's §5 fixes (member cleanup, cpq
+resumability). All verified against the actual code first.
+
+- **N1 (confirmed, real correctness/scale bug):** `delete_entities_by_
+  type()`'s member delete sent every id of the type in one unchunked
+  `ANY(array)`/`JSON_TABLE` statement, while every other multi-id delete
+  in this file chunks at `_DELETE_CHUNK_SIZE` (20,000) for exactly the
+  reason this one didn't — a type with hundreds of thousands of entities
+  meant one huge bind and one long statement. Worse: an entity of that
+  type inserted between the id `SELECT` and the final `DELETE` was still
+  caught by the final type-predicate delete (same predicate, re-evaluated
+  fresh) but was never in the earlier id list, so its members were
+  silently orphaned. Fixed: member cleanup now runs a subquery on the
+  same `workspace_id`/`ontology_type` predicate (`DELETE FROM aryx_
+  entity_member WHERE ... entity_id IN (SELECT id FROM aryx_entity WHERE
+  workspace_id = ? AND ontology_type = ?)`) instead of an id list —
+  re-evaluated at delete time, so it has neither the chunking problem nor
+  the race. The id `SELECT` is kept only to build this method's return
+  value.
+- **N2 (confirmed, narrowed, not fixed this round):** the resumability
+  fix only covers a file that already fully completed. A hard crash
+  partway through a file — the case the heartbeat-sweep watchdog exists
+  to catch — runs no cleanup, since `resolve_and_relate_raw_graph()`'s
+  orphan-cleanup only fires on a graceful `PipelineCancelled`, never on a
+  hard process kill. Re-confirming after such a crash re-resolves every
+  tag from scratch, creating duplicates alongside the partial entities
+  the killed attempt left behind. A real fix (delete the previous
+  attempt's partial entities before re-resolving, or track per-tag
+  completion) is a genuine feature on the same scale as the per-tag
+  resumability `resolve_and_relate_raw_graph()`'s own docstring already
+  calls out as separate, larger, out-of-scope work — not attempted as a
+  drive-by fix here. See §5 for the full writeup.
+- **N3 (confirmed, two sub-issues, both fixed):** (a) `completed_plans`
+  mixed two key spaces — generic tabular plans use `plan["filename"]` (a
+  per-tag-derived name), cpq files used the raw `source_filename`. A
+  collision was unlikely but not impossible, and silent if it ever
+  happened. Fixed by prefixing every cpq entry (`cpq:{source_filename}`)
+  so the two spaces can never collide, even accidentally. (b) Finishing a
+  plan — tabular OR cpq — wrote `failed_plans: []` unconditionally, and
+  since `update_confirm_state()` replaces the whole persisted state (no
+  merge), this silently discarded any failed-plan record an earlier
+  attempt in the same confirm run had written. In practice this was
+  dormant (`failed_plans` is never populated with real content anywhere
+  in the current codebase — confirmed by grep), but it was a live landmine
+  for whenever that changes, and the pattern existed at BOTH write sites,
+  not just the cpq one this review was about. Fixed at both: carry
+  forward `state.get("failed_plans", [])` instead of hardcoding `[]`.
+
+New test for N1 (`delete_entities_by_type` now always runs the member
+delete via the real query shape, even when nothing currently matches —
+the subquery makes that a correct, cheap no-op), 2 existing cpq-resume
+tests updated for the new prefixed key format, 1 new test for the
+`failed_plans` preservation fix. Verified zero new regressions: full
+sweep across the touched areas (`entity_store`, `doc_discovery`,
+`ontology_delete_type`, `resolve_and_relate_raw_graph`) shows the exact
+same 10 pre-existing, already-documented caplog/logging-propagation
+flakiness failures as before this round, no new ones.
