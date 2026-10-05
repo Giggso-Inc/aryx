@@ -169,6 +169,10 @@ class TestApplyOracleMigrationsConnect(unittest.TestCase):
                 apply_oracle_migrations("tcps://adb.test:1522/db_high")
 
     def test_connect_called_with_user_password_dsn(self) -> None:
+        """Two connections now (PR review round 7 follow-up, Medium): one
+        for migration blocks, one dedicated to holding the row lock so a
+        DDL block's implicit commit can't release it mid-run -- both with
+        the same user/password/dsn."""
         from aryx.store.oracle_migrate import apply_oracle_migrations
         import aryx.config as cfg_mod
         import oracledb
@@ -181,10 +185,66 @@ class TestApplyOracleMigrationsConnect(unittest.TestCase):
              patch.object(oracledb, "connect", create=True, return_value=mock_conn) as mock_connect:
             apply_oracle_migrations("tcps://adb.test:1522/db_high")
 
-        mock_connect.assert_called_once_with(
+        assert mock_connect.call_count == 2
+        mock_connect.assert_called_with(
             user="aryx_user", password="secret",
             dsn="tcps://adb.test:1522/db_high",
         )
+
+    def test_lock_connection_is_separate_from_migration_connection(self) -> None:
+        """PR review round 7 follow-up, Medium: the lock FOR UPDATE must run
+        on a DIFFERENT connection than migration blocks -- Oracle's implicit
+        commit before/after every DDL statement would otherwise release the
+        lock mid-run the moment a DDL block executes on the same connection,
+        letting a second worker re-run (and, for a DDL-then-DML file,
+        double-apply) the same file. Two distinct mock connections (not just
+        asserting connect() was called twice) let this test actually catch a
+        regression back to one shared connection/cursor."""
+        import aryx.config as cfg_mod
+        import aryx.store.oracle_migrate as mod
+        import oracledb
+        import tempfile
+        from pathlib import Path
+
+        cfg_mod.get_settings.cache_clear()
+
+        migrate_conn = MagicMock(name="migrate_conn")
+        lock_conn = MagicMock(name="lock_conn")
+        migrate_cur = MagicMock(name="migrate_cur")
+        lock_cur = MagicMock(name="lock_cur")
+        migrate_conn.cursor.return_value = migrate_cur
+        lock_conn.cursor.return_value = lock_cur
+        migrate_cur.fetchall.return_value = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "0001_test.sql").write_text(
+                "ALTER TABLE t ADD (z NUMBER);", encoding="utf-8",
+            )
+            with patch.object(cfg_mod, "get_settings", return_value=self._patch_settings()), \
+                 patch.object(oracledb, "connect", create=True,
+                              side_effect=[migrate_conn, lock_conn]), \
+                 patch.object(mod, "_ORACLE_MIGRATIONS_DIR", tmp_path):
+                mod.apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+        lock_calls_on_lock_conn = [
+            c for c in lock_cur.execute.call_args_list if "FOR UPDATE" in c.args[0]
+        ]
+        assert len(lock_calls_on_lock_conn) == 1
+        lock_calls_on_migrate_conn = [
+            c for c in migrate_cur.execute.call_args_list if "FOR UPDATE" in c.args[0]
+        ]
+        assert lock_calls_on_migrate_conn == []
+
+        migration_block_calls = [
+            c for c in migrate_cur.execute.call_args_list if "ALTER TABLE t ADD" in c.args[0]
+        ]
+        assert len(migration_block_calls) == 1
+        assert lock_cur.execute.call_args_list == lock_calls_on_lock_conn, (
+            "lock cursor must only ever run the lock SELECT, never a migration block"
+        )
+
+        lock_conn.commit.assert_called_once()  # releases the lock
 
 
 # ── migration tracking table correctness (PR review M3, 2026-10-04) ─────────

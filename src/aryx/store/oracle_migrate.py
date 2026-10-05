@@ -276,20 +276,34 @@ def apply_oracle_migrations(dsn: str) -> None:
             "(check ARYX_OCI_ADB_DSN, ARYX_DB_USER, ARYX_DB_PASSWORD)"
         ) from exc
     conn.autocommit = True
+    # Lock held on a SEPARATE connection from the one that runs migration
+    # blocks (PR review round 7 follow-up, Medium): Oracle issues an
+    # implicit commit before AND after every DDL statement, and a commit
+    # releases row locks. A migration file ordered DDL-then-DML (e.g.
+    # ALTER TABLE ... ADD followed by a backfill UPDATE) would otherwise
+    # have its own DDL block commit the SAME transaction holding the lock,
+    # releasing it mid-file -- the second worker then acquires the lock,
+    # sees the file not yet recorded (_mark_applied only runs after every
+    # block in the file succeeds), and re-runs the whole file, double-
+    # applying the backfill. A DDL block on a DIFFERENT connection only
+    # commits ITS OWN transaction, leaving the lock connection's
+    # FOR UPDATE row lock untouched for the run's full duration.
+    lock_conn = None
     try:
         cur = conn.cursor()
         _ensure_tracking_table(cur)
         _ensure_lock_row(cur)
-        # Serialize the two uvicorn workers' migration runs (PR review round
-        # 7, High) behind a row lock held for the whole run, not just the
-        # tracking-table bookkeeping -- autocommit must be off for the lock
-        # to survive past this one statement. Re-fetch `applied` only AFTER
-        # acquiring the lock: a worker that was blocked here must see what
-        # the other worker just committed, not a stale pre-lock snapshot,
-        # or it would redundantly re-run a file the first worker just
-        # applied.
-        conn.autocommit = False
-        cur.execute(
+
+        lock_conn = oracledb.connect(
+            user=settings.db_user, password=settings.db_password, dsn=dsn
+        )
+        lock_conn.autocommit = False
+        lock_cur = lock_conn.cursor()
+        # Re-fetch `applied` only AFTER acquiring the lock: a worker that
+        # was blocked here must see what the other worker just committed,
+        # not a stale pre-lock snapshot, or it would redundantly re-run a
+        # file the first worker just applied.
+        lock_cur.execute(
             "SELECT filename FROM aryx_schema_migrations WHERE filename = :1 FOR UPDATE",
             [_LOCK_ROW_FILENAME],
         )
@@ -381,12 +395,15 @@ def apply_oracle_migrations(dsn: str) -> None:
                 "aryx_schema_migrations)", skipped_files,
             )
     finally:
-        # Commits whatever progress this run made (and releases the lock
-        # row) even on an exception path -- matches the old per-statement
-        # autocommit behaviour of persisting completed files rather than
-        # losing them because a later file in the same run hit an
-        # unexpected error.
-        conn.commit()
+        # conn stays autocommit=True throughout (each block/mark_applied
+        # commits itself, same as before the lock existed) -- no explicit
+        # commit needed for it. lock_conn is the one holding the row lock;
+        # committing it (even on an exception path, so a crash mid-run
+        # doesn't leave the lock held until the connection pool times it
+        # out) is what releases the lock for the next worker/boot.
+        if lock_conn is not None:
+            lock_conn.commit()
+            lock_conn.close()
         conn.close()
 
 

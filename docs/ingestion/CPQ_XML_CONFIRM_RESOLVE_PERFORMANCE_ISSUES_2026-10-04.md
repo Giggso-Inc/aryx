@@ -1781,3 +1781,43 @@ test_put_upsert_is_idempotent` fails when run alongside
 in this round — reproduced with none of this round's files in the mix,
 so this is a pre-existing test-isolation issue, not a regression from
 round 7.
+
+### Follow-up (same day): round-7 lock fix released its own lock
+
+**Medium, confirmed and fixed.** The round-7 `oracle_migrate` lock
+acquired `SELECT ... FOR UPDATE` on the sentinel row and then ran every
+migration block on the SAME connection/cursor. Oracle issues an implicit
+commit before AND after every DDL statement, and a commit releases row
+locks — so a migration file ordered DDL-then-DML (e.g. `ALTER TABLE ...
+ADD` followed by a backfill `UPDATE`) had its own DDL block commit the
+transaction holding the lock, releasing it mid-file. The second worker
+would then acquire the lock, see the file not yet recorded
+(`_mark_applied` only runs after every block in a file succeeds), and
+re-run the whole file — double-applying the backfill, exactly the race
+the lock exists to prevent. Files whose DML precedes any DDL were fine;
+only the DDL-then-DML ordering broke, which is why this wasn't caught by
+re-running the existing (mock-based) test suite.
+
+Fixed by holding the lock on a dedicated SECOND connection, separate from
+the one that executes migration blocks — a DDL block's implicit commit on
+the migrations connection no longer touches the lock connection's
+transaction at all, so the lock survives the full run regardless of block
+ordering. `conn` (migrations) stays `autocommit=True` throughout (back to
+its pre-lock, per-statement-commit behavior); `lock_conn` stays
+`autocommit=False` for the run's duration and is committed (releasing the
+lock) in the `finally` block.
+
+New regression test uses two DISTINCT mock connections (not just
+asserting `connect()` was called twice, which the old single-connection
+code would also satisfy trivially) to confirm the `FOR UPDATE` select
+runs only on the lock connection's cursor and never the migration
+connection's — confirmed it fails against the pre-fix code (0 lock calls
+found on the lock cursor, since there wasn't a separate one) and passes
+against the fix.
+
+Not independently verified against a real Oracle instance (same caveat
+the original finding carried) — the regression test proves the
+connection-separation *structure* this fix depends on, not the actual
+Oracle lock-release semantics underneath it, which is textbook Oracle
+behavior (DDL auto-commits) rather than something this environment can
+exercise directly.
