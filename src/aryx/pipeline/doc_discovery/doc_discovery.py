@@ -468,6 +468,17 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                                "recovery_selected": "skip_file", "fallback_target": None,
                                "exit_condition": "skipped", "result": "skipped"})
 
+    # Opt-in (ARYX_CSV_BML_ENABLED): every plain CSV the user approved is also loaded into its own workspace table
+    # (ws<id>_<file stem>) by the BML-driven pipeline -- additive, so the landing below is unchanged. The plans are not
+    # removed from valid_plans; best effort, a skipped/failed file is stored as an issue and never fails this job.
+    from aryx.csv_bml_ingestion.config import csv_bml_enabled  # noqa: PLC0415
+    if csv_bml_enabled():
+        from aryx.csv_bml_ingestion.confirm_hook import ingest_csv_plans_with_bml  # noqa: PLC0415
+        ingest_csv_plans_with_bml(
+            valid_plans, workspace_id=workspace_id, job_id=job_id,
+            on_stage=lambda detail: jobs.update_stage(job_id, "CSV BML Ingestion", int(step * 90 / total), detail),
+        )
+
     # cpq_ingestion: a plain CSV upload whose plan is active for this
     # pipeline (ARYX_INGEST_FILE_TYPE includes "csv", ARYX_INGEST_PIPELINE=
     # cpq_ingestion) lands directly in Postgres (aryx_landed_record) and
