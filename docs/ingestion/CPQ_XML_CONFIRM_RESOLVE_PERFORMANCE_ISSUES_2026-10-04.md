@@ -1908,3 +1908,47 @@ this specific trigger (false-positive sweep kills) much rarer, which
 reduces how often the zombie scenario is even reached — but a genuine
 user-initiated cancel or a real worker crash during a long block-scoring
 pass would still take until the next tag boundary to actually stop.
+
+### Follow-up (same day): the first heartbeat fix was still block-boundary-only
+
+**Medium, confirmed and fixed — twice over, same root defect.** The first
+version of this fix only checked `_PROGRESS_MAX_SECONDS` at block
+*boundaries*: end of a block's pair loop, and (missed entirely the first
+time) after the embedding-prefetch loop. Both still had the exact same
+class of gap the whole incident was about — a single long-running
+operation with no internal checkpoint:
+
+- `max_pairs_per_block` defaults to 500, and each pair goes through
+  `score_pair`/`_route_pair`, which can trigger an LLM adjudication call.
+  At seconds per call, ONE block can legitimately run for tens of
+  minutes — past the ceiling never being re-checked until that block
+  finally finishes. The original incident is most consistent with this
+  exact shape (a handful of singleton blocks logged near-instantly, then
+  one or a few large multi-member blocks absorbing the whole 22m47s gap),
+  not literally 500+ small blocks each taking a few seconds.
+- The embedding-prefetch loop (`ThreadPoolExecutor` + `as_completed`,
+  measured in this module's own docstring at ~99% of `resolve()`'s
+  wall-clock time on a realistic dataset) had ZERO `on_block_progress`
+  calls anywhere in it — `_last_progress_emit` is set before entering the
+  loop, and nothing fires until the first multi-member block's pair loop
+  finishes afterward.
+
+Fixed by checking the time ceiling inside both: once per pair in the
+block loop (a `monotonic()` call is negligible next to a scoring/
+adjudication call), and once per completed future in the prefetch loop.
+Both report `block_idx` (not `block_idx + 1`) since the current block/the
+whole prefetch phase hasn't finished yet — `on_block_progress`'s
+`(blocks_done, total_blocks)` contract stays unchanged; only new call
+sites were added, no signature change.
+
+Two new tests isolate each gap specifically (distinguishing "fired during
+prefetch" from "fired mid-block" matters, since both report
+`blocks_done=0` for the first block/first prefetch — otherwise
+ambiguous): the prefetch test only advances a fake clock inside
+`broker.embed()`'s mock (never called again once embeddings are cached
+for the pair loop), so any early heartbeat observed can only have come
+from the prefetch loop; the mid-block test uses one large single block
+(`C(6,2)=15` pairs) with a small per-call clock increment, so crossing
+the ceiling requires several per-pair checks, not one end-of-block check.
+Verified both fail against the previous (block-boundary-only) version of
+this fix and pass against the current one.

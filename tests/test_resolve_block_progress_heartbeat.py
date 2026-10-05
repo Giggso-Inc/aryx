@@ -81,8 +81,89 @@ def test_progress_fires_on_time_ceiling_even_mid_run_when_blocks_are_slow() -> N
 
     assert calls, "expected at least one heartbeat"
     first_done, total = calls[0]
-    assert first_done == 1 < total, (
-        "expected a heartbeat after block 1 due to the time ceiling, even "
-        "though block 1 is neither the 25th block nor the last one -- got "
-        f"first call {calls[0]}"
+    assert first_done < total, (
+        "expected an early heartbeat (embedding-prefetch or mid-block "
+        "time ceiling) well before the run finishes -- got first call "
+        f"{calls[0]}, which looks like only the final checkpoint fired"
+    )
+
+
+def test_progress_fires_during_embedding_prefetch_before_any_pair_is_scored() -> None:
+    """Regression guard, isolated to the embedding-prefetch loop (PR review
+    follow-up): the prefetch (ThreadPoolExecutor + as_completed) had ZERO
+    on_block_progress calls anywhere in it, even though this module's own
+    docstring says embedding is ~99% of resolve()'s wall-clock time on a
+    realistic dataset -- a large tag could sit there silently for many
+    minutes.
+
+    Isolates the prefetch specifically from the per-pair mid-block check
+    (both can independently fire a heartbeat with done=0, which would
+    otherwise be ambiguous): the fake clock only advances inside
+    broker.embed() -- called exclusively during the prefetch, never again
+    during the pair-scoring loop below it (embeddings are cached by then).
+    So ANY heartbeat observed before the run's final checkpoint can only
+    have come from the prefetch loop's own check.
+    """
+    records = _fixture(n_clusters=3)  # several multi-member blocks -> several embed() calls during prefetch
+    broker = MagicMock()
+    fake_now = [0.0]
+
+    def _embed_side_effect(_texts):
+        fake_now[0] += 70.0  # only source of elapsed time in this test
+        raise RuntimeError("no embeddings in this test")  # falls back to string-only scoring
+
+    broker.embed.side_effect = _embed_side_effect
+    calls: list[tuple[int, int]] = []
+
+    with patch("aryx.resolution.run.time.monotonic", side_effect=lambda: fake_now[0]):
+        resolve(records, broker, "Thing",
+                on_block_progress=lambda done, total: calls.append((done, total)))
+
+    assert calls, "expected a heartbeat during the embedding prefetch"
+    first_done, total = calls[0]
+    assert first_done == 0 < total, (
+        f"expected the first heartbeat to fire mid-prefetch (done=0) -- got {calls[0]}"
+    )
+
+
+def test_progress_fires_mid_block_for_a_single_large_block_of_slow_pairs() -> None:
+    """Regression guard, isolated to the per-pair check inside the block
+    loop (PR review follow-up): max_pairs_per_block defaults to 500 and
+    _route_pair can trigger an LLM adjudication call per pair, so a SINGLE
+    block can run for tens of minutes -- past the end-of-block-only check
+    this fix originally had, which would never re-check until that one
+    block finally finished.
+
+    One multi-member block (one embed() call, cheap/instant) with several
+    members -- several pairs -- so the per-pair loop runs more than once.
+    The fake clock only advances inside score_pair's module-level
+    monotonic() reads are NOT touched; instead this patches
+    time.monotonic() globally with a small per-call increment, well under
+    one full block's worth of calls but enough to cross the threshold
+    partway through the pair loop, proving the mid-block check (not just
+    the end-of-block one) is what fired.
+    """
+    records = _fixture(n_clusters=1, size=6)  # one block, C(6,2)=15 pairs
+    broker = _broker_no_embeddings()
+    calls: list[tuple[int, int]] = []
+
+    # +10s per read: several reads needed to cross the 60s ceiling, so the
+    # FIRST heartbeat can only come from repeated per-pair checks within
+    # this one block, not a single end-of-block check.
+    fake_now = [0.0]
+
+    def _fake_monotonic() -> float:
+        fake_now[0] += 10.0
+        return fake_now[0]
+
+    with patch("aryx.resolution.run.time.monotonic", side_effect=_fake_monotonic):
+        resolve(records, broker, "Thing",
+                on_block_progress=lambda done, total: calls.append((done, total)))
+
+    assert calls, "expected at least one heartbeat"
+    # done=0 means "block_idx 0, not yet complete" -- only the mid-block
+    # per-pair check reports that; the end-of-block check for the (only,
+    # first) block would report done=1 (block_idx + 1).
+    assert any(done == 0 for done, _total in calls), (
+        f"expected a mid-block (done=0) heartbeat before the block finished -- got {calls}"
     )

@@ -67,6 +67,21 @@ _PROGRESS_EVERY = 25
 # This ceiling bounds the worst case to this many seconds regardless of how
 # expensive any individual block or run of blocks turns out to be, with
 # generous margin below the 20-minute default heartbeat timeout.
+#
+# PR review follow-up (2026-10-05): the first version of this fix only
+# checked the ceiling at block BOUNDARIES (end of the per-block pair loop,
+# and after the embedding-prefetch loop) -- still too coarse. A single
+# block is capped at max_pairs_per_block (default 500), and each pair can
+# trigger an LLM adjudication call via _route_pair; at seconds/call, ONE
+# block can run for tens of minutes, past the ceiling never being checked
+# until that block finally finishes. The embedding prefetch
+# (ThreadPoolExecutor + as_completed, below) had the same gap -- ~99% of
+# resolve()'s wall-clock time on a realistic dataset, per this module's own
+# measured docstring, with zero on_block_progress calls anywhere in it.
+# Both are now checked internally (once per pair in the block loop, once
+# per completed future in the prefetch loop) -- a monotonic() call is
+# negligible next to a scoring/embedding/adjudication call, so checking
+# this often costs nothing that matters.
 _PROGRESS_MAX_SECONDS = 60
 
 
@@ -338,6 +353,21 @@ def resolve(
         }
         for future in as_completed(future_to_key):
             embeddings_by_block[future_to_key[future]] = future.result()
+            # PR review follow-up (2026-10-05): this prefetch is ~99% of
+            # resolve()'s wall-clock time on a realistic dataset (this
+            # function's own docstring, measured) -- a large tag with many
+            # blocks to embed can sit here for many minutes with zero
+            # on_block_progress calls, since _last_progress_emit was set
+            # before entering this loop and nothing fires until the FIRST
+            # multi-member block's pair loop finishes below. blocks_done=0
+            # here (no block's pair-scoring has started yet) -- the point
+            # is keeping the heartbeat alive during an otherwise-silent
+            # phase, not an accurate block count.
+            if on_block_progress is not None and (
+                time.monotonic() - _last_progress_emit >= _PROGRESS_MAX_SECONDS
+            ):
+                on_block_progress(0, total_blocks)
+                _last_progress_emit = time.monotonic()
 
     for block_idx, (block_key, group) in enumerate(block_items):
         if len(group) <= 1:
@@ -381,6 +411,21 @@ def resolve(
                         union.find(left.record_id) == union.find(right.record_id):
                     block_merges += 1
                 pairs_evaluated += 1
+                # PR review follow-up (2026-10-05): the end-of-block check
+                # below is still too coarse on its own -- max_pairs_per_block
+                # defaults to 500, and _route_pair can make an LLM
+                # adjudication call per pair, so a SINGLE block can run for
+                # tens of minutes (500 pairs x seconds/call), well past the
+                # 20-minute sweep, with the end-of-block check never
+                # reached in time. One monotonic() call per pair is
+                # negligible next to a scoring/adjudication call, so
+                # checking here closes the gap the block-boundary check
+                # alone could not.
+                if on_block_progress is not None and (
+                    time.monotonic() - _last_progress_emit >= _PROGRESS_MAX_SECONDS
+                ):
+                    on_block_progress(block_idx, total_blocks)
+                    _last_progress_emit = time.monotonic()
         total_merged += block_merges
         if would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ingest.resolve.block_done block scored",
