@@ -38,6 +38,13 @@ _LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
 _LAYOUT_COMPONENTS_CACHE: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
 _LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 _LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
+# The three above are keyed by `layout_source.layout_cache_key`: (workspace_id,
+# catalog_prefix) for the sentinel variant (unchanged), plus the variant for
+# any other. Variant-choice caches (cpq_layout_variants_enabled): all keyed
+# (workspace_id, catalog_prefix[, variant]) so invalidation clears the prefix.
+_LAYOUT_VARIANT_KEYS_CACHE: dict[tuple[int, str], list[str]] = {}
+_LAYOUT_FLOW_MAP_CACHE: dict[tuple[int, str], dict[str, frozenset[str]]] = {}
+_LAYOUT_CONTROLSET_CACHE: dict[tuple[int, str, str], frozenset[str]] = {}
 
 
 def _resolve_layout_file_source() -> LayoutFileSource:
@@ -63,9 +70,15 @@ def invalidate_layout_cache(workspace_id: int, catalog_prefix: str) -> None:
     lifetime, since these caches have no TTL and no other invalidation
     path (see CPQ_LAYOUT_FILE_STORAGE_MIGRATION_PLAN_2026-09-30.md)."""
     key = (workspace_id, catalog_prefix)
-    _LAYOUT_COMPONENTS_CACHE.pop(key, None)
-    _LAYOUT_DISPLAY_ORDER_CACHE.pop(key, None)
-    _LAYOUT_FULL_ORDER_CACHE.pop(key, None)
+    for cache in (
+        _LAYOUT_COMPONENTS_CACHE, _LAYOUT_DISPLAY_ORDER_CACHE,
+        _LAYOUT_FULL_ORDER_CACHE, _LAYOUT_VARIANT_KEYS_CACHE,
+        _LAYOUT_FLOW_MAP_CACHE, _LAYOUT_CONTROLSET_CACHE,
+    ):
+        # Every variant of the prefix: the sentinel's 2-tuple key and the
+        # 3-tuple (workspace_id, catalog_prefix, variant) keys.
+        for stale in [k for k in cache if k[:2] == key]:
+            cache.pop(stale, None)
 
 # docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
 # level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by

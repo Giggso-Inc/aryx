@@ -15,14 +15,37 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+# Sentinel `variant` for a layout export that names no flow of its own (and
+# for every pre-variant row). NOT NULL by design: Oracle stores '' as NULL
+# and a NULL never conflicts in a unique key. The SQL migration
+# 0050_cpq_layout_variant.sql repeats this literal as the column default.
+DEFAULT_LAYOUT_VARIANT = "default"
+
+
+def layout_cache_key(
+    workspace_id: int, catalog_prefix: str, variant: str = DEFAULT_LAYOUT_VARIANT,
+) -> tuple:
+    """Cache key for one layout. The sentinel variant keeps the historical
+    (workspace_id, catalog_prefix) key, so single-layout catalogs are
+    byte-identical to before; any other variant appends itself."""
+    if variant == DEFAULT_LAYOUT_VARIANT:
+        return (workspace_id, catalog_prefix)
+    return (workspace_id, catalog_prefix, variant)
+
 
 class LayoutFileSource(Protocol):
     """Resolves a catalog's native-UI layout export to its raw file text,
     scoped to a specific workspace."""
 
-    def get(self, catalog_name: str, workspace_id: int) -> str | None:
+    def get(
+        self, catalog_name: str, workspace_id: int,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
+    ) -> str | None:
         """Return the layout file's raw text for catalog_name in
-        workspace_id, or None."""
+        workspace_id (one `variant`), or None.
+
+        Sources may also offer ``variant_keys(catalog_name, workspace_id)``
+        (stored variants, oldest upload first); it is optional."""
         ...
 
 
@@ -60,21 +83,35 @@ class OracleLayoutFileSource:
             self._pool = get_pool(self._dsn)
         return self._pool
 
-    def get(self, catalog_name: str, workspace_id: int) -> str | None:
+    def variant_keys(self, catalog_name: str, workspace_id: int) -> list[str]:
+        """Stored variant keys for one catalog, oldest upload first."""
+        if not catalog_name:
+            return []
+        from aryx.queries import load  # noqa: PLC0415 -- see _get_pool's note
+        with self._get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_cpq_layout_variants"), (workspace_id, catalog_name))
+                return [str(r[0]) for r in cur.fetchall()]
+
+    def get(
+        self, catalog_name: str, workspace_id: int,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
+    ) -> str | None:
         if not catalog_name:
             return None
         from aryx.queries import load  # noqa: PLC0415 -- see _get_pool's note
         pool = self._get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(load("select_cpq_layout_file"), (workspace_id, catalog_name))
+                cur.execute(load("select_cpq_layout_file"), (workspace_id, catalog_name, variant))
                 row = cur.fetchone()
         if row is None:
             logger.warning(
                 "cpq layout_source: no active layout file for "
-                "workspace_id=%r catalog_prefix=%r in aryx_cpq_layout_file "
-                "-- this catalog will get no display-order/visibility "
-                "signal from an uploaded layout export", workspace_id, catalog_name,
+                "workspace_id=%r catalog_prefix=%r variant=%r in "
+                "aryx_cpq_layout_file -- this catalog will get no display-"
+                "order/visibility signal from an uploaded layout export",
+                workspace_id, catalog_name, variant,
             )
             return None
         return row[0]

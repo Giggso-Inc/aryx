@@ -12,12 +12,23 @@ path for per-test isolation).
 from __future__ import annotations
 
 from aryx.cpq import engine as _engine_module
-from aryx.cpq.layout_source import LayoutFileSource
+from aryx.cpq.layout_and_join_data.layout_variant import effective_variant
+from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT, LayoutFileSource, layout_cache_key
+
+
+def _components(engine, workspace_id, catalog_prefix, layout_source, variant):
+    """Components for `variant`; the variant argument is only passed when
+    non-sentinel, so the single-layout call shape is unchanged."""
+    if variant == DEFAULT_LAYOUT_VARIANT:
+        return engine._load_layout_components(workspace_id, catalog_prefix, layout_source)
+    return engine._load_layout_components(
+        workspace_id, catalog_prefix, layout_source, variant)
 
 
 def load_layout_display_order(
     engine, workspace_id: int, catalog_prefix: str = "",
     layout_source: LayoutFileSource | None = None,
+    variant: str = DEFAULT_LAYOUT_VARIANT,
 ) -> dict[str, int] | None:
     """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2 — {variable_name:
     rank} for exactly the attributes a catalog's decoded native-UI
@@ -32,12 +43,16 @@ def load_layout_display_order(
 
     layout_source — injected for tests; defaults to the process-wide
     Oracle ADB / Postgres source (see LayoutFileSource).
+    variant — which stored layout; with `cpq_layout_variants_enabled` on and
+    the default passed, the variant is chosen from the bound model
+    (layout_variant.effective_variant), else the single layout as before.
     """
     cache = _engine_module._LAYOUT_DISPLAY_ORDER_CACHE
-    key = (workspace_id, catalog_prefix)
+    variant = effective_variant(workspace_id, catalog_prefix, variant, layout_source)
+    key = layout_cache_key(workspace_id, catalog_prefix, variant)
     if key in cache:
         return cache[key]
-    components = engine._load_layout_components(workspace_id, catalog_prefix, layout_source)
+    components = _components(engine, workspace_id, catalog_prefix, layout_source, variant)
     if components is None:
         cache[key] = None
         return None
@@ -58,6 +73,7 @@ def load_layout_display_order(
 def _load_layout_full_order(
     engine, workspace_id: int, catalog_prefix: str = "",
     layout_source: LayoutFileSource | None = None,
+    variant: str = DEFAULT_LAYOUT_VARIANT,
 ) -> dict[str, int] | None:
     """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b — {variable_name:
     rank} over EVERY component in the layout file's document order,
@@ -69,10 +85,11 @@ def _load_layout_full_order(
     those hidden attrs for the summary/payload visible-set use case.
     """
     cache = _engine_module._LAYOUT_FULL_ORDER_CACHE
-    key = (workspace_id, catalog_prefix)
+    variant = effective_variant(workspace_id, catalog_prefix, variant, layout_source)
+    key = layout_cache_key(workspace_id, catalog_prefix, variant)
     if key in cache:
         return cache[key]
-    components = engine._load_layout_components(workspace_id, catalog_prefix, layout_source)
+    components = _components(engine, workspace_id, catalog_prefix, layout_source, variant)
     if components is None:
         cache[key] = None
         return None
