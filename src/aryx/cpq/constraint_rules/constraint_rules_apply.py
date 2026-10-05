@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.constraint_rules.constraint_rules_intersect import intersect
 from aryx.cpq.constraint_rules.constraint_rules_mode import effective_allowed, guard_open
@@ -114,7 +115,7 @@ def apply_rules(
             ):
                 continue
             condition_key = frozenset({rule.condition_attr_id})
-        if not guard_open(rule, filled):
+        if not guard_open(rule, filled, get_settings().cpq_required_set_guards_assumed_open):
             continue    # plan F2: the mode call sits inside a guard whose variable is empty
         intersect(
             constrained, contributions, target, effective_allowed(rule, target),

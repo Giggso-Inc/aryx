@@ -320,7 +320,9 @@ class CpqIntentSettingsMixin(BaseSettings):
             "only runs when that session variable has a value. The variable is "
             "supplied by the host, not by the quote. When true, a guard variable "
             "that is absent from the quote state is assumed to be populated (as "
-            "in production); when false (default) such a rule does not fire."
+            "in production); when false (default) such a rule does not fire. "
+            "Applies both to the derived required set and to constraint-rule "
+            "ALLOW/DISALLOW actions when options are narrowed."
         ),
     )
     cpq_series_model_narrowing_enabled: bool = Field(

@@ -10,10 +10,18 @@ from __future__ import annotations
 from typing import Any
 
 
-def guard_open(rule: Any, filled: dict[str, str]) -> bool:
-    """False when the rule's guard variable is empty (the call would not run)."""
+def guard_open(rule: Any, filled: dict[str, str], assume_open: bool = False) -> bool:
+    """False when the rule's guard variable is empty (the call would not run).
+
+    `assume_open` (flag `cpq_required_set_guards_assumed_open`): a guard variable
+    the quote never carries (the host supplies it, as in production) counts as
+    populated; one that is present but blank still closes the guard."""
     guard = getattr(rule, "guard_attr", "")
-    return not guard or bool((filled.get(guard) or "").strip())
+    if not guard:
+        return True
+    if assume_open and guard not in filled:
+        return True
+    return bool((filled.get(guard) or "").strip())
 
 
 def effective_allowed(rule: Any, target: Any) -> list[str]:
