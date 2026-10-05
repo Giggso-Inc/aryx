@@ -1,0 +1,67 @@
+{
+  "signal": {
+    "date": "2026-10-05",
+    "user": "unknown",
+    "org": "",
+    "project": "nl_hint_extraction",
+    "sessions": 1,
+    "commits": 0,
+    "secrets_blocked": 0,
+    "cve_blocked": 0,
+    "policy_mode": "shadow",
+    "raven_version": "3.0.0",
+    "plugin_type": "enterprise",
+    "signal_version": 2,
+    "git_remote": "https://github.com/Giggso-Inc/aryx-enterprise.git",
+    "mcp_ungoverned": 0,
+    "mcp_override": 0,
+    "mcp_events": [],
+    "mcp_events_dropped": 0,
+    "model_cost_usd": 368.752401,
+    "model_optimal_usd": 122.917467,
+    "lines_generated": 0,
+    "lines_accepted": 0,
+    "tokens_estimated": 14004560,
+    "design_events": [],
+    "design_events_dropped": 0,
+    "damage_blocked": 0,
+    "damage_asked": 0,
+    "damage_events": [],
+    "damage_events_dropped": 0,
+    "pr_created": 0,
+    "pr_reviewed": 0,
+    "pr_created_urls": [],
+    "pr_reviewed_urls": [],
+    "pr_timings": {},
+    "model_breakdown": {
+      "sonnet": {
+        "input": 3776,
+        "output": 2686372,
+        "cache_write": 0,
+        "cache_write_1h": 11314412,
+        "cache_read": 868530069,
+        "cost_usd": 368.752401
+      }
+    }
+  },
+  "totals": {
+    "cost": 368.752401,
+    "tokens": 14004560,
+    "optimal": 122.917467,
+    "breakdown": {
+      "sonnet": {
+        "input": 3776,
+        "output": 2686372,
+        "cache_write": 0,
+        "cache_write_1h": 11314412,
+        "cache_read": 868530069,
+        "cost_usd": 368.752401
+      }
+    },
+    "models": [
+      "sonnet"
+    ],
+    "started_at": "2026-10-01T16:23:12.167Z"
+  },
+  "stamped": "2026-10-05T15:19:44.168843+00:00"
+}

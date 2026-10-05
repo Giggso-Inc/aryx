@@ -28,7 +28,7 @@ ATTRS = [_attr(1, "freeText"), _attr(2, "menuAttr", ("A", "B")), _attr(3, "multi
 def test_only_unfilled_free_text_attributes_become_empty_strings():
     with patch.object(bt, "get_settings", _cfg(True)):
         out = bt.with_blank_free_text(ATTRS, {"answered": "x"})
-    assert out == {"answered": "x", "freeText": ""}
+    assert out == {"answered": "x", "freeText": "", "multiAttr": ""}
 
 
 def test_flag_off_returns_the_same_dict():
@@ -65,3 +65,32 @@ def test_a_declarative_not_equal_condition_on_an_unfilled_free_text_attribute_fi
         off = _filled_by_rule_id(ATTRS, bt.with_blank_free_text(ATTRS, {}))
     assert evaluate_declarative_conditions(conditions, on)[0] is True
     assert evaluate_declarative_conditions(conditions, off)[0] is None
+
+
+def test_an_unselected_multi_select_attribute_reads_as_empty_and_a_selected_one_keeps_its_choice():
+    with patch.object(bt, "get_settings", _cfg(True)):
+        out = bt.with_blank_free_text(ATTRS, {}, {"multiAttr": []})
+        kept = bt.with_blank_free_text(ATTRS, {}, {"multiAttr": ["x"]})
+    assert out["multiAttr"] == "" and "multiAttr" not in kept
+
+
+def test_a_recommendation_script_with_a_find_on_an_untouched_multi_select_resolves():
+    from aryx.cpq.bml import bml_branches as bb, bml_find as bf
+    from aryx.cpq.bml import bml_tier1
+    from aryx.cpq.recommendation_and_constraint_rules import apply_recommendations as ar
+    from aryx.cpq.state import RecommendationRule
+
+    script = ('if(zone=="N"){ return "NO"; } '
+              'if(find(features,"TRIGGER") > -1){ return "NO"; } else { return "YES"; }')
+    attrs = [_attr(1, "zone", ("N", "E")), _attr(2, "features", select_type="multi"), _attr(3, "guide", ("YES", "NO"))]
+    rule = RecommendationRule(rule_name="r", condition_attr_id=0, condition_value="", target_attr_id=3, script=script)
+    class Checker:
+        def allowed_values_for_script(self, text, variables):
+            return bml_tier1.evaluate_tier1(text, variables)[0]
+
+    def run(flag):
+        with patch.object(bt, "get_settings", _cfg(flag)),                 patch.object(bb, "find_enabled", lambda: True), patch.object(bf, "find_enabled", lambda: True):
+            return ar.apply_recommendation_rules(attrs, {"zone": "E"}, [rule], Checker(), {})
+
+    assert run(True) == {"guide": ("YES", "YES")}
+    assert run(False) == {}

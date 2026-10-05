@@ -98,7 +98,7 @@ def apply_constraint_rules(
             return dict(_constraint_cache["result"])
 
     by_rule_id = engine._attr_index(attrs)
-    blank_aware = with_blank_free_text(attrs, filled)
+    blank_aware = with_blank_free_text(attrs, filled, filled_multi)
     filled_by_rule_id = engine._filled_by_rule_id(attrs, blank_aware, filled_multi)
     constrained: dict[int, list[str]] = {}
     # target.entity_id -> [(condition_key, normalized_allowed_values, rule_name)]
