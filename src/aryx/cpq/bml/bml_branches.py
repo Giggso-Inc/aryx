@@ -102,6 +102,12 @@ _TIER1_BLOCKERS = re.compile(
 )
 
 _BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
+# Lenient twins (flag `cpq_find_function_enabled`): BML allows `return"text"` with no space after
+# `return`. A space is required everywhere else, so `returnVal` is never mistaken for `return`.
+_RETURN_WS = r'(?:\s+|(?=["]))'
+_FULL_RETURN_RHS_RE_LENIENT = re.compile(r'\breturn' + _RETURN_WS + r'(.+?);', re.DOTALL)
+_RETURN_STR_RE_LENIENT = re.compile(r'\breturn' + _RETURN_WS + r'"([^"]*)"\s*;?')
+_BARE_RETURN_RE_LENIENT = re.compile(r'\A\s*return' + _RETURN_WS + r'.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
 
 
 def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] | None:
@@ -140,7 +146,8 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         # for every other branch body, so this idiom gets neither more
         # nor less scrutiny than a real if/else chain's own bodies.
         bare = script.strip()
-        if bare and _BARE_RETURN_RE.match(bare) and not _TIER1_BLOCKERS.search(bare):
+        _bare_re = _BARE_RETURN_RE_LENIENT if find_enabled() else _BARE_RETURN_RE
+        if bare and _bare_re.match(bare) and not _TIER1_BLOCKERS.search(bare):
             return [(None, bare)]
         return None
     pos = m.start()
@@ -326,12 +333,12 @@ def _branch_values(body: str) -> list[str] | None:
         # "YES"; }`). Same concatenation guard as the returnVal path: a
         # tail continuing with `+` past the matched literal means this
         # isn't a clean single-value return, so bail rather than truncate.
-        m2 = _RETURN_STR_RE.search(body)
+        m2 = (_RETURN_STR_RE_LENIENT if find_enabled() else _RETURN_STR_RE).search(body)
         if not m2:
             return None
         tail2 = body[m2.end():].lstrip()
         if tail2.startswith("+"):
-            _full = _FULL_RETURN_RHS_RE.search(body)
+            _full = (_FULL_RETURN_RHS_RE_LENIENT if find_enabled() else _FULL_RETURN_RHS_RE).search(body)
             _literal_vals = (
                 _literal_concat_values(_full.group(1)) if _full else None
             )
