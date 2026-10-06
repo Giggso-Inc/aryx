@@ -22,6 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         wget unzip libaio1t64 \
     && wget -q https://download.oracle.com/otn_software/linux/instantclient/2380000/instantclient-basiclite-linux.x64-23.8.0.25.04.zip \
         -O /tmp/instantclient.zip \
+    # Oracle doesn't publish a checksum for this artifact; this pins the
+    # digest fetched and verified when this was added, catching tampering
+    # or an unexpected content change rather than silently trusting TLS alone.
+    && echo "208bc7a9372efae098ab743d6e76aeb66e6f42579dcdbb7a6a8438412481b02e  /tmp/instantclient.zip" | sha256sum -c - \
     && mkdir -p /opt/oracle \
     && unzip -q /tmp/instantclient.zip -d /opt/oracle \
     && rm /tmp/instantclient.zip \

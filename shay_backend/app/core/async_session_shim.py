@@ -19,16 +19,54 @@ before writing this file, not assumed):
   codebase only ever uses a given session *sequentially*, which is fine
   even when each call happens to run on a different thread-pool thread.
 
-Each I/O-bearing call runs via asyncio.to_thread() so it doesn't block the
-event loop -- the standard pattern for driving a sync-only driver from
-async code.
+Each I/O-bearing call runs on a dedicated ThreadPoolExecutor (see
+_get_executor() below), not the event loop's shared default executor --
+the standard pattern for driving a sync-only driver from async code, sized
+so DB calls aren't throttled by whatever else in the process happens to
+also use asyncio.to_thread()/run_in_executor(None, ...).
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session, sessionmaker
+
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Lazily built, process-wide executor dedicated to Oracle session I/O.
+
+    The event loop's *default* executor caps at min(32, cpu_count+4) threads
+    (6 on a 2-vCPU container) and is shared with every other asyncio.to_thread()/
+    run_in_executor(None, ...) caller in the process -- far below
+    DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW (30 by default), so a few slow
+    queries could starve unrelated to_thread() work, and vice versa. Sizing
+    this executor to the pool means at most "pool size" DB calls are ever
+    in flight at once anyway, so one thread per potential connection is
+    sufficient and doesn't over-subscribe the process.
+    """
+    global _executor
+    if _executor is None:
+        with _executor_lock:
+            if _executor is None:
+                from app.core.config import settings  # noqa: PLC0415 -- avoid import cycle at module load time
+
+                max_workers = settings.DATABASE_POOL_SIZE + settings.DATABASE_MAX_OVERFLOW
+                _executor = ThreadPoolExecutor(
+                    max_workers=max_workers, thread_name_prefix="oracle-sync-session"
+                )
+    return _executor
+
+
+async def _run_sync(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_get_executor(), functools.partial(func, *args, **kwargs))
 
 
 class AsyncSessionShim:
@@ -39,25 +77,25 @@ class AsyncSessionShim:
         self._sync = sync_session
 
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._sync.execute, *args, **kwargs)
+        return await _run_sync(self._sync.execute, *args, **kwargs)
 
     async def commit(self) -> None:
-        await asyncio.to_thread(self._sync.commit)
+        await _run_sync(self._sync.commit)
 
     async def rollback(self) -> None:
-        await asyncio.to_thread(self._sync.rollback)
+        await _run_sync(self._sync.rollback)
 
     async def flush(self, *args: Any, **kwargs: Any) -> None:
-        await asyncio.to_thread(self._sync.flush, *args, **kwargs)
+        await _run_sync(self._sync.flush, *args, **kwargs)
 
     async def refresh(self, *args: Any, **kwargs: Any) -> None:
-        await asyncio.to_thread(self._sync.refresh, *args, **kwargs)
+        await _run_sync(self._sync.refresh, *args, **kwargs)
 
     async def close(self) -> None:
         # Session.close() already rolls back any uncommitted transaction on
         # its own -- matches AsyncSession's default __aexit__ behavior,
         # no extra rollback call needed here.
-        await asyncio.to_thread(self._sync.close)
+        await _run_sync(self._sync.close)
 
     def add(self, instance: Any) -> None:
         """Not I/O -- marks the object in the identity map only, matching

@@ -9,10 +9,12 @@ pip version bump. Thick mode delegates to Oracle's own Instant Client (OCI)
 libraries instead, which Oracle ships in lockstep with each Database
 release.
 
-Gated behind ARYX_ORACLE_CLIENT_MODE (default "thin") -- flip back to
-"thin" (or unset) to revert instantly, no rebuild needed; the Instant
-Client install in the Dockerfile is unconditional, only this runtime
-switch controls which mode actually runs.
+Gated behind ARYX_ORACLE_CLIENT_MODE. This module's own fallback (when the
+variable is unset) is "thin", but docker-compose-oci.yml sets the shipped
+default to "thick" for this service -- flip ARYX_ORACLE_CLIENT_MODE to
+"thin" to revert instantly, no rebuild needed; the Instant Client install
+in the Dockerfile is unconditional, only this runtime switch controls
+which mode actually runs.
 
 init_oracle_client() is process-wide and may be called at most once per
 process (a second call raises) -- idempotency-guarded here in case this
@@ -33,6 +35,17 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
+def _first_path_entry(value: str | None) -> str | None:
+    """LD_LIBRARY_PATH may be a colon-separated list; init_oracle_client()
+    takes a single directory and fails (then falls back to thin) if handed
+    the whole list verbatim -- confirmed via DPI-1047 in an earlier, single
+    -dir form of this env var. Only the fallback path needs this:
+    ARYX_ORACLE_INSTANT_CLIENT_DIR is always a single directory by contract."""
+    if not value:
+        return None
+    return value.split(":", 1)[0] or None
+
+
 def _init_thick_mode_if_configured() -> None:
     """Best-effort: a broken thick-mode init (missing/misconfigured Instant
     Client) must degrade to thin mode, not take the whole app down at
@@ -48,7 +61,9 @@ def _init_thick_mode_if_configured() -> None:
         return
     import oracledb  # noqa: PLC0415 -- only needed on the thick-mode path
 
-    lib_dir = os.environ.get("ARYX_ORACLE_INSTANT_CLIENT_DIR") or os.environ.get("LD_LIBRARY_PATH")
+    lib_dir = os.environ.get("ARYX_ORACLE_INSTANT_CLIENT_DIR") or _first_path_entry(
+        os.environ.get("LD_LIBRARY_PATH")
+    )
     _t0 = time.monotonic()
     _trace_id = str(uuid.uuid4())
     try:

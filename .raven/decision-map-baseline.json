@@ -654,6 +654,16 @@
     [
       "shay_backend/app/core/async_session_shim.py",
       42,
+      "_get_executor"
+    ],
+    [
+      "shay_backend/app/core/async_session_shim.py",
+      64,
+      "_get_executor"
+    ],
+    [
+      "shay_backend/app/core/async_session_shim.py",
+      80,
       "execute"
     ],
     [
@@ -758,12 +768,12 @@
     ],
     [
       "shay_backend/app/core/database_optimizations.py",
-      90,
+      88,
       "create_postgresql_optimizations"
     ],
     [
       "shay_backend/app/core/database_optimizations.py",
-      92,
+      90,
       "<try>"
     ],
     [
@@ -858,12 +868,12 @@
     ],
     [
       "shay_backend/app/core/oracle_client.py",
-      34,
+      43,
       "init_thick_mode_if_configured"
     ],
     [
       "shay_backend/app/core/oracle_client.py",
-      44,
+      55,
       "<try>"
     ],
     [

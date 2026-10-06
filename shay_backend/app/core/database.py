@@ -33,7 +33,7 @@ from app.core.async_session_shim import make_async_session_local
 from app.core.config import settings
 from app.core.database_url import _ensure_async_postgres_driver, _normalize_postgres_url
 from app.core.database_optimizations import (
-    _oracle_repair_partial_unique_indexes,
+    _oracle_repair_partial_unique_indexes,  # noqa: F401 — not called below anymore (see the Oracle branch of init_db()); kept and re-exported because tests/test_database_characterization.py imports and exercises it directly
     _oracle_repair_partial_unique_indexes_sync,
     create_postgresql_optimizations,
 )

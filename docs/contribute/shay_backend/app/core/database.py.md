@@ -1,11 +1,11 @@
 # Attribution — shay_backend/app/core/database.py
 
-Last updated: 2026-10-06T09:18:07.348399+00:00
+Last updated: 2026-10-06T09:49:48.163008+00:00
 Total lines: 187
-Lines AI-generated: 68 (36.4%)
-Lines human-typed: 3
+Lines AI-generated: 46 (24.6%)
+Lines human-typed: 23
 Lines joint: 0
-Lines unattributed: 116
+Lines unattributed: 118
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -14,7 +14,9 @@ Owner (most recent author): m.munir@giggso.com
 | 24-30 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-06T09:01:38.133314+00:00 |  |
 | 31-33 | m.munir@giggso.com | — | — | — | — | — | 2026-10-06T09:11:55.538396+00:00 | pre-commit gap — unattributed by the local hook |
 | 34-34 | m.munir@giggso.com | — | — | — | — | — | 2026-10-02T03:59:32.114897+00:00 |  |
-| 35-61 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-01T06:08:50.622021+00:00 |  |
+| 35-39 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-06T09:35:50.597783+00:00 |  |
+| 40-59 | m.munir@giggso.com | — | — | — | — | — | 2026-10-02T03:59:32.114897+00:00 |  |
+| 60-61 | m.munir@giggso.com | — | — | — | — | — | 2026-10-06T09:49:47.808374+00:00 | pre-commit gap — unattributed by the local hook |
 | 62-71 | m.munir@giggso.com | — | — | — | — | — | 2026-10-02T03:22:56.477046+00:00 | pre-commit gap — unattributed by the local hook |
 | 72-74 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-01T06:09:03.423974+00:00 |  |
 | 75-86 | m.munir@giggso.com | — | — | — | — | — | 2026-10-06T09:11:55.538454+00:00 | pre-commit gap — unattributed by the local hook |

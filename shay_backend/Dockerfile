@@ -27,8 +27,14 @@ RUN apt-get update && apt-get install -y \
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_8
 RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip libaio1t64 \
-    && curl -sL https://download.oracle.com/otn_software/linux/instantclient/2380000/instantclient-basiclite-linux.x64-23.8.0.25.04.zip \
+    && curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/2380000/instantclient-basiclite-linux.x64-23.8.0.25.04.zip \
         -o /tmp/instantclient.zip \
+    # -f makes an HTTP error fail the build instead of silently downloading
+    # an error page that only fails later, confusingly, at unzip. Oracle
+    # doesn't publish a checksum for this artifact; this pins the digest
+    # fetched and verified when this was added (same file as the main
+    # Dockerfile's Instant Client install).
+    && echo "208bc7a9372efae098ab743d6e76aeb66e6f42579dcdbb7a6a8438412481b02e  /tmp/instantclient.zip" | sha256sum -c - \
     && mkdir -p /opt/oracle \
     && unzip -q /tmp/instantclient.zip -d /opt/oracle \
     && rm /tmp/instantclient.zip \

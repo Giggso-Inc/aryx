@@ -403,9 +403,26 @@ error unrelated to the code under test.
   (A1.Flex), needing a different Instant Client download than `api`/
   `shay-api`'s x86_64, and is the most size/cold-start-sensitive of the
   three. Don't add Instant Client here until its Oracle usage is confirmed.
-- Full conversion of `shay-api` off async Oracle access (the 405-file
-  rewrite) — rejected as out of scope for this change; the dual-engine
-  approach above is the actual plan.
+- Every other Aryx entry point that talks to Oracle directly stays on thin
+  mode and is therefore still exposed to the OSON v2 gap on read: confirmed,
+  the CLI/CSV-BML ingestion path (`src/aryx/csv_bml_ingestion/db.py`, which
+  connects to Oracle ADB directly under `ARYX_DB_BACKEND=oci`) does not
+  import `aryx.api.main_oracle_client` or call `oracledb.init_oracle_client()`
+  itself (confirmed by grepping both across the repo — only
+  `src/aryx/api/main.py` and `shay_backend/main.py` do). If it reads a row
+  that later gets written via `JSON_MERGEPATCH` from a thick-mode process,
+  it will still hit `DPY-3021`. (`sales-ui`-related code found while
+  checking this, e.g. `src/aryx/api/ask_handle/ask_handle_approval.py`, is
+  served by `api` itself, not a separate process — already covered by A1-A3
+  above; there is no standalone `sales-ui` backend in this repo.) Not
+  addressed here; call this out explicitly in the PR so reviewers don't
+  assume the whole Oracle surface is covered.
+- `shay-api`'s conversion off async Oracle access is DONE (see S6 below) —
+  but scoped to Oracle only, via `AsyncSessionShim`, not the full 405-file
+  rewrite to native sync calls that was originally scoped out and rejected.
+  The dual-engine approach (S3/S4) that this bullet used to describe as
+  "the actual plan" was itself abandoned after S5's live crash; S6 is what
+  actually shipped.
 
 ## Verification
 
