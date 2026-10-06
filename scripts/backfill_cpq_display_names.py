@@ -94,18 +94,25 @@ def read_workspace(
 
 def apply_updates(estore: EntityStore, workspace_id: int, plan: BackfillPlan) -> int:
     """Write planned attributes; one committed transaction per chunk."""
+    t0 = time.monotonic()
     rows = [(Json(attrs, dumps=_dumps), eid, workspace_id) for eid, attrs in plan.updates.items()]
     for i in range(0, len(rows), _CHUNK):
         with estore._pool.connection() as conn:  # commits on clean exit
             with conn.cursor() as cur:
                 cur.executemany(_UPDATE_ATTRIBUTES, rows[i:i + _CHUNK])
         print(f"  updated {min(i + _CHUNK, len(rows))}/{len(rows)} entities", flush=True)
+    raven_log("INFO", "P3", "backfill.display_names.attributes_applied entity attribute chunks committed",
+              context={"task_id": f"backfill-apply-{workspace_id}", "final_status": "done",
+                       "duration_ms": int((time.monotonic() - t0) * 1000), "stage": "apply_updates",
+                       "result": "ok", "reason_code": "ATTRIBUTES_WRITTEN", "impact_scope": f"workspace:{workspace_id}",
+                       "entities_updated": len(rows)})
     return len(rows)
 
 
 def delete_wrappers(estore: EntityStore, dsn: str, workspace_id: int, wrapper_ids: list[int]) -> int:
     """Drop wrapper entities' relationships, the entities (both chunked), then
     any ontology type left with no entities (no ghost types in the Ontology tab)."""
+    t0 = time.monotonic()
     type_of = {int(eid): ot for eid, ot, _attrs in estore.list_entities()}
     empty_types = types_fully_removed(type_of, wrapper_ids)
     for i in range(0, len(wrapper_ids), _CHUNK):
@@ -118,6 +125,11 @@ def delete_wrappers(estore: EntityStore, dsn: str, workspace_id: int, wrapper_id
     for name in empty_types:
         ostore.delete_type(name)
     print(f"  removed {len(empty_types)} now-empty ontology type(s): {empty_types}", flush=True)
+    raven_log("INFO", "P3", "backfill.display_names.wrappers_deleted wrapper entities and empty types removed",
+              context={"task_id": f"backfill-delete-{workspace_id}", "final_status": "done",
+                       "duration_ms": int((time.monotonic() - t0) * 1000), "stage": "delete_wrappers",
+                       "result": "ok", "reason_code": "WRAPPERS_REMOVED", "impact_scope": f"workspace:{workspace_id}",
+                       "entities_deleted": deleted, "empty_types_removed": empty_types})
     return deleted
 
 
@@ -141,6 +153,8 @@ def _preclear_oracle_graph(estore: EntityStore, workspace_id: int) -> None:
 
 def rebuild_graph(estore: EntityStore, dsn: str, settings: Any, workspace_id: int) -> dict:
     """Full rebuild -- raw SQL updates mark nothing dirty, so incremental would skip."""
+    t0 = time.monotonic()
+    trace_id = str(uuid.uuid4())
     backend = settings.effective_graph_backend()
     if backend == "oci_graph":
         from aryx.graph.oracle_graph_store import OracleGraphStore
@@ -150,9 +164,18 @@ def rebuild_graph(estore: EntityStore, dsn: str, settings: Any, workspace_id: in
         from aryx.graph import FalkorStore
         from aryx.naming import ws_graph
         graph_inst = FalkorStore(settings.graph_url, ws_graph(workspace_id))
+    raven_log("INFO", "P3", "backfill.display_names.graph_backend_selected routed to the configured graph store",
+              context={"selected_option": backend, "available_options": ["oci_graph", "falkordb"],
+                       "reason_code": "EFFECTIVE_GRAPH_BACKEND", "policy_version": "1", "trace_id": trace_id,
+                       "task_id": f"backfill-rebuild-{workspace_id}", "workspace_id": workspace_id})
     counts = project_graph(estore, graph_inst, type_ancestors=_build_type_ancestors(dsn),
                            workspace_id=workspace_id)
     print(f"  graph rebuilt: {counts}")
+    raven_log("INFO", "P3", "backfill.display_names.graph_rebuilt full graph projection completed",
+              context={"task_id": f"backfill-rebuild-{workspace_id}", "final_status": "done",
+                       "duration_ms": int((time.monotonic() - t0) * 1000), "stage": "rebuild_graph",
+                       "result": "ok", "reason_code": "FULL_REBUILD_COMPLETE", "impact_scope": f"workspace:{workspace_id}",
+                       "projection_counts": dict(counts or {})})
     return counts
 
 

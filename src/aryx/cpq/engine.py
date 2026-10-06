@@ -22,11 +22,13 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.raven_log import raven_log
 from aryx.cpq import rule_scope
 from aryx.cpq import data_table_bridge
 from aryx.cpq.bml.bml import (
@@ -904,7 +906,16 @@ class CpqEngine:
     def ingested_family_labels(
         self, reader: Any, workspace_id: int,
     ) -> dict[str, str]:
-        return nl_hint_extraction.families.ingested_family_labels(self, reader, workspace_id)
+        _t0 = time.monotonic()
+        result = nl_hint_extraction.families.ingested_family_labels(self, reader, workspace_id)
+        raven_log("DEBUG", "P4", "ask.family_labels.delegated engine delegated to nl_hint_extraction.families",
+                  context={"dependency_name": "nl_hint_extraction.families.ingested_family_labels",
+                           "operation": "ingested_family_labels", "duration_ms": int((time.monotonic() - _t0) * 1000),
+                           "result": "ok", "error_class": "none", "attempt": 1, "trace_id": str(uuid.uuid4()),
+                           "task_id": f"family-labels-{workspace_id}", "final_status": "done",
+                           "stage": "ingested_family_labels", "reason_code": "DELEGATED_OK",
+                           "impact_scope": f"workspace:{workspace_id}"})
+        return result
 
     def load_product_config(
         self,

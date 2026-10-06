@@ -105,20 +105,23 @@ def has_locale_key(properties: dict[str, Any]) -> bool:
 def accumulate(props: dict[str, Any], key: str, value: str) -> None:
     """Same collision rule as pass 1: never overwrite, accumulate a list.
 
-    Idempotent on an already-seen value: re-running the fold against a
-    parent that already carries ``value`` (e.g. ``display_backfill.py``
-    replanning after ``--keep-wrappers``, or after a wrapper-delete chunk
-    failed partway) must not turn a scalar/list into a duplicate entry --
-    confirmed live, this was silently corrupting re-run output before this
-    guard existed.
+    Deliberately NOT deduped: two sibling wrapper nodes with identical text
+    (e.g. two ``<label><en>Yes</en></label>`` under one parent) are two real
+    source records, and a caller may read this list positionally against
+    another accumulated list on the same parent (an option-text list paired
+    with an option-value list). Dropping a repeat here would silently shift
+    that pairing. ``display_backfill.py``'s replanning idempotency (PR #437
+    review, M1) is handled in the planner instead, which has the parent's
+    PRE-fold state available to tell "genuinely new sibling" apart from
+    "this exact wrapper was already folded in on an earlier --apply" --
+    this function alone can't distinguish the two.
     """
     existing = props.get(key)
     if existing is None:
         props[key] = value
     elif isinstance(existing, list):
-        if value not in existing:
-            existing.append(value)
-    elif existing != value:
+        existing.append(value)
+    else:
         props[key] = [existing, value]
 
 

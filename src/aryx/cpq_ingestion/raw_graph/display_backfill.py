@@ -81,9 +81,24 @@ def plan_display_backfill(
     for parent, child in contains:
         if child not in wrapper_ids or parent in wrapper_ids or parent not in entities:
             continue
-        props = working.setdefault(parent, copy.deepcopy(entities[parent]))
-        accumulate(props, tag_of[child], wrapper_value(entities[child]))
         folded_wrappers.add(child)
+        value = wrapper_value(entities[child])
+        # Idempotency (PR #437 review, M1): `entities[parent]` is the
+        # PRE-plan, already-committed state -- if an earlier --apply already
+        # folded this exact wrapper's value in (--keep-wrappers left the
+        # wrapper entity behind, or a later run replans before the wrapper
+        # delete step runs), skip re-accumulating it so a second --apply
+        # can't turn a scalar into ["X", "X"]. accumulate() itself stays a
+        # plain, non-deduping append (N4) -- it can't tell "already folded"
+        # apart from "a second real sibling with the same text", only the
+        # planner can, by comparing against the pre-plan committed value.
+        already_folded = entities[parent].get(tag_of[child])
+        if already_folded == value or (
+            isinstance(already_folded, list) and value in already_folded
+        ):
+            continue
+        props = working.setdefault(parent, copy.deepcopy(entities[parent]))
+        accumulate(props, tag_of[child], value)
 
     plan = BackfillPlan(wrapper_tags=sorted(tags))
     for eid, attrs in entities.items():

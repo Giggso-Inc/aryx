@@ -151,25 +151,16 @@ def test_fold_repeated_wrapper_under_one_parent_accumulates_list():
     assert parent.properties["label"] == ["A", "B"]
 
 
-def test_accumulate_is_idempotent_on_a_scalar_repeat():
-    """Review finding M1 (PR #437): re-running the fold against a parent
-    that already holds the value (e.g. display_backfill.py replanning
-    after --keep-wrappers) must stay a scalar, not become ["X", "X"]."""
+def test_accumulate_keeps_a_genuine_repeated_sibling_value():
+    """Review finding N4 (PR #437): two sibling wrapper nodes with
+    identical text are two real records, not a duplicate to collapse --
+    a positionally-paired sibling list on the same parent depends on this.
+    The idempotency fix for M1 lives in display_backfill.py's planner
+    instead, which can tell "new sibling" apart from "already folded by an
+    earlier --apply"; this function alone cannot."""
     props = {"label": "X"}
     accumulate(props, "label", "X")
-    assert props["label"] == "X"
-
-
-def test_accumulate_is_idempotent_on_a_list_repeat():
-    props = {"label": ["A", "B"]}
-    accumulate(props, "label", "B")
-    assert props["label"] == ["A", "B"]
-
-
-def test_accumulate_still_collects_a_genuinely_new_value():
-    props = {"label": "A"}
-    accumulate(props, "label", "B")
-    assert props["label"] == ["A", "B"]
+    assert props["label"] == ["X", "X"]
 
 
 def test_fold_does_not_overwrite_existing_parent_property_silently():
