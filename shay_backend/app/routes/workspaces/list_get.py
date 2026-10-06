@@ -6,9 +6,11 @@ Split from app/routes/workspaces.py (Raven style-compliance pass, see
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2).
 """
 
+import asyncio
 from typing import Optional
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, select, func
@@ -20,7 +22,7 @@ from app.models.workspace import Workspace
 from app.schemas.workspace import WorkspaceList, WorkspaceResponse
 from app.utils.permissions import require_active_workspace_role
 
-from .helpers import _bridge_for_workspace, _get_workspace_or_404, serialize_workspace
+from .helpers import _existing_bridge_for_workspace, _get_workspace_or_404, serialize_workspace
 
 router = APIRouter()
 
@@ -30,7 +32,7 @@ async def list_workspaces(
     request: Request,
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100),
+    size: int = Query(100, ge=1, le=100),
     search: Optional[str] = None
 ) -> WorkspaceList:
     """List workspaces for current user"""
@@ -74,9 +76,19 @@ async def list_workspaces(
     count_result = await db.execute(count_query)
     total = count_result.scalar()
 
+    # PR #448 review: with `size` now defaulting to 100, awaiting
+    # _existing_bridge_for_workspace() one at a time -- each opening its
+    # own httpx.AsyncClient -- meant up to 100 sequential round trips on a
+    # single request. One shared client + asyncio.gather() runs every
+    # lookup for this page concurrently instead.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        bridges = await asyncio.gather(*(
+            _existing_bridge_for_workspace(workspace.id, client=client)
+            for workspace in workspaces
+        ))
+
     bridged_workspaces = []
-    for workspace in workspaces:
-        bridge = await _bridge_for_workspace(request, workspace)
+    for workspace, bridge in zip(workspaces, bridges):
         payload = serialize_workspace(workspace).model_dump()
         payload["bridge"] = bridge
         bridged_workspaces.append(payload)
@@ -100,7 +112,8 @@ async def get_workspace(
     workspace = await _get_workspace_or_404(db, workspace_id)
     await require_active_workspace_role(db, user.id, UUID(str(workspace.id)))
 
-    bridge = await _bridge_for_workspace(request, workspace)
+    # Read-only lookup, not create-or-reuse -- see list_workspaces() above.
+    bridge = await _existing_bridge_for_workspace(workspace.id)
     payload = serialize_workspace(workspace).model_dump()
     payload["bridge"] = bridge
     return payload

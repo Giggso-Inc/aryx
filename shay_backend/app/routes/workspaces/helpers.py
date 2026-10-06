@@ -137,3 +137,52 @@ async def _bridge_for_workspace(request: Request, workspace: Workspace) -> dict[
     """Return the Aryx bridge mapping for a Shay workspace, creating it when missing."""
     bridge = await _ensure_aryx_workspace_bridge(request, workspace)
     return bridge
+
+
+async def _existing_bridge_for_workspace(
+    shay_workspace_id: Any, client: httpx.AsyncClient | None = None,
+) -> dict[str, Any] | None:
+    """Return the Aryx bridge mapping for a Shay workspace if one already
+    exists, without creating one -- for read-only endpoints (list/get/delete).
+
+    Unlike _bridge_for_workspace(), this never has a write side effect.
+    Confirmed live, 2026-10-07: list/get calling the create-or-reuse path
+    on every request let a stale client re-fetching a workspace list (or
+    detail) resurrect a just-deleted workspace's Aryx bridge, since the
+    Workspace row it already had in hand by the time it reached this call
+    said nothing about whether that workspace had just been deleted
+    concurrently. A read endpoint should never have a side effect that
+    recreates data.
+
+    PR #448 review (2026-10-07): this is also the single lookup delete.py's
+    workspace-delete route needs (it already treated a missing mapping as
+    "nothing to bridge-delete", not an error -- the same None-on-404
+    semantics as here), so it now calls this instead of carrying its own
+    fourth copy of the same GET. purge.py and _shared.py's
+    _resolve_aryx_workspace_id() raise on a missing mapping instead of
+    returning None (a genuinely different contract for those call sites,
+    not just a style difference), so they are left as a separate,
+    not-yet-done consolidation rather than folded in here.
+
+    Args:
+        client: an existing AsyncClient to reuse (e.g. when a caller needs
+            many lookups in the same request, so they share one connection
+            instead of opening a new one per lookup -- see
+            list_workspaces()). A fresh one is opened and closed locally
+            when not given, for simple single-lookup callers.
+    """
+    async def _call(c: httpx.AsyncClient) -> dict[str, Any] | None:
+        response = await c.get(
+            f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{shay_workspace_id}/mapping",
+            headers=_aryx_headers(),
+        )
+        if response.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    if client is not None:
+        return await _call(client)
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout) as owned_client:
+        return await _call(owned_client)

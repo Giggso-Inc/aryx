@@ -6518,17 +6518,12 @@
     ],
     [
       "shay_backend/app/routes/workspaces/delete.py",
-      27,
+      26,
       "delete_workspace"
     ],
     [
       "shay_backend/app/routes/workspaces/delete.py",
-      40,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/workspaces/delete.py",
-      90,
+      83,
       "delete_workspace"
     ],
     [
@@ -6572,13 +6567,28 @@
       "_update_aryx_workspace_bridge"
     ],
     [
+      "shay_backend/app/routes/workspaces/helpers.py",
+      142,
+      "_existing_bridge_for_workspace"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/helpers.py",
+      174,
+      "_call"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/helpers.py",
+      182,
+      "_call"
+    ],
+    [
       "shay_backend/app/routes/workspaces/list_get.py",
-      29,
+      31,
       "list_workspaces"
     ],
     [
       "shay_backend/app/routes/workspaces/list_get.py",
-      84,
+      96,
       "list_workspaces"
     ],
     [
@@ -13672,23 +13682,33 @@
       "_normalize_quantity_text"
     ],
     [
+      "src/aryx/cpq/rdb/rdb_linked_scripts.py",
+      35,
+      "linked_function_scripts"
+    ],
+    [
+      "src/aryx/cpq/rdb/rdb_linked_scripts.py",
+      67,
+      "linked_function_scripts"
+    ],
+    [
       "src/aryx/cpq/rdb/rdb_oracle.py",
-      129,
+      179,
       "_workspace_table_rows"
     ],
     [
       "src/aryx/cpq/rdb/rdb_oracle.py",
-      133,
+      183,
       "<try>"
     ],
     [
       "src/aryx/cpq/rdb/rdb_oracle.py",
-      142,
+      192,
       "fetch_workspace_table_groups"
     ],
     [
       "src/aryx/cpq/rdb/rdb_oracle.py",
-      146,
+      196,
       "<try>"
     ],
     [
@@ -15133,7 +15153,7 @@
     ],
     [
       "src/aryx/store/oracle_workspace.py",
-      85,
+      114,
       "create"
     ],
     [

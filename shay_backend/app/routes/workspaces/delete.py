@@ -12,13 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.member import GGMember
 from app.utils.permissions import require_active_workspace_role
 
-from .helpers import _aryx_headers, _delete_aryx_workspace_bridge, _get_workspace_or_404
+from .helpers import _delete_aryx_workspace_bridge, _existing_bridge_for_workspace, _get_workspace_or_404
 
 router = APIRouter()
 
@@ -35,18 +34,12 @@ async def delete_workspace(
 
     await require_active_workspace_role(db, user.id, UUID(str(workspace.id)), allowed_roles={"admin"})
 
-    bridge = None
-    timeout = httpx.Timeout(30.0)
+    # PR #448 review: this was its own fourth copy of the mapping GET
+    # (duplicating delete's own semantics -- 404 means "nothing to
+    # bridge-delete", not an error); now the single shared lookup also
+    # used by list/get.
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            mapping_response = await client.get(
-                f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping",
-                headers=_aryx_headers(),
-            )
-            if mapping_response.status_code == status.HTTP_200_OK:
-                bridge = mapping_response.json()
-            elif mapping_response.status_code != status.HTTP_404_NOT_FOUND:
-                mapping_response.raise_for_status()
+        bridge = await _existing_bridge_for_workspace(workspace_id)
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text or str(exc)
         raise HTTPException(
