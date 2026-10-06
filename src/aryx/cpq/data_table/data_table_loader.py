@@ -23,6 +23,7 @@ from aryx.cpq.data_table.data_table_cache import (
 )
 from aryx.cpq.data_table.data_table_shapes import _detect_shape, _is_defaultinattr_shaped
 from aryx.cpq.rdb.rdb import get_cpq_rdb
+from aryx.cpq.rdb.rdb_workspace_tables import groups_from as workspace_table_groups
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,12 @@ def _cached_shape_scan(
         return hit[1]
     t0 = time.monotonic()
     rows: list[dict[str, Any]] = []
-    for entities in get_cpq_rdb().fetch_all_entities_grouped_by_type(workspace_id).values():
+    rdb = get_cpq_rdb()
+    grouped = rdb.fetch_all_entities_grouped_by_type(workspace_id)
+    # CSVs the CSV pipeline loaded into their own ws<id>_<name> tables count too (never twice: a table is skipped
+    # when entities of the same name exist)
+    grouped.update(workspace_table_groups(rdb, workspace_id, shape_pred, grouped.keys()))
+    for entities in grouped.values():
         for _eid, attrs in entities:
             if shape_pred(set(attrs.keys())):
                 rows.append(attrs)
@@ -266,7 +272,12 @@ def _scan_all_tables(
     # list_ontology_types() + one fetch_entities_by_exact_type() round trip
     # PER type (109 types here) -- confirmed live, ~411s for a single
     # resolve_region_allow_value() call. One grouped query instead.
-    for ontology_type, entities in rdb.fetch_all_entities_grouped_by_type(workspace_id).items():
+    grouped = rdb.fetch_all_entities_grouped_by_type(workspace_id)
+    # CSVs the CSV pipeline loaded into their own ws<id>_<name> tables count too (never twice: a table is skipped
+    # when entities of the same name exist)
+    grouped.update(workspace_table_groups(
+        rdb, workspace_id, lambda keys: _detect_shape(keys) is not None, grouped.keys()))
+    for ontology_type, entities in grouped.items():
         if not entities:
             continue
         counts = {"constraint": 0, "sequence": 0, "hierarchy": 0, "series_mapping": 0, "region_rule": 0, None: 0}
