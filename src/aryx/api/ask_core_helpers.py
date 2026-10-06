@@ -64,6 +64,13 @@ def _safe_detect_product_mention(question: str, reader: Any, workspace_id: int) 
     try:
         return _ask_api_module._cpq_engine.detect_product_mention(question, {}, reader, workspace_id)
     except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.product_hint.detect_mention_failed detect_product_mention failed, no mention assumed",
+            error_code="ARYX_ASK_PRODUCT_MENTION_DETECT_FAILED", context={
+                "dependency_name": "cpq_engine", "operation": "detect_product_mention",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+            },
+        )
         _ask_api_module.logger.debug("cpq quantity gate: detect_product_mention failed: %r", exc)
         return ""
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.graph import GraphReader
+from aryx.raven_log import raven_log
 from aryx.store.relationship_type_store import RelationshipTypeStore
 from aryx.workspaces import make_workspace_store
 
@@ -47,6 +48,13 @@ def _kinds(reader: GraphReader) -> list[str]:
     try:
         overview = reader.type_overview(sample_limit=3)
     except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.overview.section_failed workspace overview section skipped",
+            error_code="ARYX_ASK_OVERVIEW_SECTION_FAILED", context={
+                "dependency_name": "graph_reader", "operation": "kinds",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+            },
+        )
         logger.debug("overview kinds skipped: %s", exc)
         return []
     if not overview:
@@ -65,6 +73,14 @@ def _relationships(workspace_id: int) -> list[str]:
     try:
         rels = RelationshipTypeStore(get_settings().effective_dsn()).list(workspace_id)
     except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.overview.section_failed workspace overview section skipped",
+            error_code="ARYX_ASK_OVERVIEW_SECTION_FAILED", context={
+                "dependency_name": "relationship_type_store", "operation": "relationships",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                "workspace_id": workspace_id,
+            },
+        )
         logger.debug("overview rels skipped: %s", exc)
         return []
     if not rels:
@@ -89,5 +105,13 @@ def _aim(workspace_id: int) -> list[str]:
         finally:
             store.close()
     except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.overview.section_failed workspace overview section skipped",
+            error_code="ARYX_ASK_OVERVIEW_SECTION_FAILED", context={
+                "dependency_name": "workspace_store", "operation": "aim",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                "workspace_id": workspace_id,
+            },
+        )
         logger.debug("overview aim skipped: %s", exc)
     return []
