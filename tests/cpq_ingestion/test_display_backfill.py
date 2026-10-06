@@ -86,6 +86,10 @@ def test_plan_replanning_after_keep_wrappers_does_not_duplicate_label():
     entities[FAMILY] = dict(entities[FAMILY], **first.updates[FAMILY])  # simulate --apply
     second = plan_display_backfill(entities, tag_of, contains)
     assert FAMILY not in second.updates or second.updates[FAMILY]["label"] == "ASTRO®25_BOM"
+    # Review finding N8 (PR #437): the wrapper must still be listed for
+    # deletion on the retry -- the planner skipping the already-folded
+    # VALUE must not also skip marking the wrapper entity itself redundant.
+    assert second.wrapper_entity_ids == first.wrapper_entity_ids
 
 
 def test_plan_wrapper_with_a_child_of_its_own_is_kept():
