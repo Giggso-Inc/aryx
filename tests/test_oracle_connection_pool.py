@@ -26,6 +26,9 @@ def _make_pool(raw_connection: MagicMock) -> tuple[OraclePool, MagicMock]:
     inner = MagicMock()
     inner.acquire.return_value = raw_connection
     pool._pool = inner
+    # Explicit, deterministic default -- "the connection is fine" -- rather
+    # than relying on a bare MagicMock()'s call result being truthy.
+    raw_connection.is_healthy.return_value = True
     return pool, inner
 
 
@@ -117,6 +120,61 @@ class TestOraclePoolConnectionCleanup(unittest.TestCase):
         args, kwargs = raven_log_mock.call_args
         self.assertEqual(args[0], "WARN")
         self.assertEqual(kwargs["context"]["result"], "error")
+
+    def test_is_healthy_false_triggers_drop_without_any_marker_match(self) -> None:
+        """Thick mode (this project's default) can surface a dropped session
+        via the OCI client library as ORA-03113/ORA-03114/ORA-03135/DPI-1080
+        instead of a DPY- code -- none of which match _DEAD_CONNECTION_MARKERS.
+        is_healthy() must still catch it, since it checks the connection's
+        actual state rather than matching an error-message string."""
+        raw = MagicMock()
+        pool, inner = _make_pool(raw)
+        raw.is_healthy.return_value = False
+
+        with self.assertRaises(Exception) as ctx:
+            with pool.connection():
+                raise Exception("ORA-03113: end-of-file on communication channel")
+
+        self.assertIn("ORA-03113", str(ctx.exception))
+        raw.rollback.assert_not_called()
+        inner.drop.assert_called_once_with(raw)
+        inner.release.assert_not_called()
+
+    def test_failing_rollback_is_treated_as_proof_of_death_even_without_a_marker(self) -> None:
+        """Last-resort fallback: if neither the marker check nor
+        is_healthy() caught it, but rollback() itself fails, that failure
+        is itself proof the connection is dead -- needs no error-code list
+        at all. The *original* exception must still be what propagates,
+        not whatever rollback() raised."""
+        raw = MagicMock()
+        pool, inner = _make_pool(raw)
+        raw.is_healthy.return_value = True  # looked healthy going in
+        raw.rollback.side_effect = Exception("some other failure only visible on rollback")
+
+        with self.assertRaises(Exception) as ctx:
+            with pool.connection():
+                raise Exception("ORA-03113: end-of-file on communication channel")
+
+        self.assertIn("ORA-03113", str(ctx.exception))
+        raw.rollback.assert_called_once()
+        inner.drop.assert_called_once_with(raw)
+        inner.release.assert_not_called()
+
+    def test_drop_failure_is_swallowed_and_does_not_mask_the_original_exception(self) -> None:
+        """drop() runs in `finally` and can itself raise (e.g. if the
+        connection object was already dropped/closed via some other path) --
+        letting that propagate would replace the real exception, the same
+        masking bug this fix closes for rollback()."""
+        raw = MagicMock()
+        pool, inner = _make_pool(raw)
+        inner.drop.side_effect = Exception("drop() blew up too")
+
+        with self.assertRaises(Exception) as ctx:
+            with pool.connection():
+                raise Exception("DPY-4011: the database or network closed the connection")
+
+        self.assertIn("DPY-4011", str(ctx.exception))
+        inner.drop.assert_called_once_with(raw)
 
 
 if __name__ == "__main__":
