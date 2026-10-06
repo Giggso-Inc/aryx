@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/routes/workspaces/list_get.py
 
-Last updated: 2026-10-06T20:48:52.770706+00:00
+Last updated: 2026-10-06T20:49:07.493304+00:00
 Total lines: 110
 Lines AI-generated: 17 (15.5%)
 Lines human-typed: 1

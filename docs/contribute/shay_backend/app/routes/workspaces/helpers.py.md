@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/routes/workspaces/helpers.py
 
-Last updated: 2026-10-06T20:48:52.770195+00:00
+Last updated: 2026-10-06T20:49:07.492537+00:00
 Total lines: 164
 Lines AI-generated: 29 (17.7%)
 Lines human-typed: 0

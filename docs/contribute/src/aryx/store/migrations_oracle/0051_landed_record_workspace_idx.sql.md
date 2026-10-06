@@ -1,6 +1,6 @@
 # Attribution — src/aryx/store/migrations_oracle/0051_landed_record_workspace_idx.sql
 
-Last updated: 2026-10-06T20:48:52.768655+00:00
+Last updated: 2026-10-06T20:49:07.491797+00:00
 Total lines: 21
 Lines AI-generated: 21 (100.0%)
 Lines human-typed: 0

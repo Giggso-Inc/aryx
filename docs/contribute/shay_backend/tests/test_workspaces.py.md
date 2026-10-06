@@ -1,6 +1,6 @@
 # Attribution — shay_backend/tests/test_workspaces.py
 
-Last updated: 2026-10-06T20:48:52.771224+00:00
+Last updated: 2026-10-06T20:49:07.494157+00:00
 Total lines: 427
 Lines AI-generated: 105 (24.6%)
 Lines human-typed: 2

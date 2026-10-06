@@ -1,6 +1,6 @@
 # Attribution — src/aryx/store/oracle_workspace.py
 
-Last updated: 2026-10-06T20:48:52.767468+00:00
+Last updated: 2026-10-06T20:49:07.490977+00:00
 Total lines: 273
 Lines AI-generated: 51 (18.7%)
 Lines human-typed: 3

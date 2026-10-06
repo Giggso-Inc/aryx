@@ -1,6 +1,6 @@
 # Attribution — tests/test_oracle_workspace.py
 
-Last updated: 2026-10-06T20:48:52.766310+00:00
+Last updated: 2026-10-06T20:49:07.490046+00:00
 Total lines: 739
 Lines AI-generated: 69 (9.3%)
 Lines human-typed: 626
