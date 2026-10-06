@@ -43,8 +43,14 @@ def audit_unfolded_leaf_tags(
     by_tag: dict[str, list[RawNode]], edges: Iterable[RawEdge], *,
     fold_enabled: bool, log_id: str | None = None, source_key: str = "",
 ) -> dict[str, int]:
-    """Detect, log and count unfolded leaf tags; returns them ({} when none)."""
-    unfolded = find_unfolded_leaf_tags(by_tag, edges)
+    """Detect, log and count unfolded leaf tags; returns them ({} when none).
+
+    A diagnostic: an unexpected error here is logged and swallowed so it can never abort the ingest."""
+    try:
+        unfolded = find_unfolded_leaf_tags(by_tag, edges)
+    except Exception:  # noqa: BLE001
+        logger.warning("raw_graph leaf audit did=%s source_key=%s failed; skipped", log_id, source_key, exc_info=True)
+        return {}
     if not unfolded:
         return {}
     reason = REASON_KEPT_AFTER_FOLD if fold_enabled else REASON_FOLD_DISABLED

@@ -163,3 +163,8 @@ def test_result_reports_unfolded_leaf_tags_only_when_the_fold_left_one_behind():
     assert job_partial.pop_hidden("job-w") == 1
     assert "unfolded_leaf_tags" not in _run(fold_enabled=True)
     assert job_partial.pop_hidden("job-w") == 0
+
+
+def test_a_failing_audit_never_aborts_the_ingest():
+    by_tag, _edges = _grouped()
+    assert audit_unfolded_leaf_tags(by_tag, None, fold_enabled=True, log_id="job-x") == {}
