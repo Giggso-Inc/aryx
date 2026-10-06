@@ -13,9 +13,14 @@
 -- the whole workspace deletion with DPY-4024/ORA-03156 -- for EVERY
 -- workspace, not just large ones, since the scan cost doesn't depend on
 -- how much of that 7.9M belongs to the workspace being deleted.
+--
+-- ONLINE (PR #448 review): a plain CREATE INDEX takes a DML-blocking lock
+-- on the table for the full build -- a real concern here since ingestion
+-- writes to aryx_landed_record continuously. ONLINE lets DML proceed
+-- concurrently with the (slower) online build instead.
 
 BEGIN
-  EXECUTE IMMEDIATE 'CREATE INDEX idx_landed_record_workspace ON aryx_landed_record (workspace_id)';
+  EXECUTE IMMEDIATE 'CREATE INDEX idx_landed_record_workspace ON aryx_landed_record (workspace_id) ONLINE';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 AND SQLCODE != -1408 THEN RAISE; END IF;
 END;
 /

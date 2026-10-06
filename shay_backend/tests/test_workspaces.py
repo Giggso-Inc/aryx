@@ -390,6 +390,34 @@ async def test_existing_bridge_for_workspace_returns_mapping_on_200():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_existing_bridge_for_workspace_reuses_a_passed_in_client():
+    """PR #448 review: list_workspaces() now shares one AsyncClient across
+    all lookups for a page instead of opening a new one per workspace (up
+    to 100 of them with the new default page size). Confirms the function
+    actually uses the client it's given instead of opening its own."""
+    from app.routes.workspaces.helpers import _existing_bridge_for_workspace
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json = MagicMock(return_value={"aryx_workspace_id": 42})
+    response.raise_for_status = MagicMock()
+
+    shared_client = MagicMock()
+    shared_client.get = AsyncMock(return_value=response)
+
+    with (
+        patch("app.routes.workspaces.helpers.httpx.AsyncClient") as client_class,
+        patch("app.routes.workspaces.helpers._aryx_headers", return_value={"x-aryx-api-key": "k"}),
+    ):
+        result = await _existing_bridge_for_workspace("some-workspace-id", client=shared_client)
+
+    assert result == {"aryx_workspace_id": 42}
+    shared_client.get.assert_awaited_once()
+    client_class.assert_not_called()  # no new AsyncClient opened
+
+
+@pytest.mark.unit
 def test_list_workspaces_returns_null_bridge_without_creating_one(mock_db, admin_user):
     """A workspace with no existing Aryx bridge must list with bridge=None,
     not trigger creation of a new one."""

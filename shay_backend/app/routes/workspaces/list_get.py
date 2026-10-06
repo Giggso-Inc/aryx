@@ -6,9 +6,11 @@ Split from app/routes/workspaces.py (Raven style-compliance pass, see
 docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2).
 """
 
+import asyncio
 from typing import Optional
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, select, func
@@ -74,12 +76,19 @@ async def list_workspaces(
     count_result = await db.execute(count_query)
     total = count_result.scalar()
 
+    # PR #448 review: with `size` now defaulting to 100, awaiting
+    # _existing_bridge_for_workspace() one at a time -- each opening its
+    # own httpx.AsyncClient -- meant up to 100 sequential round trips on a
+    # single request. One shared client + asyncio.gather() runs every
+    # lookup for this page concurrently instead.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        bridges = await asyncio.gather(*(
+            _existing_bridge_for_workspace(workspace.id, client=client)
+            for workspace in workspaces
+        ))
+
     bridged_workspaces = []
-    for workspace in workspaces:
-        # Read-only lookup, not create-or-reuse -- listing workspaces must
-        # never have the side effect of creating Aryx bridge data (see
-        # _existing_bridge_for_workspace's docstring).
-        bridge = await _existing_bridge_for_workspace(workspace.id)
+    for workspace, bridge in zip(workspaces, bridges):
         payload = serialize_workspace(workspace).model_dump()
         payload["bridge"] = bridge
         bridged_workspaces.append(payload)

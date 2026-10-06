@@ -6518,17 +6518,12 @@
     ],
     [
       "shay_backend/app/routes/workspaces/delete.py",
-      27,
+      26,
       "delete_workspace"
     ],
     [
       "shay_backend/app/routes/workspaces/delete.py",
-      40,
-      "<try>"
-    ],
-    [
-      "shay_backend/app/routes/workspaces/delete.py",
-      90,
+      83,
       "delete_workspace"
     ],
     [
@@ -6577,13 +6572,23 @@
       "_existing_bridge_for_workspace"
     ],
     [
+      "shay_backend/app/routes/workspaces/helpers.py",
+      174,
+      "_call"
+    ],
+    [
+      "shay_backend/app/routes/workspaces/helpers.py",
+      182,
+      "_call"
+    ],
+    [
       "shay_backend/app/routes/workspaces/list_get.py",
-      29,
+      31,
       "list_workspaces"
     ],
     [
       "shay_backend/app/routes/workspaces/list_get.py",
-      87,
+      96,
       "list_workspaces"
     ],
     [
