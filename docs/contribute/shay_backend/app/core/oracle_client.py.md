@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/core/oracle_client.py
 
-Last updated: 2026-10-06T09:17:59.351861+00:00
+Last updated: 2026-10-06T09:18:07.350908+00:00
 Total lines: 56
 Lines AI-generated: 56 (100.0%)
 Lines human-typed: 0

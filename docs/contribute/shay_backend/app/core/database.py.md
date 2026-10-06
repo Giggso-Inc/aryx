@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/core/database.py
 
-Last updated: 2026-10-06T09:17:59.349800+00:00
+Last updated: 2026-10-06T09:18:07.348399+00:00
 Total lines: 187
 Lines AI-generated: 68 (36.4%)
 Lines human-typed: 3

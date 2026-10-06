@@ -1,6 +1,6 @@
 # Attribution — docs/oci-oracle/JSON_MERGEPATCH_OSON_V2_INCIDENT_AND_FIX_PLAN_2026-10-06.md
 
-Last updated: 2026-10-06T09:17:59.350148+00:00
+Last updated: 2026-10-06T09:18:07.348823+00:00
 Total lines: 213
 Lines AI-generated: 213 (100.0%)
 Lines human-typed: 0

@@ -1,6 +1,6 @@
 # Attribution — src/aryx/api/main.py
 
-Last updated: 2026-10-06T09:17:59.351205+00:00
+Last updated: 2026-10-06T09:18:07.350086+00:00
 Total lines: 104
 Lines AI-generated: 4 (3.8%)
 Lines human-typed: 0

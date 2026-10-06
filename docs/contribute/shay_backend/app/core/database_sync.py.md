@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/core/database_sync.py
 
-Last updated: 2026-10-06T09:17:59.352577+00:00
+Last updated: 2026-10-06T09:18:07.351668+00:00
 Total lines: 70
 Lines AI-generated: 38 (54.3%)
 Lines human-typed: 0
