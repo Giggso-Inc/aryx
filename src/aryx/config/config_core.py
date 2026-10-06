@@ -39,6 +39,18 @@ class CoreSettingsMixin(BaseSettings):
             "tests/cpq_ingestion/test_structural_leaf.py."
         ),
     )
+    cpq_locale_wrapper_fold_enabled: bool = Field(
+        default=True,
+        description=(
+            "Fold value-only locale-wrapper XML tags (<label><en>..</en></label>) "
+            "onto their parent node after the structural-leaf fold, and restore "
+            "_xml_to_csvs's name promotion + a display_label field, so CPQ "
+            "families/models/attributes show names instead of numeric ids "
+            "(docs/ingestion/CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05.md). Set "
+            "ARYX_CPQ_LOCALE_WRAPPER_FOLD_ENABLED=false to restore the previous "
+            "behavior (wrappers resolve as their own entity types)."
+        ),
+    )
     cpq_force_exact_enabled: bool = Field(
         default=True,
         description=(

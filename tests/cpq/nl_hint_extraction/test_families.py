@@ -93,3 +93,47 @@ def test_falls_back_to_distinct_types_attributeerror_path():
     )
 
     assert list_ingested_families(engine, reader, workspace_id=1) == ["APX Next"]
+
+
+# ── ingested_family_labels (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05) ───────────
+
+from aryx.cpq.nl_hint_extraction.families import ingested_family_labels  # noqa: E402
+
+
+def _label_engine(attrs_by_id: dict[int, dict]) -> MagicMock:
+    engine = MagicMock()
+    engine._batch_fetch.side_effect = lambda ids, workspace_id: {
+        eid: attrs_by_id[eid] for eid in ids if eid in attrs_by_id
+    }
+    return engine
+
+
+def _apx_reader() -> MagicMock:
+    return _reader(
+        types=["ApxnextCnofigdataBmPrdFamily"],
+        entities_by_type={"ApxnextCnofigdataBmPrdFamily": [{"id": 1, "name": "aSTRO25_bom"}]},
+    )
+
+
+def test_ingested_family_labels_display_label_preferred():
+    engine = _label_engine({1: {"name": "aSTRO25_bom", "display_label": "ASTRO®25_BOM"}})
+    assert ingested_family_labels(engine, _apx_reader(), workspace_id=1) == {"aSTRO25_bom": "ASTRO®25_BOM"}
+
+
+def test_ingested_family_labels_falls_back_to_name_without_display_label():
+    engine = _label_engine({1: {"name": "aSTRO25_bom"}})
+    assert ingested_family_labels(engine, _apx_reader(), workspace_id=1) == {"aSTRO25_bom": "aSTRO25_bom"}
+
+
+def test_ingested_family_labels_keys_match_list_ingested_families():
+    """The prompt maps list_ingested_families' names through this dict --
+    every listed name must be a key, or the prompt would drop a family."""
+    engine = _label_engine({1: {"name": "aSTRO25_bom", "display_label": "ASTRO®25_BOM"}})
+    reader = _apx_reader()
+    assert list(ingested_family_labels(engine, reader, 1)) == list_ingested_families(engine, reader, 1)
+
+
+def test_ingested_family_labels_unprefixed_types_return_empty():
+    engine = _label_engine({1: {"name": "x", "display_label": "X"}})
+    reader = _reader(types=["bm_prd_family"], entities_by_type={"bm_prd_family": [{"id": 1}]})
+    assert ingested_family_labels(engine, reader, workspace_id=1) == {}

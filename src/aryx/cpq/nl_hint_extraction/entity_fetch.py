@@ -66,19 +66,22 @@ def _match_family_name(
         return None
     family_pg = engine._batch_fetch([e["id"] for e in family_ents], workspace_id)
     for fent in family_ents:
-        fname = str(
-            family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
-        )
-        fname_norm = _engine_module._strip_catalog_name_noise(
-            re.sub(r"[^a-z0-9]", "", fname.lower())
-        )
-        if not fname_norm:
-            continue
-        shorter_len = min(len(fname_norm), len(hint_norm))
-        if shorter_len < _engine_module._HINT_MIN_PHRASE_LEN:
-            continue
-        if fname_norm in hint_norm or hint_norm in fname_norm:
-            return fname
+        attrs = family_pg.get(fent["id"], {})
+        fname = str(attrs.get("name") or fent.get("name") or "")
+        # display_label (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05): the family
+        # prompt shows labels, so a reply echoing "APX™ NEXT" must resolve
+        # too. Always returns `name` -- the identity downstream keys on.
+        for candidate in (fname, str(attrs.get("display_label") or "")):
+            cand_norm = _engine_module._strip_catalog_name_noise(
+                re.sub(r"[^a-z0-9]", "", candidate.lower())
+            )
+            if not cand_norm:
+                continue
+            shorter_len = min(len(cand_norm), len(hint_norm))
+            if shorter_len < _engine_module._HINT_MIN_PHRASE_LEN:
+                continue
+            if cand_norm in hint_norm or hint_norm in cand_norm:
+                return fname
     return None
 
 

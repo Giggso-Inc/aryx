@@ -108,6 +108,50 @@ def test_family_prompt_branches(recs, monkeypatch, suggestions, families, option
     _no_sentinel(recs)
 
 
+
+def test_family_prompt_shows_display_labels_not_internal_names(recs, monkeypatch):
+    """No fuzzy signal -> all-families prompt: rendered with each family's
+    display_label (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05), not the internal
+    variable/id name."""
+    eng = _Eng(list_ingested_families=lambda *a: ["aSTRO25_bom"],
+               ingested_family_labels=lambda *a: {"aSTRO25_bom": "ASTRO 25 Radios"},
+               ingested_product_alias_map=lambda *a: {},
+               suggest_product_candidates=lambda *a, **k: [])
+    monkeypatch.setattr(ask_api, "_cpq_engine", eng)
+    m = _mod("ask_step1_product_family_prompt")
+    monkeypatch.setattr(m, "set_pending_scope", lambda *a, **k: None)
+    resp, _ = m._build_product_family_prompt_or_resolve(
+        _req("I need a quote for some radios please"), _session(), None)
+    assert "ASTRO 25 Radios" in resp["answer"] and "aSTRO25_bom" not in resp["answer"]
+
+
+def test_family_prompt_without_label_map_falls_back_to_names(recs, monkeypatch):
+    eng = _Eng(list_ingested_families=lambda *a: ["aSTRO25_bom"],
+               ingested_product_alias_map=lambda *a: {},
+               suggest_product_candidates=lambda *a, **k: [])
+    monkeypatch.setattr(ask_api, "_cpq_engine", eng)
+    m = _mod("ask_step1_product_family_prompt")
+    monkeypatch.setattr(m, "set_pending_scope", lambda *a, **k: None)
+    resp, _ = m._build_product_family_prompt_or_resolve(
+        _req("I need a quote for some radios please"), _session(), None)
+    assert "aSTRO25_bom" in resp["answer"]
+
+
+def test_family_prompt_label_lookup_failure_falls_back_to_names(recs, monkeypatch):
+    """Labels are display-only: a failing lookup must never break the prompt."""
+    def _boom(*a):
+        raise AttributeError("reader has no distinct_types")
+    eng = _Eng(list_ingested_families=lambda *a: ["aSTRO25_bom"],
+               ingested_family_labels=_boom,
+               ingested_product_alias_map=lambda *a: {},
+               suggest_product_candidates=lambda *a, **k: [])
+    monkeypatch.setattr(ask_api, "_cpq_engine", eng)
+    m = _mod("ask_step1_product_family_prompt")
+    monkeypatch.setattr(m, "set_pending_scope", lambda *a, **k: None)
+    resp, _ = m._build_product_family_prompt_or_resolve(
+        _req("I need a quote for some radios please"), _session(), None)
+    assert "aSTRO25_bom" in resp["answer"]
+
 # ------------------------------------------------------------------ step 2
 
 def _patch_gates(monkeypatch, attrs):

@@ -901,6 +901,11 @@ class CpqEngine:
     ) -> list[str]:
         return nl_hint_extraction.families.list_ingested_families(self, reader, workspace_id)
 
+    def ingested_family_labels(
+        self, reader: Any, workspace_id: int,
+    ) -> dict[str, str]:
+        return nl_hint_extraction.families.ingested_family_labels(self, reader, workspace_id)
+
     def load_product_config(
         self,
         reader: Any,
