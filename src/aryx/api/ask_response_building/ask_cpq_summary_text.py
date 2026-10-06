@@ -28,6 +28,7 @@ def _cpq_summary_text(
     product_quantity: int | None = None,
     filled: dict[str, str] | None = None,
     product_anchor_hint: str | None = None,
+    filled_multi: dict[str, list[str]] | None = None,
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
@@ -100,7 +101,7 @@ def _cpq_summary_text(
     _tc_t0 = time.monotonic()
     _required_vns = _cpq_engine.mandatory_tier_c_vns(
         filled, workspace_id, _catalog_prefix,
-        attrs=attrs, filled_source=sources, display_order=display_order,
+        attrs=attrs, filled_source=sources, filled_multi=filled_multi, display_order=display_order,
         product_hint=product_anchor_hint or product_name)
     _ask_api_module.logger.info(
         "cpq_perf: mandatory_tier_c_vns took %.3fs", time.monotonic() - _tc_t0,

@@ -114,7 +114,7 @@ def rule_required_vns(
         if rule.condition_script is not None or not _fires(rule.conditions, by_rule_id):
             continue
         guard = getattr(rule, "guard_attr", "")
-        if guard and not (guard_open(rule, filled) or (assume_open and guard not in filled)):
+        if guard and not guard_open(rule, filled, assume_open):
             continue
         target = by_id.get(rule.target_attr_id)
         if target is not None:

@@ -119,6 +119,7 @@ def _handle_bulk_quantity_change(
                 session.product_name, req.workspace_id, sources=session.filled_source,
                 product_quantity=session.product_quantity, filled=session.filled,
                 product_anchor_hint=session.product_anchor_question,
+                filled_multi=session.filled_multi,
             )
             answer = (
                 cascade_note + "\n\n"

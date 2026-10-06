@@ -134,6 +134,7 @@ def _handle_multi_select_removal(
                 session.product_name, req.workspace_id, sources=session.filled_source,
                 product_quantity=session.product_quantity, filled=session.filled,
                 product_anchor_hint=session.product_anchor_question,
+                filled_multi=session.filled_multi,
             )
             answer = (
                 cascade_note + "\n\n"
