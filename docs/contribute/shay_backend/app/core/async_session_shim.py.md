@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/core/async_session_shim.py
 
-Last updated: 2026-10-06T09:49:48.166423+00:00
+Last updated: 2026-10-06T09:50:01.859361+00:00
 Total lines: 127
 Lines AI-generated: 77 (60.6%)
 Lines human-typed: 0

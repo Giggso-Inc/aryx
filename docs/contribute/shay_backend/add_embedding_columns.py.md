@@ -1,6 +1,6 @@
 # Attribution — shay_backend/add_embedding_columns.py
 
-Last updated: 2026-10-06T09:49:48.167884+00:00
+Last updated: 2026-10-06T09:50:01.860427+00:00
 Total lines: 170
 Lines AI-generated: 22 (12.9%)
 Lines human-typed: 0

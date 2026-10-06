@@ -1,6 +1,6 @@
 # Attribution — src/aryx/api/main_oracle_client.py
 
-Last updated: 2026-10-06T09:49:48.164631+00:00
+Last updated: 2026-10-06T09:50:01.857738+00:00
 Total lines: 103
 Lines AI-generated: 30 (29.1%)
 Lines human-typed: 0

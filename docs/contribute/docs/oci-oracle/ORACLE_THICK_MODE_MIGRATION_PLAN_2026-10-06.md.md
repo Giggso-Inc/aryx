@@ -1,6 +1,6 @@
 # Attribution — docs/oci-oracle/ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md
 
-Last updated: 2026-10-06T09:49:48.163783+00:00
+Last updated: 2026-10-06T09:50:01.857153+00:00
 Total lines: 473
 Lines AI-generated: 115 (24.3%)
 Lines human-typed: 0
