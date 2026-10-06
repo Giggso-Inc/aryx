@@ -55,8 +55,12 @@ def fold_structural_leaf_tags(
     edges: list[RawEdge],
     by_tag: dict[str, list[RawNode]],
     *, log_id: str | None = None, source_key: str = "",
+    parent_ids: set[int] | None = None,
 ) -> dict[str, list[RawNode]]:
     """Fold every structural-leaf tag's value onto its parent, drop it from by_tag.
+
+    `parent_ids` -- optional precomputed set of every node id that is the source of an edge, so a
+    caller that also needs it (the post-fold audit) builds it once for the whole file.
 
     Mutates the parent ``RawNode.properties`` dicts in place (``RawNode``
     is a frozen dataclass, but its ``properties`` dict is not -- mutating
@@ -113,7 +117,8 @@ def fold_structural_leaf_tags(
     if not by_tag:
         return by_tag
 
-    parent_ids: set[int] = {edge.source_id for edge in edges}
+    if parent_ids is None:
+        parent_ids = {edge.source_id for edge in edges}
 
     leaf_tags = {
         tag: nodes for tag, nodes in by_tag.items()

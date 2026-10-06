@@ -27,6 +27,7 @@ from collections import defaultdict
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.cpq_ingestion.raw_graph.containment_relate import translate_containment_edges
+from aryx.cpq_ingestion.raw_graph.leaf_audit import audit_unfolded_leaf_tags
 from aryx.cpq_ingestion.raw_graph.match_key_inference import infer_match_keys_for_tag
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawGraphProjection, RawNode
 from aryx.cpq_ingestion.raw_graph.store import with_query_tables
@@ -355,9 +356,10 @@ def resolve_and_relate_raw_graph(
     # PR review N1: opt-out for a new behavior-changing fix, even one
     # believed safe (every existing per-caller test keeps passing with the
     # default True).
+    parent_ids = {edge.source_id for edge in edges}     # one pass over the edges, shared by the fold and the audit
     if settings.cpq_structural_leaf_fold_enabled:
         by_tag = fold_structural_leaf_tags(
-            edges, by_tag, log_id=log_id, source_key=source_key,
+            edges, by_tag, log_id=log_id, source_key=source_key, parent_ids=parent_ids,
         )
     # Pass 2 + display fields (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05): fold
     # value-only locale wrappers (<label><en>) onto their parent and restore
@@ -367,6 +369,17 @@ def resolve_and_relate_raw_graph(
         by_tag = fold_value_wrapper_tags(
             edges, by_tag, log_id=log_id, source_key=source_key,
         )
+    # Post-fold invariant (see leaf_audit): a plain-text leaf tag that still lands as its
+    # own entity type means its text is NOT on the parent. Flag it now, not at query time.
+    logger.info(
+        "raw_graph folds did=%s source_key=%s structural_leaf=%s locale_wrapper=%s",
+        log_id, source_key, settings.cpq_structural_leaf_fold_enabled,
+        settings.cpq_locale_wrapper_fold_enabled,
+    )
+    unfolded_leaf_tags = audit_unfolded_leaf_tags(
+        by_tag, edges, fold_enabled=settings.cpq_structural_leaf_fold_enabled,
+        log_id=log_id, source_key=source_key, parent_ids=parent_ids,
+    )
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}
     estore = EntityStore(dsn, workspace_id)
@@ -522,6 +535,8 @@ def resolve_and_relate_raw_graph(
 
     result = {"tags": len(by_tag), "entities": total_entities,
               "relationships": len(relationships), **graph_counts}
+    if unfolded_leaf_tags:
+        result["unfolded_leaf_tags"] = unfolded_leaf_tags
     logger.info("raw_graph resolve_and_relate complete did=%s source_key=%s %s",
                 log_id, source_key, result)
     # PR review round 5 (Raven logging, N4): this was previously missing
