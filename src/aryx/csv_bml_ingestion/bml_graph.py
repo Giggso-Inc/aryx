@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 TABLES_KEY = "bml_tables"
 QUERIES_KEY = "bml_queries"
 QUERY_TABLES_KEY = "bml_query_tables"
+SCRIPT_PROPS_KEY = "bml_script_props"   # set by the leaf fold: tag name(s) the query lists were folded under
 MAX_QUERIES_PER_NODE = 8
 MAX_SQL_CHARS = 2000
 

@@ -45,10 +45,76 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
     set-membership check per tag, removes that multiplier entirely.
     """
     node_ids = {n.id for n in nodes}
+    allowed = {RAW_PROP_TEXT, *_carried_keys()}
     for n in nodes:
-        if set(n.properties) - {RAW_PROP_TEXT}:
+        if set(n.properties) - allowed:
             return False
     return node_ids.isdisjoint(parent_ids)
+
+
+_BML_KEYS: tuple[str, ...] | None = None    # (tables, queries, query_tables, script_props); cached on success only
+_IMPORT_WARNED = False                      # the failed import is retried on every call but logged once
+
+
+def _bml_keys() -> tuple[str, ...]:
+    """The CSV BML property names, or () when that module cannot be imported (a failure is not cached).
+
+    Imported lazily (csv_bml_ingestion imports this package). The fold must never fail, or stay disabled for
+    the life of the process, because an optional enrichment module could not load once.
+    """
+    global _BML_KEYS
+    if _BML_KEYS is not None:
+        return _BML_KEYS
+    try:
+        from aryx.csv_bml_ingestion.bml_graph import (  # noqa: PLC0415
+            QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY, TABLES_KEY,
+        )
+    except ImportError:
+        global _IMPORT_WARNED
+        if not _IMPORT_WARNED:      # one traceback per process; the retry stays, the log noise does not
+            _IMPORT_WARNED = True
+            logger.warning("structural leaf fold: csv_bml_ingestion unavailable; BML lists will not be carried",
+                           exc_info=True)
+        return ()
+    _BML_KEYS = (TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY)
+    return _BML_KEYS
+
+
+def _carried_keys() -> tuple[str, ...]:
+    """Query-table lists the CSV BML enrichment adds to a node that holds SQL (not XML attributes).
+
+    They do not make a tag a non-leaf: the fold carries them onto the parent with the text.
+    """
+    return _bml_keys()[:3]
+
+
+def _carry_lists(parent: RawNode, leaf: RawNode, tag: str) -> None:
+    """Merge the leaf's query-table lists onto the parent (extend; never nest; tables de-duplicated).
+
+    Also records the tag the script was folded under (`bml_script_props`), so a CSV BML match can name the
+    property that holds the script body instead of guessing it.
+    """
+    keys = _bml_keys()
+    if not keys:
+        return
+    tables_key, queries_key, query_tables_key, script_props_key = keys
+    carried = False
+    for key in (tables_key, queries_key, query_tables_key):
+        values = leaf.properties.get(key)
+        if not isinstance(values, list):
+            continue
+        carried = True
+        current = parent.properties.get(key)
+        if not isinstance(current, list):
+            parent.properties[key] = list(values)
+        elif key == tables_key:
+            current.extend(v for v in values if v not in current)
+        else:
+            current.extend(values)      # queries and their tables stay parallel
+    if carried:
+        tags = parent.properties.setdefault(script_props_key, [])
+        if isinstance(tags, list) and tag not in tags:
+            tags.append(tag)
 
 
 def fold_structural_leaf_tags(
@@ -167,6 +233,7 @@ def fold_structural_leaf_tags(
                 existing.append(text)
             else:
                 parent.properties[tag] = [existing, text]
+            _carry_lists(parent, leaf, tag)
             folded_count += 1
         if orphan_count:
             # Parentless leaves (e.g. a leaf-shaped root tag) keep this tag

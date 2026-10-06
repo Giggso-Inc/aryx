@@ -22,9 +22,9 @@ from typing import Any
 
 from aryx.cpq_ingestion.config import get_cpq_ingestion_settings
 from aryx.cpq_ingestion.naming import raw_workspace_id
-from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, TABLES_KEY
+from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY, TABLES_KEY
 from aryx.csv_bml_ingestion.bml_index import (
-    MAX_IDENTITY_CHARS, MAX_IDENTITY_VALUES, PATH_DEPTH, BmlLookup, BmlMatch, make_label,
+    LABEL_HINTS, MAX_IDENTITY_CHARS, MAX_IDENTITY_VALUES, PATH_DEPTH, BmlLookup, BmlMatch, make_label,
 )
 from aryx.csv_bml_ingestion.constants import (
     CURATED_FALLBACK_CODE, FALLBACK_RECOVERY, FALLBACK_TRIGGER, RESULT_DEGRADED, STEP_BML_LOOKUP,
@@ -59,6 +59,32 @@ def _attrs(value: Any) -> dict:
             return {}
         return loaded if isinstance(loaded, dict) else {}
     return {}
+
+
+_BML_KEYS = {TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY}
+
+
+def _folded_script_prop(attrs: dict) -> str:
+    """Property holding the script body when the leaf fold put it on this vertex, else "" (plain vertex)."""
+    tags = attrs.get(SCRIPT_PROPS_KEY)
+    return tags[0] if isinstance(tags, list) and tags and isinstance(tags[0], str) else ""
+
+
+def _own_identity(attrs: dict, text_keys: set[str]) -> dict[str, str]:
+    """Short scalar values the matched vertex itself carries (its name, id, ...), excluding its script.
+
+    The keys `make_label` prefers (id/guid/name/key) come first, so they are never crowded out by other
+    short properties (flags, types).
+    """
+    keys = [k for k in LABEL_HINTS if k in attrs] + [k for k in attrs if k not in LABEL_HINTS]
+    out: dict[str, str] = {}
+    for key in keys:
+        value = attrs[key]
+        if key in _BML_KEYS or key in text_keys or len(out) >= MAX_IDENTITY_VALUES:
+            continue
+        if isinstance(value, str) and 0 < len(value) <= MAX_IDENTITY_CHARS:
+            out[str(key)] = value
+    return out
 
 
 class StoredGraphLookup:
@@ -119,7 +145,11 @@ class StoredGraphLookup:
             for sql, tables in zip(attrs.get(QUERIES_KEY, []), attrs.get(QUERY_TABLES_KEY, []))
             if table in tables.split(","))
         identity, path = self._context(ws, entity_id)
-        return BmlMatch(table=table, node_id=entity_id, node_tag=tag, prop="text", path=path,
+        folded = _folded_script_prop(attrs)
+        prop = folded or "text"
+        if folded:  # the script text is folded onto its function: the vertex describes itself
+            identity = _own_identity(attrs, set(attrs.get(SCRIPT_PROPS_KEY, []))) or identity
+        return BmlMatch(table=table, node_id=entity_id, node_tag=tag, prop=prop, path=path,
                         identity=identity, label=make_label(identity, tag, entity_id), queries=queries)
 
     def _context(self, ws: int, entity_id: int) -> tuple[dict[str, str], tuple[str, ...]]:
