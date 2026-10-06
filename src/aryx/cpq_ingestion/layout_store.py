@@ -117,7 +117,11 @@ def store_layout_file(
     content = data.decode("utf-8")
     # Flag off: one layout per catalog as before, so a re-upload always replaces the 'default'
     # row the reader serves; the variant key is derived only when variants are enabled.
-    variant = layout_variant_from_content(content) if get_settings().cpq_layout_variants_enabled         else _default_variant()
+    variant = (
+        layout_variant_from_content(content)
+        if get_settings().cpq_layout_variants_enabled
+        else _default_variant()
+    )
     params = {
         "layout_id": uuid.uuid4().hex,
         "workspace_id": workspace_id,
