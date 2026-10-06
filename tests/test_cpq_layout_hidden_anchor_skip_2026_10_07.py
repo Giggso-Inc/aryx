@@ -96,11 +96,25 @@ def test_no_layout_changes_nothing(monkeypatch):
     assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "productSelectionProduct_all")]) == set()
 
 
-def test_only_attributes_of_this_catalog_are_returned(monkeypatch):
-    eng = _engine_with_layout(monkeypatch, _layout(_component("productSelectionProduct_all", True),
-                                                   _component("someOtherHidden", True)))
-    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "productSelectionProduct_all")]) \
-        == {"productSelectionProduct_all"}
+def test_only_the_product_selector_is_returned_even_when_other_attributes_are_hidden(monkeypatch):
+    eng = _engine_with_layout(monkeypatch, _layout(
+        _component("productSelectionProduct_all", True), _component("someOtherHidden", True),
+        _component("modelSelectionSelectModel_viSoln", True)))
+    attrs = [_attr(1, "productSelectionProduct_all"), _attr(2, "someOtherHidden"),
+             _attr(3, "modelSelectionSelectModel_viSoln")]
+    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, attrs) == {"productSelectionProduct_all"}
+
+
+def test_a_hidden_select_model_is_still_force_asked(monkeypatch):
+    """No blind-fill guard exists for select-model (SVX lists a camera at order 1), so the layout skip
+    must not remove its question either."""
+    eng = _engine_with_layout(monkeypatch, _layout(_component("modelSelectionSelectModel_viSoln", True)))
+    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "modelSelectionSelectModel_viSoln")]) == set()
+
+
+def test_product_absent_from_the_catalog_attrs_is_not_returned(monkeypatch):
+    eng = _engine_with_layout(monkeypatch, _layout(_component("productSelectionProduct_all", True)))
+    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "ultimateDestinationCountry")]) == set()
 
 
 def test_the_opt_out_flag_restores_todays_behaviour(monkeypatch):
@@ -134,13 +148,14 @@ def test_a_vn_placed_twice_once_visible_is_not_hidden(monkeypatch):
         _component("productSelectionProduct_all", True), _component("productSelectionProduct_all", False),
         _component("mountType_viSoln", True)))
     assert eng.load_layout_hidden_vns(WS, PREFIX) == {"mountType_viSoln"}
+    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "productSelectionProduct_all")]) == set()
 
 
 def test_the_ask_helper_unions_the_flow_exemption_and_the_layout_hidden_set(monkeypatch):
-    eng = _engine_with_layout(monkeypatch, _layout(_component("mountType_viSoln", True)))
+    eng = _engine_with_layout(monkeypatch, _layout(_component("productSelectionProduct_all", True)))
     monkeypatch.setattr(eng, "resolve_always_ask_skips", lambda ws, prefix, attrs: {"fromFlow"})
-    attrs = [_attr(1, "mountType_viSoln")]
-    assert eng.resolve_ask_always_ask_skips(WS, PREFIX, attrs) == {"fromFlow", "mountType_viSoln"}
+    attrs = [_attr(1, "productSelectionProduct_all")]
+    assert eng.resolve_ask_always_ask_skips(WS, PREFIX, attrs) == {"fromFlow", "productSelectionProduct_all"}
 
 
 def test_the_payload_flow_exclusion_keeps_its_flow_only_meaning(monkeypatch):
@@ -153,10 +168,28 @@ def test_the_payload_flow_exclusion_keeps_its_flow_only_meaning(monkeypatch):
 
 
 def test_no_ask_path_builds_skip_always_ask_from_the_flow_exemption_alone():
-    """Every caller under aryx/api must use the helper; otherwise a cascade, quantity, clear, activation,
-    removal or country-change turn re-asks a layout-hidden Product."""
+    """Only the engine wrapper, the helper module and `payload_flow_exclusions` (whose flow-only meaning
+    is deliberate) may call resolve_always_ask_skips( anywhere under src/aryx; every ask path uses
+    resolve_ask_always_ask_skips, otherwise a cascade, quantity, clear, activation, removal or
+    country-change turn re-asks a layout-hidden Product."""
     import pathlib
-    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "aryx" / "api"
-    offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
-                 if "resolve_always_ask_skips(" in p.read_text(encoding="utf-8")]
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "aryx"
+    allowed = {"cpq/engine.py", "cpq/layout_and_join_data/always_ask.py", "cpq/layout_and_join_data/flow_exclusions.py"}
+    offenders = sorted(
+        p.relative_to(root).as_posix() for p in root.rglob("*.py")
+        if "resolve_always_ask_skips(" in p.read_text(encoding="utf-8")
+        and p.relative_to(root).as_posix() not in allowed
+        and "rules_loop/rules_loop.py" not in p.as_posix())      # docstring mention only
     assert offenders == []
+
+
+def test_the_exemption_leaves_a_decision_record(monkeypatch):
+    from aryx.cpq.layout_and_join_data import always_ask as module
+    seen = []
+    monkeypatch.setattr(module, "raven_log", lambda *a, **k: seen.append((a, k)))
+    eng = _engine_with_layout(monkeypatch, _layout(_component("productSelectionProduct_all", True)))
+    assert eng.resolve_layout_hidden_anchor_skips(WS, PREFIX, [_attr(1, "productSelectionProduct_all")])
+    (args, kwargs), = seen
+    assert "ask.always_ask.layout_hidden_skip" in args[2]
+    assert kwargs["context"]["skipped_vns"] == ["productSelectionProduct_all"]
+    assert kwargs["context"]["reason_code"] == "LAYOUT_HIDE_TRUE"

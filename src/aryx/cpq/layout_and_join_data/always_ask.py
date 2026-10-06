@@ -14,6 +14,7 @@ from __future__ import annotations
 from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log
 
 
 def resolve_always_ask_skips(
@@ -48,29 +49,37 @@ def resolve_always_ask_skips(
 def resolve_layout_hidden_anchor_skips(
     engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
 ) -> set[str]:
-    """Variable names the catalog's layout explicitly hides (`hide: true`), so the
-    always-ask overrides (Product, select-model) leave them alone.
+    """The shared Product selector, when the catalog's layout explicitly hides it (`hide: true`).
 
-    The overrides force a question for attributes the native UI is assumed to show.
-    The layout says otherwise for a catalog that hides one: SVX's layout hides
-    `productSelectionProduct_all` (`hide: true`, in its "Hidden" tab) while every APX
-    and Astro layout shows it (`hide: false`), so those stay asked. Generic: no
-    attribute or catalog name, only the layout's own flag. Only an explicit `true`
-    counts; an attribute missing from the layout is not treated as hidden, and no
+    The Product always-ask override forces a question for an attribute the native UI is assumed
+    to show. SVX's layout hides `productSelectionProduct_all` (`hide: true`, in its "Hidden" tab)
+    while every APX and Astro layout shows it (`hide: false`), so those stay asked. Only an
+    explicit `true` counts; an attribute missing from the layout is not treated as hidden, and no
     layout (None) leaves everything as before.
 
-    The skip only removes the question. The governed blind-fill guard for the
-    shared Product list still applies to a skipped attribute, so it is neither
-    asked nor filled with a foreign product's code.
+    Deliberately Product only. A hidden select-model attribute stays force-asked: its blind
+    first-option fill is unsafe (SVX lists a camera at order 1 ahead of the real variants) and only
+    the Product attribute has that guard in the fill tiers. The skip only removes the question; the
+    governed blind-fill guard for the shared Product list still applies, so it is neither asked nor
+    filled with a foreign product's code.
     Flag: `cpq_layout_hidden_anchor_skip_enabled` (default on; the opt-out is
     ARYX_CPQ_LAYOUT_HIDDEN_ANCHOR_SKIP_ENABLED=false).
     """
     if not get_settings().cpq_layout_hidden_anchor_skip_enabled:
         return set()
+    from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # noqa: PLC0415 -- avoids an import cycle at module load
+
     hidden = engine.load_layout_hidden_vns(workspace_id, catalog_prefix)
-    if not hidden:
+    if not hidden or PRODUCT_LITERAL not in hidden:
         return set()
-    return {attr.variable_name for attr in attrs if attr.variable_name in hidden}
+    skips = {attr.variable_name for attr in attrs if attr.variable_name == PRODUCT_LITERAL}
+    if skips:
+        raven_log("DEBUG", "P4", "ask.always_ask.layout_hidden_skip layout hides the product selector, not force-asked",
+                  context={"selected_option": "skip_always_ask", "available_options": ["force_ask", "skip_always_ask"],
+                           "reason_code": "LAYOUT_HIDE_TRUE", "policy_version": "layout_hidden_anchor_v1",
+                           "workspace_id": workspace_id, "catalog_prefix": catalog_prefix,
+                           "skipped_vns": sorted(skips)})
+    return skips
 
 
 def resolve_ask_always_ask_skips(
