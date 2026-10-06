@@ -197,7 +197,7 @@ def test_narration_fallbacks(recs, monkeypatch):
 
 def test_summary_text_no_groups(recs, monkeypatch):
     from aryx.api.ask_response_building import ask_cpq_summary_text as m
-    _engine(monkeypatch, load_layout_display_order=lambda *a: [], mandatory_tier_c_vns=lambda *a: set(),
+    _engine(monkeypatch, load_layout_display_order=lambda *a: [], mandatory_tier_c_vns=lambda *a, **k: set(),
             categorized_summary_groups=lambda *a, **k: [])
     assert m._cpq_summary_text({}, [], set(), "APX", 7) == ""
     assert _ev(recs, "ask.response.summary_skipped")[0]["context"]["reason_code"] == "NO_SUMMARY_GROUPS"
