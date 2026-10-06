@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aryx.config import get_settings
 from aryx.queries import load
 from aryx.raven_log import raven_log
 from aryx.worker.job_partial import note_hidden
@@ -54,6 +55,11 @@ def catalog_prefix_from_filename(filename: str) -> str:
     derived and ingestion-derived catalog_prefix values in the same shape.
     """
     return Path(filename).stem
+
+
+def _default_variant() -> str:
+    from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT  # noqa: PLC0415 -- see layout_variant_from_content
+    return DEFAULT_LAYOUT_VARIANT
 
 
 def layout_variant_from_content(content: str) -> str:
@@ -109,7 +115,9 @@ def store_layout_file(
                        "available_options": ["explicit", "filename_stem"], "reason_code": "CATALOG_PREFIX",
                        "bytes": len(data), "limit": _MAX_LAYOUT_FILE_BYTES})
     content = data.decode("utf-8")
-    variant = layout_variant_from_content(content)
+    # Flag off: one layout per catalog as before, so a re-upload always replaces the 'default'
+    # row the reader serves; the variant key is derived only when variants are enabled.
+    variant = layout_variant_from_content(content) if get_settings().cpq_layout_variants_enabled         else _default_variant()
     params = {
         "layout_id": uuid.uuid4().hex,
         "workspace_id": workspace_id,

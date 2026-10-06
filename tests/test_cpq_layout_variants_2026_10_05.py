@@ -209,11 +209,19 @@ class _Ds:
     def ensure(self, *a): return {}
 
 
+def _store_flag(monkeypatch, on):
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    m.return_value.cpq_layout_variants_enabled = on
+    monkeypatch.setattr(layout_store, "get_settings", m)
+
+
 @pytest.fixture
 def pool(monkeypatch):
     p = _Pool()
     monkeypatch.setattr(layout_store, "get_pool", lambda dsn: p)
     monkeypatch.setattr(layout_store, "DatasourceStore", _Ds)
+    _store_flag(monkeypatch, True)
     return p
 
 
@@ -229,6 +237,14 @@ def test_variant_derived_from_variable_name_and_reupload_replaces_only_it(pool):
     assert len(pool.rows) == 2
     assert pool.rows[(WS, PREFIX, FLOW_A)]["filename"] == "three.json"
     assert pool.rows[(WS, PREFIX, FLOW_B)]["filename"] == "two.json"
+
+
+def test_flag_off_a_reupload_always_replaces_the_default_row(pool, monkeypatch):
+    _store_flag(monkeypatch, False)
+    _store(_layout(FLOW_A, ["a1"]), "one.json")
+    _store(_layout(FLOW_B, ["b1"]), "two.json")
+    assert list(pool.rows) == [(WS, PREFIX, DEFAULT_LAYOUT_VARIANT)]
+    assert pool.rows[(WS, PREFIX, DEFAULT_LAYOUT_VARIANT)]["filename"] == "two.json"
 
 
 @pytest.mark.parametrize("content", ["not json", "[1, 2]", '{"status": "Active"}',
