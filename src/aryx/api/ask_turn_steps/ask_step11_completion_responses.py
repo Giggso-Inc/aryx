@@ -84,6 +84,7 @@ def _step11_completion_response(
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
         product_anchor_hint=session.product_anchor_question,
+        filled_multi=session.filled_multi,
     )
     raven_log("DEBUG", "P4", "ask.response.completion configuration complete summary built", context={
         "selected_option": "completion_summary", "reason_code": "NOTHING_PENDING",

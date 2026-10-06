@@ -51,6 +51,7 @@ def _step6_no_value_or_nudge(
         session.product_name, req.workspace_id, sources=session.filled_source,
         product_quantity=session.product_quantity, filled=session.filled,
         product_anchor_hint=session.product_anchor_question,
+        filled_multi=session.filled_multi,
     )
     answer = (
         f"I didn't quite catch that. Here is the current configuration for "

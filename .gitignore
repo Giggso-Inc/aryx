@@ -50,3 +50,7 @@ Current_State_Aryx.html
 CPQ_INTENT_FLOWS.md
 PRACTICE_AUDIT_*.md
 INGESTION_TO_ASK_REVIEW.csv
+
+# Raven hook telemetry in any nested package
+**/.raven/.cache/
+**/.raven/audit/
