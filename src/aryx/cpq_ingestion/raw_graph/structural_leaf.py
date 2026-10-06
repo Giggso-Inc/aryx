@@ -15,7 +15,6 @@ See docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md
 """
 from __future__ import annotations
 
-import functools
 import logging
 
 from aryx.cpq_ingestion.constants import RAW_PROP_TEXT
@@ -53,20 +52,36 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
     return node_ids.isdisjoint(parent_ids)
 
 
-@functools.cache
+_BML_KEYS: tuple[str, ...] | None = None    # (tables, queries, query_tables, script_props); cached on success only
+
+
+def _bml_keys() -> tuple[str, ...]:
+    """The CSV BML property names, or () when that module cannot be imported (a failure is not cached).
+
+    Imported lazily (csv_bml_ingestion imports this package). The fold must never fail, or stay disabled for
+    the life of the process, because an optional enrichment module could not load once.
+    """
+    global _BML_KEYS
+    if _BML_KEYS is not None:
+        return _BML_KEYS
+    try:
+        from aryx.csv_bml_ingestion.bml_graph import (  # noqa: PLC0415
+            QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY, TABLES_KEY,
+        )
+    except ImportError:
+        logger.warning("structural leaf fold: csv_bml_ingestion unavailable; BML lists will not be carried",
+                       exc_info=True)
+        return ()
+    _BML_KEYS = (TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY)
+    return _BML_KEYS
+
+
 def _carried_keys() -> tuple[str, ...]:
     """Query-table lists the CSV BML enrichment adds to a node that holds SQL (not XML attributes).
 
     They do not make a tag a non-leaf: the fold carries them onto the parent with the text.
-    Imported lazily (csv_bml_ingestion imports this package).
     """
-    try:
-        from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, TABLES_KEY  # noqa: PLC0415
-    except ImportError:     # the fold must never fail because an optional enrichment module cannot load
-        logger.warning("structural leaf fold: csv_bml_ingestion unavailable; BML lists will not be carried",
-                       exc_info=True)
-        return ()
-    return TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY
+    return _bml_keys()[:3]
 
 
 def _carry_lists(parent: RawNode, leaf: RawNode, tag: str) -> None:
@@ -75,10 +90,10 @@ def _carry_lists(parent: RawNode, leaf: RawNode, tag: str) -> None:
     Also records the tag the script was folded under (`bml_script_props`), so a CSV BML match can name the
     property that holds the script body instead of guessing it.
     """
-    keys = _carried_keys()
+    keys = _bml_keys()
     if not keys:
         return
-    tables_key, queries_key, query_tables_key = keys
+    tables_key, queries_key, query_tables_key, script_props_key = keys
     carried = False
     for key in (tables_key, queries_key, query_tables_key):
         values = leaf.properties.get(key)
@@ -93,9 +108,7 @@ def _carry_lists(parent: RawNode, leaf: RawNode, tag: str) -> None:
         else:
             current.extend(values)      # queries and their tables stay parallel
     if carried:
-        from aryx.csv_bml_ingestion.bml_graph import SCRIPT_PROPS_KEY  # noqa: PLC0415
-
-        tags = parent.properties.setdefault(SCRIPT_PROPS_KEY, [])
+        tags = parent.properties.setdefault(script_props_key, [])
         if isinstance(tags, list) and tag not in tags:
             tags.append(tag)
 

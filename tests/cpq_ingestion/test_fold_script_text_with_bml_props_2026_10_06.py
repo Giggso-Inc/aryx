@@ -133,12 +133,30 @@ def test_fold_still_works_when_the_bml_module_cannot_be_imported(monkeypatch):
             raise ImportError("boom")
         return real_import(name, *a, **k)
 
-    sl._carried_keys.cache_clear()
+    sl._BML_KEYS = None
     monkeypatch.setattr(builtins, "__import__", failing)
     try:
         plain = _projection([_SQL])
         folded = fold_structural_leaf_tags(plain.edges, _by_tag(plain))
     finally:
         monkeypatch.undo()
-        sl._carried_keys.cache_clear()
+        sl._BML_KEYS = None
     assert folded["bm_function"][0].properties["script_text"] == _SQL
+
+
+def test_a_failed_bml_import_is_not_cached_so_a_later_call_recovers(monkeypatch):
+    import builtins
+
+    from aryx.cpq_ingestion.raw_graph import structural_leaf as sl
+    real_import = builtins.__import__
+
+    def failing(name, *a, **k):
+        if name.startswith("aryx.csv_bml_ingestion"):
+            raise ImportError("boom")
+        return real_import(name, *a, **k)
+
+    sl._BML_KEYS = None
+    with monkeypatch.context() as m:
+        m.setattr(builtins, "__import__", failing)
+        assert sl._carried_keys() == ()
+    assert sl._carried_keys() == (TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY)     # recovered, not stuck on ()
