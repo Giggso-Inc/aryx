@@ -75,6 +75,19 @@ def test_plan_unchanged_entity_not_in_updates():
     assert 5 not in plan_display_backfill(entities, tag_of, contains).updates
 
 
+def test_plan_replanning_after_keep_wrappers_does_not_duplicate_label():
+    """Review finding M1 (PR #437): --keep-wrappers (or a wrapper-delete
+    chunk failing after attribute updates already committed) leaves the
+    wrapper entity in place while the parent already carries the folded
+    value. Replanning from that state must not turn ``label`` into
+    ``["ASTRO®25_BOM", "ASTRO®25_BOM"]`` on a second --apply."""
+    entities, tag_of, contains = _workspace()
+    first = plan_display_backfill(entities, tag_of, contains)
+    entities[FAMILY] = dict(entities[FAMILY], **first.updates[FAMILY])  # simulate --apply
+    second = plan_display_backfill(entities, tag_of, contains)
+    assert FAMILY not in second.updates or second.updates[FAMILY]["label"] == "ASTRO®25_BOM"
+
+
 def test_plan_wrapper_with_a_child_of_its_own_is_kept():
     entities, tag_of, contains = _workspace()
     entities[20] = {"id": "z"}

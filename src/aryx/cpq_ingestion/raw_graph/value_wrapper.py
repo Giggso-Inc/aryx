@@ -103,13 +103,22 @@ def has_locale_key(properties: dict[str, Any]) -> bool:
 
 
 def accumulate(props: dict[str, Any], key: str, value: str) -> None:
-    """Same collision rule as pass 1: never overwrite, accumulate a list."""
+    """Same collision rule as pass 1: never overwrite, accumulate a list.
+
+    Idempotent on an already-seen value: re-running the fold against a
+    parent that already carries ``value`` (e.g. ``display_backfill.py``
+    replanning after ``--keep-wrappers``, or after a wrapper-delete chunk
+    failed partway) must not turn a scalar/list into a duplicate entry --
+    confirmed live, this was silently corrupting re-run output before this
+    guard existed.
+    """
     existing = props.get(key)
     if existing is None:
         props[key] = value
     elif isinstance(existing, list):
-        existing.append(value)
-    else:
+        if value not in existing:
+            existing.append(value)
+    elif existing != value:
         props[key] = [existing, value]
 
 

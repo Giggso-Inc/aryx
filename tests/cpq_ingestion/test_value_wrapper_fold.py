@@ -12,6 +12,7 @@ from __future__ import annotations
 from aryx.cpq_ingestion.constants import RAW_PROP_TEXT
 from aryx.cpq_ingestion.raw_graph.models import RawEdge, RawNode
 from aryx.cpq_ingestion.raw_graph.value_wrapper import (
+    accumulate,
     apply_display_fields,
     fold_value_wrapper_tags,
     wrapper_value,
@@ -148,6 +149,27 @@ def test_fold_repeated_wrapper_under_one_parent_accumulates_list():
     b = RawNode(id=3, tag="label", properties={"en": "B"})
     fold_value_wrapper_tags([_edge(1, 2), _edge(1, 3)], {"rec": [parent], "label": [a, b]})
     assert parent.properties["label"] == ["A", "B"]
+
+
+def test_accumulate_is_idempotent_on_a_scalar_repeat():
+    """Review finding M1 (PR #437): re-running the fold against a parent
+    that already holds the value (e.g. display_backfill.py replanning
+    after --keep-wrappers) must stay a scalar, not become ["X", "X"]."""
+    props = {"label": "X"}
+    accumulate(props, "label", "X")
+    assert props["label"] == "X"
+
+
+def test_accumulate_is_idempotent_on_a_list_repeat():
+    props = {"label": ["A", "B"]}
+    accumulate(props, "label", "B")
+    assert props["label"] == ["A", "B"]
+
+
+def test_accumulate_still_collects_a_genuinely_new_value():
+    props = {"label": "A"}
+    accumulate(props, "label", "B")
+    assert props["label"] == ["A", "B"]
 
 
 def test_fold_does_not_overwrite_existing_parent_property_silently():

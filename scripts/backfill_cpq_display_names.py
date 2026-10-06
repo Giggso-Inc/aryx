@@ -23,6 +23,13 @@ Safety: dry-run by default (prints the plan, touches nothing). Review it,
 then pass --apply. --keep-wrappers skips the wrapper deletion. --rebuild-only
 retries just the graph rebuild. Not wired into startup or migrations.
 
+Run this with no ingest job active against the workspace, during a quiet
+period: the plan reads every entity once and --apply writes whole attribute
+dicts back, so a concurrent ingest's writes to an entity this touches are
+overwritten. On the Oracle backend, --apply also pre-clears the workspace's
+graph tables before the rebuild (ORA-30036 workaround, see above), so Ask
+reads an empty graph for that workspace until the rebuild finishes.
+
 Usage:
     python scripts/backfill_cpq_display_names.py --workspace-id 1126
     python scripts/backfill_cpq_display_names.py --workspace-id 1126 --apply
