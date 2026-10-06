@@ -1,6 +1,6 @@
 # Attribution — src/aryx/store/oracle_connection_pool.py
 
-Last updated: 2026-10-06T18:36:58.295947+00:00
+Last updated: 2026-10-06T18:37:11.828976+00:00
 Total lines: 240
 Lines AI-generated: 85 (35.4%)
 Lines human-typed: 9

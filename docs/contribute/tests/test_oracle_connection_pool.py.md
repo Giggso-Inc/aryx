@@ -1,6 +1,6 @@
 # Attribution — tests/test_oracle_connection_pool.py
 
-Last updated: 2026-10-06T18:36:58.296605+00:00
+Last updated: 2026-10-06T18:37:11.829526+00:00
 Total lines: 181
 Lines AI-generated: 81 (44.8%)
 Lines human-typed: 0
