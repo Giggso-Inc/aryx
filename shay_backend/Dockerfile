@@ -62,6 +62,11 @@ RUN set -eux; \
     mkdir -p /opt/oracle; \
     unzip -q /tmp/instantclient.zip -d /opt/oracle; \
     rm /tmp/instantclient.zip; \
+    # `ln -s` succeeds even if its target doesn't exist -- fail loudly here
+    # (same reasoning as the main Dockerfile) rather than silently shipping
+    # a broken symlink that only surfaces as a fallback-to-thin-mode log
+    # line at runtime.
+    test -d "/opt/oracle/${ic_dir}"; \
     ln -s "/opt/oracle/${ic_dir}" /opt/oracle/instantclient_current; \
     ln -s "/lib/${multiarch}/libaio.so.1t64" "/lib/${multiarch}/libaio.so.1"; \
     chmod -R a+rX /opt/oracle; \

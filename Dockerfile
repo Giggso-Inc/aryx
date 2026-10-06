@@ -58,6 +58,12 @@ RUN set -eux; \
     mkdir -p /opt/oracle; \
     unzip -q /tmp/instantclient.zip -d /opt/oracle; \
     rm /tmp/instantclient.zip; \
+    # `ln -s` succeeds even if its target doesn't exist -- if the archive
+    # ever extracts to a different directory name than $ic_dir (version
+    # bump, Oracle changing their packaging), this build must fail loudly
+    # here, not silently ship a broken symlink that only surfaces as a
+    # fallback-to-thin-mode log line at runtime.
+    test -d "/opt/oracle/${ic_dir}"; \
     ln -s "/opt/oracle/${ic_dir}" /opt/oracle/instantclient_current; \
     # Oracle's client binary dlopen()s the old "libaio.so.1" name; this
     # base image only ships "libaio.so.1t64" (Debian's 64-bit time_t

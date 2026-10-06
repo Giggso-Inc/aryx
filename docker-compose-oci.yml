@@ -78,7 +78,7 @@ services:
       # thick mode fixes it. Set to "thin" to revert instantly (container
       # restart only, no rebuild) if this ever needs to be rolled back.
       - ARYX_ORACLE_CLIENT_MODE=${ARYX_ORACLE_CLIENT_MODE:-thick}
-      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_8
+      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_current
       # Graph → Oracle Graph (ADB SQL/PGQ) + PGX for analytics/reasoning
       - ARYX_GRAPH_BACKEND=oci_graph
       - PGX_SERVER_URL=http://pgx-server:7007
@@ -276,7 +276,7 @@ services:
       # async connection unconditionally requires thin mode). Set to
       # "thin" to revert instantly if needed.
       - ARYX_ORACLE_CLIENT_MODE=${ARYX_ORACLE_CLIENT_MODE:-thick}
-      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_8
+      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_current
       # Aryx bridge — internal Docker network URL + shared API key
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
