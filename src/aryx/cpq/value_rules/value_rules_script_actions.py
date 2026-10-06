@@ -7,8 +7,39 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
+from aryx.cpq.bml.bml_condition_expression import copy_conditions
 from aryx.cpq.engine import ConstraintRule, RecommendationRule, logger
+from aryx.cpq.value_rules.value_rules_constraint_mode import parse_constraint_mode
 from aryx.cpq.value_rules.value_rules_state import RuleLoadState
+
+
+def _mode_rule(
+    state: RuleLoadState, eid: int, rule_name: str, aid: int,
+    inp_list: list[tuple] | None, script: str,
+) -> bool:
+    """Plan F2 (flag `cpq_constraint_mode_enabled`): a script that sets an
+    ALLOW/DISALLOW list through `setConstraintValuesInSession` becomes a
+    declarative, mode-carrying ConstraintRule gated by the rule's own inputs.
+    False (nothing appended) when the flag is off or the script is not that shape."""
+    if not get_settings().cpq_constraint_mode_enabled:
+        return False
+    parsed = parse_constraint_mode(script)
+    if parsed is None:
+        return False
+    state.con_rules.append(ConstraintRule(
+        rule_name=rule_name or str(eid),
+        condition_attr_id=(inp_list[-1][0] if inp_list else 0),
+        condition_value="",
+        target_attr_id=aid,
+        allowed_values=parsed.values,
+        conditions=copy_conditions(inp_list) if inp_list else None,
+        mode=parsed.mode,
+        guard_attr=parsed.guard_var,
+        blank=parsed.blank,
+    ))
+    state.script_constraints += 1
+    return True
 
 
 def process_script_backed_actions(
@@ -34,6 +65,8 @@ def process_script_backed_actions(
             logger.warning(
                 "cpq: rule %r references function_id=%d but no "
                 "BmFunction script was found", rule_name, act_fn)
+        elif act_set_type == -1 and _mode_rule(state, eid, rule_name, aid, inp_list, script):
+            continue
         elif act_set_type == -1:
             state.con_rules.append(ConstraintRule(
                 rule_name=rule_name or str(eid),

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.data_table.data_table_cache import (
     _cache_write_if_marker_unchanged,
@@ -67,7 +68,8 @@ def _load_rule_join_data(
     single top-level rule-loading block.
     """
     _cache = _engine_module._RULE_JOIN_DATA_CACHE
-    _key = (workspace_id, catalog_prefix)
+    _use_expr = get_settings().cpq_condition_expression_enabled
+    _key = (workspace_id, catalog_prefix, _use_expr)
     _marker_at_read = _invalidate_on_marker_change(
         _cache, _engine_module._RULE_JOIN_DATA_CACHE_LAST_SEEN_MARKER,
     )
@@ -85,6 +87,9 @@ def _load_rule_join_data(
     inputs_by_rule: dict[int, list[tuple[int, str, str]]] = {}
     for rid, aid, val, op in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
         inputs_by_rule.setdefault(rid, []).append((aid, val, op))
+    if _use_expr:    # plan F3: keep each rule's condition_expression with its rows
+        from aryx.cpq.layout_and_join_data.rule_expressions import attach_expressions
+        inputs_by_rule = attach_expressions(rdb, workspace_id, catalog_prefix, inputs_by_rule)
     actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
     for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
         actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))

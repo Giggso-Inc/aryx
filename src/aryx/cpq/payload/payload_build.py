@@ -149,6 +149,7 @@ def build_payload(
         engine, filled, filled_source, filled_multi, attrs, hidden_vns, rules,
         scope_required_and_edited, workspace_id, catalog_prefix,
         product_anchor_hint=product_anchor_hint, dt_cache=_dt_cache,
+        display_order=display_order,
     )
     serialize_scalar_attrs(engine, ctx, filled, scope_required_and_edited)
     serialize_multi_attrs(engine, ctx, filled_multi, scope_required_and_edited)

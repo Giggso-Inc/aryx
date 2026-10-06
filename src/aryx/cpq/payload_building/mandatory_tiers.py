@@ -24,8 +24,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.cpq.payload_building.required_set import derive_required_vns
 from aryx.cpq.model_policy import resolve_recommended_config_only_membership
 
 
@@ -35,6 +37,12 @@ def mandatory_tier_c_vns(
     workspace_id: int | None,
     catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
+    attrs: list[Any] | None = None,
+    filled_source: dict[str, str] | None = None,
+    filled_multi: dict[str, list[str]] | None = None,
+    hidden_vns: set[str] | None = None,
+    display_order: dict[str, int] | None = None,
+    product_hint: str = "",
 ) -> frozenset[str]:
     """Tier C for `_is_mandatory_input_attr` (beautify/summary ONLY --
     NOT config_data, see docs/CPQ_ConfigData_Payload_Mandatory_Fix_
@@ -66,6 +74,11 @@ def mandatory_tier_c_vns(
     """
     if not filled or workspace_id is None:
         return frozenset()
+    if attrs and get_settings().cpq_required_set_enabled:
+        # plan F6: beautify and the summary use the same derived set as config_data
+        return derive_required_vns(
+            engine, attrs, filled, filled_multi, filled_source, hidden_vns, display_order,
+            workspace_id, catalog_prefix, product_hint, cache)
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
     if not base_model:
         return frozenset()

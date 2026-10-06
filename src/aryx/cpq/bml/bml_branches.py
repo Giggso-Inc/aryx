@@ -14,6 +14,7 @@ import re
 
 from aryx.config import get_settings
 from aryx.cpq.bml.bml_conditions import _parse_boolean_expr, _parse_condition
+from aryx.cpq.bml.bml_find import find_enabled, is_plain_return, is_tail_return, starts_with_if
 from aryx.cpq.bml.bml_text import _find_block, _strip_block_comments, _strip_line_comments
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,12 @@ _RETURN_STR_RE = re.compile(r'\breturn\s+"([^"]*)"\s*;?')
 
 # if (...) { ... } chain scanner
 _IF_RE = re.compile(r'\bif\s*\(', re.IGNORECASE)
+# Lenient twin (flag `cpq_find_function_enabled`): BML also spells an else-if as `elif(`.
+_IF_RE_ELIF = re.compile(r'(?:\bel)?if\s*\(', re.IGNORECASE)
+
+
+def _if_re() -> "re.Pattern[str]":
+    return _IF_RE_ELIF if find_enabled() else _IF_RE
 
 # Constructs that put a script beyond Tier 1 (function calls, nesting hints).
 _TIER1_BLOCKERS = re.compile(
@@ -101,6 +108,12 @@ _TIER1_BLOCKERS = re.compile(
 )
 
 _BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
+# Lenient twins (flag `cpq_find_function_enabled`): BML allows `return"text"` with no space after
+# `return`. A space is required everywhere else, so `returnVal` is never mistaken for `return`.
+_RETURN_WS = r'(?:\s+|(?=["]))'
+_FULL_RETURN_RHS_RE_LENIENT = re.compile(r'\breturn' + _RETURN_WS + r'(.+?);', re.DOTALL)
+_RETURN_STR_RE_LENIENT = re.compile(r'\breturn' + _RETURN_WS + r'"([^"]*)"\s*;?')
+_BARE_RETURN_RE_LENIENT = re.compile(r'\A\s*return' + _RETURN_WS + r'.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
 
 
 def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] | None:
@@ -114,7 +127,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
     """
     script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
-    m = _IF_RE.search(script)
+    m = _if_re().search(script)
     if not m:
         # No if/else at all — a common, genuinely trivial idiom: the WHOLE
         # script is just one unconditional `return <value>;` (confirmed
@@ -139,13 +152,14 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         # for every other branch body, so this idiom gets neither more
         # nor less scrutiny than a real if/else chain's own bodies.
         bare = script.strip()
-        if bare and _BARE_RETURN_RE.match(bare) and not _TIER1_BLOCKERS.search(bare):
+        _bare_re = _BARE_RETURN_RE_LENIENT if find_enabled() else _BARE_RETURN_RE
+        if bare and _bare_re.match(bare) and not _TIER1_BLOCKERS.search(bare):
             return [(None, bare)]
         return None
     pos = m.start()
     text = script
     while True:
-        m = _IF_RE.search(text, pos)
+        m = _if_re().search(text, pos)
         if not m:
             break
         paren_start = m.end() - 1
@@ -180,8 +194,8 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         if block is None:
             return None
         body, after = block
-        if _IF_RE.search(body):
-            return None  # nested if → Tier 2
+        if _if_re().search(body) and not (find_enabled() and starts_with_if(body)):
+            return None  # nested if → Tier 2 (plan F14: a body that IS an if-chain is walked)
         if _TIER1_BLOCKERS.search(body):
             return None
         branches.append((cond, body))
@@ -192,6 +206,11 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if rest2.lower().startswith("if"):
                 pos = text.find("if", after)
                 continue
+        if find_enabled() and rest.lower().startswith("elif") and _if_re().match(rest):
+            pos = text.find("elif", after)
+            continue
+        if rest.lower().startswith("else"):
+            rest2 = rest[4:].lstrip()
             brace2 = text.find("{", after)
             if brace2 == -1:
                 return None
@@ -199,12 +218,21 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if block2 is None:
                 return None
             body2, _ = block2
-            if _IF_RE.search(body2):
+            if _if_re().search(body2) and not (find_enabled() and starts_with_if(body2)):
                 return None
             if _TIER1_BLOCKERS.search(body2):
                 return None
             branches.append((None, body2))
             break
+        if find_enabled() and is_plain_return(body):
+            # Plan F14: sequential ifs after an unconditionally-returning
+            # body are an else-if chain; a bare literal return is the else.
+            if _if_re().match(rest):
+                pos = text.find("elif" if rest.lower().startswith("elif") else "if", after)
+                continue
+            if is_tail_return(rest):
+                branches.append((None, rest))
+                break
         # Amendment 19 follow-up (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
         # a single if{...} block with NO `else` keyword at all, followed by
         # exactly one bare `return true;`/`return false;` and nothing else,
@@ -225,7 +253,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         # condition_false. Booleans have no such "empty means nothing"
         # ambiguity, so this is safe to infer; quoted-string returns are
         # not, and are intentionally left untouched.
-        if len(branches) == 1 and not _IF_RE.search(rest):
+        if len(branches) == 1 and not _if_re().search(rest):
             m_tail = re.match(r'return\s+(true|false)\s*;\s*$', rest, re.IGNORECASE)
             if m_tail:
                 branches.append((None, rest))
@@ -316,12 +344,12 @@ def _branch_values(body: str) -> list[str] | None:
         # "YES"; }`). Same concatenation guard as the returnVal path: a
         # tail continuing with `+` past the matched literal means this
         # isn't a clean single-value return, so bail rather than truncate.
-        m2 = _RETURN_STR_RE.search(body)
+        m2 = (_RETURN_STR_RE_LENIENT if find_enabled() else _RETURN_STR_RE).search(body)
         if not m2:
             return None
         tail2 = body[m2.end():].lstrip()
         if tail2.startswith("+"):
-            _full = _FULL_RETURN_RHS_RE.search(body)
+            _full = (_FULL_RETURN_RHS_RE_LENIENT if find_enabled() else _FULL_RETURN_RHS_RE).search(body)
             _literal_vals = (
                 _literal_concat_values(_full.group(1)) if _full else None
             )
@@ -375,9 +403,15 @@ def _branch_values(body: str) -> list[str] | None:
 #     else { return true; }
 _BOOL_RETURN_RE = re.compile(r'\breturn\s+(true|false)\b', re.IGNORECASE)
 
+_BOOL_ASSIGN_RE = re.compile(r'\s*\w+\s*=\s*(true|false)\s*;\s*\Z', re.IGNORECASE)
+
+
 def _branch_bool(body: str) -> bool | None:
     """Extract a literal true/false from a hide/show branch body."""
     m = _BOOL_RETURN_RE.search(body)
+    if not m and find_enabled():
+        # flag `cpq_find_function_enabled`: `retVal = TRUE;` with the script's own `return retVal;` after the chain
+        m = _BOOL_ASSIGN_RE.match(body)
     if not m:
         return None
     return m.group(1).lower() == "true"

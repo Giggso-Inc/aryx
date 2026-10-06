@@ -228,6 +228,145 @@ class CpqIntentSettingsMixin(BaseSettings):
             "catalog/model has its own real, distinct model_policy entry."
         ),
     )
+    cpq_getconstraintvals_port_enabled: bool = Field(
+        default=False,
+        description=(
+            "docs/oci-oracle/CONFIG_DATA_REQUIRED_FIELDS_INGEST_AND_FIX_PLAN_"
+            "2026-10-05.md F1: when true, the util.getConstraintVals "
+            "substitution (cpq/bml/bml_util_substitution.py) uses a port of "
+            "the real util function (data_table_getconstraintvals.py) -- "
+            "target matched in any whitelist column, only attributes EARLIER "
+            "in the UI sequence filter a row, '~'/',' multi-select values "
+            "split, R flag removes the blank option -- instead of "
+            "resolve_whitelist_values' plain AND-equality match. Off by "
+            "default: byte-identical to before this flag existed."
+        ),
+    )
+    cpq_country_region_table_enabled: bool = Field(
+        default=False,
+        description=(
+            "docs/oci-oracle/CONFIG_DATA_REQUIRED_FIELDS_INGEST_AND_FIX_PLAN_"
+            "2026-10-05.md F5: when true, derive_region (and the RTTE/TA "
+            "lookup) consult the ingested newCountryRegion / rtteTAReference "
+            "Data Tables (data_table_geo.py) before the static "
+            "_COUNTRY_TO_REGION constant. Off by default: byte-identical to "
+            "before this flag existed; the constant stays the fallback."
+        ),
+    )
+    cpq_empty_condition_rule_true_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F10 (docs/oci-oracle/CONFIG_DATA_AND_BEAUTIFY_CODE_FIX_PLAN_"
+            "2026-10-05.md): a declarative hiding rule with NO conditions at "
+            "all is always true (Oracle semantics) instead of 'unknown'. Off "
+            "by default: byte-identical to before."
+        ),
+    )
+    cpq_condition_expression_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F3: evaluate a rule's `condition_expression` over its "
+            "`rule_input_index` rows (AND binds tighter than OR) instead of "
+            "grouping inputs by attribute. Off by default."
+        ),
+    )
+    cpq_constraint_mode_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F2: read the ALLOW/DISALLOW mode of a constraint action "
+            "(the third argument of setConstraintValuesInSession) and apply "
+            "its literal value list accordingly. Off by default."
+        ),
+    )
+    cpq_master_string_hide_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F9: evaluate hide scripts that search a master string "
+            "(SPLIT/findinarray) with the master string COMPUTED from the "
+            "ingested attrSequence, instead of treating an empty master as "
+            "'unknown'. Off by default."
+        ),
+    )
+    cpq_find_function_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F14: the value-script evaluator understands "
+            "`find(attr, \"text\") > -1` style tests, so region-dependent "
+            "script defaults resolve deterministically (not via the LLM tier). "
+            "Off by default."
+        ),
+    )
+    cpq_multiselect_default_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F11: several Defaultinattr rows for one multi-select "
+            "attribute are its pre-checked set (list default) instead of "
+            "'ambiguous, no default'. Off by default."
+        ),
+    )
+    cpq_required_set_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F6/F4/F13: config_data, beautify's Mandatory section and the "
+            "summary use ONE derived required set (attrSequence R, blank-"
+            "disallow and message-only rules; visible, unfilled, with legal "
+            "options) instead of the hand-listed tiers. Off by default."
+        ),
+    )
+    cpq_required_set_guards_assumed_open: bool = Field(
+        default=False,
+        description=(
+            "Plan F6: a blank-disallow action wrapped in `if(<variable> <> \"\")` "
+            "only runs when that session variable has a value. The variable is "
+            "supplied by the host, not by the quote. When true, a guard variable "
+            "that is absent from the quote state is assumed to be populated (as "
+            "in production); when false (default) such a rule does not fire. "
+            "Applies both to the derived required set and to constraint-rule "
+            "ALLOW/DISALLOW actions when options are narrowed."
+        ),
+    )
+    cpq_series_model_narrowing_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F8: before attrSequence/whitelist rows are read for the "
+            "derived required set, drop the CPQ models of series children that "
+            "the ingested series-mapping table does not offer for the quote's "
+            "country/region (an undecidable row keeps the model). Off by default."
+        ),
+    )
+    cpq_required_set_shadow_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F6 shadow mode: compute the derived required set next to "
+            "the current classification and LOG the difference; never changes "
+            "any output. Off by default."
+        ),
+    )
+    cpq_model_prefix_tie_ask_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan F16: when the wording names model A in full and is a strict "
+            "prefix of another sellable model B on a different catalog node, "
+            "ask which one instead of silently picking A. Off by default."
+        ),
+    )
+    cpq_blank_free_text_in_conditions_enabled: bool = Field(
+        default=False,
+        description=(
+            "BML reads an unset text variable as an empty string. When on, constraint-rule "
+            "condition scripts see every unfilled free-text attribute (no menu options) as "
+            "'' instead of unknown, e.g. a customer type nobody entered counts as not federal."
+        ),
+    )
+    cpq_layout_variants_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan section 3: several layout exports per catalog, keyed by the "
+            "layout file's own `variableName`; the one for the resolved "
+            "model is chosen from the catalog's Configuration Flow rules. "
+            "Off by default: one layout per catalog, as before."
+        ),
+    )
     data_table_candidates_empty_on_no_match_enabled: bool = Field(
         default=False,
         description=(

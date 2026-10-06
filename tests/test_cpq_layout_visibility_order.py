@@ -146,7 +146,7 @@ class _FakeLayoutRow:
         self._last = params
 
     def fetchone(self):
-        ws, cat = self._last
+        ws, cat = self._last[:2]  # (workspace_id, catalog_prefix, variant)
         text = self._rows.get((ws, cat))
         return (text,) if text is not None else None
 

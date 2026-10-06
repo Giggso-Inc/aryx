@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 
 
@@ -148,7 +149,11 @@ def is_mandatory_input_attr(
     ) or (rule_forced_active_vns is not None and vn in rule_forced_active_vns) or (
         data_table_forced_vns is not None and vn in data_table_forced_vns
     )
-    attrseq_confirmed = vn in _engine_module._ATTRSEQ_CONFIRMED_REQUIRED_VNS
+    # plan F6: with the derived required set driving, the hand-listed names are not consulted
+    attrseq_confirmed = (
+        vn in _engine_module._ATTRSEQ_CONFIRMED_REQUIRED_VNS
+        and not get_settings().cpq_required_set_enabled
+    )
     if gate_attrseq_confirmed_to_active_source:
         attrseq_confirmed = attrseq_confirmed and is_active_source
     tier_a = attr is not None and (

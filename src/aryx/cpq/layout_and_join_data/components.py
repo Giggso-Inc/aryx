@@ -17,7 +17,7 @@ from typing import Any
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.engine import logger
-from aryx.cpq.layout_source import LayoutFileSource
+from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT, LayoutFileSource, layout_cache_key
 
 
 def _walk_layout_components(node: Any) -> list[dict[str, Any]]:
@@ -46,6 +46,7 @@ def _walk_layout_components(node: Any) -> list[dict[str, Any]]:
 def _load_layout_components(
     cls, workspace_id: int, catalog_prefix: str,
     layout_source: LayoutFileSource | None,
+    variant: str = DEFAULT_LAYOUT_VARIANT,
 ) -> list[dict[str, Any]] | None:
     """Parsed, `status=="Active"`-validated, flattened (document-order)
     component list for a catalog's layout export, or None if no
@@ -54,13 +55,17 @@ def _load_layout_components(
     `_load_layout_full_order` (§2b, ALL entries — rule conditions are
     frequently layout-*hidden*, e.g. a derived attr like Base Model,
     so the ranking those need can't come from the visible-only map)
-    build on."""
+    build on. `variant` selects one of several stored layouts (default:
+    the sentinel, i.e. today's single layout)."""
     cache = _engine_module._LAYOUT_COMPONENTS_CACHE
-    key = (workspace_id, catalog_prefix)
+    key = layout_cache_key(workspace_id, catalog_prefix, variant)
     if key in cache:
         return cache[key]
     source = layout_source or _engine_module._DEFAULT_LAYOUT_FILE_SOURCE
-    text = source.get(catalog_prefix, workspace_id)
+    if variant == DEFAULT_LAYOUT_VARIANT:  # older sources take no variant arg
+        text = source.get(catalog_prefix, workspace_id)
+    else:
+        text = source.get(catalog_prefix, workspace_id, variant=variant)
     if not text:
         cache[key] = None
         return None

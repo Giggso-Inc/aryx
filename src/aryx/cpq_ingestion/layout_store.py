@@ -11,12 +11,14 @@ its downstream consumer (``CpqEngine``) does not.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aryx.config import get_settings
 from aryx.queries import load
 from aryx.raven_log import raven_log
 from aryx.worker.job_partial import note_hidden
@@ -55,6 +57,28 @@ def catalog_prefix_from_filename(filename: str) -> str:
     return Path(filename).stem
 
 
+def _default_variant() -> str:
+    from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT  # noqa: PLC0415 -- see layout_variant_from_content
+    return DEFAULT_LAYOUT_VARIANT
+
+
+def layout_variant_from_content(content: str) -> str:
+    """Variant key for a layout export: its own top-level `variableName`
+    (opaque string, read from the data). Invalid JSON, a non-object, or a
+    missing/blank/non-string name -> the sentinel (never NULL or '')."""
+    # Lazy: importing aryx.cpq pulls the whole engine chain (see the
+    # invalidate_layout_cache note in store_layout_file).
+    from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT  # noqa: PLC0415
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return DEFAULT_LAYOUT_VARIANT
+    name = data.get("variableName") if isinstance(data, dict) else None
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return DEFAULT_LAYOUT_VARIANT
+
+
 def store_layout_file(
     data: bytes,
     filename: str,
@@ -63,7 +87,9 @@ def store_layout_file(
     dsn: str,
     catalog_prefix: str | None = None,
 ) -> str:
-    """Upsert one layout file's content for (workspace_id, catalog_prefix).
+    """Upsert one layout file's content for (workspace_id, catalog_prefix,
+    variant), the variant being the file's own `variableName` -- a
+    re-upload replaces only that variant, other variants stay.
 
     Returns the catalog_prefix actually stored under (either the caller's
     explicit value, or the filename-derived default) so the caller can log
@@ -89,10 +115,18 @@ def store_layout_file(
                        "available_options": ["explicit", "filename_stem"], "reason_code": "CATALOG_PREFIX",
                        "bytes": len(data), "limit": _MAX_LAYOUT_FILE_BYTES})
     content = data.decode("utf-8")
+    # Flag off: one layout per catalog as before, so a re-upload always replaces the 'default'
+    # row the reader serves; the variant key is derived only when variants are enabled.
+    variant = (
+        layout_variant_from_content(content)
+        if get_settings().cpq_layout_variants_enabled
+        else _default_variant()
+    )
     params = {
         "layout_id": uuid.uuid4().hex,
         "workspace_id": workspace_id,
         "catalog_prefix": prefix,
+        "variant": variant,
         "filename": filename,
         "content_clob": content,
         "uploaded_at": datetime.now(tz=timezone.utc),
@@ -103,7 +137,7 @@ def store_layout_file(
             cur.execute(load("upsert_cpq_layout_file"), params)
     logger.info(
         "cpq_ingestion: stored layout file workspace_id=%d catalog_prefix=%r "
-        "filename=%r bytes=%d", workspace_id, prefix, filename, len(data),
+        "variant=%r filename=%r bytes=%d", workspace_id, prefix, variant, filename, len(data),
     )
     # Register as a datasource so the file shows up on the Data > Sources
     # catalog page like any other upload -- previously only written to

@@ -28,6 +28,8 @@ class PayloadContext:
     exclude_anchor_vns: frozenset[str] = frozenset()
     rule_forced_active_vns: frozenset[str] = frozenset()
     data_table_forced_vns: frozenset[str] = frozenset()
+    # plan F6: the derived required set (None = flag off / not computed)
+    derived_required_vns: frozenset[str] | None = None
     # docs/CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T3 — threaded through to
     # engine._is_mandatory_input_attr's Hardware Version applicability check
     # (`_hardware_version_confirmed_not_applicable`); `None`/`""` (the
@@ -37,3 +39,13 @@ class PayloadContext:
     catalog_prefix: str = ""
     product_anchor_hint: str | None = None
     dt_cache: dict[tuple[int, str], tuple] | None = None
+
+
+CUSTOMER_ENTERED_SOURCES: frozenset[str] = frozenset({"user"})
+
+
+def config_data_sources(ctx: PayloadContext, default: frozenset[str]) -> frozenset[str]:
+    """Sources whose values may enter config_data: with the derived required set
+    driving, only what the customer entered (derived hidden values stay out unless
+    the set itself names them); otherwise the existing wider set."""
+    return default if ctx.derived_required_vns is None else CUSTOMER_ENTERED_SOURCES

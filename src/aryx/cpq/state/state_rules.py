@@ -7,6 +7,7 @@ Split out of `cpq/state.py` (Raven Style Compliance Plan, Phase 2a,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -85,6 +86,14 @@ class HidingRule:
     semantics via live evidence, the same discipline _CONFIRMED_DEAD_ATTRS
     and similar named carve-outs elsewhere in engine.py already use."""
     ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
+    always: bool = False
+    """True for a declarative rule that has NO condition rows at all: Oracle
+    treats it as always true (plan F10, flag `cpq_empty_condition_rule_true_
+    enabled`). Never set for scripted rules or rules that have inputs."""
+    master_writers: list[Any] | None = None
+    """Plan F9 (flag `cpq_master_string_hide_enabled`): the recommendation
+    rules whose action WRITES a master string this script reads, attached at
+    load time. None (always, flag off) = old behaviour."""
 
 
 @dataclass
@@ -154,6 +163,15 @@ class ConstraintRule:
     conditions: list[tuple[int, str, str]] | None = None  # see HidingRule.conditions
     condition_script: str | None = None
     condition_operator: str = "4"
+    mode: str = ""
+    """"" = `allowed_values` is the allow-list (legacy). "ALLOW" / "DISALLOW" come
+    from a `setConstraintValuesInSession` action (plan F2, flag `cpq_constraint_
+    mode_enabled`); for "DISALLOW" the listed values are removed from the options."""
+    guard_attr: str = ""
+    """Variable that must hold a value for a mode-carrying action to run at all."""
+    blank: bool = False
+    """The action's literal list contains the empty string: with mode "DISALLOW" the
+    blank value itself is not allowed, i.e. the attribute is required (plan F6)."""
     ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 
 

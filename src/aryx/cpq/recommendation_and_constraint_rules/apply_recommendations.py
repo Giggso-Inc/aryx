@@ -13,6 +13,7 @@ from __future__ import annotations
 from aryx.cpq.base_model_placeholder import is_base_model_placeholder
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator
+from aryx.cpq.constraint_rules.constraint_rules_blank_text import with_blank_free_text
 from aryx.cpq.engine import _valid, logger
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.recommendation_and_constraint_rules.rule_condition import (
@@ -28,6 +29,9 @@ def apply_recommendation_rules(
     bml_eval: BmlEvaluator | None = None,
     filled_multi: dict[str, list[str]] | None = None,
     constrained_opts: dict[int, list[str]] | None = None,
+    workspace_id: int | None = None,
+    catalog_prefix: str = "",
+    dt_cache: dict | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -78,7 +82,8 @@ def apply_recommendation_rules(
     if not rules:
         return {}
     by_rule_id = _attr_index(attrs)
-    filled_by_rule_id = _filled_by_rule_id(attrs, filled, filled_multi)
+    blank_aware = with_blank_free_text(attrs, filled, filled_multi)
+    filled_by_rule_id = _filled_by_rule_id(attrs, blank_aware, filled_multi)
     new_fills: dict[str, tuple[str, str]] = {}
     for rule in rules:
         target = by_rule_id.get(rule.target_attr_id)
@@ -92,7 +97,7 @@ def apply_recommendation_rules(
         if not target or filled.get(target.variable_name):
             continue
         recommended_value = resolve_recommended_value(
-            rule, filled, filled_by_rule_id, bml_eval)
+            rule, blank_aware, filled_by_rule_id, bml_eval, workspace_id, catalog_prefix, dt_cache)
         if recommended_value is None:
             continue
         matched_display = next(

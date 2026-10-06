@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import re
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.data_table.data_table_geo import resolve_country_region
 from aryx.cpq.state import ConfigAttr
 
 
-def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
+def derive_region(
+    country: str, attr: ConfigAttr, workspace_id: int | None = None,
+    catalog_prefix: str = "", cache: "dict | None" = None,
+) -> tuple[str, str] | None:
     """Resolve a region attr's value from a known country, without
     inventing a code the catalog doesn't actually offer.
 
@@ -45,7 +50,12 @@ def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
     """
     if not country:
         return None
-    region_code = _engine_module._COUNTRY_TO_REGION.get(country.strip().lower())
+    region_code = None
+    if workspace_id is not None and get_settings().cpq_country_region_table_enabled:
+        # plan F5: the ingested newCountryRegion table first; the constant below stays the fallback
+        region_code = resolve_country_region(country, workspace_id, catalog_prefix, cache)
+    if not region_code:
+        region_code = _engine_module._COUNTRY_TO_REGION.get(country.strip().lower())
     if not region_code:
         group = _engine_module._country_alias_group(
             _engine_module._normalize_country_candidate(country)

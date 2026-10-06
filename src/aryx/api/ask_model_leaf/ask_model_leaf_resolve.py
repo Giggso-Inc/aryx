@@ -22,16 +22,20 @@ from typing import Any
 from aryx.api.ask_model_leaf.ask_model_leaf_bind import (
     bind_turn_model_context,
     pick_top_text_match,
+    prefix_tie_leaves,
     seed_model_vn_from_resolution,
 )
 from aryx.api.ask_model_leaf.ask_model_leaf_ask_prompt import _build_model_leaf_ask_prompt
 from aryx.api.ask_model_leaf.ask_model_leaf_norm import _norm_leaf
 from aryx.api.ask_model_leaf.ask_model_leaf_pending_reply import _resolve_pending_model_leaf_reply
+from aryx.cpq.layout_and_join_data.layout_variant_context import (
+    MODEL_NODE_VAR, bind_layout_model_node,
+)
 from aryx.cpq.pending_scope.pending_scope import clear_pending_scope
 from aryx.raven_log import raven_log
 
 
-def _resolve_model_leaf(
+def _resolve_model_leaf_core(
     req: "Any", session: Any, reader: Any, hints: dict, catalog_prefix: str,
     switch_trigger_question: str | None,
 ) -> dict[str, Any] | None:
@@ -129,6 +133,12 @@ def _resolve_model_leaf(
             leaf for leaf in _leaf_candidates
             if len(_norm_leaf(leaf)) >= 5 and _norm_leaf(leaf) in _combined_norm
         ]
+        # F16 (cpq_model_prefix_tie_ask_enabled, default off): the wording
+        # names a model that is a strict prefix of another sellable model on a
+        # different node -> ask which one instead of silently taking it.
+        _tie_leaves = prefix_tie_leaves(_leaf_candidates)
+        if _tie_leaves:
+            return _build_model_leaf_ask_prompt(req, session, _tie_leaves)
         if len(_text_matches) == 1:
             _resolved_leaf = _text_matches[0]
         else:
@@ -155,3 +165,18 @@ def _resolve_model_leaf(
         clear_pending_scope(session)
         return None
     return _build_model_leaf_ask_prompt(req, session, _leaf_candidates)
+
+
+def _resolve_model_leaf(
+    req: "Any", session: Any, reader: Any, hints: dict, catalog_prefix: str,
+    switch_trigger_question: str | None,
+) -> dict[str, Any] | None:
+    """`_resolve_model_leaf_core` plus: bind the model node for this turn so
+    the layout-variant choice (cpq_layout_variants_enabled) can read it
+    without any model-resolution flag. Binding is cheap and flag-agnostic;
+    only the layout loader consults it."""
+    bind_layout_model_node(hints.get(MODEL_NODE_VAR) or session.filled.get(MODEL_NODE_VAR))
+    out = _resolve_model_leaf_core(
+        req, session, reader, hints, catalog_prefix, switch_trigger_question)
+    bind_layout_model_node(hints.get(MODEL_NODE_VAR) or session.filled.get(MODEL_NODE_VAR))
+    return out

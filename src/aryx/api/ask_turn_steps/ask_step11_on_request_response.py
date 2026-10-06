@@ -65,6 +65,7 @@ def _step11_on_request_response(
             session.product_name, req.workspace_id, sources=session.filled_source,
             product_quantity=session.product_quantity, filled=session.filled,
             product_anchor_hint=session.product_anchor_question,
+            filled_multi=session.filled_multi,
         )
         still_need = ", ".join(a.display_label for a in pending)
         _log_on_request(session, "json_preview", "MODE_JSON", pending,

@@ -112,6 +112,7 @@ def _build_show_summary_response(
         # applicability signal build_payload's JSON preview uses (see
         # ask_attach_share_flags._attach_share_flags).
         product_anchor_hint=session.product_anchor_question,
+        filled_multi=session.filled_multi,
     )
     if not summary:
         _log_show_summary(session, "EMPTY_SUMMARY", visible_attr_count=_n(visible_attrs))

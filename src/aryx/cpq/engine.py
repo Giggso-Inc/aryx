@@ -49,7 +49,7 @@ from aryx.cpq.data_table.data_table_resolver import (
 from aryx.cpq.data_table.data_table_resolver import attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model
 from aryx.cpq.data_table.data_table_cache import _invalidate_on_marker_change
 from aryx.cpq.data_table.data_table_cache import _cache_write_if_marker_unchanged
-from aryx.cpq.layout_source import LayoutFileSource
+from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT, LayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb.rdb import PostgresCpqRdb, get_cpq_rdb
 from aryx.cpq.rule_trace import rule_trace
@@ -1003,25 +1003,28 @@ class CpqEngine:
     def _load_layout_components(
         cls, workspace_id: int, catalog_prefix: str,
         layout_source: LayoutFileSource | None,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
     ) -> list[dict[str, Any]] | None:
         return layout_and_join_data._load_layout_components(
-            cls, workspace_id, catalog_prefix, layout_source,
+            cls, workspace_id, catalog_prefix, layout_source, variant,
         )
 
     def load_layout_display_order(
         self, workspace_id: int, catalog_prefix: str = "",
         layout_source: LayoutFileSource | None = None,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
     ) -> dict[str, int] | None:
         return layout_and_join_data.load_layout_display_order(
-            self, workspace_id, catalog_prefix, layout_source,
+            self, workspace_id, catalog_prefix, layout_source, variant,
         )
 
     def _load_layout_full_order(
         self, workspace_id: int, catalog_prefix: str = "",
         layout_source: LayoutFileSource | None = None,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
     ) -> dict[str, int] | None:
         return layout_and_join_data._load_layout_full_order(
-            self, workspace_id, catalog_prefix, layout_source,
+            self, workspace_id, catalog_prefix, layout_source, variant,
         )
 
     def resolve_always_ask_skips(
@@ -1314,9 +1317,13 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        dt_cache: dict | None = None,
     ) -> dict[str, tuple[str, str]]:
         return rec_con_rules.apply_recommendation_rules(
-            attrs, filled, rules, bml_eval, filled_multi, constrained_opts)
+            attrs, filled, rules, bml_eval, filled_multi, constrained_opts,
+            workspace_id, catalog_prefix, dt_cache)
 
     def resync_stale_recommendations(
         self,
@@ -1548,8 +1555,11 @@ class CpqEngine:
         return gov_sibling.is_recognized_country(value)
 
     @staticmethod
-    def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
-        return gov_sibling.derive_region(country, attr)
+    def derive_region(
+        country: str, attr: ConfigAttr, workspace_id: int | None = None,
+        catalog_prefix: str = "", cache: "dict | None" = None,
+    ) -> tuple[str, str] | None:
+        return gov_sibling.derive_region(country, attr, workspace_id, catalog_prefix, cache)
 
     @staticmethod
     def _apply_series_mapping_exclusions(
@@ -1612,6 +1622,16 @@ class CpqEngine:
         cache: dict[tuple[int, str], tuple] | None = None,
     ) -> MenuOption | None:
         return data_table_bridge._resolve_via_data_tables(
+            vn, filled, valid_opts, workspace_id, catalog_prefix, cache,
+        )
+
+    @staticmethod
+    def _resolve_multi_defaults(
+        vn: str, filled: dict[str, str], valid_opts: list[MenuOption],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list[MenuOption]:
+        return data_table_bridge._resolve_multi_defaults(
             vn, filled, valid_opts, workspace_id, catalog_prefix, cache,
         )
 
@@ -2181,9 +2201,13 @@ class CpqEngine:
     def mandatory_tier_c_vns(
         self, filled: dict[str, str] | None, workspace_id: int | None,
         catalog_prefix: str = "", cache: dict[tuple[int, str], tuple] | None = None,
+        **derived_inputs: Any,
     ) -> frozenset[str]:
+        """`derived_inputs` (attrs, filled_source, filled_multi, hidden_vns,
+        display_order, product_hint) are only read when the derived required
+        set is on (plan F6)."""
         return payload_building.mandatory_tier_c_vns(
-            self, filled, workspace_id, catalog_prefix, cache)
+            self, filled, workspace_id, catalog_prefix, cache, **derived_inputs)
 
     def _data_table_resolved_anchor_vns(
         self, filled: dict[str, str] | None, attrs: list["ConfigAttr"] | None,

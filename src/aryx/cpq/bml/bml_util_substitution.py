@@ -20,7 +20,9 @@ import re
 import time
 
 from aryx.cpq import engine as _engine_module
+from aryx.config import get_settings
 from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.cpq.data_table.data_table_getconstraintvals import get_constraint_vals
 from aryx.cpq.data_table.data_table_cache import _cache_write_if_marker_unchanged, _invalidate_on_marker_change
 from aryx.cpq.engine import (
     _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE,
@@ -119,7 +121,7 @@ def _substitute_util_get_constraint_vals(
     # filled-state) pair recurring across any of those no longer re-walks
     # the candidate list.
     _cache_key = (
-        workspace_id, catalog_prefix, script,
+        workspace_id, catalog_prefix, script, get_settings().cpq_getconstraintvals_port_enabled,
         _engine_module._fill_signature(filled, {}, frozenset()),
     )
     _marker_at_read = _invalidate_on_marker_change(
@@ -133,12 +135,19 @@ def _substitute_util_get_constraint_vals(
             return _cached_result
 
     _result = script
+    use_port = get_settings().cpq_getconstraintvals_port_enabled
     for cpq_model in _engine_module._cpq_model_candidates(
         product, workspace_id, catalog_prefix, cache, base_model=base_model,
     ):
-        values = _engine_module.dt_resolve_whitelist_values(
-            cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
-        )
+        if use_port:       # plan F1: faithful util.getConstraintVals port (flag-gated, default off)
+            ported = get_constraint_vals(
+                cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
+            )
+            values = None if ported is None else ported["values"]
+        else:
+            values = _engine_module.dt_resolve_whitelist_values(
+                cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
+            )
         if values is not None:
             joined = "|".join(values)
             escaped = joined.replace("\\", "\\\\").replace('"', '\\"')
