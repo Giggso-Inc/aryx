@@ -160,3 +160,29 @@ def test_a_failed_bml_import_is_not_cached_so_a_later_call_recovers(monkeypatch)
         m.setattr(builtins, "__import__", failing)
         assert sl._carried_keys() == ()
     assert sl._carried_keys() == (TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY)     # recovered, not stuck on ()
+
+
+def test_a_persistently_failing_bml_import_logs_one_warning_but_keeps_retrying(monkeypatch, caplog):
+    import builtins
+    import logging
+
+    from aryx.cpq_ingestion.raw_graph import structural_leaf as sl
+    real_import = builtins.__import__
+    attempts = []
+
+    def failing(name, *a, **k):
+        if name.startswith("aryx.csv_bml_ingestion"):
+            attempts.append(name)
+            raise ImportError("boom")
+        return real_import(name, *a, **k)
+
+    sl._BML_KEYS = None
+    sl._IMPORT_WARNED = False
+    with monkeypatch.context() as m, caplog.at_level(logging.WARNING, logger=sl.logger.name):
+        m.setattr(builtins, "__import__", failing)
+        for _ in range(50):                      # a file with many tags / folded leaves
+            assert sl._carried_keys() == ()
+    warnings = [r for r in caplog.records if "csv_bml_ingestion unavailable" in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].exc_info      # one traceback, not fifty
+    assert len(attempts) == 50                              # the retry stays
+    sl._IMPORT_WARNED = False

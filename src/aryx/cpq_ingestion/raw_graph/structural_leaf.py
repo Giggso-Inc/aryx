@@ -53,6 +53,7 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
 
 
 _BML_KEYS: tuple[str, ...] | None = None    # (tables, queries, query_tables, script_props); cached on success only
+_IMPORT_WARNED = False                      # the failed import is retried on every call but logged once
 
 
 def _bml_keys() -> tuple[str, ...]:
@@ -69,8 +70,11 @@ def _bml_keys() -> tuple[str, ...]:
             QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY, TABLES_KEY,
         )
     except ImportError:
-        logger.warning("structural leaf fold: csv_bml_ingestion unavailable; BML lists will not be carried",
-                       exc_info=True)
+        global _IMPORT_WARNED
+        if not _IMPORT_WARNED:      # one traceback per process; the retry stays, the log noise does not
+            _IMPORT_WARNED = True
+            logger.warning("structural leaf fold: csv_bml_ingestion unavailable; BML lists will not be carried",
+                           exc_info=True)
         return ()
     _BML_KEYS = (TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY, SCRIPT_PROPS_KEY)
     return _BML_KEYS
