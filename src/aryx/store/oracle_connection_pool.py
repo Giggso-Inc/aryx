@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 _oracle_pools: dict[str, "OraclePool"] = {}
 _oracle_pool_lock = threading.Lock()
 
+# Substrings identifying a connection the server/network has already killed
+# -- DPY-4011 is the original drop; DPY-1001 ("not connected to database")
+# is what a *subsequent* call on that same dead connection raises (observed
+# live, 2026-10-06: a rollback() attempted right after a DPY-4011 raised
+# DPY-1001 instead, masking the original error -- see connection()'s own
+# try/except around rollback() below).
+_DEAD_CONNECTION_MARKERS = ("DPY-4011", "DPY-1001", "Broken pipe")
+
+
+def _is_dead_connection_error(exc: BaseException) -> bool:
+    return any(marker in str(exc) for marker in _DEAD_CONNECTION_MARKERS)
+
 
 class OracleConnectionWrapper:
     """Wraps an oracledb connection to match the psycopg3 connection API."""
@@ -126,25 +138,48 @@ class OraclePool:
             raise RuntimeError(
                 "oracle_pool: connection acquire failed (pool exhausted)"
             ) from exc
+        connection_is_dead = False
         try:
             yield OracleConnectionWrapper(raw)
             raw.commit()
         except Exception as exc:
-            raw.rollback()
-            if "DPY-4011" in str(exc) or "Broken pipe" in str(exc):
+            connection_is_dead = _is_dead_connection_error(exc)
+            if connection_is_dead:
+                # A dead connection raises again on rollback() (confirmed
+                # live, 2026-10-06: DPY-4011 followed by DPY-1001 from this
+                # exact rollback call) -- that second exception would
+                # otherwise replace and hide the original one in the
+                # traceback. Nothing to roll back on a connection the
+                # server already closed, so skip it instead of masking.
                 logger.warning(
-                    "oracle_pool: connection dropped mid-query (DPY-4011) — "
-                    "ping_interval=0 should prevent this on acquire; "
-                    "if recurring, check ADB idle timeout or network MTU settings"
+                    "oracle_pool: connection dropped (%s) -- dropping it from "
+                    "the pool instead of releasing; ping_interval=0 should "
+                    "prevent this on acquire, if recurring check ADB idle "
+                    "timeout, resource-manager statement limits, or network "
+                    "MTU settings",
+                    type(exc).__name__,
                 )
                 raven_log("WARN", "P2", "db.oracle.connection_dropped connection dropped mid-query",
                           error_code="ARYX_DB_CONN_DROPPED",
                           context={"dependency_name": "oracle_adb", "operation": "pool.connection",
                                    "result": "error", "error_class": type(exc).__name__,
                                    "ora_code": _ora_code(exc) or "DPY-4011", "attempt": 1})
+            else:
+                raw.rollback()
             raise
         finally:
-            self._pool.release(raw)
+            # release() assumes a still-usable connection; a connection the
+            # server/network already killed must be drop()'d instead, or the
+            # pool keeps counting it as a valid slot until the next acquire's
+            # ping_interval=0 check happens to catch it -- in between,
+            # unrelated callers queue for a slot that isn't really free
+            # (confirmed live, 2026-10-06: a later, unrelated MERGE timed
+            # out after ~30s, matching this pool's wait_timeout=30000
+            # almost exactly).
+            if connection_is_dead:
+                self._pool.drop(raw)
+            else:
+                self._pool.release(raw)
 
     def close(self) -> None:
         """Close all connections in the pool."""
