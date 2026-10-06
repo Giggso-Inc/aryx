@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.api.ask_request_models import AskRequest
 from aryx.graph.feature_search import search_products_combined
+from aryx.log_safe import text_ref
 from aryx.raven_log import raven_log
 
 
@@ -73,8 +74,12 @@ def _route_feature_region_search(
             error_code="ARYX_ASK_FEATURE_SEARCH_FAILED", context={
                 "dependency_name": "graph.feature_search", "operation": "search_products_combined",
                 "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
-                "region": region or "", "feature_label": feature_label or "",
-                "feature_value": feature_value or "",
+                # region/feature_value are regex-extracted straight from the customer's own
+                # question (detect_feature_region_search) -- never log them verbatim, same
+                # free-text rule this module's siblings follow with text_ref(req.question).
+                # feature_label is a fixed constant ("Feature Type"), never customer input.
+                "region_ref": text_ref(region), "feature_label": feature_label or "",
+                "feature_value_ref": text_ref(feature_value),
             },
         )
         logger.warning(
