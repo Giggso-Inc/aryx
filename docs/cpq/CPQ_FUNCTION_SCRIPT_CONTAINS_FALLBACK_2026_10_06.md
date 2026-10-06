@@ -4,7 +4,7 @@
 >
 > - **Purpose**: one record of why the CPQ engine finds no BML function scripts in some workspaces, why it was not caught, and the engine-side fallback that repairs existing workspaces without a re-ingest.
 > - **Status**: LIVING. Fix on branch `fix/cpq-function-script-via-contains-link-2026-10-06` (off `dev_oci` at `968e8454`). Not yet merged or deployed.
-> - **Last updated**: 2026-10-06.
+> - **Last updated**: 2026-10-06, after the PR #445 review (H1 merged-text check, M1 cache, L1 log once).
 > - **Related**: the ingest-side root cause analysis "script_text not on BmFunction" (2026-10-06, fold fix commit `740d4c13`, not in this repo yet). This document covers the engine side; the two fixes are complementary.
 > - **Formatting**: bullets only, no tables.
 
@@ -77,32 +77,45 @@
    - functions with their own `script_text` (or `script`): use it, unchanged behaviour;
    - functions with a BM id but no script: remember `entity_id -> BM function id`.
 3. If no function is missing a script, return immediately. **No extra query** runs for healthy workspaces.
-4. Otherwise run one query (`fetch_contained_entities`) that returns every `CONTAINS` link to a ScriptText entity in the workspace, with the target's full attributes:
+4. Otherwise (on a cache miss, step 7) run one query (`fetch_contained_entities`) that returns every `CONTAINS` link to a ScriptText entity in the workspace, with the target's full attributes:
    - `aryx_relationship r JOIN aryx_entity t ON t.id = r.target_entity_id`
    - filtered by workspace, `r.name = 'CONTAINS'`, and the ScriptText type (normalized suffix `scripttext`, restricted to the same `catalog_prefix` as the functions)
    - ordered by source then target id, so the pick is deterministic.
-5. For each missing function (`add_linked_scripts`), take the first non-blank text from its linked rows, looking at `text` (the raw XML element text key), then `script_text`, then `script`.
-6. Log one Raven record (`cpq.rdb.function_scripts_linked`, INFO) with counts only: functions, without own script, filled from link, still missing. No script text is logged.
+5. Check every merged ScriptText entity (`fetch_member_payloads` + `mixed_text_entities`, added after PR #445 review H1):
+   - read the landed payload of every record merged into each ScriptText entity (`aryx_entity_member` -> `aryx_landed_record`);
+   - an entity whose members carry more than one distinct text is **mixed** and is never used. Its functions stay missing instead of receiving another function's script;
+   - if this read fails, nothing is filled (and nothing is cached), because the merge cannot be verified.
+6. For each missing function (`linked_scripts_by_function`, `add_linked_scripts`), take the first non-blank text from its non-mixed linked rows, looking at `text` (the raw XML element text key), then `script_text`, then `script`.
+7. Cache the per-function result per `(workspace, catalog_prefix)` (`rdb_linked_scripts`), cleared when the catalog is re-ingested (the same invalidation marker the data-table and attribute-search caches use), with a 6 h TTL backstop. Only verified lookups are cached.
+8. On a cache miss only, log one Raven record (`cpq.rdb.function_scripts_linked`, INFO) with counts only: functions, without own script, filled from link, still missing, links, mixed entities, skipped links, verified. No script text is logged.
 
 ### 4.3 Design decisions
 - **Read from `aryx_entity`, never from the graph tables.** `aryx_graph_vertex` clips every string attribute to 200 characters (`_GRAPH_ATTR_STR_MAX`), which would hand the engine truncated scripts. The fallback reads the stored entity attributes, which hold the full text.
 - **Own script always wins.** A function that already has `script_text` is never overridden by a link, so workspaces ingested after the fold fix are unaffected.
-- **One query per call, no IN lists.** The link query filters by type, not by a list of function ids. This avoids Oracle bind-list limits on workspaces with thousands of functions; links from non-function sources are discarded in Python.
+- **No IN lists.** The link and member queries filter by type, not by a list of function ids. This avoids Oracle bind-list limits on workspaces with thousands of functions; links from non-function sources are discarded in Python.
 - **Same catalog scoping as functions.** BM function ids are unique only within one XML export, so the ScriptText type is matched with the same `catalog_prefix` as the functions.
-- **Shared ScriptText entities are fine.** Two functions with identical scripts point at the same entity; each gets the same text.
-- **Failure is non-fatal.** If the link query fails, it logs `ask.rdb.read_failed` and returns no rows; the result is the same as today (scripts missing), never worse.
-- **Small, isolated code.** The selection logic is a new module (`cpq/rdb/rdb_function_scripts.py`, 91 lines) with pure functions; each dialect only adds the one SQL query.
+- **Shared ScriptText entities only when the merge was exact.** Entity resolution merged 929 script records into 666 entities. The ScriptText match key is chosen by the LLM fallback (`match_key_inference`), so a merge is not guaranteed to be exact-text. An exact merge is safe (each function gets the same, correct text); a mixed merge would hand some functions the wrong script, so it is skipped.
+- **Why members, not conflict rows.** `aryx_attribute_conflict` would show differing merged values, but it is only written when a survivorship policy is set (`resolution/run.py` `_materialize`); without one, a mixed merge leaves no conflict row. The landed records always keep each original text.
+- **Wrong is worse than missing.** A function without a script makes its rule skip (today's behaviour). A function with another function's script runs the wrong logic silently. Every uncertain case therefore resolves to "missing".
+- **Cached because it is called often.** `fetch_function_scripts` runs from five places per turn (hiding rules, value rules, the BML evaluator, two NL-hint paths). Without the cache, a broken workspace would load every script body several times per turn. Healthy workspaces never reach the cache.
+- **Failure is non-fatal.** A failed link query logs `ask.rdb.read_failed` and returns no rows; a failed member read returns `None`, fills nothing and is not cached. The result is the same as before this change (scripts missing), never worse.
+- **Small, isolated code.** The selection logic is a new module (`cpq/rdb/rdb_function_scripts.py`, pure functions) and the cache another (`cpq/rdb/rdb_linked_scripts.py`); each dialect only adds the two SQL queries.
 
 ### 4.4 Files changed
-- `src/aryx/cpq/rdb/rdb_function_scripts.py` (new): `own_function_scripts`, `add_linked_scripts`, constants.
-- `src/aryx/cpq/rdb/rdb_postgres.py`: `fetch_function_scripts` uses the fallback; new `fetch_contained_entities` (Postgres SQL).
-- `src/aryx/cpq/rdb/rdb_oracle.py`: `fetch_contained_entities` (Oracle SQL, `:n` binds).
-- `tests/test_cpq_function_scripts_contains_link_2026_10_06.py` (new, 11 tests).
+- `src/aryx/cpq/rdb/rdb_function_scripts.py` (new): `own_function_scripts`, `mixed_text_entities`, `linked_scripts_by_function`, `add_linked_scripts`, constants.
+- `src/aryx/cpq/rdb/rdb_linked_scripts.py` (new): `linked_function_scripts` (cached lookup), `clear_linked_scripts_cache`.
+- `src/aryx/cpq/rdb/rdb_postgres.py`: `fetch_function_scripts` uses the fallback; new `fetch_contained_entities` and `fetch_member_payloads` (Postgres SQL).
+- `src/aryx/cpq/rdb/rdb_oracle.py`: the same two queries in Oracle SQL (`:n` binds).
+- `tests/test_cpq_function_scripts_contains_link_2026_10_06.py` (new, 18 tests).
 
 ### 4.5 Tests
 - Own script wins, and the link query is not run at all.
 - Missing script is read from the linked ScriptText (catalog prefix passed through).
-- Two functions sharing one merged ScriptText entity both get the script.
+- Two functions sharing one exactly-merged ScriptText entity both get the script.
+- An entity whose members carry different texts is skipped; its functions stay missing and the counts say so.
+- A failed member read fills nothing and caches nothing.
+- Repeated calls reuse one lookup and log once; another catalog gets its own entry; a newer re-ingest marker clears the cache.
+- Postgres and Oracle `fetch_member_payloads`: correct tables, binds and parameters; a failed read returns `None`.
 - A function with no link stays missing, and the log counts say so.
 - An own script is not overridden by a link.
 - Blank linked text is skipped; the first non-blank linked row wins.
@@ -116,7 +129,9 @@
 ## 5. Risks and limits
 
 - **Large scripts**: the fallback returns whatever `aryx_entity` stored. Whether very large scripts (around 129 KB seen on the older line) store intact on Oracle is still unverified (ingest RCA risk R1).
-- **Extra query cost**: only for workspaces with missing scripts; one join filtered by workspace, relationship name and type. Callers already invoke `fetch_function_scripts` several times per turn; if the cost shows up, cache per workspace and re-ingest marker.
+- **Mixed merges stay unfixed**: functions linked to a mixed ScriptText entity keep no script until the workspace is re-ingested with the fold fix. The log's `mixed_entities` and `still_missing` counts show how many.
+- **First-lookup cost**: on a cache miss, two queries return every script body of the workspace (links and member payloads). After that, calls are served from memory until a re-ingest or the 6 h TTL. Measure the first turn on ws 1126 after deploy.
+- **Landed text vs entity text**: the member check compares the landed payloads; if the cleaning stage normalised text differently from the entity attribute, an exact merge still compares equal (all members are cleaned the same way).
 - **Text key assumption**: an unfolded ScriptText entity is expected to keep the raw element text under `text`. The fallback also accepts `script_text` and `script`. Verify on ws 1126 after deploy (section 6).
 - **Not a substitute for the fold fix**: other leaf tags that failed to fold for the same reason are not covered by this fallback.
 
@@ -125,7 +140,7 @@
 ## 6. How to verify after deploy
 
 1. Run one quote turn in ws 1126 ("I want a quote for APX Next").
-2. In the API log, expect `cpq.rdb.function_scripts_linked` with `filled_from_link` near 929 and `still_missing` near 0.
+2. In the API log, expect one `cpq.rdb.function_scripts_linked` record (not one per call) with `verified: 1`. `filled_from_link` should be near 929, and `mixed_entities` says how many merged entities were unsafe and skipped.
 3. Expect the `no BmFunction script was found` warnings to disappear, `build_bml_evaluator ... scripts=` to be non-zero, and non-zero recommendation or constraint rules.
 4. Optional DB check of the text key (run as ADMIN):
    - `SELECT JSON_QUERY(attributes, '$' RETURNING VARCHAR2(4000) TRUNCATE) FROM ARYX_APP.aryx_entity WHERE workspace_id = 1126 AND LOWER(ontology_type) LIKE '%scripttext%' FETCH FIRST 1 ROWS ONLY;`

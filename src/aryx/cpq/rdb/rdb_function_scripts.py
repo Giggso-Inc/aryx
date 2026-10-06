@@ -63,29 +63,74 @@ def own_function_scripts(
     return scripts, missing
 
 
+def mixed_text_entities(member_rows: list[tuple[int, dict[str, Any]]]) -> set[int]:
+    """Entity ids whose merged member records carry more than one distinct text.
+
+    Entity resolution merges ScriptText records into one entity (929 -> 666
+    on ws 1126). The match key for this tag is LLM-chosen, so the merge is
+    not guaranteed to be exact-text; an entity whose members disagree holds
+    one survivor text that is wrong for some of the functions linked to it.
+    Conflict rows cannot prove this either way: they are only written when a
+    survivorship policy is set (resolution/run.py _materialize).
+
+    Args:
+        member_rows: (entity_id, landed payload) per merged member record.
+
+    Returns:
+        Ids of entities whose members disagree on the script text.
+    """
+    texts: dict[int, set[str]] = {}
+    for eid, payload in member_rows:
+        texts.setdefault(eid, set()).add(_first_text(payload, _LINKED_KEYS))
+    return {eid for eid, seen in texts.items() if len(seen) > 1}
+
+
+def linked_scripts_by_function(
+    linked: list[tuple[int, int, dict[str, Any]]],
+    mixed: set[int],
+) -> tuple[dict[int, str], int]:
+    """Script per linking (function) entity, skipping mixed-text targets.
+
+    Args:
+        linked: (source_entity_id, target_entity_id, target attributes) rows,
+            ordered by source then target so the pick is deterministic.
+        mixed: target entity ids that must not be used (see mixed_text_entities).
+
+    Returns:
+        (by_source, skipped): by_source maps source entity id -> script;
+        skipped counts link rows ignored because their target is mixed.
+    """
+    by_source: dict[int, str] = {}
+    skipped = 0
+    for source_eid, target_eid, attrs in linked:
+        if target_eid in mixed:
+            skipped += 1
+            continue
+        script = _first_text(attrs, _LINKED_KEYS)
+        if script and source_eid not in by_source:
+            by_source[source_eid] = script
+    return by_source, skipped
+
+
 def add_linked_scripts(
     scripts: dict[int, str],
     missing: dict[int, int],
-    linked: list[tuple[int, int, dict[str, Any]]],
+    by_source: dict[int, str],
 ) -> int:
-    """Fill `scripts` for `missing` functions from their linked ScriptText rows.
+    """Fill `scripts` for `missing` functions from their linked script.
 
     Args:
         scripts: BM function id -> script, updated in place.
         missing: entity_id -> BM function id of functions without a script.
-        linked: (source_entity_id, target_entity_id, target attributes) rows,
-            ordered by source then target so the pick is deterministic.
+        by_source: function entity id -> linked script (linked_scripts_by_function).
 
     Returns:
         How many functions got their script from a link.
     """
     filled = 0
-    for source_eid, _target_eid, attrs in linked:
-        fn_id = missing.get(source_eid)
-        if fn_id is None or fn_id in scripts:
-            continue
-        script = _first_text(attrs, _LINKED_KEYS)
-        if script:
+    for eid, fn_id in missing.items():
+        script = by_source.get(eid)
+        if script and fn_id not in scripts:
             scripts[fn_id] = script
             filled += 1
     return filled

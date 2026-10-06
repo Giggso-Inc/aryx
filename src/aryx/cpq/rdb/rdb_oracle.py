@@ -133,6 +133,29 @@ class OracleCpqRdb(PostgresCpqRdb):
             _read_failed("fetch_contained_entities")
         return rows
 
+    def fetch_member_payloads(
+        self, workspace_id: int, target_suffix: str, catalog_prefix: str = "",
+    ) -> list[tuple[int, dict[str, Any]]] | None:
+        """(entity_id, landed payload) per merged member record; None when the read fails."""
+        pattern = _type_pattern(catalog_prefix, target_suffix)
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT m.entity_id, l.payload FROM aryx_entity_member m "
+                        "JOIN aryx_entity e ON e.workspace_id = m.workspace_id AND e.id = m.entity_id "
+                        "JOIN aryx_landed_record l ON l.id = m.landed_record_id "
+                        "WHERE m.workspace_id = :1 "
+                        "AND REPLACE(LOWER(e.ontology_type), '_', '') LIKE :2",
+                        (workspace_id, pattern),
+                    )
+                    return [(int(eid), _as_attrs(payload)) for eid, payload in cur.fetchall()]
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
+            logger.debug("cpq rdb(oracle): member payload fetch failed", exc_info=True)
+            _read_failed("fetch_member_payloads")
+            return None
+
     def fetch_entities_by_exact_type(
         self, workspace_id: int, ontology_type: str,
     ) -> list[tuple[int, dict[str, Any]]]:
