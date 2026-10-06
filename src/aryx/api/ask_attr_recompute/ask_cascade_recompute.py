@@ -37,7 +37,7 @@ def _recompute_after_cascade(
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
-    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+    skip_always_ask = _cpq_engine.resolve_ask_always_ask_skips(
         req.workspace_id, catalog_prefix, attrs)
     # Amendment 10 follow-up, extended to cascade turns (found live
     # 2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): the

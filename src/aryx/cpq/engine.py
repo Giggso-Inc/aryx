@@ -1018,6 +1018,15 @@ class CpqEngine:
             self, workspace_id, catalog_prefix, layout_source, variant,
         )
 
+    def load_layout_hidden_vns(
+        self, workspace_id: int, catalog_prefix: str = "",
+        layout_source: LayoutFileSource | None = None,
+        variant: str = DEFAULT_LAYOUT_VARIANT,
+    ) -> set[str] | None:
+        return layout_and_join_data.load_layout_hidden_vns(
+            self, workspace_id, catalog_prefix, layout_source, variant,
+        )
+
     def _load_layout_full_order(
         self, workspace_id: int, catalog_prefix: str = "",
         layout_source: LayoutFileSource | None = None,
@@ -1031,6 +1040,20 @@ class CpqEngine:
         self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
     ) -> set[str]:
         return layout_and_join_data.resolve_always_ask_skips(
+            self, workspace_id, catalog_prefix, attrs,
+        )
+
+    def resolve_ask_always_ask_skips(
+        self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+    ) -> set[str]:
+        return layout_and_join_data.resolve_ask_always_ask_skips(
+            self, workspace_id, catalog_prefix, attrs,
+        )
+
+    def resolve_layout_hidden_anchor_skips(
+        self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+    ) -> set[str]:
+        return layout_and_join_data.resolve_layout_hidden_anchor_skips(
             self, workspace_id, catalog_prefix, attrs,
         )
 

@@ -11,8 +11,10 @@ dotted path in several tests.
 
 from __future__ import annotations
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log
 
 
 def resolve_always_ask_skips(
@@ -42,6 +44,57 @@ def resolve_always_ask_skips(
         if attr.entity_id not in in_flow_ids:
             skips.add(attr.variable_name)
     return skips
+
+
+def resolve_layout_hidden_anchor_skips(
+    engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+) -> set[str]:
+    """The shared Product selector, when the catalog's layout explicitly hides it (`hide: true`).
+
+    The Product always-ask override forces a question for an attribute the native UI is assumed
+    to show. SVX's layout hides `productSelectionProduct_all` (`hide: true`, in its "Hidden" tab)
+    while every APX and Astro layout shows it (`hide: false`), so those stay asked. Only an
+    explicit `true` counts; an attribute missing from the layout is not treated as hidden, and no
+    layout (None) leaves everything as before.
+
+    Deliberately Product only. A hidden select-model attribute stays force-asked: its blind
+    first-option fill is unsafe (SVX lists a camera at order 1 ahead of the real variants) and only
+    the Product attribute has that guard in the fill tiers. The skip only removes the question; the
+    governed blind-fill guard for the shared Product list still applies, so it is neither asked nor
+    filled with a foreign product's code.
+    Flag: `cpq_layout_hidden_anchor_skip_enabled` (default on; the opt-out is
+    ARYX_CPQ_LAYOUT_HIDDEN_ANCHOR_SKIP_ENABLED=false).
+    """
+    if not get_settings().cpq_layout_hidden_anchor_skip_enabled:
+        return set()
+    from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # noqa: PLC0415 -- avoids an import cycle at module load
+
+    hidden = engine.load_layout_hidden_vns(workspace_id, catalog_prefix)
+    if not hidden or PRODUCT_LITERAL not in hidden:
+        return set()
+    skips = {attr.variable_name for attr in attrs if attr.variable_name == PRODUCT_LITERAL}
+    if skips:
+        raven_log("DEBUG", "P4", "ask.always_ask.layout_hidden_skip layout hides the product selector, not force-asked",
+                  context={"selected_option": "skip_always_ask", "available_options": ["force_ask", "skip_always_ask"],
+                           "reason_code": "LAYOUT_HIDE_TRUE", "policy_version": "layout_hidden_anchor_v1",
+                           "workspace_id": workspace_id, "catalog_prefix": catalog_prefix,
+                           "skipped_vns": sorted(skips)})
+    return skips
+
+
+def resolve_ask_always_ask_skips(
+    engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+) -> set[str]:
+    """The `skip_always_ask` set every ASK path passes to auto_fill: the flow-based exemption
+    plus the attributes the layout explicitly hides.
+
+    One helper for all ask-path callers (the per-turn recompute and every cascade, quantity,
+    clear, activation, removal and country-change recompute), so no path re-asks a hidden
+    anchor. Not used by `payload_flow_exclusions`: that treats a non-empty
+    `resolve_always_ask_skips` as "the flow hides the product selector" and must keep that meaning.
+    """
+    return engine.resolve_always_ask_skips(workspace_id, catalog_prefix, attrs) | (
+        engine.resolve_layout_hidden_anchor_skips(workspace_id, catalog_prefix, attrs))
 
 
 def resolve_primary_layout_section_vns(
