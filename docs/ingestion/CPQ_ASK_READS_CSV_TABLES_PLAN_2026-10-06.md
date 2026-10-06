@@ -36,7 +36,7 @@ Rules:
 * **No switch per table:** there will be many Data Tables, so none needs an environment flag. A table is used when the
   pipeline has created it for the workspace and its columns fit a shape the engine asks for; a workspace without such
   tables is unaffected. Oracle only (the Postgres reader returns none); any failure returns nothing, so the engine
-  behaves as before. Per-table cap `ARYX_CPQ_WS_TABLE_MAX_ROWS` (default 1,000,000).
+  behaves as before. Per-table cap `ARYX_CPQ_WS_TABLE_MAX_ROWS` (default 500,000; a capped read logs a warning).
 * **Country -> region:** the engine's own `cpq_country_region_table_enabled` (plan F5) now defaults to on, so the
   ingested `newCountryRegion` table is consulted before the built-in country list; with no such table the list is the
   fallback exactly as before. It stays an off-switch (`ARYX_CPQ_COUNTRY_REGION_TABLE_ENABLED=false`), not something to
@@ -51,6 +51,21 @@ stopped `derive_region` (it needs `attr.options`). `cpq/children_wrappers.py` wi
 the wrappers a node CONTAINS (`direction == "out"`, never its parent's wrapper). It is used by the attribute menu
 collection (`product_config_menu_base.py`) and the product-option fetch (`product_option_fetch.py`). A graph without
 wrappers is returned unchanged.
+
+## Review follow-ups (PR #444)
+
+* **Default flip (N1):** the one change with workspace-wide reach. Every workspace on the API that already has a
+  `newCountryRegion` table now uses it before the built-in list. Tests pin both ends: the default is on, a table row wins,
+  and a table without a matching row falls back to the list. Roll it out on one workspace first if that is wanted.
+* **Memory (N3):** a table's rows share one case-insensitive index (not one per row) and the default cap is 500,000.
+  Each Data Table scan still reads the table itself and holds it up to the engine cache TTL; sharing rows between scans
+  was left out on purpose, because the engine may change the dicts it gets.
+* **Reporting (N4):** a failed table read raises the same `ARYX_ASK_RDB_READ_FAILED` Raven record as the entity reads.
+* **Lookups (N5):** a suffix match is used only when exactly one table ends with the name (two would be a guess; an
+  exact name always wins); synthetic ids are unique across all the tables of one grouped read. The skip-when-entities-exist
+  check stays an exact name match: entity types made from a CSV carry no catalog prefix (see `_load_all_tables`), so a
+  catalog-prefixed entity type is not the same CSV.
+* **Best effort (N2):** the whole wrapper pass is inside the guard; a neighbour without an id is ignored.
 
 ## Not changed
 

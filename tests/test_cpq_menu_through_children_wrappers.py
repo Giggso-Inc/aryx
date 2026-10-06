@@ -93,3 +93,23 @@ def test_the_product_option_fetch_also_looks_behind_the_wrapper():
     engine._batch_fetch.side_effect = lambda ids, ws: (
         {1: {"variable_name": "productSelectionProduct_all"}} if ids == [1] else {21: {"item_value": "APX NEXT", "item_text": "APX NEXT"}})
     assert pof.fetch_product_option_list(engine, reader, 7, "ApxNext") == [("APX NEXT", "APX NEXT")]
+
+
+def test_a_neighbour_without_an_id_never_breaks_the_pass():
+    reader = _Reader(GRAPH)
+    before = {1: [{"type": "ApxNextChildren", "direction": "out"}, _n(10, "ApxNextChildren")]}      # first one has no id
+    out = through_children_wrappers(reader, before)
+    assert [n.get("id") for n in out[1]] == [None, 10, 21, 22]                                  # the good wrapper still widens
+    assert through_children_wrappers(object(), {1: [_n(10, "ApxNextChildren")]}) == {1: [_n(10, "ApxNextChildren")]}   # no reader support
+
+
+def test_the_product_option_fetch_keeps_its_options_when_a_neighbour_has_no_id():
+    from aryx.cpq.nl_hint_extraction import product_option_fetch as pof
+
+    reader = MagicMock()
+    reader.find_entities.return_value = [{"id": 1, "name": "productSelectionProduct_all"}]
+    reader.neighbors.return_value = [{"type": "ApxNextChildren", "direction": "out"}, _n(5, "ApxNextBmMenuItem")]
+    engine = MagicMock()
+    engine._batch_fetch.side_effect = lambda ids, ws: (
+        {1: {"variable_name": "productSelectionProduct_all"}} if ids == [1] else {5: {"item_value": "A", "item_text": "A"}})
+    assert pof.fetch_product_option_list(engine, reader, 7, "ApxNext") == [("A", "A")]

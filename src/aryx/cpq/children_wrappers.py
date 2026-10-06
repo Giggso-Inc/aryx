@@ -32,17 +32,22 @@ def through_children_wrappers(
 
     Best effort: if the second lookup fails the original map is returned, so options are never lost, only not widened.
     """
-    wrappers = {eid: [n["id"] for n in found if is_children_wrapper(n)] for eid, found in neighbors_by_id.items()}
+    try:
+        return _widen(reader, neighbors_by_id)
+    except Exception:  # noqa: BLE001  e.g. a reader without neighbors_batch, or a neighbour without an id
+        logger.debug("cpq: neighbours behind Children wrappers not available", exc_info=True)
+        return neighbors_by_id
+
+
+def _widen(reader: Any, neighbors_by_id: dict[int, list[dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:
+    wrappers = {eid: [n["id"] for n in found if is_children_wrapper(n) and n.get("id") is not None]
+                for eid, found in neighbors_by_id.items()}
     wrapper_ids = sorted({w for ids in wrappers.values() for w in ids})
     if not wrapper_ids:
         return neighbors_by_id
     behind: dict[int, list[dict[str, Any]]] = {}
-    try:
-        for start in range(0, len(wrapper_ids), _BATCH):
-            behind.update(reader.neighbors_batch(wrapper_ids[start:start + _BATCH]))
-    except Exception:  # noqa: BLE001  e.g. a reader without neighbors_batch
-        logger.debug("cpq: neighbours behind Children wrappers not available", exc_info=True)
-        return neighbors_by_id
+    for start in range(0, len(wrapper_ids), _BATCH):
+        behind.update(reader.neighbors_batch(wrapper_ids[start:start + _BATCH]))
     widened: dict[int, list[dict[str, Any]]] = {}
     for eid, found in neighbors_by_id.items():
         extra = [m for w in wrappers.get(eid, ()) for m in behind.get(w, ())

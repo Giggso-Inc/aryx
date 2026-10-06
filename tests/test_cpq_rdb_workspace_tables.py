@@ -222,3 +222,40 @@ def test_the_data_table_loader_classifies_workspace_table_rows_like_entity_rows(
     assert (constraint, sequence, hierarchy, series) == ([], [], [], [])
     assert [r["value"] for r in region_rules] == ["H15", "H16"] and region_rules[0]["UDCC"] == "TC"
     loader._clear_tables_cache()
+
+
+# --- review follow-ups -----------------------------------------------------------------------------------------------
+def test_rows_of_a_table_share_one_case_index_and_ids_stay_unique_across_tables():
+    conn = _db(ws7_attrtovarmapping=(TAG7, ["CPQMODEL", "GROUP", "ATTRIBUTENAME", "ATTRIBUTEVARIABLE"], [("m", "g", "a", "v")] * 2))
+    groups = wt.grouped_rows(conn, 7, lambda keys: shapes._is_region_rule_shaped(keys) or shapes._is_attr_var_mapping_shaped(keys))
+    rows = [row for rows in groups.values() for row in rows]
+    assert len({i for i, _ in rows}) == len(rows) == 4 and all(i < 0 for i, _ in rows)       # ids unique across tables
+    region_rows = groups["newcountryregmapping"]
+    assert region_rows[0][1]._by_lower is region_rows[1][1]._by_lower                        # one index per table, not per row
+
+
+def test_a_suffix_match_is_used_only_when_exactly_one_table_ends_with_it():
+    conn = _db(ws7_otherregmapping=(TAG7, REGION_COLUMNS, REGION_ROWS))
+    assert wt.rows_for_type(conn, 7, "regmapping", suffix=True) == []                        # two tables end with it: no guess
+    assert len(wt.rows_for_type(conn, 7, "newcountryregmapping", suffix=True)) == 2          # an exact name always wins
+    assert len(wt.rows_for_type(conn, 7, "otherregmapping", suffix=True)) == 2
+
+
+def test_a_failed_table_read_is_reported_to_raven_and_returns_nothing(monkeypatch):
+    from aryx.cpq.rdb import rdb_oracle
+    reported = []
+    monkeypatch.setattr(rdb_oracle, "_read_failed", reported.append)
+    rdb = OracleCpqRdb.__new__(OracleCpqRdb)
+
+    @contextmanager
+    def broken():
+        raise RuntimeError("no database")
+        yield
+    rdb._connection = broken
+    assert rdb.fetch_workspace_table_groups(7, shapes._is_region_rule_shaped) == {}
+    assert rdb._workspace_table_rows(7, "x", suffix=True) == []
+    assert reported == ["fetch_workspace_table_groups", "fetch_workspace_table_rows"]
+
+
+def test_the_default_row_cap_is_half_a_million():
+    assert wt.DEFAULT_MAX_ROWS == 500_000

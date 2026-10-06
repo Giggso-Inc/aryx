@@ -133,8 +133,10 @@ class OracleCpqRdb(PostgresCpqRdb):
         try:
             with self._connection() as conn:
                 return rdb_workspace_tables.rows_for_type(conn, workspace_id, logical, suffix=suffix)
-        except Exception:  # noqa: BLE001  the engine treats missing table data as "no rows", never as an error
+        except Exception as exc:  # noqa: BLE001  the engine treats missing table data as "no rows", never as an error
+            _warn_if_timeout(exc, "oracle")
             logger.warning("cpq rdb(oracle): workspace table read failed ws=%s table=%r", workspace_id, logical, exc_info=True)
+            _read_failed("fetch_workspace_table_rows")
             return []
 
     def fetch_workspace_table_groups(
@@ -144,8 +146,10 @@ class OracleCpqRdb(PostgresCpqRdb):
         try:
             with self._connection() as conn:
                 return rdb_workspace_tables.grouped_rows(conn, workspace_id, accept, skip_types)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            _warn_if_timeout(exc, "oracle")
             logger.warning("cpq rdb(oracle): workspace tables read failed ws=%s", workspace_id, exc_info=True)
+            _read_failed("fetch_workspace_table_groups")
             return {}
 
     def fetch_all_entities_grouped_by_type(

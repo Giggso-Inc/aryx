@@ -28,7 +28,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MAX_ROWS_ENV = "ARYX_CPQ_WS_TABLE_MAX_ROWS"
-DEFAULT_MAX_ROWS = 1_000_000
+DEFAULT_MAX_ROWS = 500_000
 _LISTING_TTL_SECONDS = 30.0
 _FETCH_BATCH = 5000
 
@@ -52,9 +52,10 @@ class TableRow(dict):
 
     __slots__ = ("_by_lower",)
 
-    def __init__(self, items: Iterable[tuple[str, Any]] = ()) -> None:
+    def __init__(self, items: Iterable[tuple[str, Any]] = (), by_lower: dict[str, str] | None = None) -> None:
         super().__init__(items)
-        self._by_lower = {str(k).lower(): k for k in self}
+        # a table passes ONE shared index for all its rows (a row only misses the columns it has no value for)
+        self._by_lower = by_lower if by_lower is not None else {str(k).lower(): k for k in self}
 
     def _resolve(self, key: Any) -> Any:
         return key if dict.__contains__(self, key) else self._by_lower.get(str(key).lower(), key)
@@ -145,9 +146,15 @@ def _columns(conn: Any, physical: str) -> list[str]:
         return [str(r[0]) for r in cur.fetchall()]
 
 
-def _read(conn: Any, physical: str, columns: list[str], variant: int = 0) -> list[tuple[int, dict[str, Any]]]:
-    """Every row of ``physical`` (up to the cap) as (synthetic negative id, row); NULL cells are left out."""
+def _read(
+    conn: Any, physical: str, columns: list[str], variant: int = 0, first_id: int = -1,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Every row of ``physical`` (up to the cap) as (synthetic negative id, row); NULL cells are left out.
+
+    Ids count down from ``first_id`` (-1, -2, ...), so a caller reading several tables can keep them unique.
+    """
     names = [recase(c, variant) for c in columns]
+    by_lower = {n.lower(): n for n in names}
     select = ", ".join(f'"{c}"' for c in columns)        # quoted: KEY / VALUE are column names here
     cap = max_rows()
     rows: list[tuple[int, dict[str, Any]]] = []
@@ -161,8 +168,8 @@ def _read(conn: Any, physical: str, columns: list[str], variant: int = 0) -> lis
             for values in batch:
                 if len(rows) >= cap:
                     break
-                row = TableRow((n, v) for n, v in zip(names, values) if v is not None)
-                rows.append((-(len(rows) + 1), row))   # negative ids never collide with aryx_entity ids
+                row = TableRow(((n, v) for n, v in zip(names, values) if v is not None), by_lower)
+                rows.append((first_id - len(rows), row))   # negative ids never collide with aryx_entity ids
     if len(rows) >= cap:
         logger.warning("cpq: workspace table %s read capped at %d rows (%s)", physical, cap, MAX_ROWS_ENV)
     return rows
@@ -171,10 +178,13 @@ def _read(conn: Any, physical: str, columns: list[str], variant: int = 0) -> lis
 def rows_for_type(conn: Any, workspace_id: int, ontology_type: str, *, suffix: bool = False) -> list[tuple[int, dict[str, Any]]]:
     """Rows of the workspace table whose logical name equals ``ontology_type`` (or ends with it, when ``suffix``)."""
     wanted = normalized(ontology_type)
-    for logical, physical in workspace_tables(conn, workspace_id).items():
-        have = normalized(logical)
-        if have == wanted or (suffix and wanted and have.endswith(wanted)):
-            return _read(conn, physical, _columns(conn, physical))
+    tables = workspace_tables(conn, workspace_id)
+    exact = [p for logical, p in tables.items() if normalized(logical) == wanted]
+    if exact:
+        return _read(conn, exact[0], _columns(conn, exact[0]))
+    ending = [p for logical, p in tables.items() if suffix and wanted and normalized(logical).endswith(wanted)]
+    if len(ending) == 1:                               # exactly one table ends with it; two would be a guess
+        return _read(conn, ending[0], _columns(conn, ending[0]))
     return []
 
 
@@ -187,6 +197,7 @@ def grouped_rows(
     """
     skip = {normalized(t) for t in skip_types}
     grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    next_id = -1
     for logical, physical in workspace_tables(conn, workspace_id).items():
         if normalized(logical) in skip:
             continue
@@ -194,5 +205,6 @@ def grouped_rows(
         variant = next((v for v in _SPELLING_VARIANTS if columns and accept({recase(c, v) for c in columns})), None)
         if variant is None:
             continue
-        grouped[logical] = _read(conn, physical, columns, variant)
+        grouped[logical] = _read(conn, physical, columns, variant, next_id)
+        next_id -= len(grouped[logical])               # the next table continues below this one: ids stay unique
     return grouped
