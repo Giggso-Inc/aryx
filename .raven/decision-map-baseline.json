@@ -8358,17 +8358,17 @@
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      71,
+      78,
       "_mine_history_for_cpq_context"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      121,
+      128,
       "_current_turn_usage_dict"
     ],
     [
       "src/aryx/api/ask_core_helpers.py",
-      139,
+      146,
       "_current_turn_usage_dict"
     ],
     [
@@ -8383,22 +8383,22 @@
     ],
     [
       "src/aryx/api/ask_data_table_conflict_reask.py",
-      20,
+      21,
       "_reask_confirmed_data_table_conflict"
     ],
     [
       "src/aryx/api/ask_data_table_conflict_reask.py",
-      33,
+      34,
       "<try>"
     ],
     [
       "src/aryx/api/ask_data_table_conflict_reask.py",
-      57,
+      66,
       "<assign>"
     ],
     [
       "src/aryx/api/ask_data_table_conflict_reask.py",
-      77,
+      86,
       "_reask_confirmed_data_table_conflict"
     ],
     [
@@ -8523,17 +8523,17 @@
     ],
     [
       "src/aryx/api/ask_feature_region_search.py",
-      42,
+      44,
       "_route_feature_region_search"
     ],
     [
       "src/aryx/api/ask_feature_region_search.py",
-      62,
+      64,
       "<try>"
     ],
     [
       "src/aryx/api/ask_feature_region_search.py",
-      76,
+      95,
       "_route_feature_region_search"
     ],
     [
@@ -9278,7 +9278,7 @@
     ],
     [
       "src/aryx/api/ask_qa/ask_route_qa.py",
-      87,
+      96,
       "_route_qa"
     ],
     [
@@ -9498,27 +9498,27 @@
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
-      29,
+      30,
       "_shadow_classify_cpq_turn"
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
-      39,
+      40,
       "<try>"
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
-      66,
+      67,
       "_llm_confirm_deterministic_intent"
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
-      77,
+      78,
       "<try>"
     ],
     [
       "src/aryx/api/ask_shadow_classify_and_confirm_intent.py",
-      94,
+      105,
       "_llm_confirm_deterministic_intent"
     ],
     [
@@ -11133,52 +11133,52 @@
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      557,
+      561,
       "_evaluate_llm"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      590,
-      "_evaluate_llm_hide"
-    ],
-    [
-      "src/aryx/cpq/bml/bml.py",
       594,
-      "<try>"
-    ],
-    [
-      "src/aryx/cpq/bml/bml.py",
-      622,
       "_evaluate_llm_hide"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      657,
-      "_evaluate_llm_condition"
-    ],
-    [
-      "src/aryx/cpq/bml/bml.py",
-      661,
+      598,
       "<try>"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      690,
+      630,
+      "_evaluate_llm_hide"
+    ],
+    [
+      "src/aryx/cpq/bml/bml.py",
+      665,
       "_evaluate_llm_condition"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      692,
+      669,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/bml/bml.py",
+      702,
+      "_evaluate_llm_condition"
+    ],
+    [
+      "src/aryx/cpq/bml/bml.py",
+      704,
       "_evaluate_llm_ask_worthy"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      701,
+      713,
       "<try>"
     ],
     [
       "src/aryx/cpq/bml/bml.py",
-      744,
+      760,
       "_evaluate_llm_ask_worthy"
     ],
     [
@@ -11263,47 +11263,47 @@
     ],
     [
       "src/aryx/cpq/data_table/data_table_loader.py",
-      148,
+      154,
       "_load_all_tables"
     ],
     [
       "src/aryx/cpq/data_table/data_table_loader.py",
-      243,
+      249,
       "_scan_all_tables"
     ],
     [
       "src/aryx/cpq/data_table/data_table_loader.py",
-      315,
+      326,
       "_scan_all_tables"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      205,
+      206,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      305,
+      306,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      308,
+      309,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      359,
+      360,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      371,
+      372,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      440,
+      443,
       "_load_attr_var_mapping_rows"
     ],
     [
@@ -13483,12 +13483,12 @@
     ],
     [
       "src/aryx/cpq/nl_hint_extraction/product_option_fetch.py",
-      71,
+      73,
       "<try>"
     ],
     [
       "src/aryx/cpq/nl_hint_extraction/product_option_fetch.py",
-      98,
+      101,
       "fetch_product_option_list"
     ],
     [
@@ -13628,22 +13628,22 @@
     ],
     [
       "src/aryx/cpq/product_config/product_config_menu_base.py",
-      15,
+      16,
       "collect_base_menu_neighbors"
     ],
     [
       "src/aryx/cpq/product_config/product_config_menu_base.py",
-      37,
+      38,
       "<try>"
     ],
     [
       "src/aryx/cpq/product_config/product_config_menu_base.py",
-      44,
+      47,
       "<try>"
     ],
     [
       "src/aryx/cpq/product_config/product_config_menu_base.py",
-      86,
+      89,
       "collect_base_menu_neighbors"
     ],
     [
@@ -13670,6 +13670,26 @@
       "src/aryx/cpq/quantity/quantity_word_numbers.py",
       147,
       "_normalize_quantity_text"
+    ],
+    [
+      "src/aryx/cpq/rdb/rdb_oracle.py",
+      129,
+      "_workspace_table_rows"
+    ],
+    [
+      "src/aryx/cpq/rdb/rdb_oracle.py",
+      133,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/rdb/rdb_oracle.py",
+      142,
+      "fetch_workspace_table_groups"
+    ],
+    [
+      "src/aryx/cpq/rdb/rdb_oracle.py",
+      146,
+      "<try>"
     ],
     [
       "src/aryx/cpq/recommendation_and_constraint_rules/apply_recommendations.py",
@@ -14103,7 +14123,7 @@
     ],
     [
       "src/aryx/cpq_ingestion/raw_graph/resolve_relate.py",
-      92,
+      93,
       "<try>"
     ],
     [
@@ -15028,12 +15048,12 @@
     ],
     [
       "src/aryx/store/oracle_connection_pool.py",
-      47,
+      71,
       "execute"
     ],
     [
       "src/aryx/store/oracle_connection_pool.py",
-      62,
+      86,
       "__init__"
     ],
     [

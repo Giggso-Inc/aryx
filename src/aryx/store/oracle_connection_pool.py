@@ -20,6 +20,30 @@ logger = logging.getLogger(__name__)
 _oracle_pools: dict[str, "OraclePool"] = {}
 _oracle_pool_lock = threading.Lock()
 
+# Substrings identifying a connection the server/network has already killed
+# -- DPY-4011 is the original drop; DPY-1001 ("not connected to database")
+# is what a *subsequent* call on that same dead connection raises (observed
+# live, 2026-10-06: a rollback() attempted right after a DPY-4011 raised
+# DPY-1001 instead, masking the original error -- see connection()'s own
+# try/except around rollback() below).
+#
+# This string list is necessarily incomplete: these are thin-mode/driver-
+# level codes. Thick mode (this project's default -- docker-compose-oci.yml
+# sets ARYX_ORACLE_CLIENT_MODE=thick) can surface a dropped session via the
+# OCI client library instead, as ORA-03113/ORA-03114/ORA-03135/DPI-1080 (not
+# yet observed live here, but plausible and not covered by this list). That
+# is why this is only a fast-path pre-check below, not the sole source of
+# truth -- raw.is_healthy() (oracledb's own, code-list-free connection
+# health check, covering "the network socket is broken" or "an Oracle error
+# indicates the connection is unusable" regardless of client mode) and a
+# failing rollback() (itself proof of death, caught separately) are what
+# actually make the dead/alive decision.
+_DEAD_CONNECTION_MARKERS = ("DPY-4011", "DPY-1001", "Broken pipe")
+
+
+def _is_dead_connection_error(exc: BaseException) -> bool:
+    return any(marker in str(exc) for marker in _DEAD_CONNECTION_MARKERS)
+
 
 class OracleConnectionWrapper:
     """Wraps an oracledb connection to match the psycopg3 connection API."""
@@ -126,16 +150,35 @@ class OraclePool:
             raise RuntimeError(
                 "oracle_pool: connection acquire failed (pool exhausted)"
             ) from exc
+        connection_is_dead = False
         try:
             yield OracleConnectionWrapper(raw)
             raw.commit()
         except Exception as exc:
-            raw.rollback()
-            if "DPY-4011" in str(exc) or "Broken pipe" in str(exc):
+            # Three independent signals, in order of cheapness: a known
+            # driver-level error string (fast, but incomplete -- see
+            # _DEAD_CONNECTION_MARKERS' docstring on thick mode), then
+            # is_healthy() (oracledb's own code-list-free check: "the
+            # network socket is broken, or an Oracle error indicates the
+            # connection is unusable" -- covers ORA-/DPI- thick-mode codes
+            # this file can't enumerate), then -- if neither caught it --
+            # a rollback() attempt failing is itself proof the connection
+            # is dead (confirmed live, 2026-10-06: a rollback() right after
+            # a DPY-4011 raised DPY-1001 instead of completing).
+            connection_is_dead = _is_dead_connection_error(exc) or not raw.is_healthy()
+            if not connection_is_dead:
+                try:
+                    raw.rollback()
+                except Exception:
+                    connection_is_dead = True
+            if connection_is_dead:
                 logger.warning(
-                    "oracle_pool: connection dropped mid-query (DPY-4011) — "
-                    "ping_interval=0 should prevent this on acquire; "
-                    "if recurring, check ADB idle timeout or network MTU settings"
+                    "oracle_pool: connection dropped (%s) -- dropping it from "
+                    "the pool instead of releasing; ping_interval=0 should "
+                    "prevent this on acquire, if recurring check ADB idle "
+                    "timeout, resource-manager statement limits, or network "
+                    "MTU settings",
+                    type(exc).__name__,
                 )
                 raven_log("WARN", "P2", "db.oracle.connection_dropped connection dropped mid-query",
                           error_code="ARYX_DB_CONN_DROPPED",
@@ -144,7 +187,31 @@ class OraclePool:
                                    "ora_code": _ora_code(exc) or "DPY-4011", "attempt": 1})
             raise
         finally:
-            self._pool.release(raw)
+            # release() assumes a still-usable connection; a connection the
+            # server/network already killed must be drop()'d instead, or the
+            # pool keeps counting it as a valid slot until the next acquire's
+            # ping_interval=0 check happens to catch it -- in between,
+            # unrelated callers queue for a slot that isn't really free
+            # (confirmed live, 2026-10-06: a later, unrelated MERGE timed
+            # out after ~30s, matching this pool's wait_timeout=30000
+            # almost exactly).
+            if connection_is_dead:
+                try:
+                    self._pool.drop(raw)
+                except Exception:
+                    # drop() itself can raise (e.g. ERR_NOT_CONNECTED if
+                    # this connection object was already dropped/closed via
+                    # some other path) -- this runs in `finally`, so letting
+                    # it propagate would replace and mask whatever real
+                    # exception is already in flight, the same masking bug
+                    # this fix exists to close. Log and move on instead.
+                    logger.warning(
+                        "oracle_pool: pool.drop() itself failed for an already-dead "
+                        "connection -- swallowing so it doesn't mask the original error",
+                        exc_info=True,
+                    )
+            else:
+                self._pool.release(raw)
 
     def close(self) -> None:
         """Close all connections in the pool."""
