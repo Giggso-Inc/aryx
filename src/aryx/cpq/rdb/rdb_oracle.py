@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
+from aryx.cpq.rdb.rdb_function_scripts import CONTAINS
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
 from aryx.cpq.rdb import rdb_workspace_tables
 from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb, _warn_if_timeout
@@ -105,6 +106,55 @@ class OracleCpqRdb(PostgresCpqRdb):
             logger.debug("cpq rdb(oracle): type fetch failed", exc_info=True)
             _read_failed("fetch_entities_by_type")
         return rows or self._workspace_table_rows(workspace_id, type_suffix, suffix=True)
+
+    def fetch_contained_entities(
+        self, workspace_id: int, target_suffix: str, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, dict[str, Any]]]:
+        """(source_id, target_id, target attributes) for CONTAINS links to a type."""
+        pattern = _type_pattern(catalog_prefix, target_suffix)
+        rows: list[tuple[int, int, dict[str, Any]]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT r.source_entity_id, r.target_entity_id, t.attributes "
+                        "FROM aryx_relationship r JOIN aryx_entity t "
+                        "ON t.workspace_id = r.workspace_id AND t.id = r.target_entity_id "
+                        "WHERE r.workspace_id = :1 AND r.name = :2 "
+                        "AND REPLACE(LOWER(t.ontology_type), '_', '') LIKE :3 "
+                        "ORDER BY r.source_entity_id, r.target_entity_id",
+                        (workspace_id, CONTAINS, pattern),
+                    )
+                    for src, tgt, attrs in cur.fetchall():
+                        rows.append((int(src), int(tgt), _as_attrs(attrs)))
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
+            logger.debug("cpq rdb(oracle): contained fetch failed", exc_info=True)
+            _read_failed("fetch_contained_entities")
+        return rows
+
+    def fetch_member_payloads(
+        self, workspace_id: int, target_suffix: str, catalog_prefix: str = "",
+    ) -> list[tuple[int, dict[str, Any]]] | None:
+        """(entity_id, landed payload) per merged member record; None when the read fails."""
+        pattern = _type_pattern(catalog_prefix, target_suffix)
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT m.entity_id, l.payload FROM aryx_entity_member m "
+                        "JOIN aryx_entity e ON e.workspace_id = m.workspace_id AND e.id = m.entity_id "
+                        "JOIN aryx_landed_record l ON l.id = m.landed_record_id "
+                        "WHERE m.workspace_id = :1 "
+                        "AND REPLACE(LOWER(e.ontology_type), '_', '') LIKE :2",
+                        (workspace_id, pattern),
+                    )
+                    return [(int(eid), _as_attrs(payload)) for eid, payload in cur.fetchall()]
+        except Exception as exc:
+            _warn_if_timeout(exc, "oracle")
+            logger.debug("cpq rdb(oracle): member payload fetch failed", exc_info=True)
+            _read_failed("fetch_member_payloads")
+            return None
 
     def fetch_entities_by_exact_type(
         self, workspace_id: int, ontology_type: str,

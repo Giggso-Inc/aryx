@@ -12,7 +12,14 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
+from aryx.cpq.rdb.rdb_function_scripts import (
+    CONTAINS,
+    FUNCTION_SUFFIX,
+    add_linked_scripts,
+    own_function_scripts,
+)
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
+from aryx.cpq.rdb.rdb_linked_scripts import linked_function_scripts
 from aryx.raven_log import raven_log
 from aryx.store.db_timeouts import log_if_timeout
 
@@ -584,14 +591,91 @@ class PostgresCpqRdb:
         unique WITHIN one ingested export (confirmed colliding across
         catalogs sharing a workspace), so catalog_prefix must be passed
         whenever more than one product's XML is ingested into one workspace.
+
+        Fallback (2026-10-06): a function whose own script is empty reads it
+        from the ScriptText entity it CONTAINS -- the shape an XML ingest
+        leaves when the script_text leaf was not folded onto the function
+        (see rdb_function_scripts).
+
+        A merged ScriptText entity is used only when every record merged into
+        it carries the same text (rdb_function_scripts.mixed_text_entities);
+        otherwise its functions stay missing rather than get a wrong script.
+        The link lookup is cached per workspace (rdb_linked_scripts).
         """
-        scripts: dict[int, str] = {}
-        for _eid, attrs in self.fetch_entities_by_type(workspace_id, "bmfunction", catalog_prefix):
-            fn_id = _as_int(attrs.get("id") or attrs.get("bm_function_id"))
-            script = attrs.get("script_text") or attrs.get("script") or ""
-            if fn_id and isinstance(script, str) and script.strip():
-                scripts[fn_id] = script
+        functions = self.fetch_entities_by_type(workspace_id, FUNCTION_SUFFIX, catalog_prefix)
+        scripts, missing = own_function_scripts(functions)
+        if not missing:
+            return scripts
+        by_source, stats = linked_function_scripts(self, workspace_id, catalog_prefix)
+        filled = add_linked_scripts(scripts, missing, by_source)
+        if stats is not None:  # cache miss: report once per lookup, not per call
+            raven_log("INFO", "P4", "cpq.rdb.function_scripts_linked function scripts read via CONTAINS link",
+                      context={"selected_option": "contains_link" if filled else "none_found",
+                               "available_options": ["own_attribute", "contains_link", "none_found"],
+                               "reason_code": "SCRIPT_TEXT_NOT_ON_FUNCTION" if stats["verified"]
+                               else "MEMBER_CHECK_FAILED",
+                               "workspace_id": workspace_id, "catalog_prefix": catalog_prefix,
+                               "functions": len(functions), "without_own_script": len(missing),
+                               "filled_from_link": filled, "still_missing": len(missing) - filled,
+                               **stats})
         return scripts
+
+    def fetch_contained_entities(
+        self, workspace_id: int, target_suffix: str, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, dict[str, Any]]]:
+        """(source_id, target_id, target attributes) for CONTAINS links to a type.
+
+        The target type is matched like fetch_entities_by_type (normalized
+        suffix, optional catalog_prefix). Ordered by source then target.
+        """
+        pattern = _type_pattern(catalog_prefix, target_suffix)
+        rows: list[tuple[int, int, dict[str, Any]]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT r.source_entity_id, r.target_entity_id, t.attributes "
+                        "FROM aryx_relationship r JOIN aryx_entity t "
+                        "ON t.workspace_id = r.workspace_id AND t.id = r.target_entity_id "
+                        "WHERE r.workspace_id = %s AND r.name = %s "
+                        "AND replace(lower(t.ontology_type), '_', '') LIKE %s "
+                        "ORDER BY r.source_entity_id, r.target_entity_id",
+                        (workspace_id, CONTAINS, pattern),
+                    )
+                    for src, tgt, attrs in cur.fetchall():
+                        rows.append((int(src), int(tgt), _as_attrs(attrs)))
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
+            logger.debug("cpq rdb: contained fetch failed for %s", target_suffix, exc_info=True)
+            _read_failed("fetch_contained_entities")
+        return rows
+
+    def fetch_member_payloads(
+        self, workspace_id: int, target_suffix: str, catalog_prefix: str = "",
+    ) -> list[tuple[int, dict[str, Any]]] | None:
+        """(entity_id, landed payload) for every record merged into entities of a type.
+
+        Returns None (not []) when the read fails, so a caller can tell
+        "could not check" apart from "nothing merged".
+        """
+        pattern = _type_pattern(catalog_prefix, target_suffix)
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT m.entity_id, l.payload FROM aryx_entity_member m "
+                        "JOIN aryx_entity e ON e.workspace_id = m.workspace_id AND e.id = m.entity_id "
+                        "JOIN aryx_landed_record l ON l.id = m.landed_record_id "
+                        "WHERE m.workspace_id = %s "
+                        "AND replace(lower(e.ontology_type), '_', '') LIKE %s",
+                        (workspace_id, pattern),
+                    )
+                    return [(int(eid), _as_attrs(payload)) for eid, payload in cur.fetchall()]
+        except Exception as exc:
+            _warn_if_timeout(exc, "pg")
+            logger.debug("cpq rdb: member payload fetch failed for %s", target_suffix, exc_info=True)
+            _read_failed("fetch_member_payloads")
+            return None
 
     def fetch_attr_set_assoc(
         self, workspace_id: int, catalog_prefix: str = "",
