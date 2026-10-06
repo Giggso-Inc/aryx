@@ -8,6 +8,22 @@ called from init_db() there. Extracted verbatim, no behavior change.
 
 from app.core.config import settings
 
+# (index_name_uppercase, table_name_uppercase, column_list) -- shared by both
+# the async and sync repair functions below, so there is exactly one list to
+# keep in sync with the actual schema, not two.
+_ARC_INDEXES = [
+    ("UK_GG_MEMBERS_WORKSPACE",         "GG_MEMBERS",         "WORKSPACE_ID, USER_ID"),
+    ("UK_GG_MEMBERS_CHANNEL",           "GG_MEMBERS",         "CHANNEL_ID, USER_ID"),
+    ("UK_GG_MEMBERS_THREAD",            "GG_MEMBERS",         "THREAD_ID, USER_ID"),
+    ("UK_GG_APP_CONNECTIONS_WORKSPACE", "GG_APP_CONNECTIONS", "WORKSPACE_ID, APP_ID"),
+    ("UK_GG_APP_CONNECTIONS_CHANNEL",   "GG_APP_CONNECTIONS", "CHANNEL_ID, APP_ID"),
+    ("UK_GG_APP_CONNECTIONS_THREAD",    "GG_APP_CONNECTIONS", "THREAD_ID, APP_ID"),
+    ("UK_GG_DATASOURCES_WORKSPACE",     "DATASOURCES",        "WORKSPACE_ID, NAME"),
+    ("UK_GG_DATASOURCES_CHANNEL",       "DATASOURCES",        "CHANNEL_ID, NAME"),
+    ("UK_GG_DATASOURCES_THREAD",        "DATASOURCES",        "THREAD_ID, NAME"),
+    ("UK_GG_DATASOURCES_MESSAGE",       "DATASOURCES",        "MESSAGE_ID, NAME"),
+]
+
 
 async def _oracle_repair_partial_unique_indexes(conn) -> None:
     """
@@ -21,23 +37,16 @@ async def _oracle_repair_partial_unique_indexes(conn) -> None:
     This repair runs before create_all so that an existing Oracle schema created by a
     previous boot gets fixed in-place without dropping any tables or losing data.
     Safe to call repeatedly: queries user_indexes first, no-ops if already non-unique.
+
+    Not called by the live Oracle path anymore (init_db() now runs the sync
+    engine branch, which calls _oracle_repair_partial_unique_indexes_sync
+    instead) -- kept, and still exported from database.py, because
+    tests/test_database_characterization.py exercises this exact function
+    directly as its characterization of the repair SQL.
     """
     from sqlalchemy import text
 
-    # (index_name_uppercase, table_name_uppercase, column_list)
-    arc_indexes = [
-        ("UK_GG_MEMBERS_WORKSPACE",         "GG_MEMBERS",         "WORKSPACE_ID, USER_ID"),
-        ("UK_GG_MEMBERS_CHANNEL",           "GG_MEMBERS",         "CHANNEL_ID, USER_ID"),
-        ("UK_GG_MEMBERS_THREAD",            "GG_MEMBERS",         "THREAD_ID, USER_ID"),
-        ("UK_GG_APP_CONNECTIONS_WORKSPACE", "GG_APP_CONNECTIONS", "WORKSPACE_ID, APP_ID"),
-        ("UK_GG_APP_CONNECTIONS_CHANNEL",   "GG_APP_CONNECTIONS", "CHANNEL_ID, APP_ID"),
-        ("UK_GG_APP_CONNECTIONS_THREAD",    "GG_APP_CONNECTIONS", "THREAD_ID, APP_ID"),
-        ("UK_GG_DATASOURCES_WORKSPACE",     "DATASOURCES",        "WORKSPACE_ID, NAME"),
-        ("UK_GG_DATASOURCES_CHANNEL",       "DATASOURCES",        "CHANNEL_ID, NAME"),
-        ("UK_GG_DATASOURCES_THREAD",        "DATASOURCES",        "THREAD_ID, NAME"),
-        ("UK_GG_DATASOURCES_MESSAGE",       "DATASOURCES",        "MESSAGE_ID, NAME"),
-    ]
-    for idx_name, table_name, cols in arc_indexes:
+    for idx_name, table_name, cols in _ARC_INDEXES:
         result = await conn.execute(
             text("SELECT uniqueness FROM user_indexes WHERE index_name = :n"),
             {"n": idx_name},
@@ -47,6 +56,30 @@ async def _oracle_repair_partial_unique_indexes(conn) -> None:
             try:
                 await conn.execute(text(f'DROP INDEX "{idx_name}"'))
                 await conn.execute(text(f'CREATE INDEX "{idx_name}" ON "{table_name}" ({cols})'))
+                print(f"  repaired: {idx_name} (unique → non-unique)")
+            except Exception as e:
+                print(f"  warning: could not repair {idx_name}: {e}")
+
+
+def _oracle_repair_partial_unique_indexes_sync(conn) -> None:
+    """Sync counterpart of `_oracle_repair_partial_unique_indexes` --
+    same SQL, same _ARC_INDEXES list, no `await` -- for init_db()'s Oracle
+    branch now that engine is a sync Engine (python-oracledb thick mode,
+    see docs/oci-oracle/ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md
+    "shay-api" section). This is the one actually called by the live
+    Oracle path."""
+    from sqlalchemy import text
+
+    for idx_name, table_name, cols in _ARC_INDEXES:
+        result = conn.execute(
+            text("SELECT uniqueness FROM user_indexes WHERE index_name = :n"),
+            {"n": idx_name},
+        )
+        row = result.fetchone()
+        if row and row[0] == "UNIQUE":
+            try:
+                conn.execute(text(f'DROP INDEX "{idx_name}"'))
+                conn.execute(text(f'CREATE INDEX "{idx_name}" ON "{table_name}" ({cols})'))
                 print(f"  repaired: {idx_name} (unique → non-unique)")
             except Exception as e:
                 print(f"  warning: could not repair {idx_name}: {e}")

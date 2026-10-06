@@ -6,7 +6,7 @@ Run this script to add the required columns for the embedding feature
 import asyncio
 import sys
 from sqlalchemy import text
-from app.core.database import engine
+from app.core.database import _is_oracle, engine
 
 async def add_embedding_columns():
     """Add embedding columns to gg_datasources table"""
@@ -138,7 +138,19 @@ async def main():
     print("  - embedding_status (INTEGER, default: 0)")
     print("  - Index: idx_datasource_embedding_status")
     print("=" * 60)
-    
+
+    if _is_oracle:
+        # This script's SQL (information_schema.columns, pg_indexes, Postgres
+        # ALTER COLUMN syntax) is Postgres-only and always has been -- it was
+        # never Oracle-compatible. Before the Oracle engine became sync
+        # (ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md "shay-api" section)
+        # this failed deep inside Postgres-specific SQL against Oracle;
+        # now `engine` there is a sync Engine and `async with engine.begin()`
+        # would fail immediately with a confusing asyncio error instead.
+        # Fail fast with a clear message rather than either of those.
+        print("❌ This script targets PostgreSQL only; the active database is Oracle. Nothing to do.")
+        sys.exit(1)
+
     # Run the migration
     await add_embedding_columns()
     

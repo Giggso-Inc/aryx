@@ -71,6 +71,14 @@ services:
       - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_DB_USER=${ARYX_DB_USER}
       - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      # python-oracledb thick mode (Oracle Instant Client, baked into this
+      # image's Dockerfile) -- default, see docs/oci-oracle/
+      # ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md. Thin mode cannot
+      # decode "OSON version 2" (Oracle ADB 23ai/26ai), confirmed live;
+      # thick mode fixes it. Set to "thin" to revert instantly (container
+      # restart only, no rebuild) if this ever needs to be rolled back.
+      - ARYX_ORACLE_CLIENT_MODE=${ARYX_ORACLE_CLIENT_MODE:-thick}
+      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_8
       # Graph → Oracle Graph (ADB SQL/PGQ) + PGX for analytics/reasoning
       - ARYX_GRAPH_BACKEND=oci_graph
       - PGX_SERVER_URL=http://pgx-server:7007
@@ -259,6 +267,16 @@ services:
       - DATABASE_URL=oracle+oracledb://${ARYX_DB_USER}:${ARYX_DB_PASSWORD}@localhost/?dsn=${ARYX_OCI_ADB_DSN}
       - SHAY_RUN_MIGRATIONS=false
       - SHAY_INIT_DB=true
+      # python-oracledb thick mode -- see docs/oci-oracle/
+      # ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md "shay-api" section.
+      # Oracle access converted to a synchronous SQLAlchemy engine
+      # (AsyncSessionShim, app/core/async_session_shim.py) specifically so
+      # this can be enabled -- the previous async engine made this crash
+      # with DPY-2019 (driver_mode is a one-shot, whole-process lock; an
+      # async connection unconditionally requires thin mode). Set to
+      # "thin" to revert instantly if needed.
+      - ARYX_ORACLE_CLIENT_MODE=${ARYX_ORACLE_CLIENT_MODE:-thick}
+      - ARYX_ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_8
       # Aryx bridge — internal Docker network URL + shared API key
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}

@@ -24,6 +24,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
 
+from app.core.oracle_client import init_thick_mode_if_configured
+init_thick_mode_if_configured()  # before any DB connection -- see that module's docstring
+
 from app.core.config import settings
 
 # Configure logging

@@ -20,11 +20,29 @@ def _load(name: str, path: Path) -> ModuleType:
     return mod
 
 
-_engine = _load("_eng", ROOT / ".claude/scripts/attribution_engine.py")
+_HERE = Path(__file__).resolve().parent
+
+
+def _sibling(name: str) -> Path:
+    """Resolve a sibling script from THIS file's directory first.
+
+    The installer copies every script into ~/.claude/scripts and puts nothing in
+    the user's project, so ROOT/.claude/scripts/<name> exists only when the
+    project happens to BE a Raven source checkout. Resolving from __file__ makes
+    this work on a normal install; the ROOT fallback keeps the source-checkout
+    case, and any project vendoring its own copy, working unchanged.
+    """
+    here = _HERE / name
+    if here.exists():
+        return here
+    return ROOT / ".claude/scripts" / name
+
+
+_engine = _load("_eng", _sibling("attribution_engine.py"))
 
 
 def _card_link():
-    p = ROOT / ".claude/scripts/card_link.py"
+    p = _sibling("card_link.py")
     return _load("_card", p) if p.exists() else None
 
 
@@ -80,6 +98,18 @@ def stamp_card_id(attr_map: dict) -> dict:
 
 
 def _docs_module() -> ModuleType | None:
+    """Load the doc writer, or None when the project does not ship one.
+
+    Deliberately NOT _sibling() — this one stays anchored to the PROJECT root
+    while _engine and _card_link resolve from __file__. That asymmetry is the
+    point, not an oversight: write_attributions() does not merely write docs, it
+    `git add`s them, so resolving this from __file__ would switch doc generation
+    on for every install and start silently staging docs/contribute/** into
+    every commit. That is a far larger behaviour change than the attribution fix
+    it would ride in on, and belongs in its own ticket. Keeping ROOT here
+    confines doc generation to a Raven source checkout, which is the only place
+    it happened before.
+    """
     try:
         return _load("_docs", ROOT / ".claude/scripts/doc-writer.py")
     except Exception:
@@ -123,14 +153,21 @@ def git_email() -> str:
         return os.environ.get("GIT_AUTHOR_EMAIL", "unknown")
 
 
-def auto_attribute(file_path: str, gap: tuple[int, int], human: str) -> None:
+def attribute_gap(file_path: str, gap: tuple[int, int], human: str) -> None:
+    """D-269: record a "gap" — a changed line the local hook never actually
+    captured who/what wrote — honestly, as its own source, never as
+    "source": "human" (the old name/behaviour, auto_attribute()). Claiming a
+    gap was confirmed human silently undercounted AI lines whenever the hook
+    missed a real AI edit for any reason (timing, an edit method it doesn't
+    watch, a dropped event). `human` is who the commit is attributed to, not
+    a claim about who wrote these specific lines."""
     rec = {
-        "ts": datetime.now(timezone.utc).isoformat(), "source": "human",
+        "ts": datetime.now(timezone.utc).isoformat(), "source": "gap",
         "tool": "auto-attribute", "file": file_path,
         "old_range": [gap[0], gap[0]], "new_range": [gap[0], gap[1]],
         "model": "", "mode": "", "skill": "",
         "session_id": os.environ.get("CLAUDE_SESSION_ID", ""),
-        "human": human, "reason": "pre-commit auto-attribution",
+        "human": human, "reason": "pre-commit gap — unattributed by the local hook",
     }
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with EDITS.open("a", encoding="utf-8") as f:
@@ -180,15 +217,23 @@ def main() -> int:
     if not gaps:
         write_attributions(attr_map)
         return 0
+    # D-269: every gap gets recorded, in EVERY triage mode — as an honest
+    # "gap" span (attribute_gap, source="gap"), never silently claimed as
+    # human (the old AUTO-only behaviour) and never silently left out of
+    # attributions.json entirely (the old ASK/default behaviour — and ASK
+    # IS the default, and a hook's stdin is never a TTY, so FLAG was always
+    # the normal case, not the exception). triage_mode below controls ONLY
+    # whether the commit is blocked pending human review, never whether the
+    # data reaches the Hub.
+    human = git_email()
+    for f, gs in gaps.items():
+        for g in gs:
+            attribute_gap(f, g, human)
+    edits = _engine.load_edits(EDITS)
+    attr_map = _engine.build_attribution_map(edits, set(files))
+    write_attributions(attr_map)
     mode = triage_mode()
     if mode == "AUTO":
-        human = git_email()
-        for f, gs in gaps.items():
-            for g in gs:
-                auto_attribute(f, g, human)
-        edits = _engine.load_edits(EDITS)
-        attr_map = _engine.build_attribution_map(edits, set(files))
-        write_attributions(attr_map)
         return 0
     if mode == "ASK" and not sys.stdin.isatty():
         return report_gaps(gaps, "ASK (non-TTY → FLAG)")

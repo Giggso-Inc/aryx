@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from aryx.api import main_oracle_client  # noqa: F401 — initializes oracledb thick mode (if configured) at import time, before any DB connection
 from aryx.api import main_logging  # noqa: F401 — runs logger setup at import time
 from aryx.api.actions_api import actions_router
 from aryx.api.adjudication_api import adjudication_router
