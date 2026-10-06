@@ -14,6 +14,11 @@ Checks:
 * attribute_names    -- attribute rows that carry a name (Ask shows names, not ids).
 * data_tables        -- rows that match a data-table shape (whitelist, attrSequence, region
                          mapping, series mapping, hierarchy). SKIP when the workspace cannot be read.
+
+Run it after the XML AND the data-table CSVs are uploaded (before the tables arrive, data_tables
+FAILs by design). It reads every row of the non-Bm types and groups the whole workspace by type, so on a
+very large workspace run it in a quiet period. A SKIP may mean the read itself failed; treat it as
+"not verified".
 """
 from __future__ import annotations
 
@@ -62,8 +67,12 @@ def _is_text_only(attrs: dict[str, Any]) -> bool:
 
 
 def check_leaf_wrapper_types(rdb: Any, workspace_id: int) -> Check:
+    types = rdb.list_ontology_types(workspace_id)
+    if not types:
+        # the real readers log a failed read and return [] instead of raising
+        return Check("leaf_wrapper_types", SKIP, "no ontology types returned (empty workspace, or the read failed)")
     leaked: dict[str, int] = {}
-    for otype in rdb.list_ontology_types(workspace_id):
+    for otype in types:
         if _catalog_prefix(otype) or otype.lower().endswith(_CONTAINER_SUFFIX):
             continue                       # a Bm<Tag> entity type, or the container
         rows = rdb.fetch_entities_by_exact_type(workspace_id, otype)
@@ -120,5 +129,12 @@ def evaluate_workspace_health(rdb: Any, workspace_id: int, catalog_prefix: str =
 
 
 def worst_status(checks: list[Check]) -> str:
-    order = {PASS: 0, SKIP: 0, WARN: 1, FAIL: 2}
+    """FAIL > WARN > SKIP > PASS. A skipped check is never read as a pass."""
+    order = {PASS: 0, SKIP: 1, WARN: 2, FAIL: 3}
     return max((c.status for c in checks), key=lambda s: order[s], default=PASS)
+
+
+def skipped(checks: list[Check]) -> list[Check]:
+    """Checks that could not run. The readers swallow database errors and return empty results, so
+    a SKIP can mean the read failed: the report is incomplete, not healthy."""
+    return [c for c in checks if c.status == SKIP]

@@ -168,3 +168,17 @@ def test_result_reports_unfolded_leaf_tags_only_when_the_fold_left_one_behind():
 def test_a_failing_audit_never_aborts_the_ingest():
     by_tag, _edges = _grouped()
     assert audit_unfolded_leaf_tags(by_tag, None, fold_enabled=True, log_id="job-x") == {}
+
+
+def test_readers_that_swallow_errors_and_return_empty_are_never_reported_as_healthy():
+    rdb = FakeRdb()                                     # every accessor returns empty, like a failed read
+    checks = health.evaluate_workspace_health(rdb, 7)
+    assert [c.status for c in checks] == [health.SKIP] * 4
+    assert health.worst_status(checks) == health.SKIP and len(health.skipped(checks)) == 4
+
+
+def test_worst_status_ranks_skip_above_pass_but_below_warn():
+    mk = lambda *s: [health.Check("c", x, "") for x in s]
+    assert health.worst_status(mk(health.PASS, health.SKIP)) == health.SKIP
+    assert health.worst_status(mk(health.SKIP, health.PASS)) == health.SKIP
+    assert health.worst_status(mk(health.SKIP, health.WARN)) == health.WARN
