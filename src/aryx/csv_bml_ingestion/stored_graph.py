@@ -61,6 +61,26 @@ def _attrs(value: Any) -> dict:
     return {}
 
 
+_BML_KEYS = {TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY}
+
+
+def _own_identity(attrs: dict, text_key: str) -> dict[str, str]:
+    """Short scalar values the matched vertex itself carries (its name, id, ...), excluding its text."""
+    out: dict[str, str] = {}
+    for key, value in attrs.items():
+        if key in _BML_KEYS or key == text_key or len(out) >= MAX_IDENTITY_VALUES:
+            continue
+        if isinstance(value, str) and 0 < len(value) <= MAX_IDENTITY_CHARS:
+            out[str(key)] = value
+    return out
+
+
+def _longest_text_key(attrs: dict) -> str:
+    """Name of the vertex's longest string property: the script body once it is folded onto a parent."""
+    texts = {k: v for k, v in attrs.items() if isinstance(v, str) and k not in _BML_KEYS}
+    return max(texts, key=lambda k: len(texts[k])) if texts else "text"
+
+
 class StoredGraphLookup:
     """``lookup(table)`` over the workspace's stored XML knowledge graphs."""
 
@@ -119,7 +139,11 @@ class StoredGraphLookup:
             for sql, tables in zip(attrs.get(QUERIES_KEY, []), attrs.get(QUERY_TABLES_KEY, []))
             if table in tables.split(","))
         identity, path = self._context(ws, entity_id)
-        return BmlMatch(table=table, node_id=entity_id, node_tag=tag, prop="text", path=path,
+        prop = "text" if "text" in attrs else _longest_text_key(attrs)
+        own = _own_identity(attrs, prop)
+        if own:     # the script text is folded onto its function: the vertex describes itself
+            identity = own
+        return BmlMatch(table=table, node_id=entity_id, node_tag=tag, prop=prop, path=path,
                         identity=identity, label=make_label(identity, tag, entity_id), queries=queries)
 
     def _context(self, ws: int, entity_id: int) -> tuple[dict[str, str], tuple[str, ...]]:

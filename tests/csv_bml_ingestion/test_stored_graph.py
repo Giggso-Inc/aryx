@@ -543,7 +543,7 @@ def test_the_query_lists_the_confirm_step_hands_over_survive_the_graph_store(mon
     from aryx.graph.oracle_graph_store_helpers import _safe_attrs_json
     stored = [json.loads(_safe_attrs_json(p)) for p in _confirm_payloads(monkeypatch, "true") if TABLES_KEY in p]
     assert [s[TABLES_KEY] for s in stored] == [["attrsequence"], ["attrtopdnonfrequency"]]
-    assert stored[0][QUERIES_KEY][0].count("x=1") == 60 and len(stored[0]["text"]) == 201   # text clipped, list intact
+    assert stored[0][QUERIES_KEY][0].count("x=1") == 60 and len(stored[0]["script_text"]) == 201   # script text (now on the function) clipped, list intact
 
 
 def test_the_confirm_step_hands_over_plain_properties_when_the_switch_is_off(monkeypatch):
@@ -635,3 +635,29 @@ def test_a_workspace_id_in_the_raw_graph_range_fails_the_upload_cleanly(monkeypa
     monkeypatch.setattr(sg, "get_cpq_ingestion_settings", lambda: SimpleNamespace(cpq_raw_workspace_offset=2))
     res = sess.ingest(b"x", "attrSequence.csv")
     assert (res.status, res.error_code) == ("failed", "CBI_WORKSPACE_SCOPE") and not seen   # never reached step 2
+
+
+# --- script_text folded onto its function (leaf fold + BML enrichment together) -------------------
+def test_lookup_finds_a_script_whose_text_is_folded_onto_its_function(enriched, monkeypatch):
+    from collections import defaultdict
+
+    from aryx.cpq_ingestion.naming import raw_workspace_id
+    from aryx.cpq_ingestion.raw_graph.structural_leaf import fold_structural_leaf_tags
+
+    by_tag = defaultdict(list)
+    for n in enriched.nodes:
+        by_tag[n.tag].append(n)
+    folded = fold_structural_leaf_tags(enriched.edges, dict(by_tag))
+    assert "script_text" not in folded
+    survivors = {n.id for nodes in folded.values() for n in nodes}
+    graph = SimpleNamespace(nodes=[n for n in enriched.nodes if n.id in survivors], edges=[
+        e for e in enriched.edges if e.source_id in survivors and e.target_id in survivors])
+    scope = raw_workspace_id(3, 1_000_000_000, "some_file")
+    monkeypatch.setattr(sg, "get_cpq_ingestion_settings", lambda: SimpleNamespace(cpq_raw_workspace_offset=1_000_000_000))
+    lk = StoredGraphLookup(FakeGraphDb(graph, scope), 3)
+    found = lk.lookup("attrSequence")
+    assert len(found.matches) == 1
+    match = found.matches[0]
+    assert match.node_tag == "fn" and match.prop == "script_text"
+    assert match.identity.get("name") == "Seq rule"      # the function describes itself, not its siblings
+    assert match.queries and match.queries[0].tables == ("attrsequence",)

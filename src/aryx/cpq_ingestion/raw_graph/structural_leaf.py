@@ -45,10 +45,38 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
     set-membership check per tag, removes that multiplier entirely.
     """
     node_ids = {n.id for n in nodes}
+    allowed = {RAW_PROP_TEXT, *_carried_keys()}
     for n in nodes:
-        if set(n.properties) - {RAW_PROP_TEXT}:
+        if set(n.properties) - allowed:
             return False
     return node_ids.isdisjoint(parent_ids)
+
+
+def _carried_keys() -> tuple[str, ...]:
+    """Query-table lists the CSV BML enrichment adds to a node that holds SQL (not XML attributes).
+
+    They do not make a tag a non-leaf: the fold carries them onto the parent with the text.
+    Imported lazily (csv_bml_ingestion imports this package).
+    """
+    from aryx.csv_bml_ingestion.bml_graph import QUERIES_KEY, QUERY_TABLES_KEY, TABLES_KEY  # noqa: PLC0415
+
+    return TABLES_KEY, QUERIES_KEY, QUERY_TABLES_KEY
+
+
+def _carry_lists(parent: RawNode, leaf: RawNode) -> None:
+    """Merge the leaf's query-table lists onto the parent (extend; never nest; tables de-duplicated)."""
+    tables_key, queries_key, query_tables_key = _carried_keys()
+    for key in (tables_key, queries_key, query_tables_key):
+        values = leaf.properties.get(key)
+        if not isinstance(values, list):
+            continue
+        current = parent.properties.get(key)
+        if not isinstance(current, list):
+            parent.properties[key] = list(values)
+        elif key == tables_key:
+            current.extend(v for v in values if v not in current)
+        else:
+            current.extend(values)      # queries and their tables stay parallel
 
 
 def fold_structural_leaf_tags(
@@ -167,6 +195,7 @@ def fold_structural_leaf_tags(
                 existing.append(text)
             else:
                 parent.properties[tag] = [existing, text]
+            _carry_lists(parent, leaf)
             folded_count += 1
         if orphan_count:
             # Parentless leaves (e.g. a leaf-shaped root tag) keep this tag
