@@ -1,6 +1,6 @@
 # Attribution — docker-compose-oci.yml
 
-Last updated: 2026-10-06T10:48:02.440512+00:00
+Last updated: 2026-10-06T10:48:16.688474+00:00
 Total lines: 395
 Lines AI-generated: 72 (18.2%)
 Lines human-typed: 27

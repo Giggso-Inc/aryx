@@ -1,6 +1,6 @@
 # Attribution — Dockerfile
 
-Last updated: 2026-10-06T10:48:02.441778+00:00
+Last updated: 2026-10-06T10:48:16.689195+00:00
 Total lines: 90
 Lines AI-generated: 11 (12.2%)
 Lines human-typed: 36

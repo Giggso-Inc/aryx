@@ -1,6 +1,6 @@
 # Attribution — shay_backend/Dockerfile
 
-Last updated: 2026-10-06T10:48:02.442374+00:00
+Last updated: 2026-10-06T10:48:16.689785+00:00
 Total lines: 99
 Lines AI-generated: 9 (9.1%)
 Lines human-typed: 28
