@@ -7,6 +7,31 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app/src:/app
 
+# Oracle Instant Client (thick-mode python-oracledb) -- see docs/oci-oracle/
+# ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md. Gated at runtime behind
+# ARYX_ORACLE_CLIENT_MODE (src/aryx/api/main_oracle_client.py); installed
+# unconditionally here since the image is built once and the mode is a
+# cheap env-var flip, not a rebuild. libaio1t64 (not the historically
+# common libaio1 -- Debian's 64-bit time_t package rename) is the one
+# confirmed missing system dependency on this base image. unzip (not
+# Python's zipfile module) preserves the package's internal symlinks
+# (e.g. libclntsh.so -> libclntsh.so.23.1) -- zipfile.extractall() does
+# not, confirmed live while building this.
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget unzip libaio1t64 \
+    && wget -q https://download.oracle.com/otn_software/linux/instantclient/2380000/instantclient-basiclite-linux.x64-23.8.0.25.04.zip \
+        -O /tmp/instantclient.zip \
+    && mkdir -p /opt/oracle \
+    && unzip -q /tmp/instantclient.zip -d /opt/oracle \
+    && rm /tmp/instantclient.zip \
+    # Oracle's client binary dlopen()s the old "libaio.so.1" name; this
+    # base image only ships "libaio.so.1t64" (Debian's 64-bit time_t
+    # package rename) -- confirmed live, DPI-1047 without this symlink.
+    && ln -s /lib/x86_64-linux-gnu/libaio.so.1t64 /lib/x86_64-linux-gnu/libaio.so.1 \
+    && apt-get purge -y --auto-remove wget unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .

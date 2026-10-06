@@ -652,6 +652,11 @@
       "register_routers"
     ],
     [
+      "shay_backend/app/core/async_session_shim.py",
+      42,
+      "execute"
+    ],
+    [
       "shay_backend/app/core/auth/passwords.py",
       21,
       "<try>"
@@ -733,32 +738,47 @@
     ],
     [
       "shay_backend/app/core/database.py",
-      38,
+      45,
       "_set_oracle_call_timeout"
     ],
     [
       "shay_backend/app/core/database.py",
-      52,
+      59,
       "<try>"
     ],
     [
       "shay_backend/app/core/database.py",
-      146,
-      "init_db"
+      97,
+      "<if>"
+    ],
+    [
+      "shay_backend/app/core/database.py",
+      132,
+      "<if>"
     ],
     [
       "shay_backend/app/core/database_optimizations.py",
-      55,
+      90,
       "create_postgresql_optimizations"
     ],
     [
       "shay_backend/app/core/database_optimizations.py",
-      57,
+      92,
       "<try>"
     ],
     [
       "shay_backend/app/core/database_sync.py",
       20,
+      "build_sync_oracle_engine"
+    ],
+    [
+      "shay_backend/app/core/database_sync.py",
+      43,
+      "build_sync_oracle_engine"
+    ],
+    [
+      "shay_backend/app/core/database_sync.py",
+      46,
       "get_sync_engine"
     ],
     [
@@ -835,6 +855,16 @@
       "shay_backend/app/core/encryption_utils/registration.py",
       56,
       "create_registration_url"
+    ],
+    [
+      "shay_backend/app/core/oracle_client.py",
+      34,
+      "init_thick_mode_if_configured"
+    ],
+    [
+      "shay_backend/app/core/oracle_client.py",
+      44,
+      "<try>"
     ],
     [
       "shay_backend/app/core/socket.py",
@@ -7473,27 +7503,27 @@
     ],
     [
       "shay_backend/main.py",
-      55,
+      58,
       "lifespan"
     ],
     [
       "shay_backend/main.py",
-      90,
+      93,
       "<try>"
-    ],
-    [
-      "shay_backend/main.py",
-      99,
-      "trigger_first_run"
     ],
     [
       "shay_backend/main.py",
       102,
+      "trigger_first_run"
+    ],
+    [
+      "shay_backend/main.py",
+      105,
       "<try>"
     ],
     [
       "shay_backend/main.py",
-      122,
+      125,
       "<try>"
     ],
     [
@@ -10488,7 +10518,7 @@
     ],
     [
       "src/aryx/api/main.py",
-      100,
+      101,
       "create_app"
     ],
     [

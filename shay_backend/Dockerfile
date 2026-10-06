@@ -17,6 +17,26 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Oracle Instant Client (thick-mode python-oracledb, sync engine only -- see
+# docs/oci-oracle/ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md "shay-api"
+# section). Run as root, before the USER appuser switch below, so appuser
+# can still read (not write) these files. libaio1t64 (not the historically
+# common libaio1 -- Debian's 64-bit time_t package rename) and the
+# libaio.so.1 symlink are both confirmed required on this base image
+# (same findings as the main Dockerfile's Instant Client install).
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        unzip libaio1t64 \
+    && curl -sL https://download.oracle.com/otn_software/linux/instantclient/2380000/instantclient-basiclite-linux.x64-23.8.0.25.04.zip \
+        -o /tmp/instantclient.zip \
+    && mkdir -p /opt/oracle \
+    && unzip -q /tmp/instantclient.zip -d /opt/oracle \
+    && rm /tmp/instantclient.zip \
+    && ln -s /lib/x86_64-linux-gnu/libaio.so.1t64 /lib/x86_64-linux-gnu/libaio.so.1 \
+    && chmod -R a+rX /opt/oracle \
+    && apt-get purge -y --auto-remove unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

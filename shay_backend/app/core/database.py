@@ -21,16 +21,23 @@ helper -> database_sync.py (builds its own independent Engine, shares no
 state with the async engine here).
 """
 
+import asyncio
 import logging
 from typing import AsyncGenerator
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
+from app.core.async_session_shim import make_async_session_local
 from app.core.config import settings
-from app.core.database_url import _ensure_async_postgres_driver, _extract_oracle_dsn, _normalize_postgres_url
-from app.core.database_optimizations import _oracle_repair_partial_unique_indexes, create_postgresql_optimizations
-from app.core.database_sync import get_sync_engine  # noqa: F401 — re-exported for external callers
+from app.core.database_url import _ensure_async_postgres_driver, _normalize_postgres_url
+from app.core.database_optimizations import (
+    _oracle_repair_partial_unique_indexes,
+    _oracle_repair_partial_unique_indexes_sync,
+    create_postgresql_optimizations,
+)
+from app.core.database_sync import build_sync_oracle_engine, get_sync_engine  # noqa: F401 — get_sync_engine re-exported for external callers
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +85,7 @@ _database_url = _ensure_async_postgres_driver(_raw_database_url)
 _db_url = _database_url.strip().lower()
 # Use normalized URL for PostgreSQL so passwords with @, !, etc. work (sqlite/oracle unchanged)
 _database_url = _normalize_postgres_url(_database_url) if _db_url.startswith(("postgresql", "postgres")) else _database_url
+_is_oracle = _db_url.startswith("oracle")
 
 if _db_url.startswith("sqlite"):
     # SQLite configuration
@@ -86,25 +94,19 @@ if _db_url.startswith("sqlite"):
         echo=settings.DEBUG,
         connect_args={"check_same_thread": False}
     )
-elif _database_url.strip().lower().startswith("oracle"):
-    # Oracle DB (new): JDBC-style or ?dsn= in DATABASE_URL; uses DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW
-    # Oracle DB: use oracledb_async so create_async_engine loads the async driver (required for asyncio)
-    oracle_url = _database_url.strip()
-    if "oracledb_async" not in oracle_url.lower():
-        oracle_url = oracle_url.replace("oracle+oracledb", "oracle+oracledb_async", 1)
-    # TCPS/SSL: DSN only from DATABASE_URL – JDBC-style @(description=...) or query ?dsn=...
-    oracle_url, oracle_dsn = _extract_oracle_dsn(oracle_url)
-    engine_kw: dict = {
-        "echo": settings.DEBUG,
-        "pool_size": settings.DATABASE_POOL_SIZE,
-        "max_overflow": settings.DATABASE_MAX_OVERFLOW,
-        "pool_pre_ping": True,
-        "pool_recycle": settings.DATABASE_POOL_RECYCLE_SECONDS,
-    }
-    if oracle_dsn:
-        engine_kw["connect_args"] = {"dsn": oracle_dsn}
-    engine = create_async_engine(oracle_url, **engine_kw)
-    event.listens_for(engine.sync_engine, "connect")(_set_oracle_call_timeout)
+elif _is_oracle:
+    # Oracle DB: a plain SYNC engine, not create_async_engine -- see docs/
+    # oci-oracle/ORACLE_THICK_MODE_MIGRATION_PLAN_2026-10-06.md "shay-api"
+    # section. python-oracledb hardcodes thin mode for every asyncio
+    # connection with no override (confirmed live: thick mode crash-looped
+    # this service with DPY-2019 the moment an async connection was also
+    # attempted in the same process -- driver_mode is a one-shot,
+    # whole-process lock, not a per-connection setting). A sync engine is
+    # the only way this service can use thick mode at all. AsyncSessionShim
+    # (app/core/async_session_shim.py) keeps every `AsyncSessionLocal()` /
+    # `Depends(get_db)` call site below working unchanged.
+    engine = build_sync_oracle_engine(pool_recycle=settings.DATABASE_POOL_RECYCLE_SECONDS)
+    event.listens_for(engine, "connect")(_set_oracle_call_timeout)
 else:
     # PostgreSQL configuration with optimizations (use normalized URL for special chars in password)
     engine = create_async_engine(
@@ -123,12 +125,20 @@ else:
         }
     )
 
-# Create session factory
-AsyncSessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False
-)
+# Create session factory. Oracle: AsyncSessionShim wraps a sync `Session`
+# (see the Oracle branch above) behind the same callable/async-context-
+# manager shape async_sessionmaker produces -- every `AsyncSessionLocal()`
+# call site below and across the codebase keeps working unchanged.
+if _is_oracle:
+    AsyncSessionLocal = make_async_session_local(
+        sessionmaker(bind=engine, expire_on_commit=False)
+    )
+else:
+    AsyncSessionLocal = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False
+    )
 
 # Create base class for models
 Base = declarative_base()
@@ -145,18 +155,24 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """Initialize database tables"""
+    import app.models  # noqa: F401 — importing the package registers all ORM classes with Base.metadata
+
+    if _is_oracle:
+        # engine is a sync Engine here (see the Oracle branch above) --
+        # plain `with`/no `run_sync`/no `await`, not the async-engine path
+        # below.
+        with engine.begin() as conn:
+            _oracle_repair_partial_unique_indexes_sync(conn)
+            Base.metadata.create_all(conn)
+        print("✅ Database tables created successfully")
+        return
+
     async with engine.begin() as conn:
-        import app.models  # noqa: F401 — importing the package registers all ORM classes with Base.metadata
-
-        _url = settings.DATABASE_URL or ""
-        if _url.strip().lower().startswith("oracle"):
-            await _oracle_repair_partial_unique_indexes(conn)
-
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
 
         # Create PostgreSQL-specific indexes and optimizations
-        if not _url.startswith("sqlite") and not _url.strip().lower().startswith("oracle"):
+        if not _db_url.startswith("sqlite"):
             await create_postgresql_optimizations(conn)
 
         print("✅ Database tables created successfully")
@@ -164,4 +180,8 @@ async def init_db() -> None:
 
 async def close_db() -> None:
     """Close database connections"""
+    if _is_oracle:
+        # engine is a sync Engine here -- dispose() is not a coroutine on it.
+        await asyncio.to_thread(engine.dispose)
+        return
     await engine.dispose()

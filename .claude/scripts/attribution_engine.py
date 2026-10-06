@@ -47,6 +47,11 @@ def span_from(rec: dict) -> dict:
         "start": start,
         "end": end,
         "source": rec.get("source", "ai"),
+        # D-269: True for a "gap" record (contribute-precommit.py's
+        # attribute_gap) — the local hook never actually captured who/what
+        # wrote this range. Carried through to the Hub payload so it's
+        # recorded honestly instead of merged into "human".
+        "is_gap": rec.get("source") == "gap",
         "human": rec.get("human", ""),
         "model": rec.get("model", "") or "",
         "mode": rec.get("mode", "") or "",
