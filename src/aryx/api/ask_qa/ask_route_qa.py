@@ -66,7 +66,16 @@ def _route_qa(
             attrs, _ = _cpq_engine.load_product_config(
                 reader, req.workspace_id, product_for_attrs,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            raven_log(
+                "WARN", "P3",
+                "ask.qa.product_config_load_failed load_product_config failed, QA answered with empty attrs",
+                error_code="ARYX_ASK_QA_PRODUCT_CONFIG_LOAD_FAILED", context={
+                    "dependency_name": "cpq_engine", "operation": "load_product_config",
+                    "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                    "product_context": product_for_attrs or "",
+                },
+            )
             _ask_api_module.logger.debug("route_qa: load_product_config failed", exc_info=True)
             attrs = []
     result = _ask_handle_cpq_qa_module._handle_cpq_qa(

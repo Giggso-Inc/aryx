@@ -12,6 +12,7 @@ from typing import Any
 
 from aryx.api.ask_request_models import AskRequest
 from aryx.graph.feature_search import search_products_combined
+from aryx.raven_log import raven_log
 
 
 def _format_feature_region_search_answer(
@@ -66,6 +67,16 @@ def _route_feature_region_search(
             limit=20,
         )
     except Exception as exc:  # noqa: BLE001 -- never let a search error break the turn
+        raven_log(
+            "WARN", "P3",
+            "ask.feature_search.lookup_failed search failed, answered as no matches",
+            error_code="ARYX_ASK_FEATURE_SEARCH_FAILED", context={
+                "dependency_name": "graph.feature_search", "operation": "search_products_combined",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                "region": region or "", "feature_label": feature_label or "",
+                "feature_value": feature_value or "",
+            },
+        )
         logger.warning(
             "feature_region_search: search_products_combined failed region=%r "
             "feature_label=%r feature_value=%r: %s",
