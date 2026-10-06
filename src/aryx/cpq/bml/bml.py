@@ -552,7 +552,11 @@ class BmlEvaluator:
             vals = d.get("allowed_values")
             if isinstance(vals, list):
                 return [str(v) for v in vals if str(v).strip()]
-        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+        except Exception as exc:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            raven_log("WARN", "P3", "ask.bml.tier2_eval_failed tier-2 BML LLM evaluation failed",
+                      error_code="ARYX_ASK_BML_EVAL_FAILED", context={
+                          "dependency_name": "llm_runtime", "operation": "allowed_values",
+                          "result": "failed", "error_class": type(exc).__name__, "attempt": 1})
             logger.debug("bml: tier-2 LLM evaluation failed", exc_info=True)
         return None
 
@@ -617,7 +621,11 @@ class BmlEvaluator:
             hide = d.get("hide")
             if isinstance(hide, bool):
                 return hide
-        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+        except Exception as exc:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            raven_log("WARN", "P3", "ask.bml.tier2_eval_failed tier-2 BML LLM evaluation failed",
+                      error_code="ARYX_ASK_BML_EVAL_FAILED", context={
+                          "dependency_name": "llm_runtime", "operation": "hide",
+                          "result": "failed", "error_class": type(exc).__name__, "attempt": 1})
             logger.debug("bml: tier-2 LLM hide-evaluation failed", exc_info=True)
         return None
 
@@ -685,7 +693,11 @@ class BmlEvaluator:
             val = d.get("condition_true")
             if isinstance(val, bool):
                 return val
-        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+        except Exception as exc:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            raven_log("WARN", "P3", "ask.bml.tier2_eval_failed tier-2 BML LLM evaluation failed",
+                      error_code="ARYX_ASK_BML_EVAL_FAILED", context={
+                          "dependency_name": "llm_runtime", "operation": "condition",
+                          "result": "failed", "error_class": type(exc).__name__, "attempt": 1})
             logger.debug("bml: tier-2 LLM condition-evaluation failed", exc_info=True)
         return None
 
@@ -739,6 +751,10 @@ class BmlEvaluator:
             val = d.get("ask_worthy")
             if isinstance(val, bool):
                 return val
-        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+        except Exception as exc:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            raven_log("WARN", "P3", "ask.bml.tier2_eval_failed tier-2 BML LLM evaluation failed",
+                      error_code="ARYX_ASK_BML_EVAL_FAILED", context={
+                          "dependency_name": "llm_runtime", "operation": "ask_worthy",
+                          "result": "failed", "error_class": type(exc).__name__, "attempt": 1})
             logger.debug("bml: tier-2 LLM ask-worthy classification failed", exc_info=True)
         return None

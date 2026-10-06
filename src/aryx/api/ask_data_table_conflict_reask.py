@@ -13,6 +13,7 @@ from typing import Any
 
 from aryx.cpq.pending_scope.pending_scope import set_pending_scope
 from aryx.cpq.session_guard.session_guard import push_snapshot
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,14 @@ def _reask_confirmed_data_table_conflict(
             session.filled, session.filled_source, workspace_id, catalog_prefix,
         )
     except Exception as exc:  # noqa: BLE001
+        raven_log(
+            "WARN", "P3", "ask.datatable.conflict_check_failed stale conflict check failed, reask skipped",
+            error_code="ARYX_ASK_DATATABLE_CONFLICT_CHECK_FAILED", context={
+                "dependency_name": "cpq_engine", "operation": "find_confirmed_data_table_conflicts",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                "workspace_id": workspace_id, "catalog_prefix": catalog_prefix or "",
+            },
+        )
         logger.warning(
             "cpq_proactive_stale_check: data-table conflict check failed: %r", exc,
         )

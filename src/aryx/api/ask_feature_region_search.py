@@ -12,6 +12,8 @@ from typing import Any
 
 from aryx.api.ask_request_models import AskRequest
 from aryx.graph.feature_search import search_products_combined
+from aryx.log_safe import text_ref
+from aryx.raven_log import raven_log
 
 
 def _format_feature_region_search_answer(
@@ -66,10 +68,27 @@ def _route_feature_region_search(
             limit=20,
         )
     except Exception as exc:  # noqa: BLE001 -- never let a search error break the turn
+        # region/feature_value are regex-extracted straight from the customer's own
+        # question (detect_feature_region_search) -- never log them verbatim, same
+        # free-text rule this module's siblings follow with text_ref(req.question).
+        # feature_label is a fixed constant ("Feature Type"), never customer input.
+        # Computed once and reused below so BOTH the structured record and the
+        # stdlib log line stay redacted -- a prior fix here missed the stdlib line.
+        region_ref, feature_value_ref = text_ref(region), text_ref(feature_value)
+        raven_log(
+            "WARN", "P3",
+            "ask.feature_search.lookup_failed search failed, answered as no matches",
+            error_code="ARYX_ASK_FEATURE_SEARCH_FAILED", context={
+                "dependency_name": "graph.feature_search", "operation": "search_products_combined",
+                "result": "failed", "error_class": type(exc).__name__, "attempt": 1,
+                "region_ref": region_ref, "feature_label": feature_label or "",
+                "feature_value_ref": feature_value_ref,
+            },
+        )
         logger.warning(
-            "feature_region_search: search_products_combined failed region=%r "
-            "feature_label=%r feature_value=%r: %s",
-            region, feature_label, feature_value, exc, exc_info=True,
+            "feature_region_search: search_products_combined failed region=%s "
+            "feature_label=%r feature_value=%s: %s",
+            region_ref, feature_label, feature_value_ref, exc, exc_info=True,
         )
         results = []
     answer = _format_feature_region_search_answer(results, region, feature_label, feature_value)
