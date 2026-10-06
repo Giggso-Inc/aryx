@@ -297,6 +297,22 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Off by default."
         ),
     )
+    cpq_bml_nested_if_enabled: bool = Field(
+        default=True,
+        description=(
+            "Tier-1 BML evaluates a branch body that is itself an if/else "
+            "chain (a nested if), instead of reporting the whole script as "
+            "unparseable. Previously only available under the broader F14 "
+            "flag (cpq_find_function_enabled); split out so nesting works "
+            "without the rest of F14. Live case (2026-10-07, ws 1267): the "
+            "'Hide HW Version unless APX Next NA...' hiding script nests its "
+            "region check inside the model check, so it evaluated to unknown "
+            "-> Hardware Version stayed visible and was asked for APX 900. "
+            "A missing variable inside the nested chain still reports "
+            "'blocked' (never guessed). On by default; set "
+            "ARYX_CPQ_BML_NESTED_IF_ENABLED=false to restore the old behavior."
+        ),
+    )
     cpq_multiselect_default_enabled: bool = Field(
         default=False,
         description=(

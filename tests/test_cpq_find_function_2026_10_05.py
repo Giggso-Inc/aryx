@@ -12,9 +12,12 @@ from aryx.cpq.bml.bml_tier1 import evaluate_hide_tier1, evaluate_tier1
 
 
 @contextmanager
-def _flag(on: bool):
+def _flag(on: bool, nested: bool = False):
+    """F14 on/off; `nested` is cpq_bml_nested_if_enabled (off here so 'F14 off'
+    still means the pre-F14 behaviour, the meaning these tests assert)."""
     m = MagicMock()
     m.return_value.cpq_find_function_enabled = on
+    m.return_value.cpq_bml_nested_if_enabled = nested
     with patch("aryx.cpq.bml.bml_find.get_settings", m), \
             patch("aryx.cpq.bml.bml_branches.get_settings", m):
         yield
@@ -107,6 +110,11 @@ def test_nested_ifs_with_literal_returns():
         assert evaluate_tier1(s, {"zoneVar": "NA"}) == (None, True)
     with _flag(False):
         assert evaluate_tier1(s, {"zoneVar": "EU"}) == (None, False)
+    # Nesting on its own (cpq_bml_nested_if_enabled, 2026-10-07): the chain is
+    # walked, but the nested find() clause still needs F14.
+    with _flag(False, nested=True):
+        assert evaluate_tier1(s, {"zoneVar": "EU"}) == (["C"], False)
+        assert evaluate_tier1(s, {"zoneVar": "NA", "kindVar": "ALPHA"}) == (None, False)
 
 
 def test_sequential_ifs_with_trailing_literal_return():
