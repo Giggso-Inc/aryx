@@ -1,6 +1,6 @@
 # Attribution — shay_backend/app/routes/workspaces/delete.py
 
-Last updated: 2026-10-06T21:04:25.755732+00:00
+Last updated: 2026-10-06T21:04:35.457945+00:00
 Total lines: 83
 Lines AI-generated: 20 (24.1%)
 Lines human-typed: 0
