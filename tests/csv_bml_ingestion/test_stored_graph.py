@@ -661,3 +661,36 @@ def test_lookup_finds_a_script_whose_text_is_folded_onto_its_function(enriched, 
     assert match.node_tag == "fn" and match.prop == "script_text"
     assert match.identity.get("name") == "Seq rule"      # the function describes itself, not its siblings
     assert match.queries and match.queries[0].tables == ("attrsequence",)
+
+
+def _fn_vertex(attrs: dict) -> dict:
+    return {TABLES_KEY: ["attrsequence"], QUERIES_KEY: ["select a from attrSequence"],
+            QUERY_TABLES_KEY: ["attrsequence"], **attrs}
+
+
+def _match_for(monkeypatch, attrs: dict):
+    from aryx.cpq_ingestion.naming import raw_workspace_id
+    monkeypatch.setattr(sg, "get_cpq_ingestion_settings", lambda: SimpleNamespace(cpq_raw_workspace_offset=1_000_000_000))
+    scope = raw_workspace_id(3, 1_000_000_000, "some_file")
+    proj = SimpleNamespace(nodes=[SimpleNamespace(id=1, tag="bm_function", properties=attrs)], edges=[])
+    return StoredGraphLookup(FakeGraphDb(proj, scope), 3).lookup("attrSequence").matches[0]
+
+
+def test_folded_function_names_its_script_property_from_the_recorded_tag(monkeypatch):
+    attrs = _fn_vertex({"script_text": "x" * 200 + "…", "notes": "y" * 300, "bml_script_props": ["script_text"],
+                        "name": "Seq rule", "id": "42"})
+    m = _match_for(monkeypatch, attrs)
+    assert m.prop == "script_text"                     # exact, not "the longest string"
+    assert m.identity["name"] == "Seq rule" and m.label == "id=42"
+
+
+def test_identity_keeps_the_label_keys_even_among_many_short_properties(monkeypatch):
+    flags = {f"flag{i}": "Y" for i in range(12)}
+    attrs = _fn_vertex({**flags, "script_text": "s", "bml_script_props": ["script_text"], "name": "Seq rule"})
+    m = _match_for(monkeypatch, attrs)
+    assert m.identity.get("name") == "Seq rule"        # not crowded out by the 12 flags before it
+
+
+def test_vertex_with_its_own_text_property_but_no_recorded_tag_keeps_the_old_behaviour(monkeypatch):
+    m = _match_for(monkeypatch, _fn_vertex({"text": "select a from attrSequence", "name": "Seq rule"}))
+    assert m.prop == "text"

@@ -98,3 +98,47 @@ def test_fold_without_enrichment_is_unchanged():
     fn = folded["bm_function"][0]
     assert fn.properties["script_text"] == _SQL
     assert TABLES_KEY not in fn.properties
+
+
+# --- review follow-ups (N1 import guard, N2/N4 recorded script property) ------------------------------
+def test_fold_records_the_tag_the_script_was_folded_under():
+    from aryx.csv_bml_ingestion.bml_graph import SCRIPT_PROPS_KEY
+    enriched = enrich_projection(_projection([_SQL, "return 1;"]))
+    folded = fold_structural_leaf_tags(enriched.edges, _by_tag(enriched))
+    fns = sorted(folded["bm_function"], key=lambda n: n.id)
+    assert fns[0].properties[SCRIPT_PROPS_KEY] == ["script_text"]
+    assert SCRIPT_PROPS_KEY not in fns[1].properties          # no query lists, nothing to name
+
+
+def test_two_scripts_under_one_function_record_the_tag_once():
+    from aryx.csv_bml_ingestion.bml_graph import SCRIPT_PROPS_KEY
+    sql2 = "SELECT item FROM decodeMatrix WHERE cpqModel = $cpqModel AND availableForUpgrade = 'X'"
+    nodes = [RawNode(id=1, tag="bm_function", properties={}),
+             RawNode(id=2, tag="script_text", properties={RAW_PROP_TEXT: _SQL}),
+             RawNode(id=3, tag="script_text", properties={RAW_PROP_TEXT: sql2})]
+    edges = [RawEdge(source_id=1, target_id=2, name="CONTAINS"), RawEdge(source_id=1, target_id=3, name="CONTAINS")]
+    enriched = enrich_projection(RawGraphProjection(nodes=nodes, edges=edges))
+    folded = fold_structural_leaf_tags(enriched.edges, _by_tag(enriched))
+    assert folded["bm_function"][0].properties[SCRIPT_PROPS_KEY] == ["script_text"]
+
+
+def test_fold_still_works_when_the_bml_module_cannot_be_imported(monkeypatch):
+    import builtins
+
+    from aryx.cpq_ingestion.raw_graph import structural_leaf as sl
+    real_import = builtins.__import__
+
+    def failing(name, *a, **k):
+        if name.startswith("aryx.csv_bml_ingestion"):
+            raise ImportError("boom")
+        return real_import(name, *a, **k)
+
+    sl._carried_keys.cache_clear()
+    monkeypatch.setattr(builtins, "__import__", failing)
+    try:
+        plain = _projection([_SQL])
+        folded = fold_structural_leaf_tags(plain.edges, _by_tag(plain))
+    finally:
+        monkeypatch.undo()
+        sl._carried_keys.cache_clear()
+    assert folded["bm_function"][0].properties["script_text"] == _SQL
