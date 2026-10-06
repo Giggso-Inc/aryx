@@ -243,14 +243,15 @@ class CpqIntentSettingsMixin(BaseSettings):
         ),
     )
     cpq_country_region_table_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "docs/oci-oracle/CONFIG_DATA_REQUIRED_FIELDS_INGEST_AND_FIX_PLAN_"
-            "2026-10-05.md F5: when true, derive_region (and the RTTE/TA "
-            "lookup) consult the ingested newCountryRegion / rtteTAReference "
-            "Data Tables (data_table_geo.py) before the static "
-            "_COUNTRY_TO_REGION constant. Off by default: byte-identical to "
-            "before this flag existed; the constant stays the fallback."
+            "2026-10-05.md F5: derive_region (and the RTTE/TA lookup) consult "
+            "the ingested newCountryRegion / rtteTAReference Data Tables "
+            "(data_table_geo.py) before the static _COUNTRY_TO_REGION "
+            "constant. On by default, so an ingested Data Table is used "
+            "without a per-table switch; with no such table nothing changes "
+            "(the constant stays the fallback). Set false to skip the tables."
         ),
     )
     cpq_empty_condition_rule_true_enabled: bool = Field(

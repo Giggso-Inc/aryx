@@ -196,6 +196,12 @@ class PostgresCpqRdb:
             _read_failed("fetch_all_entities_grouped_by_type")
         return result
 
+    def fetch_workspace_table_groups(
+        self, workspace_id: int, accept: Any, skip_types: Any = (),
+    ) -> dict[str, list[tuple[int, dict[str, Any]]]]:
+        """CSV tables the CSV pipeline loaded for this workspace, as Data Table rows. Oracle only: none here."""
+        return {}
+
     def list_ontology_types(self, workspace_id: int) -> list[str]:
         """Every distinct ontology_type ingested into this workspace.
 

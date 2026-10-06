@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
 from aryx.cpq.rdb.rdb_helpers import _as_attrs, _as_int, _type_pattern
+from aryx.cpq.rdb import rdb_workspace_tables
 from aryx.cpq.rdb.rdb_postgres import PostgresCpqRdb, _warn_if_timeout
 from aryx.raven_log import raven_log
 from aryx.store.db_timeouts import oracle_call_timeout
@@ -103,7 +104,7 @@ class OracleCpqRdb(PostgresCpqRdb):
             _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): type fetch failed", exc_info=True)
             _read_failed("fetch_entities_by_type")
-        return rows
+        return rows or self._workspace_table_rows(workspace_id, type_suffix, suffix=True)
 
     def fetch_entities_by_exact_type(
         self, workspace_id: int, ontology_type: str,
@@ -123,7 +124,33 @@ class OracleCpqRdb(PostgresCpqRdb):
             _warn_if_timeout(exc, "oracle")
             logger.debug("cpq rdb(oracle): exact type fetch failed", exc_info=True)
             _read_failed("fetch_entities_by_exact_type")
-        return rows
+        return rows or self._workspace_table_rows(workspace_id, ontology_type, suffix=False)
+
+    def _workspace_table_rows(
+        self, workspace_id: int, logical: str, *, suffix: bool,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        """No entity rows for this type: the CSV pipeline's ``ws<id>_<logical>`` table, if there is one (best effort)."""
+        try:
+            with self._connection() as conn:
+                return rdb_workspace_tables.rows_for_type(conn, workspace_id, logical, suffix=suffix)
+        except Exception as exc:  # noqa: BLE001  the engine treats missing table data as "no rows", never as an error
+            _warn_if_timeout(exc, "oracle")
+            logger.warning("cpq rdb(oracle): workspace table read failed ws=%s table=%r", workspace_id, logical, exc_info=True)
+            _read_failed("fetch_workspace_table_rows")
+            return []
+
+    def fetch_workspace_table_groups(
+        self, workspace_id: int, accept: Any, skip_types: Any = (),
+    ) -> dict[str, list[tuple[int, dict[str, Any]]]]:
+        """Rows of every CSV table loaded for this workspace whose columns satisfy ``accept`` (see rdb_workspace_tables)."""
+        try:
+            with self._connection() as conn:
+                return rdb_workspace_tables.grouped_rows(conn, workspace_id, accept, skip_types)
+        except Exception as exc:  # noqa: BLE001
+            _warn_if_timeout(exc, "oracle")
+            logger.warning("cpq rdb(oracle): workspace tables read failed ws=%s", workspace_id, exc_info=True)
+            _read_failed("fetch_workspace_table_groups")
+            return {}
 
     def fetch_all_entities_grouped_by_type(
         self, workspace_id: int,

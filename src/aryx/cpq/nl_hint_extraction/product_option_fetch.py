@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.children_wrappers import through_children_wrappers
+
 
 def fetch_product_option_list(
     engine: Any, reader: Any, workspace_id: int, prefix: str,
@@ -79,6 +81,7 @@ def fetch_product_option_list(
         return []
     try:
         neighbors = reader.neighbors(target_id)
+        neighbors = through_children_wrappers(reader, {target_id: neighbors})[target_id]
     except Exception:
         return []
     menu_ids = [

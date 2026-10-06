@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.children_wrappers import through_children_wrappers
 from aryx.cpq.engine import _catalog_prefix, logger
 
 
@@ -36,6 +37,8 @@ def collect_base_menu_neighbors(
     # all their options, not just running slower).
     try:
         neighbors_by_attr = reader.neighbors_batch([e["id"] for e in attr_ents])
+        # a graph built from the raw XML keeps menu items one hop behind a Children wrapper
+        neighbors_by_attr = through_children_wrappers(reader, neighbors_by_attr)
     except Exception:
         logger.debug("cpq: batch neighbor fetch failed", exc_info=True)
         neighbors_by_attr = None

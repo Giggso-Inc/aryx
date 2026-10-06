@@ -19,6 +19,7 @@ from aryx.cpq.data_table.data_table_loader import _load_all_tables
 from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped
 from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 from aryx.cpq.rdb.rdb import get_cpq_rdb
+from aryx.cpq.rdb.rdb_workspace_tables import groups_from as workspace_table_groups
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +425,9 @@ def _load_attr_var_mapping_rows(
     # per-type-round-trip bug this function's own docstring already flags
     # as a duplicate of _load_all_tables()'s scan loop -- fixed the same
     # way, one grouped query instead of one round trip per ontology_type.
-    for entities in rdb.fetch_all_entities_grouped_by_type(workspace_id).values():
+    grouped = rdb.fetch_all_entities_grouped_by_type(workspace_id)
+    grouped.update(workspace_table_groups(rdb, workspace_id, _is_attr_var_mapping_shaped, grouped.keys()))
+    for entities in grouped.values():
         for _eid, attrs in entities:
             if _is_attr_var_mapping_shaped(set(attrs.keys())):
                 rows.append(attrs)
