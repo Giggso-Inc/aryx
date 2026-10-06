@@ -123,7 +123,11 @@ def load_layout_hidden_vns(
     components = _components(engine, workspace_id, catalog_prefix, layout_source, variant)
     if components is None:
         return None
-    return {
-        comp["resourceAttributeVarName"] for comp in components
-        if comp.get("resourceAttributeVarName") and comp.get("hide") is True
-    }
+    hidden: set[str] = set()
+    shown: set[str] = set()
+    for comp in components:
+        vn = comp.get("resourceAttributeVarName")
+        if not vn:
+            continue
+        (hidden if comp.get("hide") is True else shown).add(vn)
+    return hidden - shown    # placed twice, once visible: the screen shows it

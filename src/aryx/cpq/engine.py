@@ -1043,6 +1043,13 @@ class CpqEngine:
             self, workspace_id, catalog_prefix, attrs,
         )
 
+    def resolve_ask_always_ask_skips(
+        self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+    ) -> set[str]:
+        return layout_and_join_data.resolve_ask_always_ask_skips(
+            self, workspace_id, catalog_prefix, attrs,
+        )
+
     def resolve_layout_hidden_anchor_skips(
         self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
     ) -> set[str]:

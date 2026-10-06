@@ -73,6 +73,21 @@ def resolve_layout_hidden_anchor_skips(
     return {attr.variable_name for attr in attrs if attr.variable_name in hidden}
 
 
+def resolve_ask_always_ask_skips(
+    engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+) -> set[str]:
+    """The `skip_always_ask` set every ASK path passes to auto_fill: the flow-based exemption
+    plus the attributes the layout explicitly hides.
+
+    One helper for all ask-path callers (the per-turn recompute and every cascade, quantity,
+    clear, activation, removal and country-change recompute), so no path re-asks a hidden
+    anchor. Not used by `payload_flow_exclusions`: that treats a non-empty
+    `resolve_always_ask_skips` as "the flow hides the product selector" and must keep that meaning.
+    """
+    return engine.resolve_always_ask_skips(workspace_id, catalog_prefix, attrs) | (
+        engine.resolve_layout_hidden_anchor_skips(workspace_id, catalog_prefix, attrs))
+
+
 def resolve_primary_layout_section_vns(
     engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
 ) -> set[str] | None:

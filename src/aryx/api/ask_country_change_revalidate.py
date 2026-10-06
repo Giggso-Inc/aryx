@@ -57,7 +57,7 @@ def _rederive_and_revalidate_for_country_change(
         rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
             req.workspace_id, catalog_prefix)
         bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
-        skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        skip_always_ask = _cpq_engine.resolve_ask_always_ask_skips(
             req.workspace_id, catalog_prefix, attrs)
         _visible_attrs, session.filled, session.display_filled, _constrained_opts = (
             _cpq_engine.evaluate_rules_loop(

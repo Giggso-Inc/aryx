@@ -126,3 +126,37 @@ def test_a_layout_hidden_product_is_neither_asked_nor_filled_with_a_foreign_code
     filled, _display, pending = _auto_fill(skip_always_ask={"productSelectionProduct_all"})
     assert "productSelectionProduct_all" not in filled      # no blind first-by-order ("APX6500") fill
     assert pending == []                                    # and no question
+
+
+# --- review follow-ups: one helper for every ask path (F01), visible-twice attribute (F02) ---------------
+def test_a_vn_placed_twice_once_visible_is_not_hidden(monkeypatch):
+    eng = _engine_with_layout(monkeypatch, _layout(
+        _component("productSelectionProduct_all", True), _component("productSelectionProduct_all", False),
+        _component("mountType_viSoln", True)))
+    assert eng.load_layout_hidden_vns(WS, PREFIX) == {"mountType_viSoln"}
+
+
+def test_the_ask_helper_unions_the_flow_exemption_and_the_layout_hidden_set(monkeypatch):
+    eng = _engine_with_layout(monkeypatch, _layout(_component("mountType_viSoln", True)))
+    monkeypatch.setattr(eng, "resolve_always_ask_skips", lambda ws, prefix, attrs: {"fromFlow"})
+    attrs = [_attr(1, "mountType_viSoln")]
+    assert eng.resolve_ask_always_ask_skips(WS, PREFIX, attrs) == {"fromFlow", "mountType_viSoln"}
+
+
+def test_the_payload_flow_exclusion_keeps_its_flow_only_meaning(monkeypatch):
+    """`payload_flow_exclusions` treats a non-empty flow skip set as 'the flow hides the product selector';
+    layout-hidden attributes must not leak into it and be stripped from the payload."""
+    eng = _engine_with_layout(monkeypatch, _layout(_component("mountType_viSoln", True)))
+    monkeypatch.setattr(eng, "resolve_always_ask_skips", lambda ws, prefix, attrs: set())
+    monkeypatch.setattr(eng, "model_context_mirror_vns", lambda attrs: {"mirror"})
+    assert eng.payload_flow_exclusions(WS, PREFIX, [_attr(1, "mountType_viSoln")]) == {"mirror"}
+
+
+def test_no_ask_path_builds_skip_always_ask_from_the_flow_exemption_alone():
+    """Every caller under aryx/api must use the helper; otherwise a cascade, quantity, clear, activation,
+    removal or country-change turn re-asks a layout-hidden Product."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "aryx" / "api"
+    offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
+                 if "resolve_always_ask_skips(" in p.read_text(encoding="utf-8")]
+    assert offenders == []

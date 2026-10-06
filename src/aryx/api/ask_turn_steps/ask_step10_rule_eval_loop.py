@@ -55,10 +55,8 @@ def _step10_run_rule_eval_loop(
     prev_filled_snapshot = dict(session.filled)
     prev_filled_multi_snapshot = {k: list(v) for k, v in session.filled_multi.items()}
     dropped_multi: dict[str, list[str]] = {}
-    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
-        req.workspace_id, catalog_prefix, attrs)
-    # The layout's own `hide: true` also means "the native UI never shows this question".
-    skip_always_ask = skip_always_ask | _cpq_engine.resolve_layout_hidden_anchor_skips(
+    # flow exemption plus the layout's own `hide: true` ("the native UI never shows this question")
+    skip_always_ask = _cpq_engine.resolve_ask_always_ask_skips(
         req.workspace_id, catalog_prefix, attrs)
     if session.model_leaf_resolved:
         skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
