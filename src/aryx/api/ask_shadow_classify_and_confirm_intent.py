@@ -24,6 +24,7 @@ from aryx.cpq.intent_schema.intent_schema import IntentCategory
 from aryx.api.ask_catalog.ask_target_description import _resolve_target_description
 from aryx.log_safe import text_ref
 from aryx.api.ask_llm import ask_llm_classify_intent_universal as _ask_llm_classify_intent_universal_module
+from aryx.raven_log import raven_log
 
 
 def _shadow_classify_cpq_turn(
@@ -81,6 +82,16 @@ def _llm_confirm_deterministic_intent(
             bml_eval=bml_eval, catalog_prefix=catalog_prefix,
         )
     except Exception as exc:  # noqa: BLE001 — reject on any failure, never guess
+        raven_log(
+            "WARN", "P3", "ask.intent.llm_confirm_failed gateway call failed, rejecting deterministic match",
+            error_code="ARYX_ASK_INTENT_LLM_CONFIRM_FAILED",
+            context={
+                "triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1,
+                "recovery_selected": "reject_match", "fallback_target": "deterministic_intent_rejected",
+                "exit_condition": "exception", "result": "rejected",
+                "expected_category": expected_category.value if expected_category is not None else None,
+            },
+        )
         logger.debug(
             "cpq llm_verdict_checkpoint: gateway call failed, rejecting "
             "deterministic match: %r", exc,
