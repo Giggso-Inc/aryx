@@ -123,7 +123,7 @@ def test_get_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, admin_
 
     with (
         patch("app.routes.workspaces.list_get.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-        patch("app.routes.workspaces.list_get._bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
+        patch("app.routes.workspaces.list_get._existing_bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
     ):
         response = client.get(
             f"/api/v1/workspaces/{workspace_id}",
@@ -196,7 +196,7 @@ def test_list_workspaces_filters_to_active_memberships(mock_db, admin_user):
 
     with (
         patch("app.routes.workspaces.list_get.get_current_user_required", new=AsyncMock(return_value=admin_user)),
-        patch("app.routes.workspaces.list_get._bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
+        patch("app.routes.workspaces.list_get._existing_bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
     ):
         response = client.get(
             "/api/v1/workspaces/",
@@ -324,3 +324,104 @@ def test_delete_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
     assert captured["workspace_id_type"] is UUID
     mock_db.delete.assert_awaited_once_with(mock_workspace)
     mock_db.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _existing_bridge_for_workspace -- read-only mapping lookup for list/get.
+#
+# Live incident, 2026-10-07: list_get.py used to call the create-or-reuse
+# _bridge_for_workspace() on every list/get request, which could resurrect
+# a just-deleted workspace's Aryx bridge if a client re-fetched a stale
+# workspace list/detail after the workspace was deleted server-side. A read
+# endpoint must never have the side effect of creating data.
+# ---------------------------------------------------------------------------
+
+def _fake_async_client(get_response):
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(return_value=get_response)
+    fake_client.post = AsyncMock(side_effect=AssertionError(
+        "_existing_bridge_for_workspace must never POST (that's the create-or-reuse path)"
+    ))
+    fake_async_client = MagicMock()
+    fake_async_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_async_client.__aexit__ = AsyncMock(return_value=None)
+    return fake_async_client, fake_client
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_existing_bridge_for_workspace_returns_none_on_404():
+    from app.routes.workspaces.helpers import _existing_bridge_for_workspace
+
+    response = MagicMock()
+    response.status_code = 404
+    fake_async_client, fake_client = _fake_async_client(response)
+
+    with (
+        patch("app.routes.workspaces.helpers.httpx.AsyncClient", return_value=fake_async_client),
+        patch("app.routes.workspaces.helpers._aryx_headers", return_value={"x-aryx-api-key": "k"}),
+    ):
+        result = await _existing_bridge_for_workspace("deleted-workspace-id")
+
+    assert result is None
+    fake_client.get.assert_awaited_once()
+    fake_client.post.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_existing_bridge_for_workspace_returns_mapping_on_200():
+    from app.routes.workspaces.helpers import _existing_bridge_for_workspace
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json = MagicMock(return_value={"aryx_workspace_id": 1150})
+    response.raise_for_status = MagicMock()
+    fake_async_client, fake_client = _fake_async_client(response)
+
+    with (
+        patch("app.routes.workspaces.helpers.httpx.AsyncClient", return_value=fake_async_client),
+        patch("app.routes.workspaces.helpers._aryx_headers", return_value={"x-aryx-api-key": "k"}),
+    ):
+        result = await _existing_bridge_for_workspace("some-workspace-id")
+
+    assert result == {"aryx_workspace_id": 1150}
+    fake_client.post.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_list_workspaces_returns_null_bridge_without_creating_one(mock_db, admin_user):
+    """A workspace with no existing Aryx bridge must list with bridge=None,
+    not trigger creation of a new one."""
+    workspace_id = "a97c20b0-536d-4017-a171-1ee6d140def0"
+    mock_workspace = _build_workspace(admin_user, workspace_id)
+
+    class _WorkspaceResult:
+        def scalars(self):
+            return MagicMock(all=MagicMock(return_value=[mock_workspace]))
+
+    class _CountResult:
+        def scalar(self):
+            return 1
+
+    async def execute(stmt):
+        text = str(stmt).lower()
+        if "count(" in text:
+            return _CountResult()
+        return _WorkspaceResult()
+
+    mock_db.execute = execute
+    client = _make_client(mock_db)
+
+    with (
+        patch("app.routes.workspaces.list_get.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces.list_get._existing_bridge_for_workspace", new=AsyncMock(return_value=None)) as mock_lookup,
+    ):
+        response = client.get(
+            "/api/v1/workspaces/",
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["workspaces"][0]["bridge"] is None
+    mock_lookup.assert_awaited_once_with(mock_workspace.id)

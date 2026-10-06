@@ -20,7 +20,7 @@ from app.models.workspace import Workspace
 from app.schemas.workspace import WorkspaceList, WorkspaceResponse
 from app.utils.permissions import require_active_workspace_role
 
-from .helpers import _bridge_for_workspace, _get_workspace_or_404, serialize_workspace
+from .helpers import _existing_bridge_for_workspace, _get_workspace_or_404, serialize_workspace
 
 router = APIRouter()
 
@@ -30,7 +30,7 @@ async def list_workspaces(
     request: Request,
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100),
+    size: int = Query(100, ge=1, le=100),
     search: Optional[str] = None
 ) -> WorkspaceList:
     """List workspaces for current user"""
@@ -76,7 +76,10 @@ async def list_workspaces(
 
     bridged_workspaces = []
     for workspace in workspaces:
-        bridge = await _bridge_for_workspace(request, workspace)
+        # Read-only lookup, not create-or-reuse -- listing workspaces must
+        # never have the side effect of creating Aryx bridge data (see
+        # _existing_bridge_for_workspace's docstring).
+        bridge = await _existing_bridge_for_workspace(workspace.id)
         payload = serialize_workspace(workspace).model_dump()
         payload["bridge"] = bridge
         bridged_workspaces.append(payload)
@@ -100,7 +103,8 @@ async def get_workspace(
     workspace = await _get_workspace_or_404(db, workspace_id)
     await require_active_workspace_role(db, user.id, UUID(str(workspace.id)))
 
-    bridge = await _bridge_for_workspace(request, workspace)
+    # Read-only lookup, not create-or-reuse -- see list_workspaces() above.
+    bridge = await _existing_bridge_for_workspace(workspace.id)
     payload = serialize_workspace(workspace).model_dump()
     payload["bridge"] = bridge
     return payload

@@ -63,6 +63,7 @@ _stub_oracledb()
 
 from aryx.store.oracle_workspace import (  # noqa: E402
     OracleWorkspaceStore,
+    _DELETE_BATCH_SIZE,
     _DELETE_PARTITION_SQLS,
     _PARTITIONED,
     _TRUNCATE_SQLS,
@@ -146,6 +147,14 @@ def _make_pool_cursor(
     cur = MagicMock()
     cur.fetchone.return_value = fetchone
     cur.fetchall.return_value = fetchall if fetchall is not None else []
+    # Real int, not a bare MagicMock -- _drop_partitions() compares
+    # cur.rowcount < _DELETE_BATCH_SIZE to decide whether to loop for
+    # another batch, and a MagicMock doesn't support ordering comparisons
+    # against an int (raises TypeError). 0 means "nothing left to delete",
+    # so every _DELETE_PARTITION_SQLS statement still executes exactly
+    # once per table by default, matching every existing test's
+    # expectations; tests that need multi-batch looping override this.
+    cur.rowcount = 0
 
     cur_cm = MagicMock()
     cur_cm.__enter__ = MagicMock(return_value=cur)
@@ -216,14 +225,39 @@ class TestDropPartitions(unittest.TestCase):
             self.assertIn(_DELETE_PARTITION_SQLS[table], executed_sqls,
                           f"_DELETE_PARTITION_SQLS['{table}'] not executed")
 
-    def test_passes_workspace_id_as_positional_param(self) -> None:
+    def test_passes_workspace_id_and_batch_size_as_positional_params(self) -> None:
         pool, cur = _make_pool_cursor()
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store._drop_partitions(99)
         for c in cur.execute.call_args_list:
-            self.assertEqual(c[0][1], (99,),
-                             "Expected workspace_id=99 as positional tuple param")
+            self.assertEqual(c[0][1], (99, _DELETE_BATCH_SIZE),
+                             "Expected (workspace_id=99, batch_size) as positional tuple param")
+
+    def test_loops_until_a_partial_batch_is_deleted(self) -> None:
+        """A table with more than one batch worth of rows must trigger
+        multiple DELETEs for that table, stopping only once a batch comes
+        back smaller than _DELETE_BATCH_SIZE (confirmed live, 2026-10-07:
+        a workspace had 2.55M matching rows in one table alone)."""
+        pool, cur = _make_pool_cursor()
+        store = _make_store(pool)
+        # First two batches full, third partial -- 3 executions for this one
+        # table, then the other three tables get their single (rowcount=0,
+        # from the shared cur.rowcount reset below) pass each.
+        rowcounts = iter([_DELETE_BATCH_SIZE, _DELETE_BATCH_SIZE, 1234, 0, 0, 0])
+
+        def _execute_side_effect(*_args, **_kwargs):
+            cur.rowcount = next(rowcounts)
+
+        cur.execute.side_effect = _execute_side_effect
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            store._drop_partitions(99)
+        landed_record_calls = [
+            c for c in cur.execute.call_args_list
+            if c[0][0] == _DELETE_PARTITION_SQLS["aryx_landed_record"]
+        ]
+        self.assertEqual(len(landed_record_calls), 3,
+                         "Expected 3 batches for a table with 2 full + 1 partial batch")
 
 
 class TestCreate(unittest.TestCase):

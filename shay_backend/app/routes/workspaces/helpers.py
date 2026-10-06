@@ -137,3 +137,28 @@ async def _bridge_for_workspace(request: Request, workspace: Workspace) -> dict[
     """Return the Aryx bridge mapping for a Shay workspace, creating it when missing."""
     bridge = await _ensure_aryx_workspace_bridge(request, workspace)
     return bridge
+
+
+async def _existing_bridge_for_workspace(shay_workspace_id: Any) -> dict[str, Any] | None:
+    """Return the Aryx bridge mapping for a Shay workspace if one already
+    exists, without creating one -- for read-only endpoints (list/get).
+
+    Unlike _bridge_for_workspace(), this never has a write side effect.
+    Confirmed live, 2026-10-07: list/get calling the create-or-reuse path
+    on every request let a stale client re-fetching a workspace list (or
+    detail) resurrect a just-deleted workspace's Aryx bridge, since the
+    Workspace row it already had in hand by the time it reached this call
+    said nothing about whether that workspace had just been deleted
+    concurrently. A read endpoint should never have a side effect that
+    recreates data.
+    """
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.get(
+            f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{shay_workspace_id}/mapping",
+            headers=_aryx_headers(),
+        )
+        if response.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        response.raise_for_status()
+        return response.json()

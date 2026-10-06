@@ -30,7 +30,22 @@ _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx
 # Pre-built at module load time from the constant above.
 # Oracle identifiers (table names) cannot be passed as bind variables, so
 # interpolation is unavoidable — building here keeps f-strings away from execute().
-_DELETE_PARTITION_SQLS = {t: f"DELETE FROM {t} WHERE workspace_id = :1" for t in _PARTITIONED}
+#
+# Bounded by ROWNUM, not a single unbounded DELETE: confirmed live,
+# 2026-10-07 -- a workspace can carry millions of rows in one of these
+# tables (aryx_relationship specifically: 2.55M rows for a workspace with
+# zero aryx_entity rows, i.e. orphaned relationship data) even when a
+# workspace_id-leading index already exists. An index fixes a full-table-
+# scan; it does nothing for the sheer cost of physically deleting millions
+# of rows (undo/redo + index maintenance per row) in one statement, which
+# took 437s in that case -- far past the 30s Oracle call_timeout that a
+# real admin-API request runs under (DPY-4024/ORA-03156). Batching keeps
+# every individual DELETE well under that timeout regardless of how much
+# data a workspace turns out to have.
+_DELETE_BATCH_SIZE = 50_000
+_DELETE_PARTITION_SQLS = {
+    t: f"DELETE FROM {t} WHERE workspace_id = :1 AND ROWNUM <= :2" for t in _PARTITIONED
+}
 _TRUNCATE_SQLS = {t: f"DELETE FROM {t}" for t in _PARTITIONED}
 
 
@@ -65,11 +80,25 @@ class OracleWorkspaceStore:
         pass  # Oracle uses workspace_id column; no partition DDL needed
 
     def _drop_partitions(self, wid: int) -> None:
-        """Delete all rows for workspace wid from the four core tables."""
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                for table in _PARTITIONED:
-                    cur.execute(_DELETE_PARTITION_SQLS[table], (wid,))
+        """Delete all rows for workspace wid from the four core tables, in
+        bounded batches of _DELETE_BATCH_SIZE rows per statement.
+
+        Each batch is its own connection/transaction (acquire, execute,
+        commit-on-exit via self._pool.connection()) rather than one
+        connection held open for the whole table -- so a workspace with
+        millions of rows in one table never risks a single DELETE
+        exceeding Oracle's call_timeout (confirmed live, 2026-10-07: see
+        _DELETE_PARTITION_SQLS' docstring above for the incident that
+        prompted this)."""
+        for table in _PARTITIONED:
+            sql = _DELETE_PARTITION_SQLS[table]
+            while True:
+                with self._pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, (wid, _DELETE_BATCH_SIZE))
+                        deleted = cur.rowcount
+                if deleted < _DELETE_BATCH_SIZE:
+                    break
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def create(self, name: str, description: str = "", context: str = "",
