@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from aryx.cpq.layout_and_join_data.always_ask import (
     resolve_always_ask_skips,
+    resolve_layout_hidden_anchor_skips,
     resolve_primary_layout_section_vns,
 )
 from aryx.cpq.layout_and_join_data.components import (
@@ -23,6 +24,7 @@ from aryx.cpq.layout_and_join_data.components import (
 from aryx.cpq.layout_and_join_data.display_order import (
     _load_layout_full_order,
     load_layout_display_order,
+    load_layout_hidden_vns,
 )
 from aryx.cpq.layout_and_join_data.flow_exclusions import (
     model_context_mirror_vns,
@@ -53,9 +55,11 @@ __all__ = [
     "_rule_key",
     "_walk_layout_components",
     "load_layout_display_order",
+    "load_layout_hidden_vns",
     "model_context_mirror_vns",
     "payload_flow_exclusions",
     "resolve_always_ask_skips",
+    "resolve_layout_hidden_anchor_skips",
     "resolve_primary_layout_section_vns",
     "resolve_ui_layout_scope",
 ]

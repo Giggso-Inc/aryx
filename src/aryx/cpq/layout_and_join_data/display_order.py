@@ -101,3 +101,29 @@ def _load_layout_full_order(
     result = order or None
     cache[key] = result
     return result
+
+
+def load_layout_hidden_vns(
+    engine, workspace_id: int, catalog_prefix: str = "",
+    layout_source: LayoutFileSource | None = None,
+    variant: str = DEFAULT_LAYOUT_VARIANT,
+) -> set[str] | None:
+    """Variable names the catalog's native-UI layout export explicitly marks
+    `hide: true` -- the attributes the real screen never shows.
+
+    Distinct from "absent from `load_layout_display_order`": an attribute the
+    layout does not place at all may simply be missing from an incomplete
+    export, while `hide: true` is the layout stating it is hidden. Returns
+    None when no matching, currently-Active layout file exists (no layout
+    signal -- callers keep today's behaviour). The components are already
+    cached per layout by `_load_layout_components`, so this adds one pass over
+    a few hundred components.
+    """
+    variant = effective_variant(workspace_id, catalog_prefix, variant, layout_source)
+    components = _components(engine, workspace_id, catalog_prefix, layout_source, variant)
+    if components is None:
+        return None
+    return {
+        comp["resourceAttributeVarName"] for comp in components
+        if comp.get("resourceAttributeVarName") and comp.get("hide") is True
+    }

@@ -11,6 +11,7 @@ dotted path in several tests.
 
 from __future__ import annotations
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.state import ConfigAttr
 
@@ -42,6 +43,34 @@ def resolve_always_ask_skips(
         if attr.entity_id not in in_flow_ids:
             skips.add(attr.variable_name)
     return skips
+
+
+def resolve_layout_hidden_anchor_skips(
+    engine, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+) -> set[str]:
+    """Variable names the catalog's layout explicitly hides (`hide: true`), so the
+    always-ask overrides (Product, select-model) leave them alone.
+
+    The overrides force a question for attributes the native UI is assumed to show.
+    The layout says otherwise for a catalog that hides one: SVX's layout hides
+    `productSelectionProduct_all` (`hide: true`, in its "Hidden" tab) while every APX
+    and Astro layout shows it (`hide: false`), so those stay asked. Generic: no
+    attribute or catalog name, only the layout's own flag. Only an explicit `true`
+    counts; an attribute missing from the layout is not treated as hidden, and no
+    layout (None) leaves everything as before.
+
+    The skip only removes the question. The governed blind-fill guard for the
+    shared Product list still applies to a skipped attribute, so it is neither
+    asked nor filled with a foreign product's code.
+    Flag: `cpq_layout_hidden_anchor_skip_enabled` (default on; the opt-out is
+    ARYX_CPQ_LAYOUT_HIDDEN_ANCHOR_SKIP_ENABLED=false).
+    """
+    if not get_settings().cpq_layout_hidden_anchor_skip_enabled:
+        return set()
+    hidden = engine.load_layout_hidden_vns(workspace_id, catalog_prefix)
+    if not hidden:
+        return set()
+    return {attr.variable_name for attr in attrs if attr.variable_name in hidden}
 
 
 def resolve_primary_layout_section_vns(

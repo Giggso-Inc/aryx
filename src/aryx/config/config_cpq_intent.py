@@ -368,6 +368,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Off by default: one layout per catalog, as before."
         ),
     )
+    cpq_layout_hidden_anchor_skip_enabled: bool = Field(
+        default=True,
+        description=(
+            "The always-ask overrides (Product, select-model) force a question for attributes the "
+            "native UI is assumed to show. When on, an attribute the catalog's layout explicitly marks "
+            "`hide: true` is not force-asked (SVX hides Product; every APX/Astro layout shows it). It is "
+            "neither asked nor blind-filled. No layout, or no `hide: true`, changes nothing. "
+            "Override with ARYX_CPQ_LAYOUT_HIDDEN_ANCHOR_SKIP_ENABLED=false."
+        ),
+    )
     data_table_candidates_empty_on_no_match_enabled: bool = Field(
         default=False,
         description=(
