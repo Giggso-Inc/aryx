@@ -140,7 +140,7 @@ class StoredGraphLookup:
             if table in tables.split(","))
         identity, path = self._context(ws, entity_id)
         prop = "text" if "text" in attrs else _longest_text_key(attrs)
-        own = _own_identity(attrs, prop)
+        own = _own_identity(attrs, prop) if "text" not in attrs else {}   # a plain ScriptText vertex is unchanged
         if own:     # the script text is folded onto its function: the vertex describes itself
             identity = own
         return BmlMatch(table=table, node_id=entity_id, node_tag=tag, prop=prop, path=path,

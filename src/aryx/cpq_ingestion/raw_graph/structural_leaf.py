@@ -15,6 +15,7 @@ See docs/ingestion/CPQ_XML_CONFIRM_RESOLVE_PERFORMANCE_ISSUES_2026-10-04.md
 """
 from __future__ import annotations
 
+import functools
 import logging
 
 from aryx.cpq_ingestion.constants import RAW_PROP_TEXT
@@ -52,6 +53,7 @@ def is_structural_leaf_tag(nodes: list[RawNode], parent_ids: set[int]) -> bool:
     return node_ids.isdisjoint(parent_ids)
 
 
+@functools.cache
 def _carried_keys() -> tuple[str, ...]:
     """Query-table lists the CSV BML enrichment adds to a node that holds SQL (not XML attributes).
 
