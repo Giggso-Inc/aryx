@@ -356,9 +356,10 @@ def resolve_and_relate_raw_graph(
     # PR review N1: opt-out for a new behavior-changing fix, even one
     # believed safe (every existing per-caller test keeps passing with the
     # default True).
+    parent_ids = {edge.source_id for edge in edges}     # one pass over the edges, shared by the fold and the audit
     if settings.cpq_structural_leaf_fold_enabled:
         by_tag = fold_structural_leaf_tags(
-            edges, by_tag, log_id=log_id, source_key=source_key,
+            edges, by_tag, log_id=log_id, source_key=source_key, parent_ids=parent_ids,
         )
     # Pass 2 + display fields (CPQ_XML_DISPLAY_NAMES_PLAN_2026-10-05): fold
     # value-only locale wrappers (<label><en>) onto their parent and restore
@@ -377,7 +378,7 @@ def resolve_and_relate_raw_graph(
     )
     unfolded_leaf_tags = audit_unfolded_leaf_tags(
         by_tag, edges, fold_enabled=settings.cpq_structural_leaf_fold_enabled,
-        log_id=log_id, source_key=source_key,
+        log_id=log_id, source_key=source_key, parent_ids=parent_ids,
     )
     total_tags = len(by_tag)
     node_id_to_entity_id: dict[int, int] = {}

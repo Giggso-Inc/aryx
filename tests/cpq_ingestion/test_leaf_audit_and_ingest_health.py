@@ -182,3 +182,10 @@ def test_worst_status_ranks_skip_above_pass_but_below_warn():
     assert health.worst_status(mk(health.PASS, health.SKIP)) == health.SKIP
     assert health.worst_status(mk(health.SKIP, health.PASS)) == health.SKIP
     assert health.worst_status(mk(health.SKIP, health.WARN)) == health.WARN
+
+
+def test_precomputed_parent_ids_give_the_same_result_as_building_them():
+    by_tag, edges = _grouped()
+    parents = {e.source_id for e in edges}
+    assert find_unfolded_leaf_tags(by_tag, edges, parents) == find_unfolded_leaf_tags(by_tag, edges)
+    assert fold_structural_leaf_tags(edges, dict(by_tag), parent_ids=parents).keys() ==         fold_structural_leaf_tags(edges, dict(by_tag)).keys()

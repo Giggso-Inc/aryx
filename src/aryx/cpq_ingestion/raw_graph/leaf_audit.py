@@ -29,10 +29,13 @@ REASON_KEPT_AFTER_FOLD = "LEAF_TAG_KEPT_AFTER_FOLD"
 
 
 def find_unfolded_leaf_tags(
-    by_tag: dict[str, list[RawNode]], edges: Iterable[RawEdge],
+    by_tag: dict[str, list[RawNode]], edges: Iterable[RawEdge], parent_ids: set[int] | None = None,
 ) -> dict[str, int]:
-    """{tag: node count} for every tag in `by_tag` that is still a structural leaf."""
-    parent_ids = {edge.source_id for edge in edges}
+    """{tag: node count} for every tag in `by_tag` that is still a structural leaf.
+
+    `parent_ids` may be passed when the caller already built it (one pass over a very large edge list)."""
+    if parent_ids is None:
+        parent_ids = {edge.source_id for edge in edges}
     return {
         tag: len(nodes) for tag, nodes in by_tag.items()
         if nodes and is_structural_leaf_tag(nodes, parent_ids)
@@ -42,12 +45,13 @@ def find_unfolded_leaf_tags(
 def audit_unfolded_leaf_tags(
     by_tag: dict[str, list[RawNode]], edges: Iterable[RawEdge], *,
     fold_enabled: bool, log_id: str | None = None, source_key: str = "",
+    parent_ids: set[int] | None = None,
 ) -> dict[str, int]:
     """Detect, log and count unfolded leaf tags; returns them ({} when none).
 
     A diagnostic: an unexpected error here is logged and swallowed so it can never abort the ingest."""
     try:
-        unfolded = find_unfolded_leaf_tags(by_tag, edges)
+        unfolded = find_unfolded_leaf_tags(by_tag, edges, parent_ids)
     except Exception:  # noqa: BLE001
         logger.warning("raw_graph leaf audit did=%s source_key=%s failed; skipped", log_id, source_key, exc_info=True)
         return {}
