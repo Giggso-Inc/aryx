@@ -11198,12 +11198,12 @@
     ],
     [
       "src/aryx/cpq/bml/bml_tier1.py",
-      107,
+      113,
       "<if>"
     ],
     [
       "src/aryx/cpq/bml/bml_tier1.py",
-      126,
+      132,
       "_first_matching_branch"
     ],
     [
@@ -14232,54 +14232,69 @@
       "execute_statements"
     ],
     [
+      "src/aryx/csv_bml_ingestion/engine_shapes.py",
+      30,
+      "engine_shape_of_columns"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/engine_shapes.py",
+      59,
+      "engine_shape_of_columns"
+    ],
+    [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      38,
+      40,
       "ingest_csv"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      91,
+      93,
       "ingest_csv"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      94,
+      96,
       "_run"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      110,
+      114,
       "_step_table_name"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      119,
+      123,
       "_step_table_name"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      122,
+      126,
       "_step_bml_lookup"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      135,
+      149,
       "_step_bml_lookup"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      138,
+      152,
       "_log_matches"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      146,
+      160,
       "_step_apply_schema"
     ],
     [
       "src/aryx/csv_bml_ingestion/pipeline.py",
-      153,
+      167,
       "<try>"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/pipeline.py",
+      213,
+      "_warn_over_read_cap"
     ],
     [
       "src/aryx/csv_bml_ingestion/rerun.py",
@@ -14315,6 +14330,16 @@
       "src/aryx/csv_bml_ingestion/sql_author.py",
       110,
       "_save"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/sql_author.py",
+      123,
+      "author_sql_from_layout"
+    ],
+    [
+      "src/aryx/csv_bml_ingestion/sql_author.py",
+      159,
+      "author_sql_from_layout"
     ],
     [
       "src/aryx/csv_bml_ingestion/tracking.py",
