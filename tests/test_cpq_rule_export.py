@@ -148,6 +148,20 @@ class TestClassifyRuleScope:
         assert scope["matched_node"] == "700/800 Line"
         assert set(scope["covers_models"]) == {"700/800 MHZ", "900 MHZ"}
 
+    def test_multi_condition_rule_matches_on_value_not_operator(self):
+        # conditions is [(attr_id, value, operator), ...] -- value is the
+        # MIDDLE element. A prior bug unpacked it as a 2-tuple and crashed
+        # with ValueError on every rule using this field.
+        tree = self._tree()
+        idx = _name_index(tree)
+        rule = HidingRule(
+            rule_name="R6", condition_attr_id=0, condition_value="",
+            target_attr_id=2,
+            conditions=[(1, "700/800 MHZ", "4"), (1, "900 MHZ", "4")],
+        )
+        scope = classify_rule_scope(rule, idx)
+        assert scope["matched_node"] == "700/800 MHZ"
+
 
 def _unique_placed_rule_count(result: dict) -> int:
     """Count DISTINCT rules placed in `families`, not total placements --
