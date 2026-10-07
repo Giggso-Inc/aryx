@@ -204,8 +204,8 @@ def _hide_with_master_string(
     else:
         why.append("WRITER_CONDITION_UNKNOWN")
         if detail is not None:                                   # built only if the DEBUG line is written
-            names = {a.entity_id: a.variable_name for a in attrs}
-            detail["build"] = lambda: writer_condition_detail(fires, names, by_id)
+            detail["build"] = lambda: writer_condition_detail(
+                fires, {a.entity_id: a.variable_name for a in attrs}, by_id)
         master = None
     if master is None:
         return None
