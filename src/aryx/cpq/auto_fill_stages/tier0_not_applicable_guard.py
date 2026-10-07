@@ -14,12 +14,43 @@ from typing import TYPE_CHECKING
 
 from aryx.config import get_settings
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.raven_log import raven_log, would_log
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
     from aryx.cpq.state import ConfigAttr
 
 logger = logging.getLogger(__name__)
+
+
+def _log_device_once(ctx: "FillContext", scope: "FillScope") -> None:
+    """One DEBUG line per turn: the wording the guard resolves the device from and the models it found.
+
+    The guard does nothing when the wording does not resolve to a confident set of models, and it said nothing about
+    that (ws 1267, 2026-10-07: APX 4500 dropped its irrelevant attributes, APX N30 dropped none, and the logs could not
+    say why). Diagnostic only: any failure is swallowed.
+    """
+    try:
+        if not would_log("DEBUG"):
+            return
+        cache = ctx.dt_cache
+        key = ("_not_applicable_guard_device_logged", scope.workspace_id, scope.catalog_prefix)
+        if cache is not None:
+            if key in cache:
+                return
+            cache[key] = True
+        from aryx.cpq.data_table.data_table_resolver import resolve_product_cpq_models_from_hint  # noqa: PLC0415
+
+        hint = scope.product_anchor_hint
+        models = (resolve_product_cpq_models_from_hint(hint, scope.workspace_id, scope.catalog_prefix, cache)
+                  if hint and scope.workspace_id is not None else ())
+        raven_log("DEBUG", "P4", "ask.guard.device_resolved not-applicable guard device from the customer wording", context={
+            "selected_option": "device_resolved" if models else "device_unresolved",
+            "available_options": ["device_resolved", "device_unresolved"],
+            "reason_code": "GUARD_DEVICE_RESOLVED" if models else "GUARD_DEVICE_UNRESOLVED_NO_OP",
+            "hint": str(hint or "")[:160], "models": list(models)[:12], "model_count": len(models)})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change the fill
+        return
 
 
 def stage_not_applicable_guard(
@@ -32,6 +63,7 @@ def stage_not_applicable_guard(
     """Skip (and clear any earlier blind fill of) a not-applicable attr."""
     if state.done or not get_settings().cpq_not_applicable_guard_enabled:
         return
+    _log_device_once(ctx, scope)
     vn = state.vn
     if ctx.sources.get(vn) == "user":
         return  # customer-confirmed value is never cleared
