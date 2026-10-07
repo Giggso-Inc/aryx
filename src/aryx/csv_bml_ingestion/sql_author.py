@@ -125,7 +125,8 @@ def author_sql_from_layout(table: str, layout: CsvLayout, longest: dict[str, int
     """Write ``schema.sql`` / ``indexes.sql`` for a table no script queries, from the CSV alone (no LLM).
 
     Used only for a CSV whose columns the CPQ engine reads as a Data Table (``engine_shapes``). Text columns
-    are ``VARCHAR2(n)`` with ``n`` twice the longest observed value (at least 64, at most ``MAX_VARCHAR``);
+    are ``VARCHAR2(n)`` with ``n`` four times the longest observed value (at least 256, at most ``MAX_VARCHAR``: a
+    later upload with longer values must still fit, the widths are never re-derived);
     ``Integer`` columns are ``NUMBER(p)``. No index: nothing here knows an access path, and the engine reads
     the whole table. The statements go through the same validator as LLM output before they are saved.
 
@@ -144,7 +145,7 @@ def author_sql_from_layout(table: str, layout: CsvLayout, longest: dict[str, int
             cells.append(f"{column} NUMBER({min(38, max(digits, 18))})")
         else:
             specs.append(ColumnSpec(column, "text", digits))
-            cells.append(f"{column} VARCHAR2({min(MAX_VARCHAR, max(64, digits * 2))})")
+            cells.append(f"{column} VARCHAR2({min(MAX_VARCHAR, max(256, digits * 4))})")
     schema = f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(cells)});"
     validate_schema(schema, table, specs)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

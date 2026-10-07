@@ -9,15 +9,9 @@ with these columns?" from the engine's own shape tests, so the pipeline can stil
 """
 from __future__ import annotations
 
-import os
+from aryx.csv_bml_ingestion.config import LOAD_ENGINE_TABLES_ENV, load_engine_tables_enabled
 
-LOAD_ENGINE_TABLES_ENV = "ARYX_CSV_BML_LOAD_ENGINE_TABLES"
-_FALSE = {"0", "false", "no", "off"}
-
-
-def load_engine_tables_enabled() -> bool:
-    """On by default; ``ARYX_CSV_BML_LOAD_ENGINE_TABLES=false`` restores the old "no script reads it -> skip"."""
-    return os.environ.get(LOAD_ENGINE_TABLES_ENV, "").strip().lower() not in _FALSE
+__all__ = ["LOAD_ENGINE_TABLES_ENV", "engine_shape_of_columns", "load_engine_tables_enabled"]
 
 
 def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
@@ -27,15 +21,25 @@ def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
     ``recase`` (``cpqmodel`` -> ``cpqModel``), and a name can have two spellings, so both are tried, exactly as the
     reader does. Lazy imports: the engine package imports this one.
     """
+    from aryx.cpq.data_table import data_table_shapes as shapes  # noqa: PLC0415
     from aryx.cpq.data_table.data_table_inference import _is_basemodel_to_config_shaped  # noqa: PLC0415
-    from aryx.cpq.data_table.data_table_shapes import _detect_shape  # noqa: PLC0415
     from aryx.cpq.rdb.rdb_workspace_tables import recase  # noqa: PLC0415
 
+    # the pooled shapes first (sequence, series mapping, region rule, constraint, hierarchy), then the ones the engine
+    # reads through its own standalone loaders (base model, attr-var mapping, default-in-attr, country region, RTTE/TA)
+    standalone = (
+        ("basemodel_to_config", _is_basemodel_to_config_shaped),
+        ("attr_var_mapping", shapes._is_attr_var_mapping_shaped),
+        ("defaultinattr", shapes._is_defaultinattr_shaped),
+        ("country_region", shapes._is_country_region_shaped),
+        ("rtte_ta", shapes._is_rtte_ta_shaped),
+    )
     for variant in (0, 1):
         keys = {recase(column, variant) for column in columns}
-        shape = _detect_shape(keys)
+        shape = shapes._detect_shape(keys)
         if shape:
             return shape
-        if _is_basemodel_to_config_shaped(keys):
-            return "basemodel_to_config"
+        for name, detector in standalone:
+            if detector(keys):
+                return name
     return None

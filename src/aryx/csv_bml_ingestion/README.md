@@ -162,7 +162,7 @@ Some Data Tables are read by the CPQ engine itself, not by a script (`BaseModelT
 A CSV no script reads is now **still loaded** when its columns match a table shape the engine reads
 (`engine_shapes.engine_shape_of_columns`, which calls the engine's own shape tests, so no table name is listed
 anywhere). The schema is derived from the CSV's own header and type row (`sql_author.author_sql_from_layout`: no LLM,
-no index; `VARCHAR2(n)` with n = twice the longest value, at least 64; `Integer` -> `NUMBER`), goes through the same
+no index; `VARCHAR2(n)` with n = four times the longest value, at least 256, at most 4000 (later uploads must still fit); `Integer` -> `NUMBER`), goes through the same
 validator, and the table gets the same ownership stamp. Any other CSV no script reads is skipped as before.
 
 Opt out with `ARYX_CSV_BML_LOAD_ENGINE_TABLES=false` (restores the old skip). The workspace-table reader

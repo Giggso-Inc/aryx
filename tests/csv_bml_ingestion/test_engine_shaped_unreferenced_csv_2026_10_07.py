@@ -79,8 +79,8 @@ def test_sizes_leave_headroom_over_the_longest_value(bml_index, tmp_path):
     db = FakeDb()
     assert ingest_csv(p, bml_index, db).status == "loaded"
     create = next(e[1] for e in db.statements("execute") if e[1].startswith("CREATE TABLE"))
-    assert "displaymodel VARCHAR2(200)" in create               # twice the longest value
-    assert "startdate VARCHAR2(64)" in create                   # floor of 64
+    assert "displaymodel VARCHAR2(400)" in create               # four times the longest value
+    assert "startdate VARCHAR2(256)" in create                  # floor of 256
 
 
 def test_the_table_is_stamped_with_the_owner_tag_so_the_engine_reader_finds_it(bml_index, tmp_path):
@@ -159,3 +159,48 @@ def test_a_table_over_the_engines_row_cap_is_warned_about(bml_index, tmp_path, m
     db = FakeDb()
     assert ingest_csv(_base_model_csv(tmp_path), bml_index, db).rows_loaded == 2
     assert any("more than the engine reads" in m and kw["rows_loaded"] == 2 and kw["read_cap"] == 1 for m, kw in warnings)
+
+
+# --- review follow-ups: the engine's standalone shapes, reserved-word columns, switch location ----------------------
+@pytest.mark.parametrize("header,shape", [
+    (["countryCode", "countryDesc", "RTTE", "nonRTTE", "TA"], "rtte_ta"),
+    (["countryCode", "countryDesc", "region", "emsParent", "marketParent", "Enabled", "language", "regionGroup",
+      "Embargo"], "country_region"),
+    (["_update_action", "key", "BaseModel", "attr1", "val1", "attr2", "val2", "PartNumber", "Qty"], "defaultinattr"),
+    (["cpqModel", "group", "attributeName", "attributeVariable"], "attr_var_mapping"),
+    (["_update_action", "key", "seriesCPQModel", "childCPQModel", "attr1", "op1", "val1"], "series_mapping"),
+    (["_update_action", "key", "model", "UDCC", "region", "ruleType", "attribute", "value"], "region_rule"),
+])
+def test_every_table_shape_the_engine_reads_is_recognised(header, shape):
+    assert engine_shape_of_columns(_columns(header)) == shape
+
+
+@pytest.mark.parametrize("header", [
+    ["model", "value"], ["name", "region"], ["region", "value", "attribute"], ["cpqModel", "group"],
+    ["countryCode", "val1", "val2"], ["id", "name", "price"],
+])
+def test_generic_column_sets_are_not_engine_shapes(header):
+    assert engine_shape_of_columns(_columns(header)) is None
+
+
+def test_a_reserved_word_column_is_restored_to_the_engines_spelling():
+    from aryx.cpq.rdb import rdb_workspace_tables as wt
+    assert wt.recase("group_col") == "group"
+    assert wt.recase("model_col") == "model_col"       # `model` is not reserved: never suffixed, so never mapped back
+    assert wt.recase("seq") == "Seq"
+
+
+def test_an_unreferenced_attr_var_mapping_csv_is_loaded_and_reads_back_with_its_group_column(bml_index, tmp_path):
+    p = write_csv(tmp_path / "attrToVarMapping.csv", ["cpqModel", "group", "attributeName", "attributeVariable"],
+                  ["String"] * 4, [["APX1000", "g", "Feature Type", "systemEnhancementFeatureType_astro"]])
+    db = FakeDb()
+    r = ingest_csv(p, bml_index, db)
+    assert (r.status, r.table, r.rows_loaded) == ("loaded", "attrtovarmapping", 1)
+    create = next(e[1] for e in db.statements("execute") if e[1].startswith("CREATE TABLE"))
+    assert "group_col VARCHAR2(" in create
+
+
+def test_the_switch_lives_with_the_other_csv_bml_switch():
+    from aryx.csv_bml_ingestion import config
+    assert config.load_engine_tables_enabled is load_engine_tables_enabled
+    assert config.LOAD_ENGINE_TABLES_ENV == LOAD_ENGINE_TABLES_ENV

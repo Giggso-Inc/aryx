@@ -82,6 +82,12 @@ def recase(column: str, variant: int = 0) -> str:
     ``variant`` picks among the spellings of an ambiguous name (``CPQModel`` is 0, ``cpqModel`` is 1).
     """
     lowered = column.lower()
+    if lowered.endswith("_col") and lowered[:-4] in _CANONICAL:
+        # the CSV pipeline suffixes a column named like an Oracle reserved word (`group` -> `group_col`)
+        from aryx.csv_bml_ingestion.constants import ORACLE_RESERVED  # noqa: PLC0415
+
+        if lowered[:-4] in ORACLE_RESERVED:
+            lowered = lowered[:-4]
     spellings = _CANONICAL.get(lowered)
     return spellings[min(variant, len(spellings) - 1)] if spellings else lowered
 
