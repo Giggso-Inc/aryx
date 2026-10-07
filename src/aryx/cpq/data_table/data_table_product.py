@@ -242,7 +242,13 @@ def resolve_sibling_models_with_sequence_rows(
 
 
 def _alnum(text: str) -> str:
+    """Letters and digits only, upper-cased."""
     return "".join(ch for ch in text.upper() if ch.isalnum())
+
+
+def _extends_by_letters(code: str, entry: str) -> bool:
+    """True when `code` is `entry` or continues it with a letter, never a digit (X900 must not claim X9000)."""
+    return code.startswith(entry) and not code[len(entry):len(entry) + 1].isdigit()
 
 
 def resolve_punctuated_sequence_models(
@@ -269,7 +275,7 @@ def resolve_punctuated_sequence_models(
     entries = {_alnum(part) for part in _hierarchy_display(matched).split(",")} - {""}
     return tuple(sorted(
         code for code in sequence_models
-        if not code.isalnum() and any(_alnum(code).startswith(entry) for entry in entries)))
+        if not code.isalnum() and any(_extends_by_letters(_alnum(code), entry) for entry in entries)))
 
 
 def resolve_product_cpq_models_from_rows(

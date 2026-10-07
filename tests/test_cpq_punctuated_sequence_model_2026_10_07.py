@@ -38,3 +38,8 @@ def test_nothing_when_the_family_has_its_own_sequence_rows(monkeypatch):
 def test_plain_codes_are_never_picked_up(monkeypatch):
     _install(monkeypatch, ["THING8XE"])
     assert dtp.resolve_punctuated_sequence_models("THING8", 1267) == ()
+
+
+def test_a_longer_numbered_family_is_not_claimed(monkeypatch):
+    _install(monkeypatch, ["THING8/XE", "THING80/XE", "THING8/XE_BOM"])
+    assert dtp.resolve_punctuated_sequence_models("THING8", 1267) == ("THING8/XE", "THING8/XE_BOM")
