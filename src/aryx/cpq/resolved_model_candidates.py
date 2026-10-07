@@ -8,6 +8,7 @@ Absent a resolved turn, only the product-derived candidates are returned.
 from __future__ import annotations
 
 from aryx.cpq import model_resolution as _model_resolution
+from aryx.cpq.data_table.model_key_map import front_mapped_key
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 
 
@@ -30,4 +31,4 @@ def resolved_model_first_candidates(
         if cpq_model not in seen:
             seen.add(cpq_model)
             ordered.append(cpq_model)
-    return ordered
+    return list(front_mapped_key(tuple(ordered), product, workspace_id, catalog_prefix, cache))

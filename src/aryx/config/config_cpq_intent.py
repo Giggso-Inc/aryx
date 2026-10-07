@@ -704,6 +704,22 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Off by default. Override with ARYX_CPQ_ORACLE_FETCH_RULES_ORDERED_BINDS_ENABLED=true."
         ),
     )
+    cpq_catalog_model_key_enabled: bool = Field(
+        default=False,
+        description=(
+            "When a model has no rule rows under its own name, offer the data-table model key the catalog's own "
+            "mapping script gives for the selected product (for example product APX8000 -> key APX8000/XE) as the "
+            "first model candidate, only when the Attrsequence table has rows under it. Off by default. "
+            "Override with ARYX_CPQ_CATALOG_MODEL_KEY_ENABLED=true."
+        ),
+    )
+    cpq_catalog_model_key_ttl_seconds: int = Field(
+        default=900,
+        description=(
+            "Seconds the parsed product -> model key map is kept per workspace before the catalog scripts are "
+            "read again. Override with ARYX_CPQ_CATALOG_MODEL_KEY_TTL_SECONDS."
+        ),
+    )
     cpq_derive_base_model_enabled: bool = Field(
         default=False,
         description=(
