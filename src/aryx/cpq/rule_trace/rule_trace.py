@@ -85,11 +85,18 @@ install_run_id_logging(__name__)
 # ~0.22s round trip -- confirmed live, ws 1267/Astro25Configdata fires
 # 1000+ rules in one turn, so writing one row per fire cost ~650s of a
 # ~2000s turn on nothing but connection pings and round trips. Flushing
-# every _FLUSH_BATCH_SIZE fires (plus always at evaluate_rules_loop's end
-# and at seal(), see flush_pending()/seal() below) keeps the same
-# "durable before the turn's response returns" guarantee while turning
-# ~1000 round trips into a handful.
-_FLUSH_BATCH_SIZE = 50
+# every _flush_batch_size() fires (plus always at evaluate_rules_loop's
+# end, ask_api._run_cpq_turn's finally, and at seal(), see flush_pending()
+# /seal() below) keeps the same "durable before the turn's response
+# returns" guarantee while turning ~1000 round trips into a handful.
+
+
+def _flush_batch_size() -> int:
+    """PR #458 review (Low finding 4): settings-backed, not a hardcoded
+    constant, so a deployment can tune the durability/round-trip-count
+    trade-off without a code change."""
+    from aryx.config import get_settings
+    return get_settings().cpq_rule_trace_flush_batch_size
 
 
 def _durable_failed(operation: str, exc: BaseException, run_id: str = "") -> None:
@@ -194,10 +201,10 @@ def record_fire(
     check either condition themselves.
 
     The durable (DB) write is buffered, not immediate -- see
-    _FLUSH_BATCH_SIZE's docstring -- and flushed in one round trip once
-    _FLUSH_BATCH_SIZE fires accumulate, or at flush_pending()/seal()'s
-    call sites. The local .jsonl write stays immediate (cheap, local
-    disk, no round trip to batch).
+    _flush_batch_size()'s docstring -- and flushed in one round trip once
+    that many fires accumulate, or at flush_pending()/seal()'s call
+    sites. The local .jsonl write stays immediate (cheap, local disk, no
+    round trip to batch).
     """
     run_id = get_run_id()
     ctx = _ctx_var.get()
@@ -225,7 +232,7 @@ def record_fire(
         trace.pending.append(
             (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
         )
-        should_flush = len(trace.pending) >= _FLUSH_BATCH_SIZE
+        should_flush = len(trace.pending) >= _flush_batch_size()
     if should_flush:
         _flush_trace(trace)
     logger.info("cpq: rule trace fired seq=%d rule_id=%s type=%s", seq_no, rule_id, rule_type)
@@ -233,7 +240,19 @@ def record_fire(
 
 
 def _flush_trace(trace: "_OpenTrace") -> None:
-    """Durably write `trace`'s buffered fires in one batched round trip."""
+    """Durably write `trace`'s buffered fires in one batched round trip.
+
+    A failed batch is put back at the front of `trace.pending` (PR #458
+    review, Medium finding) rather than dropped -- one failure previously
+    cost one row (the old per-fire append_entry had no retry either); a
+    batch failure must not cost up to _flush_batch_size() rows instead. The
+    local .jsonl copy already has these rows regardless (written in
+    record_fire, independent of this), so no data is lost either way --
+    this only affects whether the DURABLE (DB) copy eventually gets them
+    too. Still bounded: a run_id whose breaker is open (see
+    RuleTraceStore.append_entries_batch) is silently skipped, not
+    retried forever -- same accepted trade-off as before this PR.
+    """
     with _lock:
         batch, trace.pending = trace.pending, []
     if not batch:
@@ -243,6 +262,8 @@ def _flush_trace(trace: "_OpenTrace") -> None:
     except Exception as exc:
         logger.exception("rule_trace: durable append_entries_batch failed run_id=%s", trace.run_id)
         _durable_failed("append_entries_batch", exc, trace.run_id)
+        with _lock:
+            trace.pending = batch + trace.pending
 
 
 def flush_pending(run_id: str | None = None) -> None:

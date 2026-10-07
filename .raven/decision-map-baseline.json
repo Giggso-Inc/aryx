@@ -7993,37 +7993,37 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      58,
+      73,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      68,
+      83,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      77,
+      92,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      78,
+      93,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      81,
+      96,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      83,
+      98,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      85,
+      100,
       "ask_router"
     ],
     [
@@ -13843,37 +13843,37 @@
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      108,
+      115,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      119,
+      126,
       "<try>"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      133,
+      140,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      158,
+      165,
       "_log_fired"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      179,
+      186,
       "record_fire"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      248,
+      269,
       "flush_pending"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      265,
+      286,
       "seal"
     ],
     [

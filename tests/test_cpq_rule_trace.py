@@ -28,6 +28,7 @@ def _reset_module_state(tmp_path, monkeypatch):
     settings = MagicMock()
     settings.cpq_rule_trace_dir = str(tmp_path)
     settings.cpq_rule_trace_orphan_timeout_hours = 24
+    settings.cpq_rule_trace_flush_batch_size = 50
     monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
 
     mock_store = MagicMock()
@@ -108,18 +109,39 @@ class TestRecordFire:
         assert args[4] == "RR1"
 
     def test_flush_batch_size_triggers_automatic_flush(self, tmp_path, _reset_module_state):
-        """Reaching _FLUSH_BATCH_SIZE fires flushes without an explicit
-        flush_pending() call -- the safety valve for a turn that never
-        calls evaluate_rules_loop's end-of-loop flush (e.g. a crash)."""
+        """Reaching the configured flush batch size flushes without an
+        explicit flush_pending() call -- the safety valve for a turn that
+        never calls evaluate_rules_loop's end-of-loop flush (e.g. a crash)."""
         set_run_id("run-4b")
         rule_trace.bind_context(7, "Sl3500e")
-        for i in range(rule_trace._FLUSH_BATCH_SIZE):
+        batch_size = rule_trace._flush_batch_size()
+        for i in range(batch_size):
             rule_trace.record_fire(
                 rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide",
             )
         _reset_module_state.append_entries_batch.assert_called_once()
         batch = _reset_module_state.append_entries_batch.call_args[0][0]
-        assert len(batch) == rule_trace._FLUSH_BATCH_SIZE
+        assert len(batch) == batch_size
+
+    def test_failed_flush_requeues_batch_instead_of_dropping_it(self, tmp_path, _reset_module_state):
+        """PR #458 review (Medium finding): a failed batch must not lose
+        its rows from the durable store -- it goes back to the front of
+        the pending buffer so the next flush retries it."""
+        set_run_id("run-4c")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        rule_trace.record_fire(rule_type="hiding", rule_id="H1", attr="a", outcome="hide")
+        rule_trace.flush_pending()
+        _reset_module_state.append_entries_batch.assert_called_once()
+        trace = rule_trace._open_sessions["run-4c"]
+        assert len(trace.pending) == 1 and trace.pending[0][4] == "H1"
+
+        _reset_module_state.append_entries_batch.side_effect = None
+        rule_trace.flush_pending()
+        assert trace.pending == []
+        assert _reset_module_state.append_entries_batch.call_count == 2
+        retried_batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(retried_batch) == 1 and retried_batch[0][4] == "H1"
 
 
 class TestSealing:
@@ -235,3 +257,39 @@ class TestAutoFillIsTraced:
             governed_ids={attr.entity_id}, rule_governed_ids=set(),
         )
         assert list(tmp_path.glob("*.jsonl")) == []
+
+
+class TestRunCpqTurnFlushesPending:
+    """PR #458 review (Low findings 1/2): record_fire() also runs from
+    apply_hiding_rules/apply_recommendation_rules/apply_constraint_rules
+    call sites outside evaluate_rules_loop, and an exception inside that
+    loop would skip its own end-of-loop flush. ask_api._run_cpq_turn's
+    try/finally is the one place covering every call site and exit path
+    for a single turn."""
+
+    def test_flushes_after_a_normal_return(self, monkeypatch):
+        from aryx.api import ask_api
+
+        monkeypatch.setattr(ask_api, "_run_cpq_turn_inner", lambda *a, **k: {"ok": True})
+        monkeypatch.setattr(ask_api, "enforce_conversational_invariant", lambda r: r)
+        monkeypatch.setattr(ask_api, "_apply_real_llm_usage", lambda r: None)
+        monkeypatch.setattr(ask_api.llm_runtime, "reset_turn_usage", lambda: None)
+        flushed = []
+        monkeypatch.setattr(rule_trace, "flush_pending", lambda: flushed.append(True))
+        result = ask_api._run_cpq_turn(req=None, reader=None)
+        assert result == {"ok": True}
+        assert flushed == [True]
+
+    def test_flushes_even_when_the_turn_raises(self, monkeypatch):
+        from aryx.api import ask_api
+
+        def _boom(*a, **k):
+            raise RuntimeError("turn exploded")
+
+        monkeypatch.setattr(ask_api, "_run_cpq_turn_inner", _boom)
+        monkeypatch.setattr(ask_api.llm_runtime, "reset_turn_usage", lambda: None)
+        flushed = []
+        monkeypatch.setattr(rule_trace, "flush_pending", lambda: flushed.append(True))
+        with pytest.raises(RuntimeError, match="turn exploded"):
+            ask_api._run_cpq_turn(req=None, reader=None)
+        assert flushed == [True]
