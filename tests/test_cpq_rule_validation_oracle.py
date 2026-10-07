@@ -144,6 +144,56 @@ def test_status_unresolved_group_does_not_block_a_later_definite_false() -> None
     assert status is False
 
 
+def test_status_not_equal_against_tilde_list_is_disjoint_check() -> None:
+    """"<>" against a tilde-delimited expected list ("CA~IL") must mean
+    "not any of these", not a literal string comparison against the whole
+    joined string."""
+    attrs = (_attr(1, "condition"), _attr(2, "target", "X"))
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide unless CA or IL", 0, "", 2,
+        conditions=[(1, "CA~IL", "3")],
+    )
+
+    assert evaluator.status(rule, {"condition": "US"}) is True
+    assert evaluator.status(rule, {"condition": "CA"}) is False
+    assert evaluator.status(rule, {"condition": "IL"}) is False
+
+
+def test_status_unparseable_numeric_propagates_as_unknown_not_guessed() -> None:
+    """A numeric operator that can't parse either side must return None
+    (unresolved), never a guessed True/False -- pins _operator_hit's
+    "never guess" discipline as seen through status()."""
+    attrs = (_attr(1, "condition"), _attr(2, "target", "X"))
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide if under 37", 0, "", 2,
+        conditions=[(1, "37", "1")],
+    )
+
+    assert evaluator.status(rule, {"condition": "not a number"}) is None
+
+
+def test_status_ands_two_groups_with_different_operators() -> None:
+    """Different attribute_ids are ANDed together, each honoring its OWN
+    operator -- a rule mixing "=" on one attribute with "<>" on another
+    must evaluate both correctly, not just the first group's operator."""
+    attrs = (
+        _attr(1, "region", "US", "CA"),
+        _attr(2, "tier", "GOLD", "SILVER"),
+        _attr(3, "target", "X"),
+    )
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide for US and non-gold", 0, "", 3,
+        conditions=[(1, "US", "4"), (2, "GOLD", "3")],
+    )
+
+    assert evaluator.status(rule, {"region": "US", "tier": "SILVER"}) is True
+    assert evaluator.status(rule, {"region": "US", "tier": "GOLD"}) is False
+    assert evaluator.status(rule, {"region": "CA", "tier": "SILVER"}) is False
+
+
 def test_oracle_conflicting_hide_show_is_order_independent() -> None:
     """Conflicting visibility actions must be reported, never list-order resolved."""
     attrs = [_attr(1, "condition", "A"), _attr(2, "target", "X")]

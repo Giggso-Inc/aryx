@@ -63,6 +63,17 @@ class ConditionEvaluator:
             if operator in _MULTI_SELECT_OPERATORS:
                 hits = [_operator_hit("~".join(actual_values), values, operator)]
             else:
+                # actual_values can hold more than one value even for a
+                # non-multi-select operator, when filled_multi supplies
+                # several currently-selected values for this attribute.
+                # The group is satisfied if ANY of them hits -- e.g. "<> A"
+                # with {A, B} selected is True (B already proves "<> A"
+                # holds for at least one selection), not "every selection
+                # must be <> A". This is the same per-value-OR semantic the
+                # pre-existing equality-only matches() used (not something
+                # this operator-aware rewrite introduced), preserved here
+                # deliberately rather than changed to an AND, since nothing
+                # in the real catalog's rule authoring assumes AND here.
                 hits = [_operator_hit(actual, values, operator) for actual in actual_values]
             if any(hit is True for hit in hits):
                 continue
