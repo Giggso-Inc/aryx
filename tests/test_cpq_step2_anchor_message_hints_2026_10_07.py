@@ -19,14 +19,21 @@ from aryx.cpq.state import ConfigAttr, MenuOption
 _SENTINEL = "SENTINEL_ANCHOR_TEXT_51c"
 
 
-def _product_attr() -> ConfigAttr:
-    pairs = [("APX900", "APX 900"), ("APX900FLASHPORT", "APX 900"), ("APX6500", "APX 6500")]
+def _attr(vn: str, pairs: list[tuple[str, str]]) -> ConfigAttr:
     return ConfigAttr(
-        entity_id=1, variable_name="productSelectionProduct_all", display_label="Product",
+        entity_id=hash(vn) % 10_000, variable_name=vn, display_label=vn,
         required=False, default_value="", select_type="single",
         options=[MenuOption(item_value=iv, display_name=dn, order=i)
                  for i, (iv, dn) in enumerate(pairs, start=1)],
     )
+
+
+def _attrs() -> list[ConfigAttr]:
+    """Real ws 1267 shape: "APX 900" is on the product selector and on the DMS picker."""
+    return [
+        _attr("productSelectionProduct_all", [("APX900FLASHPORT", "APX 900"), ("APX6500", "APX 6500")]),
+        _attr("productSelectionDMSO_astro", [("APX900", "APX 900"), ("APX6500", "APX 6500")]),
+    ]
 
 
 @pytest.fixture
@@ -65,13 +72,13 @@ def _run(question: str, anchor: str, hints: dict | None = None):
     req = SimpleNamespace(question=question, workspace_id=1267)
     session = SimpleNamespace(product_anchor_question=anchor, negated_vns=[], turn=2)
     hints = {} if hints is None else hints
-    step2._step2_catalog_hints_and_negation(req, session, [_product_attr()], hints, "")
+    step2._step2_catalog_hints_and_negation(req, session, _attrs(), hints, "")
     return hints, session
 
 
 def test_turn2_reads_product_from_the_anchor_message(engine, recs):
     hints, _ = _run("United States", "I want a quote for APX 900")
-    assert hints == {"productSelectionProduct_all": "APX900"}
+    assert hints == {"productSelectionProduct_all": "APX900FLASHPORT"}
     rec = [r for r in recs if "product anchor" in r["message"]][-1]
     assert rec["context"]["added_hint_vns"] == ["productSelectionProduct_all"]
 
