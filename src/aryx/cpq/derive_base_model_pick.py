@@ -8,9 +8,12 @@ Gated by ``cpq_derive_base_model_enabled``; never guesses among 2+.
 from __future__ import annotations
 
 import logging
+from typing import Any, TypedDict
 
 from aryx.config import get_settings
-from aryx.cpq.data_table.data_table_derive_base_model import derive_base_model_from_known_attrs
+from aryx.cpq.data_table.data_table_derive_base_model import (
+    derive_base_model_from_known_attrs, model_base_models,
+)
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
@@ -23,6 +26,13 @@ logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
 
+class _Seen(TypedDict):
+    """What one derivation attempt saw, for the not-derived diagnostic."""
+    candidates: list[str]
+    results: dict[str, str | None]
+    reason: str
+
+
 def derived_base_model_option(
     options: list[MenuOption], filled: dict[str, str],
     workspace_id: int | None, catalog_prefix: str,
@@ -32,12 +42,16 @@ def derived_base_model_option(
     """The Base Model option derived from `filled`, or None (flag off / no
     workspace / no options / not narrowed to one real option). Never raises. When `sources` (the
     per-turn source tags) is given, blind-filled values (source tag starting
-    ``blind_pick`` or ``default_first_available``) are not used as evidence."""
+    ``blind_pick`` or ``default_first_available``) are not used as evidence.
+
+    When nothing is derived and DEBUG is on, the diagnostic records why. With several candidate models its
+    `reason_code` describes the last candidate that produced a code (`DERIVED_CODE_NOT_AN_OPTION`) and otherwise
+    `NOT_NARROWED_TO_ONE`; `results` has each candidate's own outcome."""
     if workspace_id is None or not options:
         return None
     if not get_settings().cpq_derive_base_model_enabled:
         return None
-    seen: dict = {"candidates": [], "results": {}, "reason": "NOT_NARROWED_TO_ONE"}
+    seen: _Seen = {"candidates": [], "results": {}, "reason": "NOT_NARROWED_TO_ONE"}
     try:
         product = filled.get("productSelectionProduct_all", "")
         ignore = frozenset(
@@ -78,26 +92,36 @@ def derived_base_model_option(
     return None
 
 
-def _log_not_derived(seen, filled, options, cache, workspace_id, catalog_prefix, sources) -> None:
-    """DEBUG line: why no base model was derived. Once per per-turn cache; never affects the fill pass."""
+def _log_not_derived(
+    seen: _Seen, filled: dict[str, str], options: list[MenuOption],
+    cache: dict[Any, Any] | None, workspace_id: int, catalog_prefix: str,
+    sources: dict[str, str] | None,
+) -> None:
+    """DEBUG line: why no base model was derived; never affects the fill pass.
+
+    Deduplicated per per-turn cache by OUTCOME (reason and candidates), not once per turn: the rules loop runs several
+    fill passes against one cache, and the first pass (product still blank) must not hide a later pass that fails for a
+    different reason. An identical repeat is still skipped."""
     try:
         if not would_log("DEBUG"):
             return
-        key = ("_derive_base_model_not_derived_logged", workspace_id, catalog_prefix)
+        key = ("_derive_base_model_not_derived_logged", workspace_id, catalog_prefix,
+               seen["reason"], tuple(seen["candidates"][:6]))
         if cache is not None:
             if key in cache:
                 return
             cache[key] = True
-        from aryx.cpq.data_table.data_table_derive_base_model import model_base_models  # noqa: PLC0415
-
         counts = {m: len(model_base_models(m, workspace_id, catalog_prefix, cache)) for m in seen["candidates"][:6]}
+        reason = seen["reason"]
+        if reason == "NOT_NARROWED_TO_ONE" and counts and not any(counts.values()):
+            reason = "NO_BASE_MODEL_ROWS"      # the candidate models have no constraint rows at all
         raven_log("DEBUG", "P4", "ask.base_model.not_derived why no base model was derived this pass", context={
             "selected_option": "left_for_customer", "available_options": ["derived", "left_for_customer"],
-            "reason_code": seen["reason"], "candidates": seen["candidates"][:6],
+            "reason_code": reason, "candidates": seen["candidates"][:6],
             "base_models_per_candidate": counts,
             "results": {m: r for m, r in list(seen["results"].items())[:6]},
             "option_count": len(options), "product_filled": bool(filled.get("productSelectionProduct_all")),
             "known_attr_count": sum(1 for v in filled.values() if v),
             "blind_attr_count": sum(1 for s in (sources or {}).values() if str(s).startswith(_BLIND_SOURCE_PREFIXES))})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change the fill
-        return
+        logger.debug("cpq: not_derived diagnostic failed", exc_info=True)
