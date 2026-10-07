@@ -187,3 +187,14 @@ only the RDB faked.
 - The order dependence of the derivation.
 - Forward-filling from a part number typed in the message (needs a mapping from part number to base model; the
   `BaseModelToConfig` table has `pvPartNumber` for only 9 rows).
+
+## Follow-up (2026-10-08): the question lists only the model's own values
+
+Live run after #473: the bot asked Keypad Type and Frequency Bands (not the 660-option base model), but listed the
+catalog's full lists (4 keypads, 20 bands) although APX 900's base models hold 2 keypads and 5 bands.
+
+`discriminator_option_limits` (`base_model_narrowing.py`) returns, per separating attribute still to ask, the item values
+the base models still in play hold. `_with_model_option_limits` (`ask_step11_build_response.py`) merges them into
+`constrained_opts` before the question is built (flag `cpq_base_model_narrowing_enabled`; only tightens an existing
+rule constraint; failure leaves the list as it was). An attribute whose options all belong to the model keeps its list.
+Answers outside the list are still accepted by the normal answer path; only what is offered changes.

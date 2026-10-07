@@ -160,3 +160,29 @@ def reopen_guessed_values(
         display_filled.pop(vn, None)
         sources.pop(vn, None)
     return reopened
+
+
+def discriminator_option_limits(
+    attrs: list[Any], filled: dict[str, str], sources: dict[str, str] | None, product: str,
+    workspace_id: int | None, catalog_prefix: str, cache: dict | None = None,
+) -> dict[str, list[str]]:
+    """{entity_id: item values} the customer may still choose for each separating attribute.
+
+    The values are the ones the base models still in play hold for that attribute, so the list shows the model's
+    own bands / keypads and not every option the catalog defines for the attribute. An attribute whose rows leave
+    none of its options out, or match no option at all, is left out (its full list stays)."""
+    narrowing = build_base_model_narrowing(attrs, filled, sources, product, workspace_id, catalog_prefix, cache)
+    if narrowing is None or not narrowing.ask_first:
+        return {}
+    rows, base_models = _model_with_base_models(product, workspace_id, catalog_prefix, cache)
+    remaining = narrowed_base_models(rows, filled, blind_attrs(sources))
+    disc = single_valued_discriminators(rows, remaining)
+    by_vn = {a.variable_name: a for a in attrs}
+    limits: dict[str, list[str]] = {}
+    for vn in narrowing.ask_first:
+        attr = by_vn[vn]
+        allowed = set(disc[vn].values())
+        kept = [o.item_value for o in attr.options if value_matches(allowed, o.item_value, o.display_name)]
+        if kept and len(kept) < len(attr.options):
+            limits[attr.entity_id] = kept
+    return limits

@@ -526,3 +526,33 @@ def test_the_option_matching_rule_is_shared_by_the_typed_tie_break_and_the_forwa
     assert hints == {FREQ: "F700"}
     state = _forward(attrs[0], bmn.BaseModelNarrowing(forward={FREQ: "700/800 MHZ"}))
     assert (state.value, state.source) == ("F700", "derived_from_base_model")
+
+
+# --- the question lists the model's own values, not the whole catalog list -----------------------------------------
+def _wide_attrs():
+    """The catalog lists more bands and keypads than APX 900's base models hold."""
+    attrs = _attrs()
+    attrs[0] = _attr(FREQ, [(v, v.title()) for v in (*BANDS.values(), "SINGLE", "DUAL", "N/A")])
+    attrs[1] = _attr(KEYPAD, [(v, v.title()) for v in (*KEYPADS.values(), "NO KEYPAD", "TOUCH SCREEN")])
+    return attrs
+
+
+def _limits(attrs, filled=None):
+    return bmn.discriminator_option_limits(attrs, filled or {}, None, "APX 900", 1267, "p", {})
+
+
+def test_the_question_lists_only_the_values_the_models_base_models_hold(rows):
+    attrs = _wide_attrs()
+    limits = _limits(attrs, {COUNTRY: "US", PRODUCT: "APX 900"})
+    assert set(limits[attrs[0].entity_id]) == set(BANDS.values())
+    assert set(limits[attrs[1].entity_id]) == set(KEYPADS.values())
+
+
+def test_an_attribute_whose_options_all_belong_to_the_model_keeps_its_list(rows):
+    assert _limits(_attrs()) == {}
+
+
+def test_an_answered_attribute_is_not_limited_and_nothing_is_limited_without_a_product(rows):
+    attrs = _wide_attrs()
+    assert attrs[0].entity_id not in _limits(attrs, {FREQ: "VHF"})
+    assert bmn.discriminator_option_limits(attrs, {}, None, "", 1267, "p", {}) == {}
