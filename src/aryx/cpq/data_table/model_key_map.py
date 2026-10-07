@@ -33,6 +33,7 @@ _LOCKS: dict[tuple[int, str], threading.Lock] = {}   # one load at a time PER wo
 _LOCKS_GUARD = threading.Lock()                       # protects the two dicts only, never held during a load
 # string literals are matched first so a "//" or "/*" inside one is not taken for a comment
 _TOKENS = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|/\*.*?\*/|//[^\n]*", re.S)
+_STRINGS = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'")
 _ONLY_OR = re.compile(r"[\s()]*(?:(?:\bOR\b|\bor\b|\|\|)[\s()]*)*")
 
 
@@ -48,31 +49,70 @@ def _product_literal() -> str:
     return PRODUCT_LITERAL
 
 
-def _strip_comments(text: str) -> str:
-    """Drop /* */ and // comments in one pass; text inside a string literal is kept as it is."""
-    return _TOKENS.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else " ", text)
+def _blank_comments(text: str) -> str:
+    """Blank /* */ and // comments with spaces of the same length (positions stay put); string literals are kept."""
+    return _TOKENS.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def _depth(skeleton: str, pos: int) -> int:
+    """Brace depth at `pos` of a text whose string contents were blanked."""
+    return skeleton.count("{", 0, pos) - skeleton.count("}", 0, pos)
+
+
+def _reject(reason: str, var: str) -> tuple[str, dict[str, str]]:
+    """Log why a mapping-shaped script was not trusted, and return the empty parse."""
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.model_key.script_rejected script is not a plain product chain, ignored",
+                  context={"selected_option": "ignored", "available_options": ["used", "ignored"],
+                           "reason_code": reason, "policy_version": _POLICY})
+    return var, {}
 
 
 def parse_model_key_chain(script: str) -> tuple[str, dict[str, str]]:
-    """Return (variable, {product value: key}) from a mapping chain, or ("", {}) when the script has none.
+    """Return (variable, {product value: key}) from a plain mapping chain, or ("", {}) when the script has none.
 
-    The variable is the one the script passes to the data tables as ``CPQModel = $variable``.
+    The variable is the one the script passes to the data tables as ``CPQModel = $variable``. The chain is trusted only
+    when it is one flat ``if / elif ... / else`` chain whose branches sit at one brace depth, and every other assignment
+    to the variable comes BEFORE the chain (a default) or is the chain's own final ``else``. A chain nested in another
+    test (a region, say), or a later assignment that can overwrite the key, makes the key depend on more than the
+    product, so the whole script is ignored.
     """
-    text = _strip_comments(script)
+    text = _blank_comments(script)
     product_attr = _product_literal()
     used = _USED_VAR.search(text)
     if not used or product_attr not in text:
         return "", {}
-    product_test = re.compile(re.escape(product_attr) + r'\s*==\s*"([^"]+)"')
     var = used.group(1)
-    branch = re.compile(r"(?:\bif|\belif|\belse\s+if)\s*\((?P<cond>[^{}]*?)\)\s*\{?\s*"
-                        + re.escape(var) + r'\s*=\s*"(?P<key>[^"]+)"', re.S)
-    mapping: dict[str, str] = {}
+    skeleton = _STRINGS.sub(lambda m: m.group(0)[0] + "_" * (len(m.group(0)) - 2) + m.group(0)[-1], text)
+    product_test = re.compile(re.escape(product_attr) + r'\s*==\s*"([^"]+)"')
+    target = r"(?P<assign>(?<![\w$.])" + re.escape(var) + r")\s*=(?!=)"
+    branch = re.compile(r"(?P<kw>\bif|\belif|\belse\s+if)\s*\((?P<cond>[^{}]*?)\)\s*\{?\s*"
+                        + target.replace("(?P<assign>", "(?P<avar>") + r'\s*"(?P<key>[^"]+)"', re.S)
+    plain = []                                   # branches whose condition is only product tests joined by OR
     for found in branch.finditer(text):
         cond = found.group("cond")
-        if not _ONLY_OR.fullmatch(product_test.sub("", cond)):
-            continue    # another test (AND, <>, a second attribute) sits in the condition: not a plain product list
-        for product in product_test.findall(cond):
+        if _ONLY_OR.fullmatch(product_test.sub("", cond)):
+            plain.append(found)
+    if not plain:
+        return var, {}
+    first = plain[0].start()
+    accepted = {f.start("avar") for f in plain}
+    depth = _depth(skeleton, first)
+    if plain[0].group("kw") != "if" or any(f.group("kw") == "if" for f in plain[1:]):
+        return _reject("SECOND_IF_CHAIN", var)    # a later plain `if` can overwrite what the chain set
+    if any(_depth(skeleton, f.start()) != depth for f in plain):
+        return _reject("BRANCHES_AT_DIFFERENT_DEPTH", var)
+    for fin in re.finditer(r"\belse\s*\{?\s*" + target, skeleton):
+        if fin.start() > plain[-1].start() and _depth(skeleton, fin.start()) == depth:
+            accepted.add(fin.start("assign"))     # the chain's own final else
+    empty_guard = re.compile(r"\bif\s*\(\s*" + re.escape(var) + r'\s*==\s*""\s*\)\s*\{?\s*$')
+    for assign in re.finditer(target, skeleton):
+        at = assign.start("assign")
+        if at >= first and at not in accepted and not empty_guard.search(skeleton[max(0, at - 80):at]):
+            return _reject("ASSIGNED_OUTSIDE_THE_CHAIN", var)    # `if (var == "") { var = ... }` only fills an empty key
+    mapping: dict[str, str] = {}
+    for found in plain:
+        for product in product_test.findall(found.group("cond")):
             mapping.setdefault(product, found.group("key"))
     return var, mapping
 

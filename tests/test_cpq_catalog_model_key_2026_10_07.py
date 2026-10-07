@@ -63,7 +63,7 @@ def test_chain_is_parsed_with_the_variable_the_script_gives_the_data_tables():
 
 
 def test_a_script_with_too_few_product_tests_is_not_a_mapping():
-    small = CHAIN.replace('elif (' + PRODUCT + '=="GADGET1")', 'elif (x=="y")')
+    small = "\n".join(line for line in CHAIN.splitlines() if "GADGET1" not in line)    # one branch fewer, still a flat chain
     assert mkm.build_model_key_map({1: 'if (' + PRODUCT + '=="A") { m = "K"; } rows = Q("CPQModel=$m");'}) == {}
     assert mkm.build_model_key_map({1: small})["WIDGET1"] == "WIDGET1/X"
 
@@ -306,3 +306,41 @@ def test_a_request_gives_up_waiting_for_a_stuck_load_and_keeps_its_own_candidate
     finally:
         lock.release()
     assert mkm.model_key_map(1)                  # once the lock is free the map loads normally
+
+
+# ---- strict flat-chain rule (third review): the key must depend on the product alone ----
+
+def _flat(wrap=("", ""), prefix="", suffix="", count=6):
+    """A chain of `count` single-product branches with optional text around it, generic names."""
+    branches = "\n".join(
+        f'{"if" if i == 0 else "elif"} ({PRODUCT}=="ITEM{i}") {{ k = "KEY{i}"; }}' for i in range(count))
+    return f'{prefix}{wrap[0]}\n{branches}\n{wrap[1]}{suffix}\nrows = Q("WHERE CPQModel=$k");'
+
+
+def test_a_flat_chain_with_a_default_before_and_a_final_else_is_used():
+    script = _flat(prefix="k = upper(_bm_model_variable_name);\n",
+                   wrap=(f'if ({PRODUCT}<>"") {{', f' else {{ k = {PRODUCT}; }} }}'))
+    assert len(mkm.parse_model_key_chain(script)[1]) == 6
+
+
+def test_a_chain_nested_in_another_test_is_ignored():
+    script = _flat(wrap=('if (region=="FED") {', '} else { k = "OTHER"; }'))
+    assert mkm.parse_model_key_chain(script)[1] == {}
+
+
+def test_a_later_plain_if_that_can_overwrite_the_chain_is_ignored():
+    assert mkm.parse_model_key_chain(_flat(suffix=f'\nif ({PRODUCT}=="ITEM0") {{ k = "NEWKEY"; }}'))[1] == {}
+
+
+def test_a_later_assignment_on_another_test_is_ignored():
+    assert mkm.parse_model_key_chain(_flat(suffix='\nif (region=="NA") { k = "BASE/NA"; }'))[1] == {}
+
+
+def test_a_later_fallback_that_only_fills_an_empty_key_is_allowed():
+    script = _flat(suffix='\nif (k == "") { k = upper(_bm_model_variable_name); }')
+    assert len(mkm.parse_model_key_chain(script)[1]) == 6
+
+
+def test_an_assignment_inside_a_string_is_not_an_assignment():
+    script = _flat(prefix='msg = "k = 5";\n')
+    assert len(mkm.parse_model_key_chain(script)[1]) == 6
