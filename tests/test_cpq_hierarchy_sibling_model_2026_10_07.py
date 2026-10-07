@@ -182,3 +182,69 @@ def test_a_failing_turn_lookup_falls_back_to_the_callers_cache(tables, monkeypat
     assert first[0] == "APX900"
     assert any(isinstance(k, tuple) and k and k[0] == "_cpq_model_candidates" for k in cache)
     assert _cpq_model_candidates("APX900FLASHPORT", 1267, "", cache) == first
+
+
+# --- through the real loader: a blank Product cell is NULL, i.e. the key is absent from the row ----------------
+def _fake_loader_tables():
+    hierarchy = [
+        {"productFamily": "aSTRO25", "cpqModelName": "APX900", "displayCPQModel": "APX 900"},      # no Product key
+        {"productFamily": "aSTRO25", "cpqModelName": "APXFLASHPORTSERIES", "Product": "APX900FLASHPORT",
+         "displayCPQModel": "APX 900 FLASHport"},
+    ]
+    sequence = [{"CPQModel": "APX900", "BaseModel": "H92KDH9PW7AN", "AttrName": "x", "Seq": "1"}]
+    return {"Cpqmodelhierarchy": hierarchy, "Attrsequence": sequence}
+
+
+def test_a_hierarchy_row_without_a_product_key_survives_the_loader_and_gives_the_sibling(monkeypatch):
+    from aryx.cpq.data_table import data_table_loader, data_table_resolver
+
+    class _Rdb:
+        def __init__(self, tables):
+            self._t = tables
+
+        def fetch_all_entities_grouped_by_type(self, workspace_id):
+            return {k: [(i, r) for i, r in enumerate(v, 1)] for k, v in self._t.items()}
+
+    data_table_resolver._clear_tables_cache()
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _Rdb(_fake_loader_tables()))
+    try:
+        _c, _s, hierarchy_rows, _m, _r = data_table_loader._load_all_tables(1267, "")
+        assert {r["cpqModelName"] for r in hierarchy_rows} == {"APX900", "APXFLASHPORTSERIES"}
+        assert dtp.resolve_sibling_models_with_sequence_rows("APX900FLASHPORT", 1267) == ("APX900",)
+        monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows",
+                            lambda *a, **k: ())
+        assert _cpq_model_candidates("APX900FLASHPORT", 1267)[:2] == ("APX900", "APX900_BOM")
+    finally:
+        data_table_resolver._clear_tables_cache()
+
+
+@pytest.mark.parametrize("keys,expected", [
+    ({"cpqModelName", "Product"}, True),
+    ({"cpqModelName", "displayCPQModel"}, True),                    # blank Product cell
+    ({"cpqModelName", "displaycpqmodel"}, True),
+    ({"cpqModelName"}, False),
+    ({"Product"}, False),
+    ({"displayCPQModel", "productFamily"}, False),
+])
+def test_hierarchy_shape_detection(keys, expected):
+    from aryx.cpq.data_table.data_table_shapes import _is_hierarchy_shaped
+    assert _is_hierarchy_shaped(keys) is expected
+
+
+# --- an empty product name must never match a blank-Product row (review: HIGH) -----------------------------------
+@pytest.mark.parametrize("empty", ["", "   ", None])
+def test_an_empty_product_name_resolves_nothing(tables, empty):
+    tables(["APX900"])
+    assert dtp.resolve_product_cpq_model_family(empty, 1267) is None
+    assert dtp.resolve_sibling_models_with_sequence_rows(empty, 1267) == ()
+
+
+def test_an_empty_product_gets_the_static_fallback_not_an_arbitrary_model(tables, monkeypatch):
+    tables(["APX900"])
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+    assert _cpq_model_candidates("", 1267) == ("APXNEXT", "APXNEXT_BOM")
+
+
+def test_a_real_product_still_resolves_next_to_blank_product_rows(tables):
+    tables(["APX900"])
+    assert dtp.resolve_product_cpq_model_family("apx900flashport", 1267) == "APXFLASHPORTSERIES"

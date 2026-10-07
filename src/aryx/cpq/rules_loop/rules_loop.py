@@ -18,6 +18,7 @@ from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
 from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_timing import totals_line
 
 _MAX_LOOPS = 8
 
@@ -155,6 +156,13 @@ def evaluate_rules_loop(
         "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",
         time.monotonic() - _loop_t0, pass_num + 1,
     )
+    
+    # one line per turn: cumulative seconds per stage, largest first ("where did the minutes go")
+    logger.info(totals_line(state, time.monotonic() - _loop_t0, pass_num + 1))
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.rules_loop.timing per-stage totals for the turn", context={
+            "passes": pass_num + 1, "total_ms": int((time.monotonic() - _loop_t0) * 1000),
+            "stage_ms": {name: int(seconds * 1000) for name, seconds in state.stage_s.items()}})
     # Durably flush this turn's buffered rule-trace fires in one round
     # trip (see rule_trace.py's record_fire/_FLUSH_BATCH_SIZE) so the
     # trace is fully durable by the time this turn's response returns,

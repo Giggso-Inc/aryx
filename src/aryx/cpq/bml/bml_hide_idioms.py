@@ -48,10 +48,22 @@ _HIDE_MASTER_LIST_RE = re.compile(
     r'return\s+false\s*;\s*',
     re.IGNORECASE,
 )
+# Same shape, but the index variable that is TESTED is not the one that was ASSIGNED (live: ws 1267 has 3,225 hide
+# scripts that assign `lindex = findinarray(...)` and test `valindex ==-1`). Only used when the caller opts in.
+_HIDE_MASTER_LIST_ALIAS_RE = re.compile(_HIDE_MASTER_LIST_RE.pattern.replace(r'(?P=idx)\s*==', r'(?P<tested>\w+)\s*=='),
+                                        re.IGNORECASE)
+
+
+def _aliased(m: "re.Match[str] | None", variables: dict[str, str]) -> "re.Match[str] | None":
+    """The loose match, only when the tested index name is not a real variable (an unassigned index stands for the
+    findinarray result)."""
+    if m is None or m.group("tested") in variables or m.group("tested") == m.group("idx"):
+        return None
+    return m
 
 
 def evaluate_hide_master_list(
-    script: str, variables: dict[str, str],
+    script: str, variables: dict[str, str], alias_unassigned_index: bool = False,
 ) -> tuple[bool | None, bool]:
     """Tier 1.5 (Idiom C): resolve the "hide unless in master list" idiom
     deterministically. Returns (hide, blocked_by_missing_var) — same
@@ -59,7 +71,10 @@ def evaluate_hide_master_list(
     means the script isn't this idiom at all (try the next tier); (None,
     True) means it IS this idiom but MASTER or SEP isn't filled yet.
     """
-    m = _HIDE_MASTER_LIST_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    text = _COMMENT_RE.sub("", script).strip()
+    m = _HIDE_MASTER_LIST_RE.fullmatch(text)
+    if not m and alias_unassigned_index:
+        m = _aliased(_HIDE_MASTER_LIST_ALIAS_RE.fullmatch(text), variables)
     if not m:
         return None, False
     master = variables.get(m.group("master"))
@@ -113,8 +128,12 @@ _HIDE_MASTER_LIST_UNGUARDED_RE = re.compile(
 )
 
 
+_HIDE_MASTER_LIST_UNGUARDED_ALIAS_RE = re.compile(
+    _HIDE_MASTER_LIST_UNGUARDED_RE.pattern.replace(r'(?P=idx)\s*==', r'(?P<tested>\w+)\s*=='), re.IGNORECASE)
+
+
 def evaluate_hide_master_list_unguarded(
-    script: str, variables: dict[str, str], trust_empty_master: bool = False,
+    script: str, variables: dict[str, str], trust_empty_master: bool = False, alias_unassigned_index: bool = False,
 ) -> tuple[bool | None, bool]:
     """Tier 1.5 (Idiom D). Returns (hide, blocked_by_missing_var) — same
     contract as the other Tier-1 evaluators. (None, False) means the
@@ -126,7 +145,10 @@ def evaluate_hide_master_list_unguarded(
     (same convention used everywhere else in this codebase) and DOES
     report a confident hide.
     """
-    m = _HIDE_MASTER_LIST_UNGUARDED_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    text = _COMMENT_RE.sub("", script).strip()
+    m = _HIDE_MASTER_LIST_UNGUARDED_RE.fullmatch(text)
+    if not m and alias_unassigned_index:
+        m = _aliased(_HIDE_MASTER_LIST_UNGUARDED_ALIAS_RE.fullmatch(text), variables)
     if not m:
         return None, False
     master = variables.get(m.group("master"))

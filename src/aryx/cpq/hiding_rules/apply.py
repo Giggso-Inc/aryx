@@ -8,10 +8,12 @@ package.
 
 from __future__ import annotations
 
+import time
+
 from aryx.cpq.rule_trace import rule_trace
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
 from aryx.cpq.catalog_profile import resolve_base_model_vn
-from aryx.cpq.engine import _condition_value_matches
+from aryx.cpq.engine import _condition_value_matches, logger
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.hiding_rules.master_string import hide_with_master_string
 from aryx.cpq.hiding_rules.master_writers import master_hide_enabled
@@ -68,6 +70,9 @@ def apply_hiding_rules(
 
     hidden_eids: set[int] = set()
     messages: list[str] = []
+    _t0 = time.monotonic()
+    _script_s = 0.0
+    _outcomes = {"hide": 0, "show": 0, "unknown": 0}
 
     for rule in rules:
         target = by_rule_id.get(rule.target_attr_id)
@@ -132,7 +137,9 @@ def apply_hiding_rules(
         if rule.script is not None:
             if bml_eval is None:
                 log_unknown_script_hide(rule, target.variable_name, False)
+                _outcomes["unknown"] += 1
                 continue
+            _rule_t0 = time.monotonic()
             hide = None
             master_tried = False
             if getattr(rule, "master_writers", None) and master_hide_enabled():
@@ -144,6 +151,8 @@ def apply_hiding_rules(
                     workspace_id, catalog_prefix, dt_cache)
             if hide is None:
                 hide = bml_eval.hide_for_script(rule.script, filled)
+            _script_s += time.monotonic() - _rule_t0
+            _outcomes["unknown" if hide is None else "hide" if hide else "show"] += 1
             if hide is None:
                 log_unknown_script_hide(rule, target.variable_name, True, master_tried)
             if hide is True:
@@ -199,4 +208,7 @@ def apply_hiding_rules(
 
     hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
     filtered = [a for a in attrs if a.entity_id not in hidden_eids]
+    logger.info(
+        "cpq_perf: apply_hiding_rules rules=%d script_hide=%d script_show=%d script_unknown=%d script_s=%.3f total_s=%.3f",
+        len(rules), _outcomes["hide"], _outcomes["show"], _outcomes["unknown"], _script_s, time.monotonic() - _t0)
     return filtered, messages, hidden_vns

@@ -52,10 +52,32 @@ def test_multi_owner_without_the_product_selector_still_never_guesses():
     assert _hints("we need AT&T FirstNet", attrs) == {}
 
 
-def test_product_selector_with_two_values_for_the_phrase_still_asks():
+def test_product_selector_with_two_values_resolves_when_one_code_is_typed():
+    """BEHAVIOUR CHANGE (2026-10-07, catalog_hints_tie restored).
+
+    This case previously asserted `== {}` -- never guess between two values of
+    the product selector that share a label. That outcome is what made the
+    live APX 8000 family unusable: the selector really does hold both the
+    radio's own code and the FLASHport variant's under one label, so the turn
+    hinted nothing, the model leaf stayed ambiguous and the customer was shown
+    all 132 products in the family.
+
+    The phrase here normalizes to exactly one of the two values' own codes, so
+    the customer typed that code and nothing is being guessed. Where no value's
+    code matches the shared label, the never-guess outcome still stands --
+    see the test below.
+    """
     attrs = [_attr(PRODUCT, [("APX900", "APX 900"), ("APX900FLASHPORT", "APX 900")]),
              _attr(DMS, [("APX900", "APX 900")])]
-    assert _hints("I want a quote for APX 900", attrs) == {}
+    assert _hints("I want a quote for APX 900", attrs) == {PRODUCT: "APX900"}
+
+
+def test_product_selector_with_two_values_and_no_exact_code_still_asks():
+    """The shared label matches neither value's own code -- still never guess."""
+    attrs = [_attr(PRODUCT, [("APXNEXTXEMULTI", "APX NEXT XE All Band"),
+                             ("APXNEXTH55XEFLASHPORT", "APX NEXT XE All Band")]),
+             _attr(DMS, [("APXNEXTXEMULTI", "APX NEXT XE All Band")])]
+    assert _hints("I want a quote for APX NEXT XE All Band", attrs) == {}
 
 
 def test_single_owner_unchanged():

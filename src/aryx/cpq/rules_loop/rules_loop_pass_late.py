@@ -15,6 +15,7 @@ from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_timing import add_stage, stage_done
 
 
 def _whitelist_narrow_kwargs() -> dict[str, bool]:
@@ -44,6 +45,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
             "cpq_perf: prefetch_tier2 (post-auto_fill) took %.3fs pass=%d",
             time.monotonic() - _t0, pass_num,
         )
+        add_stage(state, "prefetch_tier2_post_autofill", _t0)
 
     _t0 = time.monotonic()
     new_fills = engine.apply_recommendation_rules(
@@ -55,6 +57,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         "cpq_perf: apply_recommendation_rules took %.3fs pass=%d",
         time.monotonic() - _t0, pass_num,
     )
+    add_stage(state, "apply_recommendation_rules", _t0)
     if new_fills:
         # Route multi-select targets to `multi`, not `filled` -- same
         # reasoning as auto_fill's final assignment block: this is yet
@@ -96,6 +99,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         "cpq_perf: resync_stale_recommendations took %.3fs pass=%d",
         time.monotonic() - _t0, pass_num,
     )
+    add_stage(state, "resync_stale_recommendations", _t0)
     # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC4,
     # 2026-08-24; refined RC5, 2026-08-24): live-confirmed a SECOND,
     # structurally identical churn source to RC3's paired-value
@@ -130,6 +134,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         "cpq_perf: apply_constraint_rules (in-loop) took %.3fs pass=%d",
         time.monotonic() - _t0, pass_num,
     )
+    add_stage(state, "apply_constraint_rules", _t0)
     _t0 = time.monotonic()
     engine._apply_series_mapping_exclusions(
         state.attrs, state.constrained_opts, state.filled,
@@ -139,6 +144,7 @@ def run_late_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope
         "cpq_perf: _apply_series_mapping_exclusions took %.3fs pass=%d",
         time.monotonic() - _t0, pass_num,
     )
+    add_stage(state, "series_mapping_exclusions", _t0)
 
     logger.info(
         "cpq_perf: pass %d total %.3fs resynced=%s inconsistent=%d",
