@@ -13,6 +13,7 @@ from typing import Any
 
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.cpq.rule_trace import rule_trace
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
 from aryx.cpq.rules_loop.rules_loop_pass_late import run_late_pass
@@ -154,4 +155,9 @@ def evaluate_rules_loop(
         "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",
         time.monotonic() - _loop_t0, pass_num + 1,
     )
+    # Durably flush this turn's buffered rule-trace fires in one round
+    # trip (see rule_trace.py's record_fire/_FLUSH_BATCH_SIZE) so the
+    # trace is fully durable by the time this turn's response returns,
+    # even though individual fires are no longer written one at a time.
+    rule_trace.flush_pending()
     return state.attrs, state.filled, state.display_filled, state.constrained_opts

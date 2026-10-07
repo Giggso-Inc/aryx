@@ -84,7 +84,11 @@ class TestRecordFire:
         assert [e["seq_no"] for e in entries] == [1, 2]
         assert [e["pass_num"] for e in entries] == [0, 1]
 
-    def test_durable_store_receives_same_entry(self, tmp_path, _reset_module_state):
+    def test_durable_store_receives_same_entry_once_flushed(self, tmp_path, _reset_module_state):
+        """The durable write is buffered (2026-10-07 perf fix -- see
+        rule_trace.py's _FLUSH_BATCH_SIZE), not immediate: record_fire()
+        alone does not call the store; flush_pending() does, in one
+        batched append_entries_batch() call."""
         set_run_id("run-4")
         rule_trace.bind_context(7, "Sl3500e")
         rule_trace.bind_pass(2)
@@ -92,12 +96,30 @@ class TestRecordFire:
             rule_type="recommendation", rule_id="RR1", attr="x", outcome="set=Y",
             bml_tier="script",
         )
-        _reset_module_state.append_entry.assert_called_once()
-        args = _reset_module_state.append_entry.call_args[0]
+        _reset_module_state.append_entries_batch.assert_not_called()
+        rule_trace.flush_pending()
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == 1
+        args = batch[0]
         assert args[0] == "run-4"  # run_id
         assert args[2] == 2        # pass_num
         assert args[3] == "recommendation"
         assert args[4] == "RR1"
+
+    def test_flush_batch_size_triggers_automatic_flush(self, tmp_path, _reset_module_state):
+        """Reaching _FLUSH_BATCH_SIZE fires flushes without an explicit
+        flush_pending() call -- the safety valve for a turn that never
+        calls evaluate_rules_loop's end-of-loop flush (e.g. a crash)."""
+        set_run_id("run-4b")
+        rule_trace.bind_context(7, "Sl3500e")
+        for i in range(rule_trace._FLUSH_BATCH_SIZE):
+            rule_trace.record_fire(
+                rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide",
+            )
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == rule_trace._FLUSH_BATCH_SIZE
 
 
 class TestSealing:
@@ -133,6 +155,19 @@ class TestSealing:
     def test_seal_with_no_open_trace_is_noop(self, tmp_path, _reset_module_state):
         rule_trace.seal("never-opened")
         _reset_module_state.seal_session.assert_not_called()
+
+    def test_seal_flushes_pending_entries_before_sealing(self, tmp_path, _reset_module_state):
+        """A fire count under _FLUSH_BATCH_SIZE never auto-flushes -- seal()
+        must still flush it, or the session's last few fires would never
+        reach the durable store at all (2026-10-07 perf fix)."""
+        set_run_id("run-9")
+        rule_trace.bind_context(1, "ApxNextConfig")
+        rule_trace.record_fire(rule_type="hiding", rule_id="H1", attr="a", outcome="hide")
+        _reset_module_state.append_entries_batch.assert_not_called()
+        rule_trace.seal("run-9")
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == 1 and batch[0][4] == "H1"
 
 
 class TestOrphanSweep:

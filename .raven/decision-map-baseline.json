@@ -11293,58 +11293,73 @@
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      206,
+      293,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      306,
+      393,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      309,
+      396,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      360,
+      447,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      372,
+      459,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      443,
+      530,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      28,
+      29,
       "_log_candidates"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      44,
+      45,
       "_prepend_resolved_model"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      55,
+      56,
       "<try>"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      128,
+      81,
+      "_memo_store"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      84,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      90,
+      "_memo_store"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      164,
       "<if>"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      173,
-      "_cpq_model_candidates"
+      209,
+      "_resolve_cpq_model_candidates"
     ],
     [
       "src/aryx/cpq/engine.py",
@@ -12943,12 +12958,12 @@
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      21,
+      22,
       "apply_hiding_rules"
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      196,
+      202,
       "apply_hiding_rules"
     ],
     [
@@ -13828,42 +13843,47 @@
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      95,
+      108,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      106,
+      119,
       "<try>"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      120,
+      133,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      145,
+      158,
       "_log_fired"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      166,
+      179,
       "record_fire"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      216,
+      248,
+      "flush_pending"
+    ],
+    [
+      "src/aryx/cpq/rule_trace/rule_trace.py",
+      265,
       "seal"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      24,
+      25,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      157,
+      163,
       "evaluate_rules_loop"
     ],
     [

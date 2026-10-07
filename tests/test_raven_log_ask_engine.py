@@ -186,6 +186,9 @@ def test_rdb_oracle_read_failure_is_logged_not_raised(recs, monkeypatch):
 
 
 def test_rule_trace_fire_attribution_and_durable_failure(recs, monkeypatch, tmp_path):
+    """The durable write is buffered, not immediate (2026-10-07 perf fix --
+    see rule_trace.py's _FLUSH_BATCH_SIZE): a single record_fire() only
+    attempts open_session, never append_entries_batch, until flushed."""
     from aryx.cpq.rule_trace import rule_trace as rt
     from aryx.cpq.logging_context import set_run_id
     set_run_id("trace-run-1")
@@ -196,19 +199,21 @@ def test_rule_trace_fire_attribution_and_durable_failure(recs, monkeypatch, tmp_
         def open_session(self, *a, **k):
             raise RuntimeError("down")
 
-        append_entry = open_session
+        def append_entries_batch(self, *a, **k):
+            raise RuntimeError("down")
 
     monkeypatch.setattr(rt, "_store", lambda: Boom())
     monkeypatch.setattr(rt, "_trace_dir", lambda: tmp_path)
     try:
         rt.record_fire(rule_type="recommendation", rule_id="Set Base Model", attr="tgt", outcome="set=Y")
+        rt.flush_pending()
     finally:
         set_run_id("")
     fired = _ev(recs, "ask.rule.fired")[0]["context"]
     assert fired["rule_name"] == "Set Base Model" and fired["ref_id"] is None
     assert (fired["target_attribute"], fired["old_source"], fired["new_source"]) == ("tgt", "default", "rule")
     failed = _ev(recs, "ask.rule_trace.durable_failed")
-    assert {f["context"]["operation"] for f in failed} == {"open_session", "append_entry"}
+    assert {f["context"]["operation"] for f in failed} == {"open_session", "append_entries_batch"}
     assert all(f["error_code"] == "ARYX_ASK_RULE_TRACE_FAILED" and f["level"] == "WARN" for f in failed)
 
 

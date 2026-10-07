@@ -116,6 +116,52 @@ class RuleTraceStore:
         with _breaker_lock:
             _fail_counts.pop(run_id, None)
 
+    def append_entries_batch(self, entries: list[tuple]) -> None:
+        """Insert many fired-rule rows in one round trip.
+
+        `entries` is a list of (run_id, seq_no, pass_num, rule_type,
+        rule_id, attr, outcome, bml_tier) tuples -- the same positional
+        shape `append_entry` inserts one at a time. Confirmed live,
+        2026-10-07: a fresh `pool.connection()` acquire costs ~0.44s just
+        for the pool's dead-connection ping (oracle_connection_pool.py's
+        ping_interval=0) on top of the ~0.22s round trip itself, and a
+        single ws 1267/Astro25Configdata turn fires 1000+ rules -- one
+        acquire + `executemany()` per buffered batch (see rule_trace.py's
+        `_flush_trace`) turns ~1000 acquire+insert round trips into a
+        handful, without changing what ends up durably stored.
+
+        Empty list is a no-op -- never opens a connection for nothing.
+        Same per-run circuit-breaker semantics as `append_entry`: a run_id
+        already breaker-open is dropped silently (local .jsonl still has
+        it), and a failed batch counts as one failure per run_id in it,
+        not one per row.
+        """
+        if not entries:
+            return
+        settings = get_settings()
+        if not settings.cpq_rule_trace_write_timeout_enabled:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(load("insert_rule_trace_entry"), entries)
+            return
+        entries = [e for e in entries if e[0] not in _open_runs]
+        if not entries:
+            return  # every run_id in this batch has its breaker open
+        run_ids = {e[0] for e in entries}
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    with _bounded(conn, cur, int(settings.cpq_rule_trace_write_timeout_ms)):
+                        cur.executemany(load("insert_rule_trace_entry"), entries)
+        except Exception as exc:
+            log_if_timeout(exc, "rule_trace_store.append_entries_batch")
+            for run_id in run_ids:
+                self._record_failure(run_id, int(settings.cpq_rule_trace_breaker_threshold))
+            raise
+        with _breaker_lock:
+            for run_id in run_ids:
+                _fail_counts.pop(run_id, None)
+
     @staticmethod
     def _record_failure(run_id: str, threshold: int) -> None:
         """Count a consecutive failure; open the breaker for the run at threshold."""

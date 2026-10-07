@@ -70,6 +70,7 @@ from aryx.store.rule_trace_store import RuleTraceStore
 __all__ = [
     "bind_context",
     "bind_pass",
+    "flush_pending",
     "record_fire",
     "seal",
     "sweep_orphans",
@@ -77,6 +78,18 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
+
+# Buffered durable writes (2026-10-07 perf fix): a fresh pool.connection()
+# acquire pings the connection before returning it (oracle_connection_
+# pool.py's ping_interval=0), costing ~0.44s on top of the insert's own
+# ~0.22s round trip -- confirmed live, ws 1267/Astro25Configdata fires
+# 1000+ rules in one turn, so writing one row per fire cost ~650s of a
+# ~2000s turn on nothing but connection pings and round trips. Flushing
+# every _FLUSH_BATCH_SIZE fires (plus always at evaluate_rules_loop's end
+# and at seal(), see flush_pending()/seal() below) keeps the same
+# "durable before the turn's response returns" guarantee while turning
+# ~1000 round trips into a handful.
+_FLUSH_BATCH_SIZE = 50
 
 
 def _durable_failed(operation: str, exc: BaseException, run_id: str = "") -> None:
@@ -179,6 +192,12 @@ def record_fire(
     sealed -- callers at the fire points in apply_hiding_rules /
     apply_recommendation_rules / apply_constraint_rules never need to
     check either condition themselves.
+
+    The durable (DB) write is buffered, not immediate -- see
+    _FLUSH_BATCH_SIZE's docstring -- and flushed in one round trip once
+    _FLUSH_BATCH_SIZE fires accumulate, or at flush_pending()/seal()'s
+    call sites. The local .jsonl write stays immediate (cheap, local
+    disk, no round trip to batch).
     """
     run_id = get_run_id()
     ctx = _ctx_var.get()
@@ -202,15 +221,45 @@ def record_fire(
                 fh.write(json.dumps(entry) + "\n")
         except Exception:
             logger.exception("rule_trace: local file write failed run_id=%s", run_id)
-    try:
-        _store().append_entry(
-            run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier,
+    with _lock:
+        trace.pending.append(
+            (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
         )
-    except Exception as exc:
-        logger.exception("rule_trace: durable append_entry failed run_id=%s", run_id)
-        _durable_failed("append_entry", exc, run_id)
+        should_flush = len(trace.pending) >= _FLUSH_BATCH_SIZE
+    if should_flush:
+        _flush_trace(trace)
     logger.info("cpq: rule trace fired seq=%d rule_id=%s type=%s", seq_no, rule_id, rule_type)
     _log_fired(rule_type, rule_id, attr, ref_id, bml_tier, pass_num, seq_no)
+
+
+def _flush_trace(trace: "_OpenTrace") -> None:
+    """Durably write `trace`'s buffered fires in one batched round trip."""
+    with _lock:
+        batch, trace.pending = trace.pending, []
+    if not batch:
+        return
+    try:
+        _store().append_entries_batch(batch)
+    except Exception as exc:
+        logger.exception("rule_trace: durable append_entries_batch failed run_id=%s", trace.run_id)
+        _durable_failed("append_entries_batch", exc, trace.run_id)
+
+
+def flush_pending(run_id: str | None = None) -> None:
+    """Durably flush run_id's (or the current context's) buffered fires now.
+
+    Call at the end of a turn's rule evaluation (evaluate_rules_loop) so
+    the turn's trace is durable by the time its HTTP response returns,
+    even though individual fires are no longer written one at a time.
+    A no-op when no trace is open for run_id, or nothing is pending.
+    """
+    run_id = run_id or get_run_id()
+    if not run_id:
+        return
+    trace = _open_sessions.get(run_id)
+    if trace is None:
+        return
+    _flush_trace(trace)
 
 
 def seal(run_id: str | None = None, status: str = "post_approval") -> None:
@@ -230,6 +279,7 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
         if trace is None:
             return
         trace.sealed = True
+    _flush_trace(trace)
     try:
         _store().seal_session(run_id, status=status)
     except Exception as exc:

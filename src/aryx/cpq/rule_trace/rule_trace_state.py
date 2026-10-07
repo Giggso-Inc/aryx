@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import contextvars
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # (workspace_id, catalog_prefix) for the current ask-turn -- bind once per
@@ -42,6 +42,17 @@ class _OpenTrace:
     file_path: Path | None
     seq_no: int = 0
     sealed: bool = False
+    # Fired-rule rows not yet flushed to the durable store (see
+    # rule_trace.py's record_fire/_flush_trace) -- each is the exact
+    # positional-argument tuple RuleTraceStore.append_entries_batch()
+    # executemany()s in one round trip, instead of one connection
+    # acquire + INSERT per rule fire (confirmed live, 2026-10-07: each
+    # acquire pings the pool's connection -- oracle_connection_pool.py's
+    # ping_interval=0 -- costing ~0.44s on top of the ~0.22s round trip
+    # itself, and a single ws 1267/Astro25Configdata turn fires 1000+
+    # rules, so this was ~650s of a ~2000s turn spent entirely on
+    # per-fire connection pings and round trips).
+    pending: list[tuple] = field(default_factory=list)
 
 
 def bind_context(workspace_id: int, catalog_prefix: str) -> None:
