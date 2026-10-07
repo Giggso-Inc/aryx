@@ -71,6 +71,39 @@ def _step2_catalog_hints_and_negation(
                 "added_hint_vns": sorted(set(hints) - _hint_keys_before),
                 "turn": getattr(session, "turn", None)})
 
+    _merge_anchor_hints(req, session, attrs, hints, catalog_prefix)
+
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
     return catalog_prefix, negated_vns
+
+
+def _merge_anchor_hints(
+    req: "Any", session: Any, attrs: list, hints: dict, catalog_prefix: str,
+) -> None:
+    """Also read option text from the earlier message that named the product.
+
+    The country gate answers turn 1 ("I want a quote for APX 900") before
+    this step runs, and turn 2 ("United States") scans only its own text,
+    so an option named while anchoring the product was never hinted (ws
+    1267, 2026-10-07: Product was asked with ~300 options). Lowest priority
+    (setdefault, after this turn and the switch trigger); positive hints
+    only, never negations; an attr already answered is never overwritten
+    (auto_fill tier0_already_filled runs before the hint tier). A completed
+    product switch clears product_anchor_question, so an old product's
+    message is never re-read.
+    """
+    from aryx.api import ask_api as _ask_api_module
+    anchor = (getattr(session, "product_anchor_question", "") or "").strip()
+    if not anchor or anchor == (req.question or "").strip():
+        return
+    _keys_before = set(hints)
+    anchor_hints, _ = _ask_api_module._cpq_engine.extract_catalog_hints(anchor, attrs)
+    for vn, iv in anchor_hints.items():
+        hints.setdefault(vn, iv)
+    raven_log("DEBUG", "P4", "ask.preamble.catalog_hints merged from product anchor", context={
+        "selected_option": "merged" if set(hints) - _keys_before else "nothing_new",
+        "available_options": ["merged", "nothing_new"], "reason_code": "ANCHOR_MESSAGE_RESCAN",
+        "catalog_prefix": catalog_prefix, "anchor_len": len(anchor),
+        "added_hint_vns": sorted(set(hints) - _keys_before),
+        "turn": getattr(session, "turn", None)})

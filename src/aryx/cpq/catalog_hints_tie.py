@@ -4,7 +4,7 @@ several real values of the same attribute (see exact_code_owner).
 from __future__ import annotations
 
 from aryx.cpq import engine as _engine_module
-from aryx.raven_log import raven_log
+from aryx.raven_log import raven_log, would_log
 
 
 def exact_code_owner(
@@ -21,6 +21,13 @@ def exact_code_owner(
     such values keep the never-guess outcome (None).
     """
     exact = [e for e in entries if _engine_module._normalize_for_hint(e[1]) == phrase]
+    if would_log("DEBUG"):
+        _log_tie(entries, exact)
+    return exact[0] if len(exact) == 1 else None
+
+
+def _log_tie(entries: set[tuple[str, str]], exact: list[tuple[str, str]]) -> None:
+    """DEBUG decision record for one same-attr tie (counts only)."""
     raven_log("DEBUG", "P4", "ask.catalog_hint.tie shared option label resolved or skipped", context={
         "selected_option": "exact_code" if len(exact) == 1 else "skip",
         "available_options": ["exact_code", "skip"],
@@ -28,7 +35,6 @@ def exact_code_owner(
             "NO_EXACT_CODE" if not exact else "MULTIPLE_EXACT_CODES"),
         "tied_values": len(entries), "exact_codes": len(exact),
         "variable_name": next(iter(entries))[0]})
-    return exact[0] if len(exact) == 1 else None
 
 
 def single_entry(

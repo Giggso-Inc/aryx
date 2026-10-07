@@ -1,0 +1,106 @@
+"""STEP 2 also reads option text from the earlier message that named the product.
+
+Live case (2026-10-07, ws 1267): "I want a quote for APX 900" was answered by
+the country gate before catalog hints ran; turn 2 ("United States") scanned
+only its own text, so Product was asked with ~300 options.
+"""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from aryx.api import ask_api
+from aryx.api.ask_turn_steps import ask_step2_catalog_hints as step2
+from aryx.cpq.engine import CpqEngine
+from aryx.cpq.state import ConfigAttr, MenuOption
+
+_SENTINEL = "SENTINEL_ANCHOR_TEXT_51c"
+
+
+def _product_attr() -> ConfigAttr:
+    pairs = [("APX900", "APX 900"), ("APX900FLASHPORT", "APX 900"), ("APX6500", "APX 6500")]
+    return ConfigAttr(
+        entity_id=1, variable_name="productSelectionProduct_all", display_label="Product",
+        required=False, default_value="", select_type="single",
+        options=[MenuOption(item_value=iv, display_name=dn, order=i)
+                 for i, (iv, dn) in enumerate(pairs, start=1)],
+    )
+
+
+@pytest.fixture
+def engine(monkeypatch):
+    """Real catalog-hint matcher; flag hints and trace binding stubbed (no DB)."""
+    eng = CpqEngine()
+    calls: list[str] = []
+    real = eng.extract_catalog_hints
+
+    def _spy(question, attrs):
+        calls.append(question)
+        return real(question, attrs)
+
+    monkeypatch.setattr(eng, "extract_catalog_hints", _spy)
+    monkeypatch.setattr(eng, "extract_flag_hints", lambda *a, **k: {})
+    monkeypatch.setattr(ask_api, "_cpq_engine", eng)
+    monkeypatch.setattr(step2.rule_trace, "bind_context", lambda *a: None)
+    eng.calls = calls
+    return eng
+
+
+@pytest.fixture
+def recs(monkeypatch):
+    out: list[dict] = []
+
+    def fake(level, criticality, message, **kw):
+        out.append({"message": message, "context": kw.get("context") or {}})
+        return {}
+
+    monkeypatch.setattr(step2, "raven_log", fake)
+    monkeypatch.setattr(step2, "would_log", lambda lv: True)
+    return out
+
+
+def _run(question: str, anchor: str, hints: dict | None = None):
+    req = SimpleNamespace(question=question, workspace_id=1267)
+    session = SimpleNamespace(product_anchor_question=anchor, negated_vns=[], turn=2)
+    hints = {} if hints is None else hints
+    step2._step2_catalog_hints_and_negation(req, session, [_product_attr()], hints, "")
+    return hints, session
+
+
+def test_turn2_reads_product_from_the_anchor_message(engine, recs):
+    hints, _ = _run("United States", "I want a quote for APX 900")
+    assert hints == {"productSelectionProduct_all": "APX900"}
+    rec = [r for r in recs if "product anchor" in r["message"]][-1]
+    assert rec["context"]["added_hint_vns"] == ["productSelectionProduct_all"]
+
+
+def test_this_turn_wins_over_the_anchor(engine, recs):
+    hints, _ = _run("make it an APX 6500", "I want a quote for APX 900")
+    assert hints == {"productSelectionProduct_all": "APX6500"}
+
+
+def test_hint_already_present_is_not_overwritten(engine, recs):
+    hints, _ = _run("United States", "I want a quote for APX 900",
+                    hints={"productSelectionProduct_all": "APX6500"})
+    assert hints["productSelectionProduct_all"] == "APX6500"
+
+
+def test_no_anchor_or_same_text_reads_once(engine, recs):
+    _run("United States", "")
+    assert engine.calls == ["United States"]
+    engine.calls.clear()
+    _run("I want a quote for APX 900", "I want a quote for APX 900")
+    assert engine.calls == ["I want a quote for APX 900"]
+
+
+def test_anchor_negations_are_ignored(engine, recs):
+    hints, session = _run("United States", "quote please, exclude the APX 900")
+    assert "productSelectionProduct_all" not in hints
+    assert session.negated_vns == []
+
+
+def test_log_has_lengths_not_text(engine, recs):
+    _run("United States", f"I want a quote for APX 900 {_SENTINEL}")
+    assert _SENTINEL not in json.dumps(recs)
