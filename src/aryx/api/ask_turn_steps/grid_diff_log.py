@@ -26,8 +26,9 @@ def log_grid_diff(before: list[str] | None, pending: Any) -> None:
         return
     try:
         after = [str(getattr(a, "variable_name", a)) for a in (pending or [])]
-        removed = [v for v in before if v not in after]
-        added = [v for v in after if v not in before]
+        before_set, after_set = set(before), set(after)          # the pending list can hold ~3,000 names
+        removed = [v for v in before if v not in after_set]
+        added = [v for v in after if v not in before_set]
         raven_log("DEBUG", "P4", "ask.recompute.grid_diff grid-quantity step changed the pending list", context={
             "selected_option": "changed" if removed or added else "unchanged",
             "available_options": ["changed", "unchanged"], "reason_code": "GRID_QUANTITY_APPEND",

@@ -118,3 +118,10 @@ def test_with_debug_off_nothing_is_copied_or_logged():
         assert grid_diff_log.names_before([_attr("a")]) is None
         grid_diff_log.log_grid_diff(None, [_attr("a")])
     rl.assert_not_called()
+
+
+def test_the_grid_diff_handles_a_pending_list_of_thousands_of_names(grid_logged):
+    before = grid_diff_log.names_before([_attr(f"a{i}") for i in range(3000)])
+    grid_diff_log.log_grid_diff(before, [_attr(f"a{i}") for i in range(10, 3000)] + [_attr("holder")])
+    (ctx,) = grid_logged
+    assert ctx["removed_count"] == 10 and ctx["added"] == ["holder"]

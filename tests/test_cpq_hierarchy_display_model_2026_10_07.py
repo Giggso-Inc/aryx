@@ -68,3 +68,25 @@ def test_a_product_that_the_hierarchy_names_by_product_is_untouched(tables):
     """APX900FLASHPORT has its own Product row: the Product-keyed path decides, as before."""
     tables()
     assert _cpq_model_candidates("APX900FLASHPORT", 1267)[:2] == ("APX900", "APX900_BOM")
+
+
+def test_a_trademark_symbol_in_the_display_or_the_product_text_does_not_stop_the_match(tables, monkeypatch):
+    tables()
+    assert dtp.resolve_models_by_hierarchy_display("APX™ 1500 Enhanced", 1267) == ("APX1500ENH",)
+    rows = [dict(HIERARCHY[1], displayCPQModel="APX™ 1500 Enhanced")]
+    seq = [{"CPQModel": "APX1500ENH", "AttrName": "x"}]
+    monkeypatch.setattr(dtp, "_load_all_tables", lambda *a, **k: ([], seq, rows, [], []))
+    dtp._clear_sequence_model_codes_cache()
+    assert dtp.resolve_models_by_hierarchy_display("APX 1500 Enhanced", 1267) == ("APX1500ENH",)
+
+
+def test_the_display_match_is_logged_as_its_own_tier(tables, monkeypatch):
+    from aryx.cpq.data_table_bridge import candidates
+    tables()
+    seen = []
+    monkeypatch.setattr(candidates, "_log_candidates", lambda tier, *a, **k: seen.append(tier))
+    _cpq_model_candidates("APX 1500 Enhanced", 1267)
+    assert seen[0] == "tier2_hierarchy_display_match" and "tier2_hierarchy_display_match" in candidates._TIERS
+    seen.clear()
+    _cpq_model_candidates("APX900FLASHPORT", 1267)                    # a Product row: the family / sibling tier, as before
+    assert seen[0] == "tier2_model_resolution"

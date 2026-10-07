@@ -23,8 +23,8 @@ from aryx.cpq.data_table.data_table_resolver import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
-_TIERS = ["tier1_text_match", "tier2_model_resolution", "tier3_base_model", "resolved_model_prepend",
-          "real_models_first", "static_fallback"]
+_TIERS = ["tier1_text_match", "tier2_model_resolution", "tier2_hierarchy_display_match", "tier3_base_model",
+          "resolved_model_prepend", "real_models_first", "static_fallback"]
 
 
 def _log_candidates(tier: str, result: tuple, product_name: str, workspace_id: int | None,
@@ -128,6 +128,9 @@ def _resolve_cpq_model_candidates(
        per-product. Both the bare family code and its "_BOM" variant are
        tried, since every real export seen so far ingests both under the
        same family.
+    2b. Otherwise, a model whose own hierarchy row (blank Product) is displayed exactly as `product_name` and that has
+       sequence rows (data_table_resolver.resolve_models_by_hierarchy_display), e.g. "APX 1500 Enhanced" ->
+       APX1500ENH. Logged as its own tier so it can be told apart from a family or sibling match.
     3. The static APXNEXT/APXNEXT_BOM fallback, when none of the above
        applies (no workspace_id, or the product is in no ingested source
        at all) -- unchanged, UNLESS `data_table_candidates_empty_on_no_
@@ -165,7 +168,7 @@ def _resolve_cpq_model_candidates(
         by_display = dt_resolve_models_by_display(product_name, workspace_id, catalog_prefix, cache)
         if by_display:        # a model whose own hierarchy row (blank Product) is displayed as the product's name
             primary = tuple(m for s in by_display for m in (s, f"{s}_BOM"))
-            tier = "tier2_model_resolution"
+            tier = "tier2_hierarchy_display_match"
     if primary is None:
         if get_settings().data_table_candidates_empty_on_no_match_enabled:
             logger.warning(

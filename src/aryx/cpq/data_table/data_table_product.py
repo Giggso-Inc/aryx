@@ -16,7 +16,7 @@ from aryx.cpq.data_table.data_table_cache import (
     _invalidate_on_marker_change,
 )
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
-from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped
+from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped, _normalize_label
 from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 from aryx.cpq.rdb.rdb import get_cpq_rdb
 from aryx.cpq.rdb.rdb_workspace_tables import groups_from as workspace_table_groups
@@ -254,14 +254,14 @@ def resolve_models_by_hierarchy_display(
     (whitespace and case normalised, at least two words) and only when the model has sequence rows. Used only after the
     Product-keyed lookups found nothing, so it can only replace the static fallback.
     """
-    norm = " ".join((product_name or "").upper().split())
+    norm = _normalize_label(product_name or "")        # case, whitespace and trademark symbols (a real label may carry one)
     if len(norm.split()) < 2:
         return ()
     _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     sequence_models = _sequence_model_codes(workspace_id, catalog_prefix, cache)
     return tuple(sorted({
         str(row["cpqModelName"]).strip() for row in hierarchy_rows
-        if not row.get("Product") and row.get("cpqModelName") and _hierarchy_display(row) == norm
+        if not row.get("Product") and row.get("cpqModelName") and _normalize_label(_hierarchy_display(row)) == norm
         and str(row["cpqModelName"]).strip().upper() in sequence_models}))
 
 
