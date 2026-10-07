@@ -142,9 +142,9 @@ def extract_catalog_hints(
         # Same attr, but 2+ genuinely different real values can share this
         # phrase (e.g. a "(4G LTE+5G)" variant suffix shared by sibling
         # products "APX NEXT"/"APX NEXT XE"). Never guess between them --
-        # unless exactly one value's own code IS the phrase, which means the
-        # customer typed that value's code rather than a shared label.
-        selected = single_entry(entries, phrase)
+        # except on the product selector, where exactly one value's own code
+        # being the phrase prefers that value (see catalog_hints_tie).
+        selected = single_entry(entries, phrase, q_norm)
         if selected is None:
             continue
         vn, item_value = selected

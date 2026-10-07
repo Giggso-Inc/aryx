@@ -66,3 +66,22 @@ def test_shared_label_with_no_exact_code_still_hints_nothing():
 def test_nothing_mentioned_hints_nothing():
     attrs = [_attr(PRODUCT_VN, _SHARED_LABEL)]
     assert _hints("hello, can you help me with a quote", attrs) == {}
+
+
+def test_a_shared_label_on_a_non_product_attribute_still_hints_nothing():
+    """Review finding: the rule is measured on the product selector only."""
+    attrs = [_attr("batteryType_astro", [("THINGONE", "Thing One"),
+                                         ("THINGONEVARIANT", "Thing One")])]
+    assert _hints("i want the thing one please", attrs) == {}
+
+
+def test_naming_the_variant_non_contiguously_does_not_pick_the_base():
+    """Review finding: "upgrade my X with <variant>" used to ask; it must not
+    silently fill the base value instead."""
+    attrs = [_attr(PRODUCT_VN, _SHARED_LABEL)]
+    assert _hints("i want to upgrade my thing one radio with variant", attrs) == {}
+
+
+def test_the_target_case_still_resolves():
+    attrs = [_attr(PRODUCT_VN, _SHARED_LABEL)]
+    assert _hints("i want quote thing one for us", attrs) == {PRODUCT_VN: "THINGONE"}
