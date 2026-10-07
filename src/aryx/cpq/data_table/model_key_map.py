@@ -25,6 +25,7 @@ from aryx.raven_log import raven_log, would_log
 _POLICY = "catalog_model_key_v1"
 _MIN_PRODUCT_TESTS = 5          # a mapping chain tests many product values; one or two is some other script
 _FAILURE_TTL_SECONDS = 60.0     # an empty map is retried soon, a real one is kept for the configured time
+_LOAD_WAIT_SECONDS = 15.0       # longest a request waits for another request's load of the same workspace
 _USED_VAR = re.compile(r"CPQModel\s*=\s*\$(\w+)")
 
 _CACHE: dict[tuple[int, str], tuple[float, dict[str, str]]] = {}   # key -> (expires_at, product -> model key)
@@ -116,27 +117,42 @@ def model_key_map(workspace_id: int, catalog_prefix: str = "") -> dict[str, str]
         if hit is not None and time.monotonic() < hit[0]:
             return hit[1]
         lock = _LOCKS.setdefault(cache_key, threading.Lock())
-    with lock:
-        with _LOCKS_GUARD:
-            hit = _CACHE.get(cache_key)             # another request may have finished the load while this one waited
-        if hit is not None and time.monotonic() < hit[0]:
-            return hit[1]
-        scripts: dict[int, str] = {}
-        try:
-            scripts = _load_scripts(workspace_id, catalog_prefix)
-            mapping = build_model_key_map(scripts)
-        except Exception as exc:  # noqa: BLE001 -- the lookup is an extra route; the caller keeps its own candidates
-            raven_log("WARN", "P3", "ask.model_key.map_failed catalog model key map not loaded, candidates unchanged",
-                      error_code="ARYX_ASK_MODEL_KEY_MAP_FAILED",
-                      context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
-                               "recovery_selected": "no_mapped_key", "fallback_target": "existing_candidates",
-                               "exit_condition": "degraded", "result": "degraded", "workspace_id": workspace_id})
-            mapping = {}
-        mapping = {name.strip().upper(): key for name, key in mapping.items()}    # looked up case-insensitively
-        ttl = float(get_settings().cpq_catalog_model_key_ttl_seconds) if scripts else _FAILURE_TTL_SECONDS
-        with _LOCKS_GUARD:
-            _CACHE[cache_key] = (time.monotonic() + ttl, mapping)
-        return mapping
+    if not lock.acquire(timeout=_LOAD_WAIT_SECONDS):      # another request is still loading and has not finished
+        raven_log("WARN", "P3", "ask.model_key.map_wait_timeout catalog model key map still loading, candidates unchanged",
+                  error_code="ARYX_ASK_MODEL_KEY_MAP_FAILED",
+                  context={"triggering_error": "LockTimeout", "attempt": 1, "max_attempts": 1,
+                           "backoff_ms": int(_LOAD_WAIT_SECONDS * 1000), "recovery_selected": "no_mapped_key",
+                           "fallback_target": "existing_candidates", "exit_condition": "degraded",
+                           "result": "degraded", "workspace_id": workspace_id})
+        return {}
+    try:
+        return _load_and_cache(cache_key, workspace_id, catalog_prefix)
+    finally:
+        lock.release()
+
+
+def _load_and_cache(cache_key: tuple[int, str], workspace_id: int, catalog_prefix: str) -> dict[str, str]:
+    """Load, parse and cache one workspace's map; the caller holds that workspace's lock."""
+    with _LOCKS_GUARD:
+        hit = _CACHE.get(cache_key)             # another request may have finished the load while this one waited
+    if hit is not None and time.monotonic() < hit[0]:
+        return hit[1]
+    scripts: dict[int, str] = {}
+    try:
+        scripts = _load_scripts(workspace_id, catalog_prefix)
+        mapping = build_model_key_map(scripts)
+    except Exception as exc:  # noqa: BLE001 -- the lookup is an extra route; the caller keeps its own candidates
+        raven_log("WARN", "P3", "ask.model_key.map_failed catalog model key map not loaded, candidates unchanged",
+                  error_code="ARYX_ASK_MODEL_KEY_MAP_FAILED",
+                  context={"triggering_error": type(exc).__name__, "attempt": 1, "max_attempts": 1, "backoff_ms": 0,
+                           "recovery_selected": "no_mapped_key", "fallback_target": "existing_candidates",
+                           "exit_condition": "degraded", "result": "degraded", "workspace_id": workspace_id})
+        scripts, mapping = {}, {}               # a failure, even after the scripts were read, is retried soon
+    mapping = {name.strip().upper(): key for name, key in mapping.items()}    # looked up case-insensitively
+    ttl = float(get_settings().cpq_catalog_model_key_ttl_seconds) if scripts else _FAILURE_TTL_SECONDS
+    with _LOCKS_GUARD:
+        _CACHE[cache_key] = (time.monotonic() + ttl, mapping)
+    return mapping
 
 
 def mapped_model_key(

@@ -276,3 +276,33 @@ def test_the_candidate_resolver_puts_the_catalog_key_first_for_a_model_with_no_r
     assert cand._resolve_cpq_model_candidates("WIDGET1", 1, "", None) == ("WIDGET1/X", "WIDGET1")
     setup.enabled = False
     assert cand._resolve_cpq_model_candidates("WIDGET1", 1, "", None) == ("WIDGET1",)
+
+
+def test_a_map_that_fails_to_build_after_the_scripts_were_read_is_retried_soon(setup, clock, monkeypatch):
+    calls = {"n": 0}
+
+    def broken(_scripts):
+        calls["n"] += 1
+        raise ValueError("malformed script")
+
+    monkeypatch.setattr(mkm, "build_model_key_map", broken)
+    assert mkm.model_key_map(1) == {}
+    clock.now += 30
+    mkm.model_key_map(1)
+    assert calls["n"] == 1                       # inside the 60 s retry window
+    clock.now += 40
+    mkm.model_key_map(1)
+    assert calls["n"] == 2                       # retried after 60 s, not kept for the full 900 s
+
+
+def test_a_request_gives_up_waiting_for_a_stuck_load_and_keeps_its_own_candidates(setup, monkeypatch):
+    monkeypatch.setattr(mkm, "_LOAD_WAIT_SECONDS", 0.05)
+    mkm._LOCKS[(1, "")] = lock = __import__("threading").Lock()
+    lock.acquire()                               # another request is "loading" and never finishes
+    try:
+        assert mkm.model_key_map(1) == {}
+        assert setup.loads == 0                  # this request did not load either
+        assert mkm.front_mapped_key(("WIDGET1",), "WIDGET1", 1) == ("WIDGET1",)
+    finally:
+        lock.release()
+    assert mkm.model_key_map(1)                  # once the lock is free the map loads normally
