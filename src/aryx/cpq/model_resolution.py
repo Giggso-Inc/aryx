@@ -218,6 +218,8 @@ class TurnModelContext:
     catalog_prefix: str
     _logged: set[tuple] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # per-turn results of pure, input-keyed lookups (see data_table_bridge.candidates); dies with the turn
+    memo: dict[tuple, object] = field(default_factory=dict)
 
     def first_time(self, key: tuple) -> bool:
         """True the first time `key` is seen this turn — dedupes diagnostics

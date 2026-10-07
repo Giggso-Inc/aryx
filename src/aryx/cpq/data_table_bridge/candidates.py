@@ -15,6 +15,7 @@ from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
+    resolve_sibling_models_with_sequence_rows as dt_resolve_sibling_models,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,
 )
 
@@ -77,7 +78,41 @@ def _prepend_resolved_model(
         return primary
 
 
+def _memo_store(cache: dict | None) -> dict | None:
+    """Where a repeated lookup is remembered: the bound turn's memo when a turn is bound (turn-scoped by
+    construction, so it can never replay another turn's answer), else the caller's own cache, else nowhere."""
+    try:
+        ctx = _model_resolution.get_turn()
+    except Exception:  # noqa: BLE001 -- memo is an optimisation, never a failure
+        ctx = None
+    if ctx is not None:
+        return ctx.memo
+    return cache
+
+
 def _cpq_model_candidates(
+    product_name: str, workspace_id: int | None = None, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None, base_model: str = "",
+) -> tuple[str, ...]:
+    """Same answer as `_resolve_cpq_model_candidates`, remembered for the rest of the turn.
+
+    ~25 call sites ask this on every pass (ws 1267, 2026-10-07: 25,232 identical resolutions in 10 minutes). The
+    result depends only on the arguments and on data/turn state that is fixed for a turn, so one resolution per
+    distinct argument set is enough. Without a per-turn dict (no cache, no bound turn) nothing is remembered.
+    With no turn bound the caller's `cache` is used, and it MUST then live no longer than one turn (the result reads
+    this turn's model resolution in `_prepend_resolved_model`).
+    """
+    store = _memo_store(cache)
+    key = ("_cpq_model_candidates", product_name, workspace_id, catalog_prefix, base_model)
+    if store is not None and key in store:
+        return store[key]
+    result = _resolve_cpq_model_candidates(product_name, workspace_id, catalog_prefix, cache, base_model)
+    if store is not None:
+        store[key] = result
+    return result
+
+
+def _resolve_cpq_model_candidates(
     product_name: str, workspace_id: int | None = None, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None, base_model: str = "",
 ) -> tuple[str, ...]:
@@ -122,7 +157,8 @@ def _cpq_model_candidates(
             product_name, workspace_id, catalog_prefix, cache,
         )
         if family:
-            primary = (family, f"{family}_BOM")
+            siblings = dt_resolve_sibling_models(product_name, workspace_id, catalog_prefix, cache)
+            primary = tuple(m for s in siblings for m in (s, f"{s}_BOM")) + (family, f"{family}_BOM")
             tier = "tier2_model_resolution"
     if primary is None:
         if get_settings().data_table_candidates_empty_on_no_match_enabled:

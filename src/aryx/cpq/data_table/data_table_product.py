@@ -149,6 +149,93 @@ def resolve_product_cpq_model_family(
     return None
 
 
+def _hierarchy_display(row: dict[str, Any]) -> str:
+    """The row's displayCPQModel, whatever the CSV's own capitalisation, whitespace-normalised and upper-cased."""
+    for key, value in row.items():
+        if str(key).lower() == "displaycpqmodel" and value:
+            return " ".join(str(value).upper().split())
+    return ""
+
+
+# Used only when the caller passes no per-turn cache: `_load_all_tables` is itself cached, but rebuilding the set over
+# every sequence row on each call is not free. Short TTL, same staleness tradeoff as data_table_loader._TABLES_CACHE.
+_SEQUENCE_MODEL_CODES_CACHE: dict[tuple[int, str], tuple[float, frozenset[str]]] = {}
+_SEQUENCE_MODEL_CODES_TTL_SECONDS = 30.0
+
+
+def _clear_sequence_model_codes_cache() -> None:
+    _SEQUENCE_MODEL_CODES_CACHE.clear()
+
+
+def _sequence_model_codes(
+    workspace_id: int, catalog_prefix: str, cache: dict[tuple[int, str], tuple] | None,
+) -> frozenset[str]:
+    """Upper-cased, non-stale CPQModel codes that have at least one sequence row.
+
+    Memoised in the caller's per-turn `cache` when one is passed, else in a short-lived module-level cache.
+    """
+    key = ("_sequence_model_codes", workspace_id, catalog_prefix)
+    if cache is not None and key in cache:
+        return cache[key]
+    now = time.monotonic()
+    if cache is None:
+        hit = _SEQUENCE_MODEL_CODES_CACHE.get((workspace_id, catalog_prefix))
+        if hit is not None and now - hit[0] < _SEQUENCE_MODEL_CODES_TTL_SECONDS:
+            return hit[1]
+    _, sequence_rows, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+    codes = frozenset(
+        str(row.get("CPQModel")).strip().upper() for row in sequence_rows
+        if row.get("CPQModel") and not _is_stale_cpq_model(row.get("CPQModel")))
+    if cache is not None:
+        cache[key] = codes
+    else:
+        _SEQUENCE_MODEL_CODES_CACHE[(workspace_id, catalog_prefix)] = (now, codes)
+    return codes
+
+
+def resolve_sibling_models_with_sequence_rows(
+    product_name: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> tuple[str, ...]:
+    """Models that hold the real sequence data for a product whose hierarchy family has none.
+
+    Live case (ws 1267, 2026-10-07): product APX900FLASHPORT maps to family APXFLASHPORTSERIES (0 sequence rows),
+    while the same hierarchy has a row with a BLANK Product, cpqModelName APX900 and displayCPQModel "APX 900"
+    (334 sequence rows). The product's own display ("APX 900 FLASHport") starts with that row's display, in the same
+    product family. Nothing is returned unless the data proves it: the matched family has no sequence rows, and the
+    sibling model does, and the sibling's display is at least two words (a one-word display such as a bare brand name
+    would match every product of the family). Candidates only ever get ADDED in front of the family, never replace
+    it, and a product whose family already has sequence rows is untouched. No model or product name appears here.
+    """
+    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+    norm = (product_name or "").strip().upper()
+    matched = next((row for row in hierarchy_rows
+                    if str(row.get("Product") or "").strip().upper() == norm and row.get("cpqModelName")), None)
+    if matched is None:
+        return ()
+    sequence_models = _sequence_model_codes(workspace_id, catalog_prefix, cache)
+    if str(matched["cpqModelName"]).strip().upper() in sequence_models:
+        return ()
+    display = _hierarchy_display(matched)
+    if not display:
+        return ()
+    family = str(matched.get("productFamily") or "").strip().upper()
+    best_len = 0
+    found: set[str] = set()
+    for row in hierarchy_rows:
+        model = str(row.get("cpqModelName") or "").strip()
+        sibling_display = _hierarchy_display(row)
+        if (row.get("Product") or not model or len(sibling_display.split()) < 2 or model.upper() not in sequence_models
+                or str(row.get("productFamily") or "").strip().upper() != family
+                or not (display == sibling_display or display.startswith(sibling_display + " "))):
+            continue
+        if len(sibling_display) > best_len:
+            best_len, found = len(sibling_display), set()
+        if len(sibling_display) == best_len:
+            found.add(model)
+    return tuple(sorted(found))
+
+
 def resolve_product_cpq_models_from_rows(
     product_name: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
