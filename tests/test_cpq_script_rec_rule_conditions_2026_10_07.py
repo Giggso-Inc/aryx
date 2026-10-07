@@ -31,19 +31,19 @@ def _load(on: bool, inputs=INPUTS):
 
 def test_flag_off_keeps_the_old_shape_and_the_writer_stays_undecided():
     rule = _load(False)
-    assert rule.conditions is None and rule.condition_attr_id == 0
+    assert rule.writer_conditions is None and rule.conditions is None and rule.condition_attr_id == 0
     assert writer_fires(rule, {39426962: "x"}, {}) is None
 
 
 def test_flag_on_keeps_the_inputs_so_the_writer_condition_is_decided():
     rule = _load(True)
-    assert list(rule.conditions) == INPUTS
+    assert list(rule.writer_conditions) == INPUTS and rule.conditions is None
     assert writer_fires(rule, {39426962: "PORTABLE"}, {}) is True        # not blank -> fires
     assert writer_fires(rule, {39426962: ""}, {}) is False               # blank -> the master string is empty
 
 
 def test_a_rule_without_inputs_is_unchanged():
-    assert _load(True, inputs=None).conditions is None
+    assert _load(True, inputs=None).writer_conditions is None
 
 
 def test_when_the_rule_itself_fires_does_not_change():
@@ -53,3 +53,26 @@ def test_when_the_rule_itself_fires_does_not_change():
         bml = MagicMock()
         bml.allowed_values_for_script.return_value = ["v"]
         assert resolve_recommended_value(rule, {}, {39426962: ""}, bml) == "v"
+
+
+def test_ranking_and_the_dependency_graph_see_the_same_rule_as_before():
+    """The inputs are not in `conditions`/`condition_attr_id`, so the dependency edges and the specificity tier of a
+    script-backed rule are the same with the flag on and off."""
+    from aryx.cpq.rule_specificity_ranking.condition_edges import _rule_condition_edges
+    attrs = [SimpleNamespace(entity_id=39426962, source_id=None, variable_name="gate", order=1),
+             SimpleNamespace(entity_id=5, source_id=None, variable_name="target", order=2)]
+    edges = {}
+    for on in (False, True):
+        rule = _load(on)
+        rule.target_attr_id = 5
+        preds, succs, _ids = _rule_condition_edges(attrs, [rule])
+        edges[on] = (preds, succs, rule.conditions, rule.condition_attr_id)
+    assert edges[True] == edges[False] and edges[True][0] == {}
+
+
+def test_a_multi_input_writer_condition_is_decided_through_this_path():
+    """(attr1 = A OR attr1 = B) AND attr2 not blank."""
+    rule = _load(True, inputs=[(1, "A", "4"), (1, "B", "4"), (2, "", "3")])
+    assert writer_fires(rule, {1: "B", 2: "x"}, {}) is True
+    assert writer_fires(rule, {1: "C", 2: "x"}, {}) is False
+    assert writer_fires(rule, {1: "A", 2: ""}, {}) is False

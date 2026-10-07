@@ -66,7 +66,7 @@ def writer_fires(rule: Any, by_id: dict[int, str], variables: dict[str, str]) ->
     if getattr(rule, "condition_script", None):
         res, blocked = evaluate_hide_tier1(rule.condition_script, variables)
         results.append(None if blocked else res)
-    conds = rule.conditions or (
+    conds = rule.conditions or getattr(rule, "writer_conditions", None) or (
         [(rule.condition_attr_id, rule.condition_value, rule.condition_operator)]
         if rule.condition_attr_id in by_id else [])
     if conds:

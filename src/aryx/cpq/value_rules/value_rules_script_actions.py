@@ -57,6 +57,7 @@ def process_script_backed_actions(
     item 2/§7-8's confirmed "APX NEXT ENHANCED product +
     non-Enhanced hardware" inconsistency this closes).
     """
+    keep_inputs = get_settings().cpq_script_rec_rule_conditions_enabled
     for aid, _at, _val, act_fn, act_set_type, _comments in acts:
         if act_fn == -1:
             continue
@@ -100,8 +101,7 @@ def process_script_backed_actions(
                 target_attr_id=aid,
                 script=script,
                 condition_script=_rec_condition_script,
-                conditions=(copy_conditions(inp_list)
-                            if inp_list and get_settings().cpq_script_rec_rule_conditions_enabled else None),
+                writer_conditions=copy_conditions(inp_list) if inp_list and keep_inputs else None,
             ))
             state.script_recommendations_wired += 1
             logger.info(
