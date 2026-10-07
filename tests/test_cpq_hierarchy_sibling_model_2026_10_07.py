@@ -79,3 +79,30 @@ def test_candidates_for_a_product_whose_family_has_data_are_unchanged(tables, mo
     tables(["APXNEXT"])
     monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
     assert _cpq_model_candidates("APXNEXTMULTI", 1267) == ("APXNEXT", "APXNEXT_BOM")
+
+
+# --- per-turn memo: the same arguments are resolved once per turn ---------------------------------------------
+def test_repeated_calls_with_one_cache_resolve_once(tables, monkeypatch):
+    tables(["APX900"])
+    calls = []
+    real = dtp.resolve_sibling_models_with_sequence_rows
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_sibling_models",
+                        lambda *a, **k: calls.append(a) or real(*a, **k))
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+    cache: dict = {}
+    first = [_cpq_model_candidates("APX900FLASHPORT", 1267, "", cache) for _ in range(50)]
+    assert len(calls) == 1 and all(r == first[0] for r in first)
+    _cpq_model_candidates("APX3000FLASHPORT", 1267, "", cache)
+    assert len(calls) == 2                                   # a different product is a different key
+
+
+def test_without_a_cache_or_bound_turn_nothing_is_remembered(tables, monkeypatch):
+    tables(["APX900"])
+    calls = []
+    real = dtp.resolve_sibling_models_with_sequence_rows
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_sibling_models",
+                        lambda *a, **k: calls.append(a) or real(*a, **k))
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+    _cpq_model_candidates("APX900FLASHPORT", 1267)
+    _cpq_model_candidates("APX900FLASHPORT", 1267)
+    assert len(calls) == 2
