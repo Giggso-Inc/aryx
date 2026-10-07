@@ -152,7 +152,8 @@ def _unknown_reasons(alias: bool) -> tuple[list[str], set[str]]:
     out: list[str] = []
     unknown_log._SEEN.clear()
     with _flags(alias), patch.object(unknown_log, "would_log", return_value=True), \
-            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])):
+            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])
+                          if not k["context"]["reason_code"].startswith("DECIDED_") else None):
         hidden = _hidden({"modelVar": "M1", "baseVar": "B2", "countryVar": "ZZ"})
     return out, hidden
 

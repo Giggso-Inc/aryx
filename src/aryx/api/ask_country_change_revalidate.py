@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.raven_log import raven_log
+from aryx.cpq.guard_anchor_hint import guard_anchor_hint_kwargs
 
 
 def _rederive_and_revalidate_for_country_change(
@@ -66,7 +67,7 @@ def _rederive_and_revalidate_for_country_change(
                 bml_eval=bml_eval, filled_source=session.filled_source,
                 filled_multi=session.filled_multi,
                 country=new_country, skip_always_ask=skip_always_ask,
-                workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+                workspace_id=req.workspace_id, catalog_prefix=catalog_prefix, **guard_anchor_hint_kwargs(session),
             )
         )
         for _attr in attrs:

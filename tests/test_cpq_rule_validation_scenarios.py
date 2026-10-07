@@ -44,6 +44,23 @@ def test_generate_scenarios_expands_tilde_rule_conditions() -> None:
     assert values.issuperset({None, "A", "B"})
 
 
+def test_generate_scenarios_handles_multi_row_conditions() -> None:
+    """rule.conditions is [(attr_id, value, operator), ...] -- a prior bug
+    unpacked each entry as a 2-tuple and crashed with ValueError on any
+    rule using this field instead of the single condition_attr_id/
+    condition_value pair."""
+    attrs = [_attr(1, "condition", "A", "B"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "multi", 0, "", 2,
+        conditions=[(1, "A", "4"), (1, "B", "4")],
+    )
+
+    scenarios = generate_scenarios(attrs, [rule], [], [])
+    values = {scenario.filled.get("condition") for scenario in scenarios}
+
+    assert values.issuperset({"A", "B"})
+
+
 def test_compare_states_reports_value_visibility_and_constraint_differences() -> None:
     """The production comparison must expose every rule-loop state dimension."""
     expected = EvaluationResult(

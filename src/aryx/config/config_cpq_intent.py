@@ -298,6 +298,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Override with ARYX_CPQ_HIDE_INDEX_ALIAS_ENABLED=true."
         ),
     )
+    cpq_script_rec_rule_conditions_enabled: bool = Field(
+        default=False,
+        description=(
+            "A script-backed recommendation rule keeps its own declarative inputs (`bm_config_rule_input`) as "
+            "`conditions`. They were dropped (condition_attr_id hard-coded to 0), so a master-string WRITER such as "
+            "\"Set Hidden Master String For Astro Portable\" (input: attribute not blank) had no condition and its "
+            "hide rules (~340 on ws 1267) could not be decided. They are kept as `RecommendationRule.writer_conditions`, "
+            "apart from `conditions`, and only the master-string writer test reads them: rule ranking, the dependency "
+            "graph and when the rule fires are unchanged. Off by default. "
+            "Override with ARYX_CPQ_SCRIPT_REC_RULE_CONDITIONS_ENABLED=true."
+        ),
+    )
     cpq_find_function_enabled: bool = Field(
         default=False,
         description=(
@@ -679,6 +691,17 @@ class CpqIntentSettingsMixin(BaseSettings):
             "conditions nothing is inferred, and if it has no rows at all "
             "(sparse data) the model tier is used. Off by default. Override "
             "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
+        ),
+    )
+    cpq_oracle_fetch_rules_ordered_binds_enabled: bool = Field(
+        default=False,
+        description=(
+            "OracleCpqRdb.fetch_rules named its placeholders :1, :3, :2 but passed (workspace_id, rule_type, "
+            "type_pattern), so the pattern landed in the rule_type test and the rule type in the LIKE: it returned no "
+            "rows and no error for every rule type (ws 1267: 3,481 active rule_type=11 hiding rules, 0 loaded; the "
+            "same read serves rule_type 6 flow and 9 validation rules). When on the placeholders and values are in the "
+            "same order. Loading those rules changes hiding on every product, so enable it in dev first and compare. "
+            "Off by default. Override with ARYX_CPQ_ORACLE_FETCH_RULES_ORDERED_BINDS_ENABLED=true."
         ),
     )
     cpq_derive_base_model_enabled: bool = Field(

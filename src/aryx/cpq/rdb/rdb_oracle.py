@@ -257,6 +257,16 @@ class OracleCpqRdb(PostgresCpqRdb):
         )
         ref_col = (", JSON_VALUE(attributes, '$.ref_id')"
                    if with_ref_id else "")
+        # Placeholders are bound by POSITION OF APPEARANCE. The legacy text below names them :1, :3, :2 against the
+        # values (workspace_id, rule_type, type_pattern), which puts the pattern into the rule_type comparison and the
+        # rule type into the LIKE: no error, no row (ws 1267, 2026-10-07: 3,481 active rule_type=11 rows, type11_count 0).
+        # With the flag on the placeholders and the values are in the same order.
+        if get_settings().cpq_oracle_fetch_rules_ordered_binds_enabled:
+            like_bind, type_bind = ":2", ":3"
+            binds = (workspace_id, type_pattern, rule_type)
+        else:
+            like_bind, type_bind = ":3", ":2"
+            binds = (workspace_id, rule_type, type_pattern)
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -268,10 +278,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.condition_function_id')""" + ref_col + """
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :3
-                          AND JSON_VALUE(attributes, '$.rule_type') = :2
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE """ + like_bind + """
+                          AND JSON_VALUE(attributes, '$.rule_type') = """ + type_bind + """
                         """ + status_clause,
-                        (workspace_id, rule_type, type_pattern),
+                        binds,
                     )
                     for row in cur.fetchall():
                         eid, src_id, name, fn_id = row[:4]

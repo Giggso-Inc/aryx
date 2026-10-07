@@ -76,6 +76,34 @@ def log_master_unresolved(rule, reason: str, detail: dict | None = None) -> None
         raven_log("DEBUG", "P4", "ask.rules_loop.master_unresolved master string could not be computed", context={
             "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
             "reason_code": reason, "rule_name": rule.rule_name,
-            "master_writer_count": len(getattr(rule, "master_writers", None) or []), **(detail or {})})
+            "master_writer_count": len(getattr(rule, "master_writers", None) or []), **((detail or {}).get("build", dict)())})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
         return
+
+
+def log_decided_master_hide(rule, target_variable: str, hide: bool, via_master: bool) -> None:
+    """Debug record of a master-string hide rule that DID decide (hide or show), once per (run, rule, target, outcome).
+
+    A "show" from one rule re-adds an attribute another rule hid (the last rule wins), and a rule that decides is
+    otherwise silent, so "why is this attribute still asked" could not be answered from the logs when no rule was
+    undecided. `via_master` says whether the computed master string decided it or the ordinary evaluator did.
+    """
+    try:
+        if not would_log("DEBUG"):
+            return
+        outcome = "hide" if hide else "show"
+        run_id = get_run_id() or ""
+        key = (str(rule.rule_name), str(target_variable), f"decided:{outcome}")
+        with _SEEN_LOCK:
+            seen = _SEEN.setdefault(run_id, set())
+            if key in seen:
+                return
+            seen.add(key)
+        raven_log("DEBUG", "P4", "ask.rules_loop.hide_decided master-string hide rule decided", context={
+            "selected_option": outcome, "available_options": ["hide", "show"],
+            "reason_code": "DECIDED_BY_MASTER_STRING" if via_master else "DECIDED_BY_SCRIPT_EVALUATOR",
+            "rule_name": rule.rule_name, "attr": target_variable,
+            "master_writer_count": len(getattr(rule, "master_writers", None) or [])})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
+        return
+

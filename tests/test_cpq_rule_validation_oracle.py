@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, MenuOption
 from aryx.cpq.state import RecommendationRule
+from aryx.cpq.validation.conditions import ConditionEvaluator
 from aryx.cpq.validation.models import Scenario
 from aryx.cpq.validation.oracle import DeterministicRuleOracle
 from aryx.cpq.validation.runner import evaluate_to_fixed_point
@@ -31,6 +32,166 @@ def test_oracle_tilde_condition_matches_every_member() -> None:
     outcomes = [oracle.evaluate_rules({"condition": value}) for value in ("A", "B")]
 
     assert all(outcome.hidden == frozenset({"target"}) for outcome in outcomes)
+
+
+def test_oracle_multi_row_conditions_match_on_value_not_operator() -> None:
+    """rule.conditions is [(attr_id, value, operator), ...] -- a prior bug
+    unpacked each entry as a 2-tuple and crashed with ValueError on any
+    rule using this (common, real-catalog) field instead of the single
+    condition_attr_id/condition_value pair."""
+    attrs = [_attr(1, "condition", "A", "B"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide target", 0, "", 2,
+        conditions=[(1, "A", "4"), (1, "B", "4")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    outcomes = [oracle.evaluate_rules({"condition": value}) for value in ("A", "B")]
+
+    assert all(outcome.hidden == frozenset({"target"}) for outcome in outcomes)
+
+
+def test_oracle_not_equal_operator_fires_when_value_differs() -> None:
+    """operator "3" ("<>") must fire when the filled value does NOT match --
+    ConditionEvaluator.status() was equality-only before this, silently
+    ignoring every non-"=" operator code."""
+    attrs = [_attr(1, "condition", "A", "B"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide unless A", 0, "", 2,
+        conditions=[(1, "A", "3")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    fires_on_b = oracle.evaluate_rules({"condition": "B"})
+    does_not_fire_on_a = oracle.evaluate_rules({"condition": "A"})
+
+    assert fires_on_b.hidden == frozenset({"target"})
+    assert does_not_fire_on_a.hidden == frozenset()
+
+
+def test_oracle_numeric_less_than_operator() -> None:
+    """operator "1" ("<") must do a numeric comparison, not a string match."""
+    attrs = [_attr(1, "condition"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide if under 37", 0, "", 2,
+        conditions=[(1, "37", "1")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    below = oracle.evaluate_rules({"condition": "30"})
+    above = oracle.evaluate_rules({"condition": "40"})
+
+    assert below.hidden == frozenset({"target"})
+    assert above.hidden == frozenset()
+
+
+def test_oracle_multi_select_intersects_operator() -> None:
+    """operator "7" ("intersects") checks the current multi-select SET
+    against the expected values, not a scalar equality check."""
+    attrs = [_attr(1, "condition"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide if smartlocate selected", 0, "", 2,
+        conditions=[(1, "SMARTLOCATE", "7")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    hit = oracle.evaluate_rules({}, {"condition": ("SMARTLOCATE", "SMARTVIDEO")})
+    miss = oracle.evaluate_rules({}, {"condition": ("SMARTVIDEO",)})
+
+    assert hit.hidden == frozenset({"target"})
+    assert miss.hidden == frozenset()
+
+
+def test_oracle_multi_select_disjoint_operator_checks_whole_set_not_per_value() -> None:
+    """operator "8" ("disjoint from") must be checked against the WHOLE
+    current-selection set at once, not per selected value then OR-ed --
+    a prior bug called _operator_hit once per value and OR-ed the results,
+    which wrongly fired on a mixed selection like {L1, ADDON} (the set
+    intersects L1/L2, so "disjoint from" is False, but per-value L1 gives
+    False and ADDON gives True, and any(...) incorrectly reported a hit)."""
+    attrs = [_attr(1, "condition"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "block unless L1 or L2 selected", 0, "", 2,
+        conditions=[(1, "L1", "8"), (1, "L2", "8")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    mixed_selection_intersects = oracle.evaluate_rules({}, {"condition": ("L1", "ADDON")})
+    addon_only_is_disjoint = oracle.evaluate_rules({}, {"condition": ("ADDON",)})
+
+    assert mixed_selection_intersects.hidden == frozenset()
+    assert addon_only_is_disjoint.hidden == frozenset({"target"})
+
+
+def test_status_unresolved_group_does_not_block_a_later_definite_false() -> None:
+    """An unresolvable group (e.g. an unparseable numeric comparison) must
+    not short-circuit the whole AND-of-groups evaluation as unknown -- a
+    later group that is definitely False must still make status() return
+    False, the same way evaluate_declarative_conditions (bml_declarative.py)
+    keeps scanning after a "missing" group so a known False still wins."""
+    attrs = (
+        _attr(1, "numeric_cond"),
+        _attr(2, "other_cond", "A", "B"),
+    )
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide target", 0, "", 3,
+        conditions=[(1, "not-a-number", "1"), (2, "A", "4")],
+    )
+
+    status = evaluator.status(rule, {"numeric_cond": "30", "other_cond": "B"})
+
+    assert status is False
+
+
+def test_status_not_equal_against_tilde_list_is_disjoint_check() -> None:
+    """"<>" against a tilde-delimited expected list ("CA~IL") must mean
+    "not any of these", not a literal string comparison against the whole
+    joined string."""
+    attrs = (_attr(1, "condition"), _attr(2, "target", "X"))
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide unless CA or IL", 0, "", 2,
+        conditions=[(1, "CA~IL", "3")],
+    )
+
+    assert evaluator.status(rule, {"condition": "US"}) is True
+    assert evaluator.status(rule, {"condition": "CA"}) is False
+    assert evaluator.status(rule, {"condition": "IL"}) is False
+
+
+def test_status_unparseable_numeric_propagates_as_unknown_not_guessed() -> None:
+    """A numeric operator that can't parse either side must return None
+    (unresolved), never a guessed True/False -- pins _operator_hit's
+    "never guess" discipline as seen through status()."""
+    attrs = (_attr(1, "condition"), _attr(2, "target", "X"))
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide if under 37", 0, "", 2,
+        conditions=[(1, "37", "1")],
+    )
+
+    assert evaluator.status(rule, {"condition": "not a number"}) is None
+
+
+def test_status_ands_two_groups_with_different_operators() -> None:
+    """Different attribute_ids are ANDed together, each honoring its OWN
+    operator -- a rule mixing "=" on one attribute with "<>" on another
+    must evaluate both correctly, not just the first group's operator."""
+    attrs = (
+        _attr(1, "region", "US", "CA"),
+        _attr(2, "tier", "GOLD", "SILVER"),
+        _attr(3, "target", "X"),
+    )
+    evaluator = ConditionEvaluator(attrs, DeterministicBmlOracle())
+    rule = HidingRule(
+        "hide for US and non-gold", 0, "", 3,
+        conditions=[(1, "US", "4"), (2, "GOLD", "3")],
+    )
+
+    assert evaluator.status(rule, {"region": "US", "tier": "SILVER"}) is True
+    assert evaluator.status(rule, {"region": "US", "tier": "GOLD"}) is False
+    assert evaluator.status(rule, {"region": "CA", "tier": "SILVER"}) is False
 
 
 def test_oracle_conflicting_hide_show_is_order_independent() -> None:

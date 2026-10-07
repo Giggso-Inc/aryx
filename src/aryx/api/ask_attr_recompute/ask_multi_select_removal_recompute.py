@@ -15,6 +15,7 @@ from typing import Any
 from aryx.api.ask_scope_and_pending.ask_pending_exclusion import _hard_exclude_from_pending
 from aryx.api.ask_scope_and_pending.ask_singleton_pending import _auto_resolve_singleton_pending
 from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
+from aryx.cpq.guard_anchor_hint import guard_anchor_hint_kwargs
 
 
 def _recompute_after_multi_select_removal(
@@ -68,7 +69,7 @@ def _recompute_after_multi_select_removal(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix, **guard_anchor_hint_kwargs(session),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -83,7 +84,7 @@ def _recompute_after_multi_select_removal(
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
         hiding_rules=hiding_rules,
-        grid_declined_vns=frozenset(session.pending_grid_declined_vns),
+        grid_declined_vns=frozenset(session.pending_grid_declined_vns), **guard_anchor_hint_kwargs(session),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it

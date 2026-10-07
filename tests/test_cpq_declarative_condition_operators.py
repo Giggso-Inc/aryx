@@ -71,9 +71,22 @@ def test_operator_5_greater_than():
     assert _operator_hit("10", ["11"], "5") is False
 
 
+def test_operator_6_greater_than_or_equal():
+    # Confirmed 2026-10-07 against real ws 1267/Astro25Configdata data --
+    # the validation MESSAGE/constraint ACTION text (not just rule names,
+    # which are ambiguous here) showed "6" must include the boundary
+    # value, unlike "5" ("Constrain qty >1 When select is false..." fires
+    # with "change the quantity to 0 or blank," which requires firing at
+    # qty=1 too, not just 2+).
+    assert _operator_hit("11", ["11"], "6") is True
+    assert _operator_hit("12", ["11"], "6") is True
+    assert _operator_hit("10", ["11"], "6") is False
+
+
 def test_numeric_operator_non_numeric_input_returns_none_never_guessed():
     assert _operator_hit("not a number", ["37"], "1") is None
     assert _operator_hit("30", ["not a number"], "1") is None
+    assert _operator_hit("not a number", ["37"], "6") is None
 
 
 def test_operator_7_scalar_behaves_like_equals():

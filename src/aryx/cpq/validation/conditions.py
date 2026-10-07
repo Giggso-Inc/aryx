@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from aryx.cpq.bml.bml_declarative import _MULTI_SELECT_OPERATORS, _operator_hit
 from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, RecommendationRule
 from aryx.cpq.validation.models import ValidationIssue
 from aryx.cpq.validation.script_oracle import DeterministicBmlOracle
@@ -34,10 +35,14 @@ class ConditionEvaluator:
                 **{key: "~".join(values) for key, values in multi.items()},
             }
             return self.scripts.condition(condition_script, variables)
-        pairs = rule.conditions or [(rule.condition_attr_id, rule.condition_value)]
+        pairs = rule.conditions or [(rule.condition_attr_id, rule.condition_value, "4")]
         grouped: dict[int, list[str]] = defaultdict(list)
-        for attribute_id, value in pairs:
+        operator_by_attr: dict[int, str] = {}
+        for attribute_id, value, operator in pairs:
+            if attribute_id not in operator_by_attr:
+                operator_by_attr[attribute_id] = operator
             grouped[attribute_id].append(value)
+        saw_unknown = False
         for attribute_id, values in grouped.items():
             attribute = self.by_id.get(attribute_id)
             variable = attribute.variable_name if attribute else ""
@@ -46,9 +51,37 @@ class ConditionEvaluator:
                 else (filled_multi or {}).get(variable, ())
             )
             if not actual_values:
-                return None
-            if not any(matches(actual, value) for actual in actual_values for value in values):
+                saw_unknown = True
+                continue
+            operator = operator_by_attr[attribute_id]
+            # "7"/"8" are defined on the WHOLE current-selection set (per
+            # _operator_hit's docstring), not per selected value -- e.g.
+            # "8" (disjoint from) must see {L1, ADDON} as one set to know
+            # it intersects, rather than OR-ing per-value hits, which would
+            # wrongly fire on the ADDON value alone even though the set as
+            # a whole isn't disjoint.
+            if operator in _MULTI_SELECT_OPERATORS:
+                hits = [_operator_hit("~".join(actual_values), values, operator)]
+            else:
+                # actual_values can hold more than one value even for a
+                # non-multi-select operator, when filled_multi supplies
+                # several currently-selected values for this attribute.
+                # The group is satisfied if ANY of them hits -- e.g. "<> A"
+                # with {A, B} selected is True (B already proves "<> A"
+                # holds for at least one selection), not "every selection
+                # must be <> A". This is the same per-value-OR semantic the
+                # pre-existing equality-only matches() used (not something
+                # this operator-aware rewrite introduced), preserved here
+                # deliberately rather than changed to an AND, since nothing
+                # in the real catalog's rule authoring assumes AND here.
+                hits = [_operator_hit(actual, values, operator) for actual in actual_values]
+            if any(hit is True for hit in hits):
+                continue
+            if all(hit is False for hit in hits):
                 return False
+            saw_unknown = True  # unresolved (e.g. unparseable numeric) -- never guessed
+        if saw_unknown:
+            return None
         return True
 
     def target(self, rule: Rule, issues: list[ValidationIssue]) -> ConfigAttr | None:
@@ -67,12 +100,6 @@ class ConditionEvaluator:
         index = {attr.entity_id: attr for attr in attrs}
         index.update({attr.source_id: attr for attr in attrs if attr.source_id is not None})
         return index
-
-
-def matches(actual: str, expected: str) -> bool:
-    """Match a literal or tilde-delimited OR list case-insensitively."""
-    allowed = {value.strip().lower() for value in expected.split("~") if value.strip()}
-    return actual.strip().lower() in allowed
 
 
 def rule_key(rule: Any) -> tuple[str, int, int, str]:
