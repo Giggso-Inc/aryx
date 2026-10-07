@@ -693,6 +693,17 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_INFER_LEGAL_VALUES_ENABLED=true."
         ),
     )
+    cpq_oracle_fetch_rules_ordered_binds_enabled: bool = Field(
+        default=False,
+        description=(
+            "OracleCpqRdb.fetch_rules named its placeholders :1, :3, :2 but passed (workspace_id, rule_type, "
+            "type_pattern), so the pattern landed in the rule_type test and the rule type in the LIKE: it returned no "
+            "rows and no error for every rule type (ws 1267: 3,481 active rule_type=11 hiding rules, 0 loaded; the "
+            "same read serves rule_type 6 flow and 9 validation rules). When on the placeholders and values are in the "
+            "same order. Loading those rules changes hiding on every product, so enable it in dev first and compare. "
+            "Off by default. Override with ARYX_CPQ_ORACLE_FETCH_RULES_ORDERED_BINDS_ENABLED=true."
+        ),
+    )
     cpq_derive_base_model_enabled: bool = Field(
         default=False,
         description=(
