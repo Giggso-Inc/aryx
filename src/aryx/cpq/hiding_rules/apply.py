@@ -15,7 +15,7 @@ from aryx.cpq.engine import _condition_value_matches
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.hiding_rules.master_string import hide_with_master_string
 from aryx.cpq.hiding_rules.master_writers import master_hide_enabled
-from aryx.cpq.hiding_rules.unknown_log import log_unknown_script_hide, unknown_reason
+from aryx.cpq.hiding_rules.unknown_log import log_unknown_script_hide
 from aryx.cpq.state import ConfigAttr, HidingRule
 
 
@@ -131,7 +131,7 @@ def apply_hiding_rules(
             continue
         if rule.script is not None:
             if bml_eval is None:
-                log_unknown_script_hide(rule, target.variable_name, unknown_reason(rule, False, False, False))
+                log_unknown_script_hide(rule, target.variable_name, False)
                 continue
             hide = None
             master_tried = False
@@ -145,9 +145,7 @@ def apply_hiding_rules(
             if hide is None:
                 hide = bml_eval.hide_for_script(rule.script, filled)
             if hide is None:
-                log_unknown_script_hide(
-                    rule, target.variable_name,
-                    unknown_reason(rule, True, master_hide_enabled(), master_tried))
+                log_unknown_script_hide(rule, target.variable_name, True, master_tried)
             if hide is True:
                 hidden_eids.add(target.entity_id)
                 messages.append(

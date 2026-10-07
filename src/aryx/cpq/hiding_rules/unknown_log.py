@@ -28,20 +28,30 @@ def unknown_reason(rule, has_evaluator: bool, master_hide_on: bool, master_tried
     return "EVALUATOR_UNKNOWN"
 
 
-def log_unknown_script_hide(rule, target_variable: str, reason: str) -> None:
-    """Debug record that `rule` left `target_variable` visible because it could not be decided."""
-    if not would_log("DEBUG"):
+def log_unknown_script_hide(rule, target_variable: str, has_evaluator: bool, master_tried: bool = False) -> None:
+    """Debug record that `rule` left `target_variable` visible because it could not be decided.
+
+    Cheap when DEBUG is off (one level check, nothing else is evaluated) and can never affect hiding: any failure in
+    building or writing the line is swallowed.
+    """
+    try:
+        if not would_log("DEBUG"):
+            return
+        from aryx.cpq.hiding_rules.master_writers import master_hide_enabled  # noqa: PLC0415 -- only when logging
+
+        reason = unknown_reason(rule, has_evaluator, master_hide_enabled(), master_tried)
+        run_id = get_run_id() or ""
+        seen = _SEEN.setdefault(run_id, set())
+        if len(_SEEN) > _MAX_RUNS:
+            for stale in list(_SEEN)[:-_MAX_RUNS]:
+                _SEEN.pop(stale, None)
+        key = (str(rule.rule_name), str(target_variable), reason)
+        if key in seen:
+            return
+        seen.add(key)
+        raven_log("DEBUG", "P4", "ask.rules_loop.hide_unknown script hide rule gave no answer", context={
+            "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
+            "reason_code": reason, "rule_name": rule.rule_name, "attr": target_variable,
+            "master_writer_count": len(getattr(rule, "master_writers", None) or [])})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
         return
-    run_id = get_run_id() or ""
-    seen = _SEEN.setdefault(run_id, set())
-    if len(_SEEN) > _MAX_RUNS:
-        for stale in list(_SEEN)[:-_MAX_RUNS]:
-            _SEEN.pop(stale, None)
-    key = (str(rule.rule_name), str(target_variable), reason)
-    if key in seen:
-        return
-    seen.add(key)
-    raven_log("DEBUG", "P4", "ask.rules_loop.hide_unknown script hide rule gave no answer", context={
-        "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
-        "reason_code": reason, "rule_name": rule.rule_name, "attr": target_variable,
-        "master_writer_count": len(getattr(rule, "master_writers", None) or [])})
