@@ -139,10 +139,13 @@ def resolve_product_cpq_model_family(
     specific map, not a full replacement for one. Returns None when no
     hierarchy table has this product at all.
     """
-    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     norm = (product_name or "").strip().upper()
+    if not norm:
+        return None     # blank-Product rows are in the pool: an empty name must never match one of them
+    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     for row in hierarchy_rows:
-        if str(row.get("Product") or "").strip().upper() == norm:
+        product = str(row.get("Product") or "").strip().upper()
+        if product and product == norm:
             family = row.get("cpqModelName")
             if family:
                 return family
@@ -207,8 +210,10 @@ def resolve_sibling_models_with_sequence_rows(
     would match every product of the family). Candidates only ever get ADDED in front of the family, never replace
     it, and a product whose family already has sequence rows is untouched. No model or product name appears here.
     """
-    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     norm = (product_name or "").strip().upper()
+    if not norm:
+        return ()
+    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     matched = next((row for row in hierarchy_rows
                     if str(row.get("Product") or "").strip().upper() == norm and row.get("cpqModelName")), None)
     if matched is None:

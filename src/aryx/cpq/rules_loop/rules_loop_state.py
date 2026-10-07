@@ -39,6 +39,8 @@ class LoopState:
     inconsistent_vns: frozenset[str] = frozenset()
     resynced: dict[str, tuple[str, str]] = field(default_factory=dict)
     pass_t0: float = 0.0
+    # cumulative seconds per stage across the passes of one turn (see rules_loop_timing)
+    stage_s: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

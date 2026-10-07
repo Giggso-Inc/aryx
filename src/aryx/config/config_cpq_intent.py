@@ -288,6 +288,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "'unknown'. Off by default."
         ),
     )
+    cpq_hide_index_alias_enabled: bool = Field(
+        default=False,
+        description=(
+            "Hide scripts of the shape `idx = findinarray(arr, \"x\"); if (other == -1) {...}` test an index "
+            "variable they never assign (ws 1267: 3,225 scripts assign `lindex` and test `valindex`). When on, the "
+            "master-string hide evaluation (cpq_master_string_hide_enabled) treats that unassigned name as the "
+            "findinarray result instead of leaving the rule undecided. Off by default. "
+            "Override with ARYX_CPQ_HIDE_INDEX_ALIAS_ENABLED=true."
+        ),
+    )
     cpq_find_function_enabled: bool = Field(
         default=False,
         description=(

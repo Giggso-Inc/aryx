@@ -18,6 +18,7 @@ from aryx.cpq.engine import _DECISION_ANCHOR_VNS, logger
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_autofill import run_autofill_step
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_timing import add_stage, stage_done
 
 
 def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScope) -> None:
@@ -43,8 +44,10 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # A rule this prefetch missed simply falls through to its normal
     # sequential call, exactly as if this line didn't exist.
     if scope.bml_eval is not None:
+        _t0 = time.monotonic()
         scope.bml_eval.prefetch_tier2(
             engine._bml_prefetch_requests(hiding=scope.hiding_rules, filled=state.filled))
+        stage_done(state, "prefetch_tier2_hiding", _t0, pass_num)
 
     # docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_GAP_PLAN_2026_08_10.md --
     # populate the one shared variable dozens of hiding-rule scripts
@@ -88,20 +91,25 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
         hidden_ms_vn not in state.filled
         or state.filled.get(_hidden_ms_computed_for_key) != _hidden_ms_key
     ):
+        _t0 = time.monotonic()
         _hidden_ms = engine._compute_hidden_master_string(
             state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
             attrs=state.attrs, var_name=hidden_ms_vn,
         )
+        stage_done(state, "compute_hidden_master_string", _t0, pass_num)
         if _hidden_ms is not None:
             state.filled[hidden_ms_vn] = _hidden_ms
             state.filled[_hidden_ms_computed_for_key] = _hidden_ms_key
 
     # Apply hiding rules first so auto_fill only fills visible attrs
+    _t0 = time.monotonic()
     state.attrs, _msgs, hidden_vns = engine.apply_hiding_rules(
         state.attrs, state.filled, scope.hiding_rules,
         bml_eval=scope.bml_eval, filled_multi=state.multi,
         workspace_id=scope.workspace_id, catalog_prefix=scope.catalog_prefix,
         dt_cache=state.dt_cache)
+    stage_done(state, "apply_hiding_rules", _t0, pass_num,
+               f"rules={len(scope.hiding_rules)} hidden={len(hidden_vns)}")
 
     # docs/CPQ_HIDDEN_VALUE_TEMPORARY_VS_CONFIRMED_PLAN_2026_08_16.md --
     # strip filled/multi for `hidden_vns` UNLESS a core decision anchor
@@ -139,6 +147,7 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
         "cpq_perf: _suppress_ungoverned_attrs took %.3fs pass=%d attrs=%d suppressed=%d",
         time.monotonic() - _t0, pass_num, len(state.attrs), len(suppressed_vns),
     )
+    add_stage(state, "suppress_ungoverned_attrs", _t0)
     for k in suppressed_vns:
         fill_log.log_pruned(k, "SUPPRESSED_UNGOVERNED", "run_early_pass", state="suppressed")
         state.filled.pop(k, None)

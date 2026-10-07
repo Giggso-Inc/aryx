@@ -10,6 +10,7 @@ from typing import Any
 
 from aryx.cpq.engine import logger
 from aryx.cpq.rules_loop.rules_loop_state import LoopScope, LoopState
+from aryx.cpq.rules_loop.rules_loop_timing import add_stage, stage_done
 
 
 def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopScope) -> None:
@@ -17,10 +18,12 @@ def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopS
     auto_fill itself, and the paired-value consistency invalidation
     right after it. Populates `state.inconsistent_vns`.
     """
+    _t0 = time.monotonic()
     governed_ids = engine.governed_target_ids(
         state.attrs, scope.hiding_rules, scope.rec_rules, scope.con_rules)
     rule_ids = engine.rule_governed_ids(
         state.attrs, scope.hiding_rules, scope.rec_rules, scope.con_rules)
+    stage_done(state, "governed_ids", _t0, pass_num)
 
     # docs/CPQ_AUTO_FILL_TIER2_PREFETCH_GAP_PLAN_2026_08_10.md -- auto_
     # fill's own _satisfied_recommendation helper calls bml_eval.
@@ -36,8 +39,10 @@ def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopS
     # again in the late pass against the POST-auto_fill state --
     # prefetch_tier2 dedupes and caches by (script, variables).
     if scope.bml_eval is not None:
+        _t0 = time.monotonic()
         scope.bml_eval.prefetch_tier2(engine._bml_prefetch_requests(
             attrs=state.attrs, rec=scope.rec_rules, filled=state.filled))
+        stage_done(state, "prefetch_tier2_autofill", _t0, pass_num)
 
     _t0 = time.monotonic()
     state.filled, state.display_filled, _ = engine.auto_fill(
@@ -57,6 +62,7 @@ def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopS
     logger.info(
         "cpq_perf: auto_fill took %.3fs pass=%d", time.monotonic() - _t0, pass_num,
     )
+    add_stage(state, "auto_fill", _t0)
 
     # Real Data Table pair-consistency check -- two attributes auto_
     # fill resolved INDEPENDENTLY can each be individually legal while
@@ -72,6 +78,7 @@ def run_autofill_step(engine: Any, pass_num: int, state: LoopState, scope: LoopS
         "cpq_perf: _invalidate_inconsistent_paired_values took %.3fs pass=%d inconsistent=%s",
         time.monotonic() - _t0, pass_num, sorted(state.inconsistent_vns),
     )
+    add_stage(state, "invalidate_inconsistent_paired_values", _t0)
     # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC3,
     # 2026-08-24; refined RC5, 2026-08-24): any vn present in this
     # pass's AND the immediately preceding pass's invalidated set is

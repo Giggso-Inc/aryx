@@ -59,3 +59,23 @@ def log_unknown_script_hide(rule, target_variable: str, has_evaluator: bool, mas
             "master_writer_count": len(getattr(rule, "master_writers", None) or [])})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
         return
+
+
+def log_master_unresolved(rule, reason: str) -> None:
+    """Debug record of the exact step at which a master-string hide rule could not be computed."""
+    try:
+        if not would_log("DEBUG"):
+            return
+        run_id = get_run_id() or ""
+        key = (str(rule.rule_name), "master", reason)
+        with _SEEN_LOCK:
+            seen = _SEEN.setdefault(run_id, set())
+            if key in seen:
+                return
+            seen.add(key)
+        raven_log("DEBUG", "P4", "ask.rules_loop.master_unresolved master string could not be computed", context={
+            "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
+            "reason_code": reason, "rule_name": rule.rule_name,
+            "master_writer_count": len(getattr(rule, "master_writers", None) or [])})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
+        return
