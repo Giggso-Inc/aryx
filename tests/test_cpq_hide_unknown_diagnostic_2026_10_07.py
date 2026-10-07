@@ -19,6 +19,11 @@ HIDE_D = (
     'return FALSE;'
 )
 PLAIN = 'return someVar == "x";'
+WRITER_SCRIPT = (
+    'cpqModel = modelVar;\n'
+    'q = BMQL("SELECT distinct AttrName FROM $tblVar WHERE CPQModel=$cpqModel and BaseModel IN ($baseVar)");\n'
+    'for r in q { out = out + r.AttrName + recSep; }\nreturn out;'
+)
 BASE = {"modelVar": "M1", "baseVar": "B1"}
 
 
@@ -37,7 +42,7 @@ def _rule(script: str = HIDE_D, writers: bool = True) -> HidingRule:
     if writers:
         rule.master_writers = [RecommendationRule(
             rule_name="w", condition_attr_id=2, condition_value="", target_attr_id=3,
-            script="q = BMQL(\"SELECT distinct AttrName FROM $tblVar\");", conditions=[(2, "", "3")])]
+            script=WRITER_SCRIPT, conditions=[(2, "", "3")])]
     return rule
 
 
@@ -148,3 +153,51 @@ def test_concurrent_logging_of_the_same_rule_writes_one_line(logged):
         for t in threads:
             t.join()
     assert len(logged.call_args_list) == 1
+
+
+# --- the exact step at which a master string could not be computed (written next to hide_unknown) ---------------
+MULTI_COL_WRITER = 'q = BMQL("SELECT distinct AttrName,Seq,optionOrReqFlag FROM $tblVar WHERE CPQModel=$modelVar");'
+SEQ_ROWS = [{"CPQModel": "M1", "BaseModel": "B1", "AttrName": "widgetAttr", "Seq": "1"}]
+
+
+def _step_reasons(rule, filled, rows=SEQ_ROWS, attrs=None):
+    out = []
+    settings = MagicMock()
+    settings.return_value.cpq_master_string_hide_enabled = True
+    with patch("aryx.cpq.hiding_rules.master_writers.get_settings", settings), \
+            patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], rows, [], [], [])), \
+            patch.object(unknown_log, "would_log", return_value=True), \
+            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])):
+        result = apply_hiding_rules(attrs or _attrs(), filled, [rule], bml_eval=BmlEvaluator({}, use_llm=False),
+                                    workspace_id=1)[2]
+    return out, result
+
+
+def test_no_sequence_rows_for_the_scope_is_named():
+    reasons, hidden = _step_reasons(_rule(), {**BASE, "countryVar": "ZZ"}, rows=[])
+    assert reasons == ["NO_SEQUENCE_ROWS_FOR_SCOPE", "MASTER_STRING_UNRESOLVED"] and hidden == set()
+
+
+def test_an_unsupported_writer_query_shape_is_named():
+    rule = _rule()
+    rule.master_writers[0].script = MULTI_COL_WRITER
+    reasons, hidden = _step_reasons(rule, {**BASE, "countryVar": "ZZ"})
+    assert reasons == ["WRITER_QUERY_SHAPE_UNSUPPORTED", "MASTER_STRING_UNRESOLVED"] and hidden == set()
+
+
+def test_an_unknown_separator_is_named():
+    attrs = [a for a in _attrs() if a.variable_name != "recSep"]
+    reasons, hidden = _step_reasons(_rule(), {**BASE, "countryVar": "ZZ"}, attrs=attrs)
+    assert reasons == ["SEPARATOR_UNKNOWN", "MASTER_STRING_UNRESOLVED"] and hidden == set()
+
+
+def test_a_resolvable_master_string_logs_no_step_reason():
+    reasons, hidden = _step_reasons(_rule(), {**BASE, "countryVar": "ZZ"})
+    assert reasons == [] and hidden == set()                       # computed, attribute present -> shown
+
+
+def test_a_writer_query_that_does_not_parse_is_named():
+    rule = _rule()
+    rule.master_writers[0].script = 'return "static";'
+    reasons, hidden = _step_reasons(rule, {**BASE, "countryVar": "ZZ"})
+    assert reasons == ["WRITER_QUERY_NOT_PARSED", "MASTER_STRING_UNRESOLVED"] and hidden == set()

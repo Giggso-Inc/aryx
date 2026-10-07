@@ -89,22 +89,28 @@ def _resolve(var: str, q: WriterQuery, variables: dict[str, str]) -> str | None:
 
 def compute_master(
     q: WriterQuery, variables: dict[str, str], sep: str, workspace_id: int | None,
-    catalog_prefix: str, cache: dict | None,
+    catalog_prefix: str, cache: dict | None, why: list[str] | None = None,
 ) -> str | None:
     """Master string built from the ingested attrSequence rows, or None when
-    it cannot be built soundly (other columns, unresolved scope, no rows)."""
-    if workspace_id is None or q.columns != ("attrname",) or not q.simple:
+    it cannot be built soundly (other columns, unresolved scope, no rows).
+    `why`, when given, receives one diagnostic reason code for a None result (never affects the result)."""
+    def _no(reason: str) -> None:
+        if why is not None:
+            why.append(reason)
         return None
+
+    if workspace_id is None or q.columns != ("attrname",) or not q.simple:
+        return _no("WRITER_QUERY_SHAPE_UNSUPPORTED")
     cpq = _resolve(q.cpq_var, q, variables)
     bases: set[str] = set()
     for kind, v in q.base_items:
         val = v if kind == "lit" else _resolve(v, q, variables)
         if val is None:
-            return None  # scope variable not resolvable -> unknown
+            return _no("BASE_SCOPE_VARIABLE_UNRESOLVED")  # scope variable not resolvable -> unknown
         if val:
             bases.add(val)
     if not cpq:
-        return None
+        return _no("MODEL_VARIABLE_UNRESOLVED")
     if q.base_items and not bases:
         return ""  # blank BaseModel scope: the query matches no rows
     from aryx.cpq.data_table.data_table_loader import _load_all_tables  # noqa: PLC0415
@@ -113,7 +119,9 @@ def compute_master(
         r.get("AttrName") for r in rows
         if r.get("CPQModel") == cpq and (not bases or r.get("BaseModel") in bases) and r.get("AttrName")
     }
-    return "".join(f"{n}{sep}" for n in sorted(names)) if names else None
+    if not names:
+        return _no("NO_SEQUENCE_ROWS_FOR_SCOPE")
+    return "".join(f"{n}{sep}" for n in sorted(names))
 
 
 def hide_with_master_string(
@@ -123,13 +131,29 @@ def hide_with_master_string(
 ) -> bool | None:
     """Hide decision for a master-string-reading hide script, or None when
     not decidable here (caller then uses the ordinary evaluator)."""
+    why: list[str] = []
+    result = _hide_with_master_string(rule, attrs, by_rule_id, filled, filled_by_rule_id, workspace_id,
+                                      catalog_prefix, cache, why)
+    if result is None and why:
+        from aryx.cpq.hiding_rules.unknown_log import log_master_unresolved  # noqa: PLC0415 -- diagnostic only
+        log_master_unresolved(rule, why[0])
+    return result
+
+
+def _hide_with_master_string(
+    rule: Any, attrs: list[Any], by_rule_id: dict[int, Any], filled: dict[str, str],
+    filled_by_rule_id: dict[int, str], workspace_id: int | None,
+    catalog_prefix: str, cache: dict | None, why: list[str],
+) -> bool | None:
     read = read_master(rule.script)
     if not read:
+        why.append("MASTER_READ_NOT_PARSED")
         return None
     master_var, sep_var = read
     writers = [w for w in rule.master_writers or []
                if (t := by_rule_id.get(w.target_attr_id)) and t.variable_name == master_var]
     if not writers:
+        why.append("NO_WRITER_FOR_MASTER_VARIABLE")
         return None
     by_vn = {a.variable_name: a for a in attrs}
     variables = dict(filled)
@@ -140,16 +164,20 @@ def hide_with_master_string(
     sep = filled.get(sep_var) or (sep_attr.default_value if sep_attr else "") or ""
     variables[sep_var] = sep
     if not sep:
+        why.append("SEPARATOR_UNKNOWN")
         return None
     by_id = _blank_defaulted(attrs, filled_by_rule_id)
     fires = [(w, writer_fires(w, by_id, variables)) for w in writers]
     live = [w for w, f in fires if f is True]
     if live:
         q = parse_writer_query(live[0].script)
-        master = compute_master(q, variables, sep, workspace_id, catalog_prefix, cache) if q else None
+        if q is None:
+            why.append("WRITER_QUERY_NOT_PARSED")
+        master = compute_master(q, variables, sep, workspace_id, catalog_prefix, cache, why) if q else None
     elif all(f is False for _, f in fires):
         master = ""
     else:
+        why.append("WRITER_CONDITION_UNKNOWN")
         master = None
     if master is None:
         return None
@@ -158,4 +186,6 @@ def hide_with_master_string(
     if res is None and not blocked:
         res, blocked = evaluate_hide_master_list_unguarded(
             rule.script, variables, trust_empty_master=True)
+    if blocked or res is None:
+        why.append("MASTER_SCRIPT_EVALUATION_BLOCKED")
     return None if blocked else res
