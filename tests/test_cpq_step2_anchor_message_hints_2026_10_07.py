@@ -68,9 +68,15 @@ def recs(monkeypatch):
     return out
 
 
-def _run(question: str, anchor: str, hints: dict | None = None):
+def _run(
+    question: str, anchor: str, hints: dict | None = None,
+    negated_vns: list | None = None, filled: dict | None = None,
+):
     req = SimpleNamespace(question=question, workspace_id=1267)
-    session = SimpleNamespace(product_anchor_question=anchor, negated_vns=[], turn=2)
+    session = SimpleNamespace(
+        product_anchor_question=anchor, negated_vns=list(negated_vns or []),
+        filled=dict(filled or {}), turn=2,
+    )
     hints = {} if hints is None else hints
     step2._step2_catalog_hints_and_negation(req, session, _attrs(), hints, "")
     return hints, session
@@ -106,6 +112,45 @@ def test_anchor_negations_are_ignored(engine, recs):
     hints, session = _run("United States", "quote please, exclude the APX 900")
     assert "productSelectionProduct_all" not in hints
     assert session.negated_vns == []
+
+
+def test_this_turn_negation_blocks_the_anchor_rehint(engine, recs):
+    """Review finding (Medium 1): a positive anchor ("I want a quote for
+    APX 900") must not re-hint the product this turn's OWN message just
+    rejected ("no, not the APX 900") -- before the fix, negated_now was
+    never consulted by _merge_anchor_hints, so the anchor's positive
+    phrase won anyway and tier1_hint_match (negation-blind) could fill
+    the rejected product."""
+    hints, session = _run("no, not the APX 900", "I want a quote for APX 900")
+    assert "productSelectionProduct_all" not in hints
+    assert "productSelectionProduct_all" in session.negated_vns
+
+
+def test_carried_over_negation_blocks_the_anchor_rehint(engine, recs):
+    """Review finding (Medium 1): a negation recorded on an EARLIER turn
+    (session.negated_vns, not this turn's negated_now) must also block
+    the anchor rescan -- the bug reproduces on every later turn, not
+    just the turn the customer said "no" on."""
+    hints, session = _run(
+        "United States", "I want a quote for APX 900",
+        negated_vns=["productSelectionProduct_all"],
+    )
+    assert "productSelectionProduct_all" not in hints
+    assert session.negated_vns == ["productSelectionProduct_all"]
+
+
+def test_rescan_skipped_once_product_already_filled(engine, recs):
+    """Review finding (Medium 2): extract_catalog_hints does a full,
+    uncached scan of every visible attr's options against the anchor
+    text -- real cost on a large catalog (ws 1267: ~3.2k attrs, ~25k
+    options), repeated every turn for a result that can't change once
+    the one variable_name this function exists to backfill is filled."""
+    hints, _ = _run(
+        "United States", "I want a quote for APX 900",
+        filled={"productSelectionProduct_all": "APX900FLASHPORT"},
+    )
+    assert hints == {}
+    assert engine.calls == ["United States"]
 
 
 def test_log_has_lengths_not_text(engine, recs):

@@ -71,7 +71,7 @@ def _step2_catalog_hints_and_negation(
                 "added_hint_vns": sorted(set(hints) - _hint_keys_before),
                 "turn": getattr(session, "turn", None)})
 
-    _merge_anchor_hints(req, session, attrs, hints, catalog_prefix)
+    _merge_anchor_hints(req, session, attrs, hints, catalog_prefix, negated_now)
 
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
@@ -80,6 +80,7 @@ def _step2_catalog_hints_and_negation(
 
 def _merge_anchor_hints(
     req: "Any", session: Any, attrs: list, hints: dict, catalog_prefix: str,
+    negated_now: set,
 ) -> None:
     """Also read option text from the earlier message that named the product.
 
@@ -92,18 +93,43 @@ def _merge_anchor_hints(
     (auto_fill tier0_already_filled runs before the hint tier). A completed
     product switch clears product_anchor_question, so an old product's
     message is never re-read.
+
+    `negated_now` is this turn's own negations (not yet folded into
+    session.negated_vns -- that happens in the caller, after this call
+    returns) -- a variable rejected THIS turn ("no, not the APX 900") or
+    any earlier turn (session.negated_vns) must never be re-hinted from
+    the anchor, or tier1_hint_match (which has no negation awareness of
+    its own -- only tier 5 does) can fill a value the customer just
+    rejected. PR #cpq-catalog-hint-exact-code-tiebreak review, Medium
+    finding 1 -- confirmed live: without this check, re-hinting fired on
+    every later turn too, not just the one where the negation was said.
+
+    Skips the rescan entirely once the product selector is already
+    filled (review Medium finding 2): extract_catalog_hints does a full
+    scan of every visible attr's options against the anchor text every
+    turn, with no caching -- on a large catalog (ws 1267: ~3.2k attrs,
+    ~25k options) that is real, repeated work for a result that can only
+    ever change the one variable_name this function exists to backfill,
+    and that variable_name's value never changes once filled.
     """
     from aryx.api import ask_api as _ask_api_module
+    from aryx.cpq.catalog_profile import PRODUCT_LITERAL
+    if PRODUCT_LITERAL in getattr(session, "filled", {}):
+        return
     anchor = (getattr(session, "product_anchor_question", "") or "").strip()
     if not anchor or anchor == (req.question or "").strip():
         return
+    skip_vns = negated_now | set(session.negated_vns)
     _keys_before = set(hints)
     anchor_hints, _ = _ask_api_module._cpq_engine.extract_catalog_hints(anchor, attrs)
     for vn, iv in anchor_hints.items():
+        if vn in skip_vns:
+            continue
         hints.setdefault(vn, iv)
     raven_log("DEBUG", "P4", "ask.preamble.catalog_hints merged from product anchor", context={
         "selected_option": "merged" if set(hints) - _keys_before else "nothing_new",
         "available_options": ["merged", "nothing_new"], "reason_code": "ANCHOR_MESSAGE_RESCAN",
         "catalog_prefix": catalog_prefix, "anchor_len": len(anchor),
         "added_hint_vns": sorted(set(hints) - _keys_before),
+        "skipped_negated_vns": sorted(skip_vns & set(anchor_hints)),
         "turn": getattr(session, "turn", None)})

@@ -91,13 +91,34 @@ def render_file_doc(file_rel: str, spans: list[dict], total: int) -> str:
     return header(file_rel, stats) + "\n" + table(spans) + "\n"
 
 
+_LAST_UPDATED_PREFIX = "Last updated: "
+
+
+def _without_timestamp(text: str) -> str:
+    """Drop the one line that unconditionally changes on every render (the
+    wall-clock "Last updated" stamp), so two renders of otherwise-identical
+    attribution data compare equal. Without this, `write_all` rewrote every
+    mirror on every call regardless of content, which (a) spuriously
+    re-staged unrelated files on each commit attempt and (b) made the
+    signoff gate's staged-content hash impossible to pin down -- a receipt
+    signed off a moment earlier never matched the hash this hook's own
+    next regeneration produced, so every commit with AI-attributed lines
+    staged self-invalidated and never passed. Confirmed live, 2026-10-07."""
+    return "\n".join(
+        line for line in text.splitlines() if not line.startswith(_LAST_UPDATED_PREFIX)
+    )
+
+
 def write_all(attr_map: dict, out_dir: Path = DOCS_DIR) -> list[Path]:
     written: list[Path] = []
     for file_rel, spans in attr_map.items():
         target = out_dir / (file_rel + ".md")
         target.parent.mkdir(parents=True, exist_ok=True)
         total = _line_count(ROOT / file_rel)
-        target.write_text(render_file_doc(file_rel, spans, total))
+        new_content = render_file_doc(file_rel, spans, total)
+        if target.exists() and _without_timestamp(target.read_text()) == _without_timestamp(new_content):
+            continue
+        target.write_text(new_content)
         written.append(target)
     return written
 

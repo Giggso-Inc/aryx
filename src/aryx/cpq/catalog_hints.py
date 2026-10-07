@@ -38,14 +38,22 @@ def extract_catalog_hints(
 
     Never guesses (D2), several ways:
       - Same option text real for 2+ different attrs -> neither is
-        hinted, no tie-break. A tie-break via a distinguishing word from
-        the attr's own variable_name was tried and REJECTED after two
-        confirmed false positives: "software" in "baseline release
-        software" self-referentially anchored softwareBundlesBundleType_
-        astro (the word only overlapped because it's also in that attr's
-        own name), and "SIM" anchored selectSecondarySIMCard_astro over
-        the intended sIMCardSelection_astro (an artifact of the latter's
-        leading lowercase "s" splitting under camelCase parsing).
+        hinted, EXCEPT the one narrow case `product_selector_entries`
+        carves out: when one of the owning attrs is the platform's
+        product selector (catalog_profile.PRODUCT_LITERAL), that one
+        wins and the others stay unhinted -- a quote request names the
+        product being quoted, so the ambiguity is resolved in its favor
+        specifically (ws 1267, 2026-10-07: "APX 900" is also an option
+        of the DMS picker productSelectionDMSO_astro). Every other
+        multi-owner case is still never-guess. A broader tie-break via a
+        distinguishing word from the attr's own variable_name was tried
+        and REJECTED after two confirmed false positives: "software" in
+        "baseline release software" self-referentially anchored
+        softwareBundlesBundleType_astro (the word only overlapped
+        because it's also in that attr's own name), and "SIM" anchored
+        selectSecondarySIMCard_astro over the intended
+        sIMCardSelection_astro (an artifact of the latter's leading
+        lowercase "s" splitting under camelCase parsing).
       - A candidate phrase must be multi-word OR contain a digit/slash
         to be trusted as a positive hint, even with a single owner — a
         lone dictionary word is too easily coincidental (e.g. "SOFTWARE"
