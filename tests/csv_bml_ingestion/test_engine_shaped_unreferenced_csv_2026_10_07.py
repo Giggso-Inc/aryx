@@ -203,15 +203,24 @@ def test_the_switch_lives_with_the_other_csv_bml_switch():
     assert config.LOAD_ENGINE_TABLES_ENV == LOAD_ENGINE_TABLES_ENV
 
 
-# --- review N5: the two loose standalone shapes do not create a table without a script -------------------------------
+# --- review N5/N6: the two loose standalone shapes need the real tables' distinguishing columns ------------------
+NEW_COUNTRY_REGION = ["countryCode", "countryDesc", "region", "emsParent", "marketParent", "Enabled", "language",
+                      "regionGroup", "Embargo"]
+DEFAULT_IN_ATTR = ["_update_action", "key", "BaseModel", "attr1", "val1", "attr2", "val2", "PartNumber", "Qty"]
+
+
+@pytest.mark.parametrize("header,shape", [(NEW_COUNTRY_REGION, "country_region"), (DEFAULT_IN_ATTR, "defaultinattr")])
+def test_the_real_country_region_and_default_in_attr_headers_still_qualify(header, shape):
+    assert engine_shape_of_columns(_columns(header)) == shape
+
+
 @pytest.mark.parametrize("header", [
-    ["countryCode", "region", "dealerName"],                                  # a customer's own country/region list
-    ["countryCode", "countryDesc", "region", "emsParent", "marketParent", "Enabled", "language", "regionGroup",
-     "Embargo"],                                                              # the real newCountryRegion header
+    ["countryCode", "region", "dealerName"],                       # a customer's own country/region list
+    ["countryCode", "countryDesc", "region"],                      # missing emsParent
     ["BaseModel", "attr1", "val1", "dealerName"],
-    ["_update_action", "key", "BaseModel", "attr1", "val1", "attr2", "val2", "PartNumber", "Qty"],   # defaultInAttr
+    ["BaseModel", "attr1", "val1", "PartNumber"],                  # missing Qty
 ])
-def test_loose_shapes_are_not_loaded_without_a_script(header):
+def test_loose_shapes_without_the_distinguishing_columns_are_not_loaded(header):
     assert engine_shape_of_columns(_columns(header)) is None
 
 
@@ -222,3 +231,11 @@ def test_an_unreferenced_customer_csv_with_country_and_region_columns_is_still_s
     r = ingest_csv(p, bml_index, db)
     assert (r.status, r.error_code) == ("skipped", "CBI_BML_NOT_FOUND")
     assert db.log == []
+
+
+def test_an_unreferenced_new_country_region_csv_is_loaded(bml_index, tmp_path):
+    p = write_csv(tmp_path / "newCountryRegion.csv", NEW_COUNTRY_REGION, ["String"] * len(NEW_COUNTRY_REGION),
+                  [["US", "United States", "NA", "NA", "NA", "Y", "en", "NA", ""]])
+    db = FakeDb()
+    r = ingest_csv(p, bml_index, db)
+    assert (r.status, r.table, r.rows_loaded) == ("loaded", "newcountryregion", 1)

@@ -14,6 +14,17 @@ from aryx.csv_bml_ingestion.config import LOAD_ENGINE_TABLES_ENV, load_engine_ta
 __all__ = ["LOAD_ENGINE_TABLES_ENV", "engine_shape_of_columns", "load_engine_tables_enabled"]
 
 
+# Two of the engine's standalone shapes are loose as the engine defines them: country region is just countryCode +
+# region, default-in-attr is BaseModel + attr1 + val1 with no model column. A customer CSV with those columns would
+# be loaded and then read by the engine as geo / default data, so for the script-free path they must also carry the
+# distinguishing columns of the real tables (newCountryRegion has countryDesc and emsParent; defaultInAttr has
+# PartNumber and Qty). The engine's own detectors are unchanged.
+_LOOSE_SHAPE_EXTRA_COLUMNS: dict[str, frozenset[str]] = {
+    "country_region": frozenset({"countrydesc", "emsparent"}),
+    "defaultinattr": frozenset({"partnumber", "qty"}),
+}
+
+
 def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
     """Name of the engine Data Table shape ``columns`` satisfy, or None when the engine never reads such a table.
 
@@ -26,22 +37,21 @@ def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
     from aryx.cpq.rdb.rdb_workspace_tables import recase  # noqa: PLC0415
 
     # the pooled shapes first (sequence, series mapping, region rule, constraint, hierarchy), then the ones the engine
-    # reads through its own standalone loaders that need several specific columns (base model, attr-var mapping,
-    # RTTE/TA). NOT included: `_is_country_region_shaped` (just countryCode + region) and `_is_defaultinattr_shaped`
-    # (BaseModel + attr1 + val1, no model column) are too loose to create a table from: an unrelated customer CSV
-    # with those columns would be loaded and then read by the engine as geo / default data. Those two tables are
-    # read by scripts in practice, so they still load through the script path exactly as before.
+    # reads through its own standalone loaders (base model, attr-var mapping, country region, default-in-attr, RTTE/TA)
     standalone = (
         ("basemodel_to_config", _is_basemodel_to_config_shaped),
         ("attr_var_mapping", shapes._is_attr_var_mapping_shaped),
+        ("defaultinattr", shapes._is_defaultinattr_shaped),
+        ("country_region", shapes._is_country_region_shaped),
         ("rtte_ta", shapes._is_rtte_ta_shaped),
     )
+    lowered = {str(column).lower() for column in columns}
     for variant in (0, 1):
         keys = {recase(column, variant) for column in columns}
         shape = shapes._detect_shape(keys)
         if shape:
             return shape
         for name, detector in standalone:
-            if detector(keys):
+            if detector(keys) and _LOOSE_SHAPE_EXTRA_COLUMNS.get(name, frozenset()) <= lowered:
                 return name
     return None

@@ -170,7 +170,7 @@ Opt out with `ARYX_CSV_BML_LOAD_ENGINE_TABLES=false` (restores the old skip). Th
 
 Notes: the derived widths apply to a table created by this build. A table created earlier keeps its widths (the saved
 `sql/<table>/` directory and `CREATE TABLE IF NOT EXISTS` are never re-derived); to widen one, delete the saved
-directory and the table, then upload again. Two engine shapes are **not** loaded without a script because they are
-too loose to create a table from (`countryCode` + `region`; `BaseModel` + `attr1` + `val1`): an unrelated CSV with
-those columns would be read by the engine as geo or default data. Real tables of those shapes are read by scripts
-and load as before.
+directory and the table, then upload again. Two engine shapes are loose as the engine defines them (`countryCode` + `region`; `BaseModel` + `attr1` + `val1`), so
+the script-free path also requires the distinguishing columns of the real tables (`countryDesc` and `emsParent`;
+`PartNumber` and `Qty`): an unrelated CSV with just those columns is skipped, because the engine would read it as geo
+or default data.
