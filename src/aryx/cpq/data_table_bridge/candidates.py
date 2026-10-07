@@ -14,6 +14,7 @@ from aryx.cpq.auto_fill_stages import fill_log
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
+    resolve_models_by_hierarchy_display as dt_resolve_models_by_display,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
     resolve_sibling_models_with_sequence_rows as dt_resolve_sibling_models,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,
@@ -159,6 +160,11 @@ def _resolve_cpq_model_candidates(
         if family:
             siblings = dt_resolve_sibling_models(product_name, workspace_id, catalog_prefix, cache)
             primary = tuple(m for s in siblings for m in (s, f"{s}_BOM")) + (family, f"{family}_BOM")
+            tier = "tier2_model_resolution"
+    if primary is None and workspace_id is not None:
+        by_display = dt_resolve_models_by_display(product_name, workspace_id, catalog_prefix, cache)
+        if by_display:        # a model whose own hierarchy row (blank Product) is displayed as the product's name
+            primary = tuple(m for s in by_display for m in (s, f"{s}_BOM"))
             tier = "tier2_model_resolution"
     if primary is None:
         if get_settings().data_table_candidates_empty_on_no_match_enabled:
