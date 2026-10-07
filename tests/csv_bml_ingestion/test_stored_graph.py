@@ -562,6 +562,8 @@ def test_with_query_tables_returns_the_same_projection_when_off(monkeypatch):
 def test_neither_graph_has_the_table_so_it_is_not_found_and_the_message_says_where_it_looked(
         monkeypatch, tmp_path, seeded_sql_root, emits):
     from aryx.csv_bml_ingestion import ingest_csv
+    # attrSequence is an engine table shape (loaded even when no script reads it); this test is about the skip message
+    monkeypatch.setenv("ARYX_CSV_BML_LOAD_ENGINE_TABLES", "false")
     lk = _curated_first(monkeypatch, project_xml_to_raw_graph(XML), project_xml_to_raw_graph(XML))   # no lists anywhere
     r = lk.lookup("attrSequence")
     assert r.matches == () and r.source == "raw graph"

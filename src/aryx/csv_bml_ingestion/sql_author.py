@@ -118,3 +118,42 @@ def _save(directory: Path, table: str, schema: str, indexes: str, lookup: BmlLoo
         lines += [f"- `{m.label}` ({'/'.join(m.path)}/{m.node_tag}.{m.prop}) identity `{m.identity}`"]
         lines += [f"  - `{q.sql}`" for q in m.queries]
     (directory / C.BML_SOURCE_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def author_sql_from_layout(table: str, layout: CsvLayout, longest: dict[str, int], tracker: RunTracker,
+                           root: Path | None = None) -> Path:
+    """Write ``schema.sql`` / ``indexes.sql`` for a table no script queries, from the CSV alone (no LLM).
+
+    Used only for a CSV whose columns the CPQ engine reads as a Data Table (``engine_shapes``). Text columns
+    are ``VARCHAR2(n)`` with ``n`` four times the longest observed value (at least 256, at most ``MAX_VARCHAR``: a
+    later upload with longer values must still fit, the widths are never re-derived);
+    ``Integer`` columns are ``NUMBER(p)``. No index: nothing here knows an access path, and the engine reads
+    the whole table. The statements go through the same validator as LLM output before they are saved.
+
+    Raises:
+        SqlAuthoringError: the directory already has files, or the CSV does not fit the allowed column sizes.
+    """
+    directory = sql_dir(table, root)
+    if directory.exists() and any(directory.iterdir()):
+        raise SqlAuthoringError(f"{directory} already has files; refusing to overwrite -- fix or delete them")
+    specs: list[ColumnSpec] = []
+    cells: list[str] = []
+    for column, kind in zip(layout.columns, layout.types):
+        digits = longest[column]
+        if kind.strip().lower() == "integer":
+            specs.append(ColumnSpec(column, "number", digits))
+            cells.append(f"{column} NUMBER({min(38, max(digits, 18))})")
+        else:
+            specs.append(ColumnSpec(column, "text", digits))
+            cells.append(f"{column} VARCHAR2({min(MAX_VARCHAR, max(256, digits * 4))})")
+    schema = f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(cells)});"
+    validate_schema(schema, table, specs)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    note = (f"-- Table {table}: derived from the CSV header and types on {stamp} because the CPQ engine reads this "
+            f"table shape and no script queries it (no LLM, no index).\n")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / C.SCHEMA_FILE).write_text(note + schema + "\n", encoding="utf-8")
+    (directory / C.INDEXES_FILE).write_text(note, encoding="utf-8")
+    tracker.info(C.STEP_AUTHOR_SQL, "derived schema from the CSV header (engine table shape, no script reads it)",
+                 table=table, directory=str(directory), columns=len(cells))
+    return directory

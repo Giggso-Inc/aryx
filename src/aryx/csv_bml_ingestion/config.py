@@ -20,3 +20,15 @@ _TRUE = {"1", "true", "yes", "on"}
 def csv_bml_enabled() -> bool:
     """True when ``ARYX_CSV_BML_ENABLED`` is set to a truthy value (read at call time)."""
     return os.environ.get(ENABLE_ENV, "").strip().lower() in _TRUE
+
+
+LOAD_ENGINE_TABLES_ENV = "ARYX_CSV_BML_LOAD_ENGINE_TABLES"
+_FALSE = {"0", "false", "no", "off"}
+
+
+def load_engine_tables_enabled() -> bool:
+    """On by default; ``ARYX_CSV_BML_LOAD_ENGINE_TABLES=false`` restores the old "no script reads it -> skip".
+
+    A CSV no script queries is still loaded when the CPQ engine reads that table shape (``engine_shapes``).
+    """
+    return os.environ.get(LOAD_ENGINE_TABLES_ENV, "").strip().lower() not in _FALSE
