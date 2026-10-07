@@ -52,6 +52,11 @@ def _step10_recompute_pending(
     # post-loop auto_fill (dev-rv-msi #371/#372). Flag off: today's behavior.
     _dt_cache: "dict | None" = {} if _bounded else None
     _loop_kwargs = {"_dt_cache": _dt_cache} if _bounded else {}
+    # ws 1267 (2026-10-07): neither call below was given the customer's own wording, so the not-applicable guard
+    # (it resolves the device from that wording) was a silent no-op for every /ask turn. Passed to BOTH calls, only
+    # while the guard's flag is on; flag off: the kwargs are byte-identical to before.
+    if _settings.cpq_not_applicable_guard_enabled and getattr(session, "product_anchor_question", ""):
+        _loop_kwargs["product_anchor_hint"] = session.product_anchor_question
 
     v_attrs, f, d_filled, c_opts = _cpq_engine.evaluate_rules_loop(
         attrs, cur_hints, dict(session.filled), hiding_rules, rec_rules, con_rules,

@@ -264,7 +264,8 @@ def test_commit_and_drain_counts(recs, monkeypatch):
 
 def test_recompute_pending_counts(recs, monkeypatch):
     mod = _m("ask_step10_recompute_pending")
-    monkeypatch.setattr(mod, "get_settings", lambda: SimpleNamespace(cpq_post_loop_timeout_enabled=False))
+    monkeypatch.setattr(mod, "get_settings", lambda: SimpleNamespace(
+        cpq_post_loop_timeout_enabled=False, cpq_not_applicable_guard_enabled=False))
     monkeypatch.setattr(mod, "grid_narrow_kwargs", lambda *a: {})
     a, b = _attr("a"), _attr("b", 2)
     _engine(monkeypatch, evaluate_rules_loop=lambda *x, **k: ([a, b], {"a": "1"}, {}, {}),
