@@ -50,6 +50,57 @@ def test_oracle_multi_row_conditions_match_on_value_not_operator() -> None:
     assert all(outcome.hidden == frozenset({"target"}) for outcome in outcomes)
 
 
+def test_oracle_not_equal_operator_fires_when_value_differs() -> None:
+    """operator "3" ("<>") must fire when the filled value does NOT match --
+    ConditionEvaluator.status() was equality-only before this, silently
+    ignoring every non-"=" operator code."""
+    attrs = [_attr(1, "condition", "A", "B"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide unless A", 0, "", 2,
+        conditions=[(1, "A", "3")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    fires_on_b = oracle.evaluate_rules({"condition": "B"})
+    does_not_fire_on_a = oracle.evaluate_rules({"condition": "A"})
+
+    assert fires_on_b.hidden == frozenset({"target"})
+    assert does_not_fire_on_a.hidden == frozenset()
+
+
+def test_oracle_numeric_less_than_operator() -> None:
+    """operator "1" ("<") must do a numeric comparison, not a string match."""
+    attrs = [_attr(1, "condition"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide if under 37", 0, "", 2,
+        conditions=[(1, "37", "1")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    below = oracle.evaluate_rules({"condition": "30"})
+    above = oracle.evaluate_rules({"condition": "40"})
+
+    assert below.hidden == frozenset({"target"})
+    assert above.hidden == frozenset()
+
+
+def test_oracle_multi_select_intersects_operator() -> None:
+    """operator "7" ("intersects") checks the current multi-select SET
+    against the expected values, not a scalar equality check."""
+    attrs = [_attr(1, "condition"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide if smartlocate selected", 0, "", 2,
+        conditions=[(1, "SMARTLOCATE", "7")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    hit = oracle.evaluate_rules({}, {"condition": ("SMARTLOCATE", "SMARTVIDEO")})
+    miss = oracle.evaluate_rules({}, {"condition": ("SMARTVIDEO",)})
+
+    assert hit.hidden == frozenset({"target"})
+    assert miss.hidden == frozenset()
+
+
 def test_oracle_conflicting_hide_show_is_order_independent() -> None:
     """Conflicting visibility actions must be reported, never list-order resolved."""
     attrs = [_attr(1, "condition", "A"), _attr(2, "target", "X")]

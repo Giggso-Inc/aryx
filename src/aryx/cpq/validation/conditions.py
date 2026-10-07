@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from aryx.cpq.bml.bml_declarative import _operator_hit
 from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, RecommendationRule
 from aryx.cpq.validation.models import ValidationIssue
 from aryx.cpq.validation.script_oracle import DeterministicBmlOracle
@@ -36,7 +37,10 @@ class ConditionEvaluator:
             return self.scripts.condition(condition_script, variables)
         pairs = rule.conditions or [(rule.condition_attr_id, rule.condition_value, "4")]
         grouped: dict[int, list[str]] = defaultdict(list)
-        for attribute_id, value, _operator in pairs:
+        operator_by_attr: dict[int, str] = {}
+        for attribute_id, value, operator in pairs:
+            if attribute_id not in operator_by_attr:
+                operator_by_attr[attribute_id] = operator
             grouped[attribute_id].append(value)
         for attribute_id, values in grouped.items():
             attribute = self.by_id.get(attribute_id)
@@ -47,8 +51,13 @@ class ConditionEvaluator:
             )
             if not actual_values:
                 return None
-            if not any(matches(actual, value) for actual in actual_values for value in values):
+            operator = operator_by_attr[attribute_id]
+            hits = [_operator_hit(actual, values, operator) for actual in actual_values]
+            if any(hit is True for hit in hits):
+                continue
+            if all(hit is False for hit in hits):
                 return False
+            return None  # unresolved (e.g. unparseable numeric) -- never guessed
         return True
 
     def target(self, rule: Rule, issues: list[ValidationIssue]) -> ConfigAttr | None:
@@ -67,12 +76,6 @@ class ConditionEvaluator:
         index = {attr.entity_id: attr for attr in attrs}
         index.update({attr.source_id: attr for attr in attrs if attr.source_id is not None})
         return index
-
-
-def matches(actual: str, expected: str) -> bool:
-    """Match a literal or tilde-delimited OR list case-insensitively."""
-    allowed = {value.strip().lower() for value in expected.split("~") if value.strip()}
-    return actual.strip().lower() in allowed
 
 
 def rule_key(rule: Any) -> tuple[str, int, int, str]:
