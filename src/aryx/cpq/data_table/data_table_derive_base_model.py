@@ -42,6 +42,59 @@ def model_base_models(
     return _base_models(_model_rows(norm_model, workspace_id, catalog_prefix, cache)) if norm_model else set()
 
 
+def explain_known_attrs(
+    cpq_model: str, known_attrs: dict[str, str], workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None, ignore_attrs: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Replays `derive_base_model_from_known_attrs` and says what each known attribute did (diagnostics only).
+
+    One entry per known attribute that some base model's rows mention, with `applied_order` (the derivation applies
+    attributes one after another in `known_attrs` order, so the order matters), `base_models_with_rows` and
+    `base_models_matching` over all of the model's base models, `matching_among_remaining` (the test the derivation
+    really uses: a match among the base models still left; 0 means the attribute is ignored), `remaining_before` and
+    `remaining_after`, and a sample of the non-blank values the rows hold (catalog data). Entries that matched nothing
+    among the remaining base models come first, so a cap keeps the useful ones. The known value itself is never
+    returned, so no customer text can reach a log."""
+    norm_model = (cpq_model or "").strip().upper()
+    if not norm_model:
+        return []
+    rows = _model_rows(norm_model, workspace_id, catalog_prefix, cache)
+    base_models = _base_models(rows)
+    remaining = set(base_models)
+    out: list[dict[str, Any]] = []
+    for order, (attr_name, value) in enumerate(known_attrs.items()):
+        if not value or attr_name in ignore_attrs:
+            continue
+        norm_value = str(value).strip().upper()
+        with_rows: set[str] = set()
+        matching: set[str] = set()
+        row_values: set[str] = set()
+        for row in rows:
+            base_model = str(row.get("BaseModel") or "").strip()
+            if base_model not in base_models:
+                continue
+            for n in (1, *CONDITION_COLUMN_SLOTS):
+                if row.get(f"attr{n}") == attr_name:
+                    with_rows.add(base_model)
+                    row_value = str(row.get(f"val{n}") or "").strip().upper()
+                    if row_value:
+                        row_values.add(row_value)
+            if _row_mentions(row, attr_name, norm_value):
+                matching.add(base_model)
+        if not with_rows:
+            continue
+        before = len(remaining)
+        matched = matching & remaining
+        if matched:        # the derivation's own step: only an attribute that matches a remaining base model narrows
+            remaining &= matched | (remaining - with_rows)
+        out.append({"attr": attr_name, "applied_order": order, "base_models_with_rows": len(with_rows),
+                    "base_models_matching": len(matching), "matching_among_remaining": len(matched),
+                    "remaining_before": before, "remaining_after": len(remaining),
+                    "row_value_count": len(row_values), "row_values_sample": sorted(row_values)[:6]})
+    out.sort(key=lambda e: e["matching_among_remaining"] != 0)          # stable: ignored attributes first
+    return out[:20]
+
+
 def derive_base_model_from_known_attrs(
     cpq_model: str, known_attrs: dict[str, str], workspace_id: int,
     catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,

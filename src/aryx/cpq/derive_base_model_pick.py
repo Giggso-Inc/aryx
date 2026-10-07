@@ -12,7 +12,7 @@ from typing import Any, TypedDict
 
 from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_derive_base_model import (
-    derive_base_model_from_known_attrs, model_base_models,
+    derive_base_model_from_known_attrs, explain_known_attrs, model_base_models,
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.raven_log import raven_log, would_log
@@ -24,6 +24,11 @@ _BLIND_SOURCE_PREFIXES = ("blind_pick", "default_first_available")
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
+
+
+def _blind_attrs(sources: dict[str, str] | None) -> frozenset[str]:
+    """Attributes whose value was guessed (blind-filled): never derivation evidence."""
+    return frozenset(vn for vn, src in (sources or {}).items() if str(src).startswith(_BLIND_SOURCE_PREFIXES))
 
 
 class _Seen(TypedDict):
@@ -54,10 +59,7 @@ def derived_base_model_option(
     seen: _Seen = {"candidates": [], "results": {}, "reason": "NOT_NARROWED_TO_ONE"}
     try:
         product = filled.get("productSelectionProduct_all", "")
-        ignore = frozenset(
-            vn for vn, src in (sources or {}).items()
-            if str(src).startswith(_BLIND_SOURCE_PREFIXES)
-        )
+        ignore = _blind_attrs(sources)
         candidates = resolved_model_first_candidates(product, workspace_id, catalog_prefix, cache)
         seen["candidates"] = candidates
         if not candidates:
@@ -99,14 +101,17 @@ def _log_not_derived(
 ) -> None:
     """DEBUG line: why no base model was derived; never affects the fill pass.
 
-    Deduplicated per per-turn cache by OUTCOME (reason and candidates), not once per turn: the rules loop runs several
-    fill passes against one cache, and the first pass (product still blank) must not hide a later pass that fails for a
-    different reason. An identical repeat is still skipped."""
+    Deduplicated per per-turn cache by OUTCOME (reason, candidates and the set of known attributes that are not
+    blind-filled), not once per turn: the rules loop runs several fill passes against one cache, and an early pass
+    must not hide a later one that fails for a different reason or that knows more attributes (`known_attr_match`
+    depends on them). An identical repeat is still skipped."""
     try:
         if not would_log("DEBUG"):
             return
+        ignore = _blind_attrs(sources)
+        known = frozenset(k for k, v in filled.items() if v and k not in ignore)
         key = ("_derive_base_model_not_derived_logged", workspace_id, catalog_prefix,
-               seen["reason"], tuple(seen["candidates"][:6]))
+               seen["reason"], tuple(seen["candidates"][:6]), known)
         if cache is not None:
             if key in cache:
                 return
@@ -115,13 +120,26 @@ def _log_not_derived(
         reason = seen["reason"]
         if reason == "NOT_NARROWED_TO_ONE" and counts and not any(counts.values()):
             reason = "NO_BASE_MODEL_ROWS"      # the candidate models have no constraint rows at all
+        explained = _explain_first_model_with_rows(seen["candidates"], counts, filled, sources, workspace_id,
+                                                   catalog_prefix, cache)
         raven_log("DEBUG", "P4", "ask.base_model.not_derived why no base model was derived this pass", context={
             "selected_option": "left_for_customer", "available_options": ["derived", "left_for_customer"],
             "reason_code": reason, "candidates": seen["candidates"][:6],
             "base_models_per_candidate": counts,
             "results": {m: r for m, r in list(seen["results"].items())[:6]},
             "option_count": len(options), "product_filled": bool(filled.get("productSelectionProduct_all")),
-            "known_attr_count": sum(1 for v in filled.values() if v),
-            "blind_attr_count": sum(1 for s in (sources or {}).values() if str(s).startswith(_BLIND_SOURCE_PREFIXES))})
+            "known_attr_count": sum(1 for v in filled.values() if v), "known_attr_match": explained,
+            "blind_attr_count": len(ignore)})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change the fill
         logger.debug("cpq: not_derived diagnostic failed", exc_info=True)
+
+
+def _explain_first_model_with_rows(
+    candidates: list[str], counts: dict[str, int], filled: dict[str, str], sources: dict[str, str] | None,
+    workspace_id: int, catalog_prefix: str, cache: dict[Any, Any] | None,
+) -> list[dict[str, Any]]:
+    """`explain_known_attrs` for the first candidate model that has base models (names and counts only)."""
+    model = next((m for m in candidates if counts.get(m)), None)
+    if model is None:
+        return []
+    return explain_known_attrs(model, filled, workspace_id, catalog_prefix, cache, ignore_attrs=_blind_attrs(sources))
