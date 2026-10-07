@@ -78,6 +78,17 @@ def writer_fires(rule: Any, by_id: dict[int, str], variables: dict[str, str]) ->
     return True if all(r is True for r in results) else None
 
 
+def writer_condition_detail(rule: Any, fires: bool | None) -> dict[str, Any]:
+    """Diagnostic shape of a writer's own condition (strings cut), for the WRITER_CONDITION_UNKNOWN log line."""
+    return {
+        "writer": str(getattr(rule, "rule_name", ""))[:120], "fires": fires,
+        "conditions": [[a, str(v)[:60], str(o)] for a, v, o in (getattr(rule, "conditions", None) or [])][:6],
+        "single": [getattr(rule, "condition_attr_id", None), str(getattr(rule, "condition_value", ""))[:60],
+                   str(getattr(rule, "condition_operator", ""))],
+        "condition_script": str(getattr(rule, "condition_script", "") or "")[:400],
+    }
+
+
 def _resolve(var: str, q: WriterQuery, variables: dict[str, str]) -> str | None:
     """Value of a query variable: a literal/ident assigned in the writer
     script (`var = "x";` / `var = other;`), else the variable itself."""
@@ -132,18 +143,19 @@ def hide_with_master_string(
     """Hide decision for a master-string-reading hide script, or None when
     not decidable here (caller then uses the ordinary evaluator)."""
     why: list[str] = []
+    detail: dict[str, Any] = {}
     result = _hide_with_master_string(rule, attrs, by_rule_id, filled, filled_by_rule_id, workspace_id,
-                                      catalog_prefix, cache, why)
+                                      catalog_prefix, cache, why, detail)
     if result is None and why:
         from aryx.cpq.hiding_rules.unknown_log import log_master_unresolved  # noqa: PLC0415 -- diagnostic only
-        log_master_unresolved(rule, why[0])
+        log_master_unresolved(rule, why[0], detail)
     return result
 
 
 def _hide_with_master_string(
     rule: Any, attrs: list[Any], by_rule_id: dict[int, Any], filled: dict[str, str],
     filled_by_rule_id: dict[int, str], workspace_id: int | None,
-    catalog_prefix: str, cache: dict | None, why: list[str],
+    catalog_prefix: str, cache: dict | None, why: list[str], detail: dict[str, Any] | None = None,
 ) -> bool | None:
     read = read_master(rule.script)
     if not read:
@@ -178,6 +190,8 @@ def _hide_with_master_string(
         master = ""
     else:
         why.append("WRITER_CONDITION_UNKNOWN")
+        if detail is not None:
+            detail["writers"] = [writer_condition_detail(w, f) for w, f in fires]
         master = None
     if master is None:
         return None
