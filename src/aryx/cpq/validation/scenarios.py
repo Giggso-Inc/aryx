@@ -57,7 +57,7 @@ def _add_rule_scenarios(
 ) -> None:
     """Add true, alternate-OR, false, and script-literal cases for one rule."""
     grouped: dict[int, list[str]] = defaultdict(list)
-    for attribute_id, encoded in _condition_pairs(rule):
+    for attribute_id, encoded, _operator in _condition_pairs(rule):
         grouped[attribute_id].extend(split_values(encoded))
     seed: dict[str, str] = {}
     seed_multi: dict[str, tuple[str, ...]] = {}
@@ -108,11 +108,11 @@ def _add_script_scenarios(
         )
 
 
-def _condition_pairs(rule: Rule) -> list[tuple[int, str]]:
+def _condition_pairs(rule: Rule) -> list[tuple[int, str, str]]:
     """Return declarative conditions, excluding script-only actions."""
     if rule.script or getattr(rule, "condition_script", None):
         return []
-    return list(rule.conditions or [(rule.condition_attr_id, rule.condition_value)])
+    return list(rule.conditions or [(rule.condition_attr_id, rule.condition_value, "4")])
 
 
 def _script_literals(rule: Rule) -> list[tuple[str, str]]:

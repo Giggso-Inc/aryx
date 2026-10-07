@@ -27,7 +27,7 @@ def _rule_condition_values(rule: Any) -> list[str] | None:
         return None
     conditions = getattr(rule, "conditions", None)
     if conditions:
-        return [v for _attr_id, v in conditions]
+        return [v for _attr_id, v, _operator in conditions]
     condition_value = getattr(rule, "condition_value", "") or ""
     return [condition_value] if condition_value else []
 
