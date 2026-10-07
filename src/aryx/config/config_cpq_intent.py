@@ -709,8 +709,9 @@ class CpqIntentSettingsMixin(BaseSettings):
         description=(
             "When a model has no rule rows under its own name, offer the data-table model key the catalog's own "
             "mapping script gives for the selected product (for example product APX8000 -> key APX8000/XE) as the "
-            "first model candidate, only when the Attrsequence table has rows under it. Off by default. "
-            "Override with ARYX_CPQ_CATALOG_MODEL_KEY_ENABLED=true."
+            "first model candidate, only when the Attrsequence table has rows under it. Also turns on the "
+            "punctuated-code candidates (a family whose sequence rows sit under codes such as APX8000/XE, found "
+            "through the hierarchy display list). Off by default. Override with ARYX_CPQ_CATALOG_MODEL_KEY_ENABLED=true."
         ),
     )
     cpq_catalog_model_key_ttl_seconds: int = Field(

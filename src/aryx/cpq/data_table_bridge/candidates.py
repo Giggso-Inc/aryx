@@ -164,7 +164,9 @@ def _resolve_cpq_model_candidates(
         )
         if family:
             siblings = dt_resolve_sibling_models(product_name, workspace_id, catalog_prefix, cache)
-            siblings += dt_resolve_punctuated_models(product_name, workspace_id, catalog_prefix, cache)
+            if get_settings().cpq_catalog_model_key_enabled:
+                siblings = tuple(dict.fromkeys(
+                    (*siblings, *dt_resolve_punctuated_models(product_name, workspace_id, catalog_prefix, cache))))
             primary = tuple(m for s in siblings for m in (s, f"{s}_BOM")) + (family, f"{family}_BOM")
             tier = "tier2_model_resolution"
     if primary is None and workspace_id is not None:

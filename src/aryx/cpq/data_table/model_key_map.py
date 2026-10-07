@@ -28,12 +28,16 @@ _FAILURE_TTL_SECONDS = 60.0     # an empty map is retried soon, a real one is ke
 _USED_VAR = re.compile(r"CPQModel\s*=\s*\$(\w+)")
 
 _CACHE: dict[tuple[int, str], tuple[float, dict[str, str]]] = {}   # key -> (expires_at, product -> model key)
-_LOCK = threading.Lock()   # one load at a time; a second request for the same workspace waits for the first
+_LOCKS: dict[tuple[int, str], threading.Lock] = {}   # one load at a time PER workspace; other workspaces never wait
+_LOCKS_GUARD = threading.Lock()                       # protects the two dicts only, never held during a load
+# string literals are matched first so a "//" or "/*" inside one is not taken for a comment
+_TOKENS = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|/\*.*?\*/|//[^\n]*", re.S)
+_ONLY_OR = re.compile(r"[\s()]*(?:(?:\bOR\b|\bor\b|\|\|)[\s()]*)*")
 
 
 def clear_model_key_map_cache() -> None:
     """Forget every loaded map (tests, and a catalog re-ingest)."""
-    with _LOCK:
+    with _LOCKS_GUARD:
         _CACHE.clear()
 
 
@@ -44,8 +48,8 @@ def _product_literal() -> str:
 
 
 def _strip_comments(text: str) -> str:
-    """Drop /* */ and // comments so their text cannot be read as code."""
-    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+    """Drop /* */ and // comments in one pass; text inside a string literal is kept as it is."""
+    return _TOKENS.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else " ", text)
 
 
 def parse_model_key_chain(script: str) -> tuple[str, dict[str, str]]:
@@ -64,7 +68,10 @@ def parse_model_key_chain(script: str) -> tuple[str, dict[str, str]]:
                         + re.escape(var) + r'\s*=\s*"(?P<key>[^"]+)"', re.S)
     mapping: dict[str, str] = {}
     for found in branch.finditer(text):
-        for product in product_test.findall(found.group("cond")):
+        cond = found.group("cond")
+        if not _ONLY_OR.fullmatch(product_test.sub("", cond)):
+            continue    # another test (AND, <>, a second attribute) sits in the condition: not a plain product list
+        for product in product_test.findall(cond):
             mapping.setdefault(product, found.group("key"))
     return var, mapping
 
@@ -100,15 +107,24 @@ def _load_scripts(workspace_id: int, catalog_prefix: str) -> dict[int, str]:
 def model_key_map(workspace_id: int, catalog_prefix: str = "") -> dict[str, str]:
     """Return the workspace's product -> model key map, loaded once and kept for the configured time.
 
-    A failed or empty load degrades to an empty map, kept only briefly so it is retried soon.
+    A failed load, or a load that returned no scripts at all, degrades to an empty map that is retried soon. Scripts
+    that were read but hold no mapping chain give an empty map kept for the full time: that is a real answer.
     """
     cache_key = (workspace_id, catalog_prefix)
-    with _LOCK:
+    with _LOCKS_GUARD:
         hit = _CACHE.get(cache_key)
         if hit is not None and time.monotonic() < hit[0]:
             return hit[1]
+        lock = _LOCKS.setdefault(cache_key, threading.Lock())
+    with lock:
+        with _LOCKS_GUARD:
+            hit = _CACHE.get(cache_key)             # another request may have finished the load while this one waited
+        if hit is not None and time.monotonic() < hit[0]:
+            return hit[1]
+        scripts: dict[int, str] = {}
         try:
-            mapping = build_model_key_map(_load_scripts(workspace_id, catalog_prefix))
+            scripts = _load_scripts(workspace_id, catalog_prefix)
+            mapping = build_model_key_map(scripts)
         except Exception as exc:  # noqa: BLE001 -- the lookup is an extra route; the caller keeps its own candidates
             raven_log("WARN", "P3", "ask.model_key.map_failed catalog model key map not loaded, candidates unchanged",
                       error_code="ARYX_ASK_MODEL_KEY_MAP_FAILED",
@@ -116,8 +132,10 @@ def model_key_map(workspace_id: int, catalog_prefix: str = "") -> dict[str, str]
                                "recovery_selected": "no_mapped_key", "fallback_target": "existing_candidates",
                                "exit_condition": "degraded", "result": "degraded", "workspace_id": workspace_id})
             mapping = {}
-        ttl = float(get_settings().cpq_catalog_model_key_ttl_seconds) if mapping else _FAILURE_TTL_SECONDS
-        _CACHE[cache_key] = (time.monotonic() + ttl, mapping)
+        mapping = {name.strip().upper(): key for name, key in mapping.items()}    # looked up case-insensitively
+        ttl = float(get_settings().cpq_catalog_model_key_ttl_seconds) if scripts else _FAILURE_TTL_SECONDS
+        with _LOCKS_GUARD:
+            _CACHE[cache_key] = (time.monotonic() + ttl, mapping)
         return mapping
 
 
@@ -132,15 +150,16 @@ def mapped_model_key(
     product = (product_name or "").strip()
     if not product or not get_settings().cpq_catalog_model_key_enabled:
         return None
-    by_upper = {name.strip().upper(): key for name, key in model_key_map(workspace_id, catalog_prefix).items()}
-    key = by_upper.get(product.upper())
-    reason = "NO_ENTRY" if key is None else ""
-    if key is not None and key.upper() not in _sequence_model_codes(workspace_id, catalog_prefix, cache):
-        key, reason = None, "KEY_HAS_NO_ROWS"
-    if key is None and would_log("DEBUG"):
-        raven_log("DEBUG", "P4", "ask.model_key.not_used mapped key not offered",
-                  context={"selected_option": "none", "available_options": ["mapped_key", "none"],
-                           "reason_code": reason, "policy_version": _POLICY, "workspace_id": workspace_id})
+    key = model_key_map(workspace_id, catalog_prefix).get(product.upper())
+    if key is None:
+        return None             # most products have no entry: the common case, not logged
+    if key.upper() not in _sequence_model_codes(workspace_id, catalog_prefix, cache):
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.model_key.not_used mapped key has no rule rows, not offered",
+                      context={"selected_option": "none", "available_options": ["mapped_key", "none"],
+                               "reason_code": "KEY_HAS_NO_ROWS", "policy_version": _POLICY,
+                               "workspace_id": workspace_id})
+        return None
     return key
 
 

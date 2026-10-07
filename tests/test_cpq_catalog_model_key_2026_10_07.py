@@ -135,3 +135,144 @@ def test_the_resolved_model_does_not_stay_ahead_of_the_catalog_key(setup, monkey
     assert rmc.resolved_model_first_candidates("WIDGET1", 1, "", None) == ["WIDGET1/X", "WIDGET1"]
     setup.enabled = False
     assert rmc.resolved_model_first_candidates("WIDGET1", 1, "", None) == ["WIDGET1", "WIDGET1/X"]
+
+
+# ---- review follow-ups: parser strictness, comment handling, cache timing, locking, wiring ----
+
+def _chain(count: int, cond: str = "{P}==\"{n}\"") -> str:
+    """A mapping chain with `count` single-product branches, generic names."""
+    branches = "\n".join(
+        f'  {"if" if i == 0 else "elif"} ({cond.format(P=PRODUCT, n=f"ITEM{i}")}) {{ selKey = "KEY{i}"; }}'
+        for i in range(count))
+    return f'if ({PRODUCT}<>"") {{\n{branches}\n}}\nrows = BMQL("SELECT a FROM t WHERE CPQModel=$selKey");'
+
+
+def test_a_condition_with_another_test_is_not_a_plain_product_list():
+    anded = _chain(6, cond='{P}=="{n}" AND region=="EU"')
+    assert mkm.parse_model_key_chain(anded)[1] == {}
+    negated = _chain(6, cond='{P}<>"{n}"')
+    assert mkm.parse_model_key_chain(negated)[1] == {}
+    assert len(mkm.parse_model_key_chain(_chain(6))[1]) == 6
+
+
+def test_the_minimum_number_of_product_tests_is_exact():
+    assert mkm.build_model_key_map({1: _chain(mkm._MIN_PRODUCT_TESTS - 1)}) == {}
+    assert len(mkm.build_model_key_map({1: _chain(mkm._MIN_PRODUCT_TESTS)})) == mkm._MIN_PRODUCT_TESTS
+
+
+def test_slashes_inside_a_string_do_not_hide_the_branches_after_them():
+    script = _chain(6).replace('selKey = "KEY0";', 'selKey = "KEY0"; note = "http://x/y"; ')
+    assert len(mkm.parse_model_key_chain(script)[1]) == 6
+
+
+def test_a_block_comment_opener_inside_a_line_comment_does_not_swallow_code():
+    script = "// see /* later\n" + _chain(6)
+    assert len(mkm.parse_model_key_chain(script)[1]) == 6
+
+
+class _Clock:
+    now = 1000.0
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    _Clock.now = 1000.0
+    monkeypatch.setattr(mkm.time, "monotonic", lambda: _Clock.now)
+    return _Clock
+
+
+def test_a_load_that_returned_no_scripts_is_retried_soon(setup, clock):
+    setup.scripts = {}
+    mkm.model_key_map(1)
+    clock.now += 30
+    mkm.model_key_map(1)
+    assert setup.loads == 1                      # inside the retry window
+    clock.now += 40
+    mkm.model_key_map(1)
+    assert setup.loads == 2                      # past 60 s
+
+
+def test_scripts_without_a_mapping_chain_are_a_real_answer_kept_for_the_full_time(setup, clock):
+    setup.scripts = {1: "x = 1;"}
+    mkm.model_key_map(1)
+    clock.now += 600
+    mkm.model_key_map(1)
+    assert setup.loads == 1
+    clock.now += 400                             # past the 900 s the settings give
+    mkm.model_key_map(1)
+    assert setup.loads == 2
+
+
+def test_a_loaded_map_expires_after_the_configured_time(setup, clock):
+    mkm.model_key_map(1)
+    clock.now += 899
+    mkm.model_key_map(1)
+    assert setup.loads == 1
+    clock.now += 2
+    mkm.model_key_map(1)
+    assert setup.loads == 2
+
+
+def test_a_slow_load_for_one_workspace_does_not_block_another(setup, monkeypatch):
+    import threading
+    started, release = threading.Event(), threading.Event()
+
+    def load(workspace_id, _prefix):
+        if workspace_id == 1:
+            started.set()
+            release.wait(timeout=10)
+        return {101: CHAIN}
+
+    monkeypatch.setattr(mkm, "_load_scripts", load)
+    slow = threading.Thread(target=mkm.model_key_map, args=(1,), daemon=True)
+    slow.start()
+    assert started.wait(timeout=5)
+    result: dict = {}
+    fast = threading.Thread(target=lambda: result.update(mkm.model_key_map(2)), daemon=True)
+    fast.start()
+    fast.join(timeout=5)
+    assert not fast.is_alive() and result                      # workspace 2 finished while workspace 1 was still loading
+    release.set()
+    slow.join(timeout=5)
+
+
+def _candidates_setup(monkeypatch, enabled: bool):
+    from aryx.cpq.data_table_bridge import candidates as cand
+    calls = SimpleNamespace(punctuated=0)
+
+    def punctuated(*_a, **_k):
+        calls.punctuated += 1
+        return ("X8/XE", "SIB")
+
+    monkeypatch.setattr(cand, "get_settings", lambda: SimpleNamespace(
+        cpq_catalog_model_key_enabled=enabled, data_table_candidates_empty_on_no_match_enabled=False,
+        cpq_model_scope_lookups_enabled=False))
+    monkeypatch.setattr(cand, "dt_resolve_product_cpq_models_from_rows", lambda *_a, **_k: ())
+    monkeypatch.setattr(cand, "dt_resolve_product_cpq_model_family", lambda *_a, **_k: "FAM")
+    monkeypatch.setattr(cand, "dt_resolve_sibling_models", lambda *_a, **_k: ("SIB",))
+    monkeypatch.setattr(cand, "dt_resolve_punctuated_models", punctuated)
+    monkeypatch.setattr(cand, "dt_front_mapped_key", lambda codes, *_a, **_k: codes)
+    monkeypatch.setattr(cand, "_log_candidates", lambda *_a, **_k: None)
+    return cand, calls
+
+
+def test_punctuated_codes_are_not_added_while_the_setting_is_off(monkeypatch):
+    cand, calls = _candidates_setup(monkeypatch, enabled=False)
+    assert cand._resolve_cpq_model_candidates("P", 1, "", None) == ("SIB", "SIB_BOM", "FAM", "FAM_BOM")
+    assert calls.punctuated == 0
+
+
+def test_punctuated_codes_are_added_once_each_while_the_setting_is_on(monkeypatch):
+    cand, calls = _candidates_setup(monkeypatch, enabled=True)
+    assert cand._resolve_cpq_model_candidates("P", 1, "", None) == (
+        "SIB", "SIB_BOM", "X8/XE", "X8/XE_BOM", "FAM", "FAM_BOM")        # SIB appears once although both lists have it
+    assert calls.punctuated == 1
+
+
+def test_the_candidate_resolver_puts_the_catalog_key_first_for_a_model_with_no_rows(setup, monkeypatch):
+    cand, _calls = _candidates_setup(monkeypatch, enabled=True)
+    monkeypatch.setattr(cand, "dt_front_mapped_key", mkm.front_mapped_key)          # the real one this time
+    monkeypatch.setattr(cand, "dt_resolve_product_cpq_models_from_rows", lambda *_a, **_k: ("WIDGET1",))
+    assert cand._resolve_cpq_model_candidates("WIDGET1", 1, "", None) == ("WIDGET1/X", "WIDGET1")
+    setup.enabled = False
+    assert cand._resolve_cpq_model_candidates("WIDGET1", 1, "", None) == ("WIDGET1",)
