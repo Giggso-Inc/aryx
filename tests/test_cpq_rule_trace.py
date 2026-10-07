@@ -143,6 +143,58 @@ class TestRecordFire:
         retried_batch = _reset_module_state.append_entries_batch.call_args[0][0]
         assert len(retried_batch) == 1 and retried_batch[0][4] == "H1"
 
+    def test_sustained_failure_does_not_retry_on_every_later_fire(
+        self, tmp_path, monkeypatch, _reset_module_state,
+    ):
+        """PR #458 review (new Medium finding): a failed flush re-queues
+        the batch, which previously left `pending` at/above the batch-size
+        threshold forever, so EVERY later record_fire re-triggered another
+        (growing) flush attempt against an already-known-bad store --
+        reviewer measured 300 fires producing 201 flush attempts. With
+        flush_suspended, only the one attempt that crossed the threshold
+        fires; later record_fire calls just keep buffering."""
+        settings = MagicMock()
+        settings.cpq_rule_trace_dir = str(tmp_path)
+        settings.cpq_rule_trace_flush_batch_size = 10
+        monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
+        set_run_id("run-4d")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        for i in range(30):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        _reset_module_state.append_entries_batch.assert_called_once()
+        trace = rule_trace._open_sessions["run-4d"]
+        assert trace.flush_suspended is True
+        assert len(trace.pending) == 30  # nothing dropped -- still all buffered
+
+    def test_flush_suspension_clears_on_a_later_successful_flush(
+        self, tmp_path, monkeypatch, _reset_module_state,
+    ):
+        settings = MagicMock()
+        settings.cpq_rule_trace_dir = str(tmp_path)
+        settings.cpq_rule_trace_flush_batch_size = 10
+        monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
+        set_run_id("run-4e")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        for i in range(10):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        trace = rule_trace._open_sessions["run-4e"]
+        assert trace.flush_suspended is True
+
+        _reset_module_state.append_entries_batch.side_effect = None
+        rule_trace.flush_pending()  # an explicit flush point -- ignores the suspension
+        assert trace.flush_suspended is False
+        assert trace.pending == []
+
+        # auto-flush works again on the next threshold crossing (3rd call
+        # overall: the failed auto-flush, the explicit flush_pending()
+        # above, then this new auto-flush)
+        for i in range(10, 20):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        assert _reset_module_state.append_entries_batch.call_count == 3
+        assert trace.pending == []
+
 
 class TestSealing:
     def test_new_session_after_seal_opens_new_file(self, tmp_path):

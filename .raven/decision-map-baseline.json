@@ -11223,12 +11223,12 @@
     ],
     [
       "src/aryx/cpq/catalog_hints.py",
-      17,
+      18,
       "extract_catalog_hints"
     ],
     [
       "src/aryx/cpq/catalog_hints.py",
-      156,
+      160,
       "extract_catalog_hints"
     ],
     [
@@ -11293,32 +11293,32 @@
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      293,
+      298,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      393,
+      398,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      396,
+      401,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      447,
+      452,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      459,
+      464,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      530,
+      535,
       "_load_attr_var_mapping_rows"
     ],
     [
@@ -12958,12 +12958,12 @@
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      22,
+      24,
       "apply_hiding_rules"
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      202,
+      214,
       "apply_hiding_rules"
     ],
     [
@@ -12988,13 +12988,13 @@
     ],
     [
       "src/aryx/cpq/hiding_rules/master_string.py",
-      150,
+      177,
       "<if>"
     ],
     [
       "src/aryx/cpq/hiding_rules/master_string.py",
-      161,
-      "hide_with_master_string"
+      194,
+      "_hide_with_master_string"
     ],
     [
       "src/aryx/cpq/hiding_rules/type11.py",
@@ -13868,43 +13868,53 @@
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      269,
+      292,
       "flush_pending"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      286,
+      309,
       "seal"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      25,
+      26,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      163,
+      171,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_autofill.py",
-      15,
+      16,
       "run_autofill_step"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_early.py",
-      23,
+      24,
       "run_early_pass"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_late.py",
-      29,
+      30,
       "run_late_pass"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_late.py",
-      176,
+      182,
       "run_late_pass"
+    ],
+    [
+      "src/aryx/cpq/rules_loop/rules_loop_timing.py",
+      24,
+      "stage_done"
+    ],
+    [
+      "src/aryx/cpq/rules_loop/rules_loop_timing.py",
+      28,
+      "stage_done"
     ],
     [
       "src/aryx/cpq/session_guard/session_guard_snapshot.py",

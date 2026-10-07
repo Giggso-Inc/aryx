@@ -53,6 +53,21 @@ class _OpenTrace:
     # rules, so this was ~650s of a ~2000s turn spent entirely on
     # per-fire connection pings and round trips).
     pending: list[tuple] = field(default_factory=list)
+    # Set when a flush fails and the batch is re-queued (see rule_trace.
+    # py's _flush_trace). Suppresses record_fire's size-triggered
+    # auto-flush while True -- PR #458 review (new Medium finding): without
+    # this, a failed flush left `pending` at/above the batch-size
+    # threshold, so EVERY later record_fire re-triggered another flush of
+    # the whole (growing) buffer -- 300 fires against an always-failing
+    # store produced 201 flush attempts, each one a real connection
+    # acquire + timeout wait, worse than the original one-INSERT-per-fire
+    # behaviour during an outage. Explicit flush points (evaluate_rules_
+    # loop's end, ask_api._run_cpq_turn's finally, seal()) still attempt a
+    # flush regardless of this flag -- it only gates the automatic,
+    # size-triggered one inside record_fire -- and a successful flush
+    # clears it again, so recovery after the DB comes back needs no
+    # separate signal.
+    flush_suspended: bool = False
 
 
 def bind_context(workspace_id: int, catalog_prefix: str) -> None:

@@ -232,7 +232,13 @@ def record_fire(
         trace.pending.append(
             (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
         )
-        should_flush = len(trace.pending) >= _flush_batch_size()
+        # flush_suspended (set by a prior failed flush) blocks this
+        # size-triggered auto-flush only -- see _OpenTrace.flush_suspended's
+        # docstring for why (PR #458 review, new Medium finding). Explicit
+        # flush points (flush_pending/seal) are unaffected.
+        should_flush = (
+            not trace.flush_suspended and len(trace.pending) >= _flush_batch_size()
+        )
     if should_flush:
         _flush_trace(trace)
     logger.info("cpq: rule trace fired seq=%d rule_id=%s type=%s", seq_no, rule_id, rule_type)
@@ -252,6 +258,19 @@ def _flush_trace(trace: "_OpenTrace") -> None:
     too. Still bounded: a run_id whose breaker is open (see
     RuleTraceStore.append_entries_batch) is silently skipped, not
     retried forever -- same accepted trade-off as before this PR.
+
+    A failure also sets trace.flush_suspended, which stops record_fire's
+    own size-triggered auto-flush from immediately retrying the re-queued
+    (now even larger) batch on every subsequent fire -- PR #458 review
+    (new Medium finding): without this, a sustained outage turned every
+    later fire into another full connection-acquire-and-timeout attempt,
+    worse than the original one-INSERT-per-fire behaviour. Retries instead
+    happen only at the next explicit flush point (flush_pending()'s
+    callers: evaluate_rules_loop's end, ask_api._run_cpq_turn's finally,
+    seal()) -- which still runs unconditionally, ignoring this flag, since
+    those are exactly the points this guarantee already relies on. A
+    successful flush clears the flag, so recovery once the DB comes back
+    needs no separate signal.
     """
     with _lock:
         batch, trace.pending = trace.pending, []
@@ -264,6 +283,10 @@ def _flush_trace(trace: "_OpenTrace") -> None:
         _durable_failed("append_entries_batch", exc, trace.run_id)
         with _lock:
             trace.pending = batch + trace.pending
+            trace.flush_suspended = True
+    else:
+        with _lock:
+            trace.flush_suspended = False
 
 
 def flush_pending(run_id: str | None = None) -> None:
