@@ -20,7 +20,7 @@ from aryx.cpq.bml.bml_hide_idioms import (
 )
 from aryx.cpq.bml.bml_tier1 import evaluate_hide_tier1
 from aryx.cpq.hiding_rules.master_writers import (
-    WriterQuery, clean_script, parse_writer_query, read_master,
+    WriterQuery, clean_script, hide_index_alias_enabled, parse_writer_query, read_master,
 )
 
 
@@ -182,10 +182,11 @@ def _hide_with_master_string(
     if master is None:
         return None
     variables[master_var] = master
-    res, blocked = evaluate_hide_master_list(rule.script, variables)
+    alias = hide_index_alias_enabled()
+    res, blocked = evaluate_hide_master_list(rule.script, variables, alias_unassigned_index=alias)
     if res is None and not blocked:
         res, blocked = evaluate_hide_master_list_unguarded(
-            rule.script, variables, trust_empty_master=True)
+            rule.script, variables, trust_empty_master=True, alias_unassigned_index=alias)
     if blocked or res is None:
         why.append("MASTER_SCRIPT_EVALUATION_BLOCKED")
     return None if blocked else res

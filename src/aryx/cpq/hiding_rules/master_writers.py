@@ -44,6 +44,12 @@ def master_hide_enabled() -> bool:
     return bool(get_settings().cpq_master_string_hide_enabled)
 
 
+def hide_index_alias_enabled() -> bool:
+    """True when hide scripts that test an index variable they never assigned are evaluated as if it were the
+    findinarray result (flag cpq_hide_index_alias_enabled)."""
+    return bool(get_settings().cpq_hide_index_alias_enabled)
+
+
 def clean_script(script: str) -> str:
     """Script text with // and block comments removed."""
     return _strip_block_comments(_strip_line_comments(script))
