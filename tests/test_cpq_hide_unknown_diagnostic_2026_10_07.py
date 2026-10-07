@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aryx.cpq.bml.bml import BmlEvaluator
-from aryx.cpq.hiding_rules import unknown_log
+from aryx.cpq.hiding_rules import master_string, unknown_log
 from aryx.cpq.hiding_rules.apply import apply_hiding_rules
 from aryx.cpq.state import ConfigAttr, HidingRule, RecommendationRule
 
@@ -203,17 +203,35 @@ def test_a_writer_query_that_does_not_parse_is_named():
     assert reasons == ["WRITER_QUERY_NOT_PARSED", "MASTER_STRING_UNRESOLVED"] and hidden == set()
 
 
-def test_an_undecidable_writer_condition_is_logged_with_its_own_condition():
+def _unknown_writer_context(writers=1, debug=True):
     rule = _rule()
-    rule.master_writers[0].conditions = [(2, "x", "9")]            # an operator the declarative evaluator cannot decide
+    rule.master_writers[0].conditions = [(2, "x", "9")]
+    rule.master_writers[0].condition_script = "return a;"
+    rule.master_writers = rule.master_writers * writers
     seen = []
     settings = MagicMock()
     settings.return_value.cpq_master_string_hide_enabled = True
-    with patch("aryx.cpq.hiding_rules.master_writers.get_settings", settings), \
-            patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], SEQ_ROWS, [], [], [])), \
-            patch.object(unknown_log, "would_log", return_value=True), \
-            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: seen.append(k["context"])), \
-            patch("aryx.cpq.hiding_rules.master_string.writer_fires", return_value=None):
+    with patch("aryx.cpq.hiding_rules.master_writers.get_settings", settings),             patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], SEQ_ROWS, [], [], [])),             patch.object(unknown_log, "would_log", return_value=debug),             patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: seen.append(k["context"])),             patch("aryx.cpq.hiding_rules.master_string.writer_fires", return_value=None),             patch("aryx.cpq.hiding_rules.master_string.writer_condition_detail",
+                  wraps=master_string.writer_condition_detail) as built:
         apply_hiding_rules(_attrs(), dict(BASE), [rule], bml_eval=BmlEvaluator({}, use_llm=False), workspace_id=1)
+    return seen, built
+
+
+def test_an_undecidable_writer_condition_is_logged_with_names_and_current_values():
+    seen, _ = _unknown_writer_context()
     step = [c for c in seen if c["reason_code"] == "WRITER_CONDITION_UNKNOWN"][0]
-    assert step["writers"][0]["writer"] == "w" and step["writers"][0]["conditions"] == [[2, "x", "9"]]
+    w = step["writers"][0]
+    assert w["writer"] == "w" and w["fires"] is None and w["condition_script"] == "return a;"
+    assert w["conditions"] == [[2, "countryVar", "x", "9", ""]]          # id, name, expected, operator, current ("" = blank)
+    assert w["single"][:2] == [2, "countryVar"] and step["writer_count"] == 1
+
+
+def test_the_writers_list_is_capped_with_a_count():
+    seen, _ = _unknown_writer_context(writers=8)
+    step = [c for c in seen if c["reason_code"] == "WRITER_CONDITION_UNKNOWN"][0]
+    assert len(step["writers"]) == 5 and step["writer_count"] == 8
+
+
+def test_with_debug_off_the_writer_detail_is_never_built():
+    seen, built = _unknown_writer_context(debug=False)
+    assert seen == [] and built.call_count == 0

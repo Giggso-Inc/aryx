@@ -76,6 +76,6 @@ def log_master_unresolved(rule, reason: str, detail: dict | None = None) -> None
         raven_log("DEBUG", "P4", "ask.rules_loop.master_unresolved master string could not be computed", context={
             "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
             "reason_code": reason, "rule_name": rule.rule_name,
-            "master_writer_count": len(getattr(rule, "master_writers", None) or []), **(detail or {})})
+            "master_writer_count": len(getattr(rule, "master_writers", None) or []), **((detail or {}).get("build", dict)())})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
         return
