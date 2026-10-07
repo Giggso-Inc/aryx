@@ -52,3 +52,61 @@ def test_with_the_guard_flag_off_neither_call_receives_it():
 def test_with_no_wording_nothing_is_passed_even_with_the_flag_on():
     seen = _run(True, wording="")
     assert "product_anchor_hint" not in seen["loop"] and "product_anchor_hint" not in seen["fill"]
+
+
+def test_the_bounded_post_loop_path_carries_both_the_cache_and_the_wording():
+    s = get_settings()
+    s.cpq_post_loop_timeout_enabled = True
+    s.cpq_post_loop_timeout_s = 5.0
+    seen = _run(True)
+    assert isinstance(seen["loop"]["_dt_cache"], dict) and seen["loop"]["product_anchor_hint"] == WORDING
+    assert seen["fill"]["_dt_cache"] is seen["loop"]["_dt_cache"] and seen["fill"]["product_anchor_hint"] == WORDING
+
+
+# --- the shared helper, and every session-bearing caller of the loop / auto_fill uses it ---------------------------
+import ast
+import pathlib
+from types import SimpleNamespace
+
+from aryx.cpq.guard_anchor_hint import guard_anchor_hint_kwargs
+
+ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "aryx" / "api"
+SESSION_CALLERS = [
+    *(f"ask_attr_recompute/ask_{n}_recompute.py" for n in (
+        "attr_activation", "attr_clear", "bulk_quantity", "cascade_multi", "cascade", "multi_select_removal")),
+    "ask_country_change_revalidate.py",
+    "ask_turn_steps/ask_step10_recompute_pending.py",
+]
+
+
+@pytest.mark.parametrize("wording,flag,expected", [
+    (WORDING, True, {"product_anchor_hint": WORDING}),
+    (WORDING, False, {}),
+    ("", True, {}),
+    (None, True, {}),
+])
+def test_the_helper_returns_the_wording_only_with_the_flag_on_and_wording_present(wording, flag, expected):
+    get_settings().cpq_not_applicable_guard_enabled = flag
+    assert guard_anchor_hint_kwargs(SimpleNamespace(product_anchor_question=wording)) == expected
+
+
+def test_a_session_without_the_attribute_gets_no_kwargs():
+    get_settings().cpq_not_applicable_guard_enabled = True
+    assert guard_anchor_hint_kwargs(SimpleNamespace()) == {}
+
+
+@pytest.mark.parametrize("rel", SESSION_CALLERS)
+def test_every_loop_and_auto_fill_call_with_a_session_passes_the_wording(rel):
+    """Pins the rollout: a future call added here without the helper reintroduces the silent no-op."""
+    tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr in ("evaluate_rules_loop", "auto_fill")
+             and isinstance(n.func.value, ast.Name) and n.func.value.id == "_cpq_engine"]
+    assert calls, rel
+
+    def passes_wording(call):
+        text = ast.dump(call)
+        return "guard_anchor_hint_kwargs" in text or any(k.arg == "product_anchor_hint" for k in call.keywords) \
+            or "_loop_kwargs" in text
+
+    assert all(passes_wording(c) for c in calls), rel
