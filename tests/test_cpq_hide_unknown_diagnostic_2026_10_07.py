@@ -167,7 +167,8 @@ def _step_reasons(rule, filled, rows=SEQ_ROWS, attrs=None):
     with patch("aryx.cpq.hiding_rules.master_writers.get_settings", settings), \
             patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], rows, [], [], [])), \
             patch.object(unknown_log, "would_log", return_value=True), \
-            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])):
+            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])
+                          if not k["context"]["reason_code"].startswith("DECIDED_") else None):
         result = apply_hiding_rules(attrs or _attrs(), filled, [rule], bml_eval=BmlEvaluator({}, use_llm=False),
                                     workspace_id=1)[2]
     return out, result

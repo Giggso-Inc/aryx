@@ -22,6 +22,7 @@ import logging
 import time
 from typing import Any
 
+from aryx.api.ask_turn_steps.grid_diff_log import log_grid_diff, names_before
 from aryx.api.ask_turn_steps.post_loop_executor import (
     run_post_loop_bounded,
     warn_if_timeouts_inverted,
@@ -120,9 +121,11 @@ def _step10_recompute_pending(
                 v_attrs, hiding_rules, rec_rules, con_rules)
         ]
     _pending_after_noise = len(p or [])
+    _grid_before = names_before(p)
     p = _cpq_engine.append_pending_grid_quantities(
         p, v_attrs, f, session.filled_multi, session.filled_source, c_opts,
         **grid_narrow_kwargs(req.workspace_id, catalog_prefix))
+    log_grid_diff(_grid_before, p)
     raven_log("DEBUG", "P4", "ask.recompute.pending rules loop and auto-fill pass done", context={
         "selected_option": "bounded_post_loop" if _bounded else "inline_post_loop",
         "available_options": ["bounded_post_loop", "inline_post_loop"],

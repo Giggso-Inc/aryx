@@ -17,7 +17,7 @@ from aryx.cpq.engine import _condition_value_matches, logger
 from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.hiding_rules.master_string import hide_with_master_string
 from aryx.cpq.hiding_rules.master_writers import master_hide_enabled
-from aryx.cpq.hiding_rules.unknown_log import log_unknown_script_hide
+from aryx.cpq.hiding_rules.unknown_log import log_decided_master_hide, log_unknown_script_hide
 from aryx.cpq.state import ConfigAttr, HidingRule
 
 
@@ -149,8 +149,11 @@ def apply_hiding_rules(
                 hide = hide_with_master_string(
                     rule, attrs, by_rule_id, filled, filled_by_rule_id,
                     workspace_id, catalog_prefix, dt_cache)
+            via_master = hide is not None
             if hide is None:
                 hide = bml_eval.hide_for_script(rule.script, filled)
+            if master_tried and hide is not None:
+                log_decided_master_hide(rule, target.variable_name, hide, via_master)
             _script_s += time.monotonic() - _rule_t0
             _outcomes["unknown" if hide is None else "hide" if hide else "show"] += 1
             if hide is None:
