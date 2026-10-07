@@ -100,6 +100,8 @@ def process_script_backed_actions(
                 target_attr_id=aid,
                 script=script,
                 condition_script=_rec_condition_script,
+                conditions=(copy_conditions(inp_list)
+                            if inp_list and get_settings().cpq_script_rec_rule_conditions_enabled else None),
             ))
             state.script_recommendations_wired += 1
             logger.info(
