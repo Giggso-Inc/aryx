@@ -58,7 +58,11 @@ def _is_hierarchy_shaped(keys: set[str]) -> bool:
     # A blank cell is stored as NULL and left out of the row (rdb_workspace_tables), so a model's own row
     # ("APX900", display "APX 900", no Product) has no Product key. It is still a hierarchy row: it carries the
     # model name and its display (live: ws 1267 -- classifying it as unrecognised hid the plain model from tier 2).
-    return "cpqModelName" in keys and ("Product" in keys or any(str(k).lower() == "displaycpqmodel" for k in keys))
+    if "cpqModelName" not in keys:
+        return False                                     # the common case, decided by one lookup
+    if "Product" in keys or "displayCPQModel" in keys:
+        return True
+    return any(str(k).lower() == "displaycpqmodel" for k in keys)    # only for odd header casing
 
 
 def _is_attr_var_mapping_shaped(keys: set[str]) -> bool:

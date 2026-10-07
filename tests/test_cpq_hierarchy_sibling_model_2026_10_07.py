@@ -229,3 +229,22 @@ def test_a_hierarchy_row_without_a_product_key_survives_the_loader_and_gives_the
 def test_hierarchy_shape_detection(keys, expected):
     from aryx.cpq.data_table.data_table_shapes import _is_hierarchy_shaped
     assert _is_hierarchy_shaped(keys) is expected
+
+
+# --- an empty product name must never match a blank-Product row (review: HIGH) -----------------------------------
+@pytest.mark.parametrize("empty", ["", "   ", None])
+def test_an_empty_product_name_resolves_nothing(tables, empty):
+    tables(["APX900"])
+    assert dtp.resolve_product_cpq_model_family(empty, 1267) is None
+    assert dtp.resolve_sibling_models_with_sequence_rows(empty, 1267) == ()
+
+
+def test_an_empty_product_gets_the_static_fallback_not_an_arbitrary_model(tables, monkeypatch):
+    tables(["APX900"])
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+    assert _cpq_model_candidates("", 1267) == ("APXNEXT", "APXNEXT_BOM")
+
+
+def test_a_real_product_still_resolves_next_to_blank_product_rows(tables):
+    tables(["APX900"])
+    assert dtp.resolve_product_cpq_model_family("apx900flashport", 1267) == "APXFLASHPORTSERIES"
