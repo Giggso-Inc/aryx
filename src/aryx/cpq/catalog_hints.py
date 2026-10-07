@@ -17,6 +17,7 @@ from aryx.cpq.catalog_hints_tie import single_entry
 
 def extract_catalog_hints(
     engine: Any, question: str, attrs: list["Any"],
+    discriminators: dict[str, frozenset[str]] | None = None,
 ) -> tuple[dict[str, str], set[str]]:
     """Extract hints by matching real menu-option text against the question.
 
@@ -136,7 +137,7 @@ def extract_catalog_hints(
             continue
         # 2+ owning attrs: never guess, unless one is the product selector
         # (see product_selector_entries); [] means skip this phrase.
-        entries = product_selector_entries(candidates[phrase])
+        entries = product_selector_entries(candidates[phrase], discriminators)
         if not entries:
             continue
         # Same attr, but 2+ genuinely different real values can share this

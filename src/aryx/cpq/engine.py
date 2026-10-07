@@ -738,6 +738,7 @@ class FillScope:
     is_pointer_default: "Any"
     satisfied_recommendation: "Any"
     dt_never_governed_anywhere: "Any"
+    base_model_narrowing: "Any" = None      # base_model_narrowing.BaseModelNarrowing, flag-gated; None = off
 
 
 # Deferred: auto_fill_setup imports FillContext/FillScope BACK from this
@@ -763,8 +764,9 @@ class CpqEngine:
 
     def extract_catalog_hints(
         self, question: str, attrs: list["ConfigAttr"],
+        discriminators: dict[str, frozenset[str]] | None = None,
     ) -> tuple[dict[str, str], set[str]]:
-        return catalog_hints.extract_catalog_hints(self, question, attrs)
+        return catalog_hints.extract_catalog_hints(self, question, attrs, discriminators)
 
 
     def _build_flag_keyword_index(

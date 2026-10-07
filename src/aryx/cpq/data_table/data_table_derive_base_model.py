@@ -34,6 +34,28 @@ def _base_models(model_rows: list[dict[str, Any]]) -> set[str]:
     }
 
 
+def model_rows_and_base_models(
+    cpq_model: str, workspace_id: int, catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """The constraint rows of `cpq_model` and its real base models (blank and "ALL" excluded)."""
+    norm_model = (cpq_model or "").strip().upper()
+    if not norm_model:
+        return [], set()
+    rows = _model_rows(norm_model, workspace_id, catalog_prefix, cache)
+    return rows, _base_models(rows)
+
+
+def row_attr_values(row: dict[str, Any]) -> list[tuple[str, str]]:
+    """(attribute, UPPER-CASE value) for every attr/val slot of a constraint row that has both."""
+    out: list[tuple[str, str]] = []
+    for n in (1, *CONDITION_COLUMN_SLOTS):
+        attr = str(row.get(f"attr{n}") or "").strip()
+        value = str(row.get(f"val{n}") or "").strip().upper()
+        if attr and value:
+            out.append((attr, value))
+    return out
+
+
 def model_base_models(
     cpq_model: str, workspace_id: int, catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
 ) -> set[str]:

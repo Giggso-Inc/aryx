@@ -1,0 +1,176 @@
+# Base model narrowing, both directions — implementation
+
+Date: 2026-10-08. Workspace 1267 (Astro25), catalog prefix `Astro25Configdata`.
+Flag: `cpq_base_model_narrowing_enabled` (`ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED`), **off by default**.
+Needs `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true` for the derivation step that already exists.
+
+## 1. The problem
+
+"I want a quote for APX 900 for US" is the main flow. The real CPQ screen asks Frequency Band and Keypad Type and never
+shows a base model. Ask asked "Since we locked in United States, please choose the Base Model" with **660 options**
+(`HK2072A`, `M36KSS9PW1AN`, …), and a message that did contain "700/800 MHz, Limited Keypad" still ended in the same
+question.
+
+## 2. What the logs and data showed (not assumed)
+
+| Finding | Evidence |
+|---|---|
+| The model and its base models are found | `ask.base_model.not_derived`: `product_filled: true`, candidates `["APX900", …]`, `base_models_per_candidate: {"APX900": 10}` |
+| Only the country narrowed anything | `known_attr_match`: one entry, `ultimateDestinationCountry`, `remaining_before: 10 → remaining_after: 8` |
+| The 10 base models are exactly 5 frequency bands × 2 keypad types | `WS1267_WHITELIST`, APX 900: `modelSelectionFrequencyBands_astro` (10 base models, 5 values), `modelSelectionKeypadType_astro` (10 base models, 2 values) |
+| Typed answers were not recognised | `ask.preamble.hints`: `hint_names: ["country"]` only |
+| The two attributes were then **guessed** | `ask.fill.attribute decided`: `source` = `default_first_available` / `blind_pick_rule_governed` (stage trail: `tier1_hint_match: no_op`, `tier4_options: value_chosen`). The derivation ignores guessed values on purpose |
+| Why the typed phrases were dropped | `extract_catalog_hints` never guesses when an option's text belongs to 2+ attributes. "Limited Keypad" is an option of `modelSelectionKeypadType_astro` and `modelSelectionDisplayType_astro`; "700/800 MHz" of the frequency band and several antenna and radio-option attributes |
+| `BaseModelToConfig.csv` does not help narrow | `attr1`/`val1` are empty for APX 900, N30, 4500, 8500, 1500; 195 of 826 models have a single base model, and only 4 split by product name |
+
+Root causes, in order of effect:
+
+1. **The customer's frequency band and keypad never count as answers** (never-guess rule on a multi-owner phrase).
+2. **The discriminating attributes are guessed, not asked** (`tier4_options` blind pick).
+3. **The base model is a decision attribute asked immediately** while nothing separates its base models yet.
+
+## 3. The mapping works both ways
+
+A base model such as `H92UDH9PW7AN` and its (frequency band, keypad) pair identify each other. Reverse
+(attributes → base model) is what a customer can answer. Forward (base model → attributes) is useful when a base model
+is given. Both are implemented.
+
+## 4. Design
+
+Everything is read from the model's own whitelist rows; no model or attribute name is in the code.
+
+### 4.1 Which attributes separate a model's base models (`base_model_narrowing.single_valued_discriminators`)
+
+An attribute separates the base models of a model when:
+- **every** base model (blank and `ALL` excluded) has rows for it,
+- each base model holds **exactly one** value for it, and
+- at least **two different** values exist.
+
+For APX 900 that gives the frequency band and the keypad type. Left out on purpose: the country (several values per
+base model), housing (only some base models), and `productSelectionProduct_all` (the same value everywhere).
+
+### 4.2 Per fill pass (`build_base_model_narrowing`, called from `auto_fill_setup` only when the flag is on)
+
+The first candidate model with two or more base models is used (candidates come from the existing
+`resolved_model_first_candidates`). The result, `BaseModelNarrowing`, is attached to `FillScope.base_model_narrowing`:
+
+| Field | Meaning |
+|---|---|
+| `ask_first` | visible, unanswered separating attributes with options, excluding the country and region keys (they have their own path). A guessed value counts as unanswered |
+| `forward` | when the customer already has a base model, `{attribute: value}` read off that base model for the unanswered separating attributes |
+| `base_model_codes` | the model's base model codes, to tell a base model attribute from a part-number one |
+
+It is `None` when there is no product, the model has fewer than two base models, or nothing separates them.
+
+### 4.3 The four behaviours
+
+| # | Where | What |
+|---|---|---|
+| 1 | `governance_flags` | an attribute in `ask_first` becomes a **decision attribute**: asked, never guessed (the engine's existing "always ask" state) |
+| 2 | `region_and_base_model` (`_defer_base_model_question`) | after the existing derivation returns nothing, a base model attribute **waits** (`state.done`, not pending) while `ask_first` is non-empty. When the customer has answered, the existing `derive_base_model_from_known_attrs` fills it |
+| 3 | same stage | a **part-number** base model attribute (its options are not base model codes, e.g. `modelSelectionBaseModelMsl_astro`) that the layout hides (`display_order` loaded and the attribute absent) is not asked |
+| 4 | new stage `tier0_forward_fill` | a known base model fills its unanswered separating attributes (source `derived_from_base_model`) |
+
+### 4.4 Typed answers (`catalog_hints_product.product_selector_entries`)
+
+When a typed phrase is owned by several attributes and none is the product selector, the owner whose value for that
+phrase is one of the model's discriminator values is preferred — **only if exactly one owner qualifies**; otherwise it
+stays never-guess. The discriminator values come from `discriminator_values(...)`, computed in
+`ask_step2_catalog_hints._model_discriminators` only when the flag is on. With the flag off, or no discriminators, the
+call to `extract_catalog_hints` is the same two-argument call as before.
+
+## 5. The flows
+
+```
+A. bare "I want a quote for APX 900 for US"
+   country known (10 -> 8 base models) -> ask Frequency Band -> ask Keypad Type
+   -> existing derivation fills the base model -> the base model question never appears
+
+B. "…for US, 700/800 MHz, Limited Keypad"
+   hints recognised for the one owner the rows use -> real (non-guess) sources
+   -> derivation fills the base model -> no questions about them
+
+C. the customer gives a base model
+   forward fill sets Frequency Band and Keypad Type (only if unanswered)
+
+D. a model with exactly one base model (195 of 826): unchanged, derived immediately
+```
+
+## 6. Files
+
+| File | Change |
+|---|---|
+| `cpq/base_model_narrowing.py` (new) | discriminators, `BaseModelNarrowing`, `build_base_model_narrowing`, `discriminator_values` |
+| `cpq/auto_fill_stages/tier0_forward_fill.py` (new) | forward fill stage, placed after `tier0_hidden` |
+| `cpq/auto_fill_stages/governance_flags.py` | decision-attribute rule |
+| `cpq/auto_fill_stages/region_and_base_model.py` | defer / skip part-number attribute |
+| `cpq/auto_fill_stages/coordinator.py` | registers the new stage |
+| `cpq/auto_fill/auto_fill_setup.py`, `cpq/engine.py` (`FillScope`) | builds and carries the narrowing (new field has a default) |
+| `cpq/catalog_hints.py`, `cpq/catalog_hints_product.py`, `cpq/engine.py` | optional `discriminators` argument |
+| `api/ask_turn_steps/ask_step2_catalog_hints.py` | computes the discriminators (flag-gated, failure-safe) |
+| `cpq/data_table/data_table_derive_base_model.py` | `model_rows_and_base_models`, `row_attr_values` |
+| `config/config_cpq_intent.py` | the flag |
+
+The derivation (`derive_base_model_from_known_attrs`) and the whitelist data are unchanged.
+
+## 7. Safety
+
+- **Flag off:** `scope.base_model_narrowing` is `None`, the hint call is the same two-argument call, and no stage changes
+  an outcome (pinned by tests, including an end-to-end flag-off case that still asks the base model).
+- **One-sided:** it only changes order and fills from the model's own rows; it never overrides an answered attribute
+  (user or hint source). A guessed value is never treated as an answer, and on a fresh turn the separating attributes
+  are asked instead of guessed. (A value guessed by an earlier turn, before the flag was on, is not cleared by this
+  change.)
+- **Fallback:** if the answers still leave two or more base models, the existing always-ask base model question
+  applies. Nothing is guessed.
+- **No customer text** is added to any log.
+
+## 8. Known limits (not fixed here)
+
+- `modelSelectionBaseModelMsl_astro` (part numbers such as `T7766A`) is not derivable from the whitelist: its options
+  are a different identifier space. It is only skipped when the layout hides it.
+- The derivation depends on the order of the known attributes; two contradictory separating attributes give an
+  order-dependent result (`explain_known_attrs` in the diagnostics shows it). Separate ticket.
+- A separating attribute that is **hidden** (APX 900's `modelSelectionRegion_astro`) is not asked and cannot count as
+  evidence unless something fills it.
+- A multi-owner phrase whose owners are *both* used by the model's rows stays never-guess.
+- The layout variant (portable vs mobile) used for the "layout hides it" check depends on the layout being uploaded
+  per variant under one prefix; with only the portable layout loaded, a mobile model's `display_order` is the
+  portable one. See `docs/oci-oracle/LAYOUT_UPLOAD_AND_MAPPING_ASTRO25_2026-10-06.md`.
+
+## 9. Tests
+
+`tests/test_cpq_base_model_narrowing_2026_10_08.py` (33), built from the real shapes: the 10 APX 900 base models
+(5 bands × 2 keypads), the multi-owner phrases "700/800 MHz" and "Limited Keypad", and the real `auto_fill` pipeline with
+only the RDB faked.
+
+| Area | Cases |
+|---|---|
+| Discriminators | only separating attributes found; 5 × 2 identifies all 10 |
+| Build | bare quote; hidden / optionless attributes; answered; guess is not an answer; nothing to narrow |
+| Forward | known base model fills; never overrides; a guessed base model is not known |
+| Stages | decision attribute; defer and resume; part-number attribute (layout hides / places / no layout); flag off |
+| Hints | dropped today; hinted with the discriminators; exactly-one-owner rule; single owner and product selector unchanged; flag-gated and failure-safe |
+| End to end | bare quote asks both and not the base model; flag off asks as before; answers derive the base model; typed hints derive it; a given base model fills the two; one answer leaves the other |
+
+## 10. Rollout and verification on dev
+
+1. Deploy with the flag off (no change).
+2. Set `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED=true` and `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true`; recreate the container
+   and confirm with `docker inspect aryx-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E "NARROWING|DERIVE_BASE"`.
+3. New chat **"I want a quote for APX 900 for US"**. Expect: Frequency Band, then Keypad Type, then no base model
+   question. Check:
+   ```bash
+   docker logs aryx-api-1 --since 10m 2>&1 | grep -E "ask.base_model.(derived|not_derived)|BASE_MODEL_DEFERRED|ask.catalog_hint.multi_owner" | cut -c1-300
+   ```
+4. New chat **"…for US, 700/800 MHz, Limited Keypad"**. Expect no questions about those, `ask.base_model.derived`, and
+   `reason_code: MODEL_DISCRIMINATOR_OWNER` on the hints.
+5. Check N30 (3 base models, frequency band only), APX 4500 and a single-base-model product (unchanged).
+6. Compare with the real screens. If a question the real UI asks is missing, turn the flag off and report the attribute.
+
+## 11. Open follow-ups
+
+- Hide / ask order of the remaining Msl and regional attributes (see the layout doc).
+- The order dependence of the derivation.
+- Forward-filling from a part number typed in the message (needs a mapping from part number to base model; the
+  `BaseModelToConfig` table has `pvPartNumber` for only 9 rows).

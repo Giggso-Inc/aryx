@@ -17,10 +17,33 @@ whole singleton via `patch("aryx.api.ask_api._cpq_engine")`.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.rule_trace import rule_trace
 from aryx.raven_log import raven_log, would_log
+
+logger = logging.getLogger(__name__)
+
+
+def _model_discriminators(req: "Any", session: Any, catalog_prefix: str) -> "dict[str, frozenset[str]] | None":
+    """The attributes (and values) the anchored product's model separates its base models by, or None.
+
+    Base model narrowing (flag): a typed "700/800 MHz" or "Limited Keypad" is an option of several attributes, so the
+    never-guess rule drops it; with these the phrase is hinted for the one owner the model's own rows use. Any
+    failure leaves hint extraction exactly as it was."""
+    try:
+        if not get_settings().cpq_base_model_narrowing_enabled:
+            return None
+        from aryx.cpq.base_model_narrowing import discriminator_values  # noqa: PLC0415 -- flag-gated
+        from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # noqa: PLC0415
+
+        product = (getattr(session, "filled", {}) or {}).get(PRODUCT_LITERAL) or getattr(session, "product_name", "")
+        return discriminator_values(product, req.workspace_id, catalog_prefix) or None
+    except Exception:  # noqa: BLE001 -- never affects hint extraction
+        logger.debug("cpq: model discriminators for hints failed", exc_info=True)
+        return None
 
 
 
@@ -35,7 +58,10 @@ def _step2_catalog_hints_and_negation(
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     rule_trace.bind_context(req.workspace_id, catalog_prefix)
     _hint_keys_before = set(hints) if would_log("DEBUG") else set()
-    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    discriminators = _model_discriminators(req, session, catalog_prefix)
+    # Flag off (or nothing to separate): the call is exactly the two-argument call it always was.
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(
+        req.question, attrs, *((discriminators,) if discriminators else ()))
     for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
     _flag_hints = _cpq_engine.extract_flag_hints(

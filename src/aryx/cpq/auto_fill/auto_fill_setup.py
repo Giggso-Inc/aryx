@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_optional_ids
 from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
@@ -86,6 +87,13 @@ def build_fill_context_and_scope(
 
     conflicted_optional_ids = compute_conflicted_optional_ids(engine, attrs, governed, rule_governed)
 
+    base_model_narrowing = None
+    if get_settings().cpq_base_model_narrowing_enabled:
+        from aryx.cpq.base_model_narrowing import build_base_model_narrowing  # noqa: PLC0415 -- flag-gated
+        base_model_narrowing = build_base_model_narrowing(
+            attrs, filled, filled_source, filled.get("productSelectionProduct_all", ""),
+            workspace_id, catalog_prefix, dt_cache)
+
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,
         dropped=dropped, dt_cache=dt_cache,
@@ -111,5 +119,6 @@ def build_fill_context_and_scope(
         is_pointer_default=is_pointer_default,
         satisfied_recommendation=satisfied_recommendation,
         dt_never_governed_anywhere=dt_setup.dt_never_governed_anywhere,
+        base_model_narrowing=base_model_narrowing,
     )
     return ctx, scope
