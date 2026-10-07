@@ -78,15 +78,28 @@ def writer_fires(rule: Any, by_id: dict[int, str], variables: dict[str, str]) ->
     return True if all(r is True for r in results) else None
 
 
-def writer_condition_detail(rule: Any, fires: bool | None) -> dict[str, Any]:
-    """Diagnostic shape of a writer's own condition (strings cut), for the WRITER_CONDITION_UNKNOWN log line."""
-    return {
-        "writer": str(getattr(rule, "rule_name", ""))[:120], "fires": fires,
-        "conditions": [[a, str(v)[:60], str(o)] for a, v, o in (getattr(rule, "conditions", None) or [])][:6],
-        "single": [getattr(rule, "condition_attr_id", None), str(getattr(rule, "condition_value", ""))[:60],
-                   str(getattr(rule, "condition_operator", ""))],
-        "condition_script": str(getattr(rule, "condition_script", "") or "")[:400],
-    }
+_MAX_DETAIL_WRITERS = 5
+
+
+def writer_condition_detail(
+    writers: list[tuple[Any, bool | None]], names: dict[int, str], by_id: dict[int, str],
+) -> dict[str, Any]:
+    """Diagnostic shape of the writers' own conditions (strings cut, list capped), for the WRITER_CONDITION_UNKNOWN
+    log line. Each condition attribute is given with its variable name and the value it currently holds."""
+    def cond(a: Any, v: Any, o: Any) -> list[Any]:
+        return [a, names.get(a, "?"), str(v)[:60], str(o), str(by_id.get(a, ""))[:40]]
+
+    out = []
+    for rule, fires in writers[:_MAX_DETAIL_WRITERS]:
+        single = [getattr(rule, "condition_attr_id", None), getattr(rule, "condition_value", ""),
+                  getattr(rule, "condition_operator", "")]
+        out.append({
+            "writer": str(getattr(rule, "rule_name", ""))[:120], "fires": fires,
+            "conditions": [cond(a, v, o) for a, v, o in (getattr(rule, "conditions", None) or [])][:6],
+            "single": cond(*single),
+            "condition_script": str(getattr(rule, "condition_script", "") or "")[:400],
+        })
+    return {"writers": out, "writer_count": len(writers)}
 
 
 def _resolve(var: str, q: WriterQuery, variables: dict[str, str]) -> str | None:
@@ -190,8 +203,9 @@ def _hide_with_master_string(
         master = ""
     else:
         why.append("WRITER_CONDITION_UNKNOWN")
-        if detail is not None:
-            detail["writers"] = [writer_condition_detail(w, f) for w, f in fires]
+        if detail is not None:                                   # built only if the DEBUG line is written
+            detail["build"] = lambda: writer_condition_detail(
+                fires, {a.entity_id: a.variable_name for a in attrs}, by_id)
         master = None
     if master is None:
         return None
