@@ -135,3 +135,16 @@ def test_a_failing_diagnostic_never_breaks_hiding(logged):
 def test_an_unexpected_rule_object_never_breaks_hiding():
     with patch.object(unknown_log, "would_log", return_value=True):
         unknown_log.log_unknown_script_hide(object(), "x", True)    # no rule_name: swallowed
+
+
+def test_concurrent_logging_of_the_same_rule_writes_one_line(logged):
+    import threading
+    rule = _rule()
+    threads = [threading.Thread(target=unknown_log.log_unknown_script_hide, args=(rule, "widgetAttr", True))
+               for _ in range(20)]
+    with _flag(False):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert len(logged.call_args_list) == 1

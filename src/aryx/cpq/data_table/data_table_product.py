@@ -204,8 +204,8 @@ def resolve_sibling_models_with_sequence_rows(
     (334 sequence rows). The product's own display ("APX 900 FLASHport") starts with that row's display, in the same
     product family. Nothing is returned unless the data proves it: the matched family has no sequence rows, and the
     sibling model does, and the sibling's display is at least two words (a one-word display such as a bare brand name
-    would match every product of the family). Candidates only ever get ADDED in front of the family, never replace it, and a product whose
-    family already has sequence rows is untouched. No model or product name appears here.
+    would match every product of the family). Candidates only ever get ADDED in front of the family, never replace
+    it, and a product whose family already has sequence rows is untouched. No model or product name appears here.
     """
     _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     norm = (product_name or "").strip().upper()

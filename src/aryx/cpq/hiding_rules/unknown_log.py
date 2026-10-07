@@ -7,10 +7,13 @@ it was undecided. Once per (run, rule, target, reason), so the many passes of a 
 """
 from __future__ import annotations
 
+import threading
+
 from aryx.cpq.logging_context import get_run_id
 from aryx.raven_log import raven_log, would_log
 
 _SEEN: dict[str, set[tuple[str, str, str]]] = {}
+_SEEN_LOCK = threading.Lock()
 _MAX_RUNS = 20
 
 
@@ -41,14 +44,15 @@ def log_unknown_script_hide(rule, target_variable: str, has_evaluator: bool, mas
 
         reason = unknown_reason(rule, has_evaluator, master_hide_enabled(), master_tried)
         run_id = get_run_id() or ""
-        seen = _SEEN.setdefault(run_id, set())
-        if len(_SEEN) > _MAX_RUNS:
-            for stale in list(_SEEN)[:-_MAX_RUNS]:
-                _SEEN.pop(stale, None)
         key = (str(rule.rule_name), str(target_variable), reason)
-        if key in seen:
-            return
-        seen.add(key)
+        with _SEEN_LOCK:
+            seen = _SEEN.setdefault(run_id, set())
+            if len(_SEEN) > _MAX_RUNS:
+                for stale in list(_SEEN)[:-_MAX_RUNS]:
+                    _SEEN.pop(stale, None)
+            if key in seen:
+                return
+            seen.add(key)
         raven_log("DEBUG", "P4", "ask.rules_loop.hide_unknown script hide rule gave no answer", context={
             "selected_option": "left_visible", "available_options": ["hide", "show", "left_visible"],
             "reason_code": reason, "rule_name": rule.rule_name, "attr": target_variable,

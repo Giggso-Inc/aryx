@@ -168,3 +168,17 @@ def test_a_passed_cache_never_touches_the_module_cache(tables):
     tables(["APX900"])
     dtp._sequence_model_codes(1267, "", {})
     assert dtp._SEQUENCE_MODEL_CODES_CACHE == {}
+
+
+def test_a_failing_turn_lookup_falls_back_to_the_callers_cache(tables, monkeypatch):
+    tables(["APX900"])
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+
+    def boom():
+        raise RuntimeError("no turn")
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates._model_resolution.get_turn", boom)
+    cache: dict = {}
+    first = _cpq_model_candidates("APX900FLASHPORT", 1267, "", cache)
+    assert first[0] == "APX900"
+    assert any(isinstance(k, tuple) and k and k[0] == "_cpq_model_candidates" for k in cache)
+    assert _cpq_model_candidates("APX900FLASHPORT", 1267, "", cache) == first
