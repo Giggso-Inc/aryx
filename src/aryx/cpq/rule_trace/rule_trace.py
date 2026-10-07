@@ -70,6 +70,7 @@ from aryx.store.rule_trace_store import RuleTraceStore
 __all__ = [
     "bind_context",
     "bind_pass",
+    "flush_pending",
     "record_fire",
     "seal",
     "sweep_orphans",
@@ -77,6 +78,25 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
+
+# Buffered durable writes (2026-10-07 perf fix): a fresh pool.connection()
+# acquire pings the connection before returning it (oracle_connection_
+# pool.py's ping_interval=0), costing ~0.44s on top of the insert's own
+# ~0.22s round trip -- confirmed live, ws 1267/Astro25Configdata fires
+# 1000+ rules in one turn, so writing one row per fire cost ~650s of a
+# ~2000s turn on nothing but connection pings and round trips. Flushing
+# every _flush_batch_size() fires (plus always at evaluate_rules_loop's
+# end, ask_api._run_cpq_turn's finally, and at seal(), see flush_pending()
+# /seal() below) keeps the same "durable before the turn's response
+# returns" guarantee while turning ~1000 round trips into a handful.
+
+
+def _flush_batch_size() -> int:
+    """PR #458 review (Low finding 4): settings-backed, not a hardcoded
+    constant, so a deployment can tune the durability/round-trip-count
+    trade-off without a code change."""
+    from aryx.config import get_settings
+    return get_settings().cpq_rule_trace_flush_batch_size
 
 
 def _durable_failed(operation: str, exc: BaseException, run_id: str = "") -> None:
@@ -179,6 +199,12 @@ def record_fire(
     sealed -- callers at the fire points in apply_hiding_rules /
     apply_recommendation_rules / apply_constraint_rules never need to
     check either condition themselves.
+
+    The durable (DB) write is buffered, not immediate -- see
+    _flush_batch_size()'s docstring -- and flushed in one round trip once
+    that many fires accumulate, or at flush_pending()/seal()'s call
+    sites. The local .jsonl write stays immediate (cheap, local disk, no
+    round trip to batch).
     """
     run_id = get_run_id()
     ctx = _ctx_var.get()
@@ -202,15 +228,82 @@ def record_fire(
                 fh.write(json.dumps(entry) + "\n")
         except Exception:
             logger.exception("rule_trace: local file write failed run_id=%s", run_id)
-    try:
-        _store().append_entry(
-            run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier,
+    with _lock:
+        trace.pending.append(
+            (run_id, seq_no, pass_num, rule_type, rule_id, attr, outcome, bml_tier),
         )
-    except Exception as exc:
-        logger.exception("rule_trace: durable append_entry failed run_id=%s", run_id)
-        _durable_failed("append_entry", exc, run_id)
+        # flush_suspended (set by a prior failed flush) blocks this
+        # size-triggered auto-flush only -- see _OpenTrace.flush_suspended's
+        # docstring for why (PR #458 review, new Medium finding). Explicit
+        # flush points (flush_pending/seal) are unaffected.
+        should_flush = (
+            not trace.flush_suspended and len(trace.pending) >= _flush_batch_size()
+        )
+    if should_flush:
+        _flush_trace(trace)
     logger.info("cpq: rule trace fired seq=%d rule_id=%s type=%s", seq_no, rule_id, rule_type)
     _log_fired(rule_type, rule_id, attr, ref_id, bml_tier, pass_num, seq_no)
+
+
+def _flush_trace(trace: "_OpenTrace") -> None:
+    """Durably write `trace`'s buffered fires in one batched round trip.
+
+    A failed batch is put back at the front of `trace.pending` (PR #458
+    review, Medium finding) rather than dropped -- one failure previously
+    cost one row (the old per-fire append_entry had no retry either); a
+    batch failure must not cost up to _flush_batch_size() rows instead. The
+    local .jsonl copy already has these rows regardless (written in
+    record_fire, independent of this), so no data is lost either way --
+    this only affects whether the DURABLE (DB) copy eventually gets them
+    too. Still bounded: a run_id whose breaker is open (see
+    RuleTraceStore.append_entries_batch) is silently skipped, not
+    retried forever -- same accepted trade-off as before this PR.
+
+    A failure also sets trace.flush_suspended, which stops record_fire's
+    own size-triggered auto-flush from immediately retrying the re-queued
+    (now even larger) batch on every subsequent fire -- PR #458 review
+    (new Medium finding): without this, a sustained outage turned every
+    later fire into another full connection-acquire-and-timeout attempt,
+    worse than the original one-INSERT-per-fire behaviour. Retries instead
+    happen only at the next explicit flush point (flush_pending()'s
+    callers: evaluate_rules_loop's end, ask_api._run_cpq_turn's finally,
+    seal()) -- which still runs unconditionally, ignoring this flag, since
+    those are exactly the points this guarantee already relies on. A
+    successful flush clears the flag, so recovery once the DB comes back
+    needs no separate signal.
+    """
+    with _lock:
+        batch, trace.pending = trace.pending, []
+    if not batch:
+        return
+    try:
+        _store().append_entries_batch(batch)
+    except Exception as exc:
+        logger.exception("rule_trace: durable append_entries_batch failed run_id=%s", trace.run_id)
+        _durable_failed("append_entries_batch", exc, trace.run_id)
+        with _lock:
+            trace.pending = batch + trace.pending
+            trace.flush_suspended = True
+    else:
+        with _lock:
+            trace.flush_suspended = False
+
+
+def flush_pending(run_id: str | None = None) -> None:
+    """Durably flush run_id's (or the current context's) buffered fires now.
+
+    Call at the end of a turn's rule evaluation (evaluate_rules_loop) so
+    the turn's trace is durable by the time its HTTP response returns,
+    even though individual fires are no longer written one at a time.
+    A no-op when no trace is open for run_id, or nothing is pending.
+    """
+    run_id = run_id or get_run_id()
+    if not run_id:
+        return
+    trace = _open_sessions.get(run_id)
+    if trace is None:
+        return
+    _flush_trace(trace)
 
 
 def seal(run_id: str | None = None, status: str = "post_approval") -> None:
@@ -230,6 +323,7 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
         if trace is None:
             return
         trace.sealed = True
+    _flush_trace(trace)
     try:
         _store().seal_session(run_id, status=status)
     except Exception as exc:

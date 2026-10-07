@@ -51,9 +51,24 @@ def _run_cpq_turn(
     Step contract, route_meta, session_data, and the real-usage-reporting
     choke point this is: see docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_
     2026_08_13.md and docs/CPQ_Usage_Reporting_Gap.md.
+
+    PR #458 review (Low findings 1/2): rule_trace.record_fire() buffers
+    durable writes and only auto-flushes every _FLUSH_BATCH_SIZE fires or
+    at evaluate_rules_loop's own end -- but record_fire also runs from
+    apply_hiding_rules/apply_recommendation_rules/apply_constraint_rules
+    call sites OUTSIDE that loop (attr activation, attr clear, scope
+    resolution, etc.), and an exception inside the loop would skip its
+    own end-of-loop flush entirely. The try/finally here is the one place
+    that covers every call site and every exit path (normal return OR
+    exception) for a single turn, so "durable before the response
+    returns" actually holds regardless of which code path fired rules.
     """
     llm_runtime.reset_turn_usage()
-    result = enforce_conversational_invariant(_run_cpq_turn_inner(req, reader, route_meta))
+    try:
+        result = enforce_conversational_invariant(_run_cpq_turn_inner(req, reader, route_meta))
+    finally:
+        from aryx.cpq.rule_trace import rule_trace
+        rule_trace.flush_pending()
     _apply_real_llm_usage(result)
     return result
 

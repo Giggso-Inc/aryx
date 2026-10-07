@@ -28,6 +28,7 @@ def _reset_module_state(tmp_path, monkeypatch):
     settings = MagicMock()
     settings.cpq_rule_trace_dir = str(tmp_path)
     settings.cpq_rule_trace_orphan_timeout_hours = 24
+    settings.cpq_rule_trace_flush_batch_size = 100
     monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
 
     mock_store = MagicMock()
@@ -84,7 +85,11 @@ class TestRecordFire:
         assert [e["seq_no"] for e in entries] == [1, 2]
         assert [e["pass_num"] for e in entries] == [0, 1]
 
-    def test_durable_store_receives_same_entry(self, tmp_path, _reset_module_state):
+    def test_durable_store_receives_same_entry_once_flushed(self, tmp_path, _reset_module_state):
+        """The durable write is buffered (2026-10-07 perf fix -- see
+        rule_trace.py's _FLUSH_BATCH_SIZE), not immediate: record_fire()
+        alone does not call the store; flush_pending() does, in one
+        batched append_entries_batch() call."""
         set_run_id("run-4")
         rule_trace.bind_context(7, "Sl3500e")
         rule_trace.bind_pass(2)
@@ -92,12 +97,103 @@ class TestRecordFire:
             rule_type="recommendation", rule_id="RR1", attr="x", outcome="set=Y",
             bml_tier="script",
         )
-        _reset_module_state.append_entry.assert_called_once()
-        args = _reset_module_state.append_entry.call_args[0]
+        _reset_module_state.append_entries_batch.assert_not_called()
+        rule_trace.flush_pending()
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == 1
+        args = batch[0]
         assert args[0] == "run-4"  # run_id
         assert args[2] == 2        # pass_num
         assert args[3] == "recommendation"
         assert args[4] == "RR1"
+
+    def test_flush_batch_size_triggers_automatic_flush(self, tmp_path, _reset_module_state):
+        """Reaching the configured flush batch size flushes without an
+        explicit flush_pending() call -- the safety valve for a turn that
+        never calls evaluate_rules_loop's end-of-loop flush (e.g. a crash)."""
+        set_run_id("run-4b")
+        rule_trace.bind_context(7, "Sl3500e")
+        batch_size = rule_trace._flush_batch_size()
+        for i in range(batch_size):
+            rule_trace.record_fire(
+                rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide",
+            )
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == batch_size
+
+    def test_failed_flush_requeues_batch_instead_of_dropping_it(self, tmp_path, _reset_module_state):
+        """PR #458 review (Medium finding): a failed batch must not lose
+        its rows from the durable store -- it goes back to the front of
+        the pending buffer so the next flush retries it."""
+        set_run_id("run-4c")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        rule_trace.record_fire(rule_type="hiding", rule_id="H1", attr="a", outcome="hide")
+        rule_trace.flush_pending()
+        _reset_module_state.append_entries_batch.assert_called_once()
+        trace = rule_trace._open_sessions["run-4c"]
+        assert len(trace.pending) == 1 and trace.pending[0][4] == "H1"
+
+        _reset_module_state.append_entries_batch.side_effect = None
+        rule_trace.flush_pending()
+        assert trace.pending == []
+        assert _reset_module_state.append_entries_batch.call_count == 2
+        retried_batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(retried_batch) == 1 and retried_batch[0][4] == "H1"
+
+    def test_sustained_failure_does_not_retry_on_every_later_fire(
+        self, tmp_path, monkeypatch, _reset_module_state,
+    ):
+        """PR #458 review (new Medium finding): a failed flush re-queues
+        the batch, which previously left `pending` at/above the batch-size
+        threshold forever, so EVERY later record_fire re-triggered another
+        (growing) flush attempt against an already-known-bad store --
+        reviewer measured 300 fires producing 201 flush attempts. With
+        flush_suspended, only the one attempt that crossed the threshold
+        fires; later record_fire calls just keep buffering."""
+        settings = MagicMock()
+        settings.cpq_rule_trace_dir = str(tmp_path)
+        settings.cpq_rule_trace_flush_batch_size = 10
+        monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
+        set_run_id("run-4d")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        for i in range(30):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        _reset_module_state.append_entries_batch.assert_called_once()
+        trace = rule_trace._open_sessions["run-4d"]
+        assert trace.flush_suspended is True
+        assert len(trace.pending) == 30  # nothing dropped -- still all buffered
+
+    def test_flush_suspension_clears_on_a_later_successful_flush(
+        self, tmp_path, monkeypatch, _reset_module_state,
+    ):
+        settings = MagicMock()
+        settings.cpq_rule_trace_dir = str(tmp_path)
+        settings.cpq_rule_trace_flush_batch_size = 10
+        monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
+        set_run_id("run-4e")
+        rule_trace.bind_context(7, "Sl3500e")
+        _reset_module_state.append_entries_batch.side_effect = RuntimeError("down")
+        for i in range(10):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        trace = rule_trace._open_sessions["run-4e"]
+        assert trace.flush_suspended is True
+
+        _reset_module_state.append_entries_batch.side_effect = None
+        rule_trace.flush_pending()  # an explicit flush point -- ignores the suspension
+        assert trace.flush_suspended is False
+        assert trace.pending == []
+
+        # auto-flush works again on the next threshold crossing (3rd call
+        # overall: the failed auto-flush, the explicit flush_pending()
+        # above, then this new auto-flush)
+        for i in range(10, 20):
+            rule_trace.record_fire(rule_type="hiding", rule_id=f"H{i}", attr="x", outcome="hide")
+        assert _reset_module_state.append_entries_batch.call_count == 3
+        assert trace.pending == []
 
 
 class TestSealing:
@@ -133,6 +229,19 @@ class TestSealing:
     def test_seal_with_no_open_trace_is_noop(self, tmp_path, _reset_module_state):
         rule_trace.seal("never-opened")
         _reset_module_state.seal_session.assert_not_called()
+
+    def test_seal_flushes_pending_entries_before_sealing(self, tmp_path, _reset_module_state):
+        """A fire count under _FLUSH_BATCH_SIZE never auto-flushes -- seal()
+        must still flush it, or the session's last few fires would never
+        reach the durable store at all (2026-10-07 perf fix)."""
+        set_run_id("run-9")
+        rule_trace.bind_context(1, "ApxNextConfig")
+        rule_trace.record_fire(rule_type="hiding", rule_id="H1", attr="a", outcome="hide")
+        _reset_module_state.append_entries_batch.assert_not_called()
+        rule_trace.seal("run-9")
+        _reset_module_state.append_entries_batch.assert_called_once()
+        batch = _reset_module_state.append_entries_batch.call_args[0][0]
+        assert len(batch) == 1 and batch[0][4] == "H1"
 
 
 class TestOrphanSweep:
@@ -200,3 +309,39 @@ class TestAutoFillIsTraced:
             governed_ids={attr.entity_id}, rule_governed_ids=set(),
         )
         assert list(tmp_path.glob("*.jsonl")) == []
+
+
+class TestRunCpqTurnFlushesPending:
+    """PR #458 review (Low findings 1/2): record_fire() also runs from
+    apply_hiding_rules/apply_recommendation_rules/apply_constraint_rules
+    call sites outside evaluate_rules_loop, and an exception inside that
+    loop would skip its own end-of-loop flush. ask_api._run_cpq_turn's
+    try/finally is the one place covering every call site and exit path
+    for a single turn."""
+
+    def test_flushes_after_a_normal_return(self, monkeypatch):
+        from aryx.api import ask_api
+
+        monkeypatch.setattr(ask_api, "_run_cpq_turn_inner", lambda *a, **k: {"ok": True})
+        monkeypatch.setattr(ask_api, "enforce_conversational_invariant", lambda r: r)
+        monkeypatch.setattr(ask_api, "_apply_real_llm_usage", lambda r: None)
+        monkeypatch.setattr(ask_api.llm_runtime, "reset_turn_usage", lambda: None)
+        flushed = []
+        monkeypatch.setattr(rule_trace, "flush_pending", lambda: flushed.append(True))
+        result = ask_api._run_cpq_turn(req=None, reader=None)
+        assert result == {"ok": True}
+        assert flushed == [True]
+
+    def test_flushes_even_when_the_turn_raises(self, monkeypatch):
+        from aryx.api import ask_api
+
+        def _boom(*a, **k):
+            raise RuntimeError("turn exploded")
+
+        monkeypatch.setattr(ask_api, "_run_cpq_turn_inner", _boom)
+        monkeypatch.setattr(ask_api.llm_runtime, "reset_turn_usage", lambda: None)
+        flushed = []
+        monkeypatch.setattr(rule_trace, "flush_pending", lambda: flushed.append(True))
+        with pytest.raises(RuntimeError, match="turn exploded"):
+            ask_api._run_cpq_turn(req=None, reader=None)
+        assert flushed == [True]

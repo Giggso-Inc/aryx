@@ -38,6 +38,34 @@ class TestAppendEntry:
         assert cursor.execute.call_count == 2  # one row per fire, never buffered
 
 
+class TestAppendEntriesBatch:
+    def test_batch_executes_one_executemany_for_many_rows(self):
+        """One connection acquire + one executemany, not one execute per
+        row -- the whole point of the 2026-10-07 perf fix (see rule_trace.
+        py's _FLUSH_BATCH_SIZE docstring: a fresh pool.connection() acquire
+        pings the connection, costing ~0.44s on top of the round trip
+        itself, and a single real turn fires 1000+ rules)."""
+        pool, cursor = _mock_pool_and_cursor()
+        entries = [
+            ("run-1", 1, 0, "hiding", "H1", "vn", "hide", None),
+            ("run-1", 2, 0, "constraint", "C1", "vn2", "allowed=[X]", "script"),
+        ]
+        with patch("aryx.store.rule_trace_store.get_pool", return_value=pool):
+            store = RuleTraceStore("postgresql://x")
+            store.append_entries_batch(entries)
+        cursor.execute.assert_not_called()
+        cursor.executemany.assert_called_once()
+        assert cursor.executemany.call_args[0][1] == entries
+        pool.connection.assert_called_once()  # one acquire for the whole batch
+
+    def test_empty_batch_never_acquires_a_connection(self):
+        pool, cursor = _mock_pool_and_cursor()
+        with patch("aryx.store.rule_trace_store.get_pool", return_value=pool):
+            store = RuleTraceStore("postgresql://x")
+            store.append_entries_batch([])
+        pool.connection.assert_not_called()
+
+
 class TestSealSession:
     def test_seal_session_returns_true_when_row_updated(self):
         pool, cursor = _mock_pool_and_cursor()

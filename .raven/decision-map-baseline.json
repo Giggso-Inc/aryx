@@ -7993,37 +7993,37 @@
     ],
     [
       "src/aryx/api/ask_api.py",
-      58,
+      73,
       "_run_cpq_turn"
     ],
     [
       "src/aryx/api/ask_api.py",
-      68,
+      83,
       "ask_router"
     ],
     [
       "src/aryx/api/ask_api.py",
-      77,
+      92,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      78,
+      93,
       "get_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      81,
+      96,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      83,
+      98,
       "set_llm_config"
     ],
     [
       "src/aryx/api/ask_api.py",
-      85,
+      100,
       "ask_router"
     ],
     [
@@ -11223,12 +11223,12 @@
     ],
     [
       "src/aryx/cpq/catalog_hints.py",
-      17,
+      18,
       "extract_catalog_hints"
     ],
     [
       "src/aryx/cpq/catalog_hints.py",
-      156,
+      160,
       "extract_catalog_hints"
     ],
     [
@@ -11293,58 +11293,73 @@
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      206,
+      298,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      306,
+      398,
       "resolve_product_cpq_models_from_hint"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      309,
+      401,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      360,
+      452,
       "resolve_cpq_model_from_display_name"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      372,
+      464,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table/data_table_product.py",
-      443,
+      535,
       "_load_attr_var_mapping_rows"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      28,
+      29,
       "_log_candidates"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      44,
+      45,
       "_prepend_resolved_model"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      55,
+      56,
       "<try>"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      128,
+      81,
+      "_memo_store"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      84,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      90,
+      "_memo_store"
+    ],
+    [
+      "src/aryx/cpq/data_table_bridge/candidates.py",
+      164,
       "<if>"
     ],
     [
       "src/aryx/cpq/data_table_bridge/candidates.py",
-      173,
-      "_cpq_model_candidates"
+      209,
+      "_resolve_cpq_model_candidates"
     ],
     [
       "src/aryx/cpq/engine.py",
@@ -12943,12 +12958,12 @@
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      21,
+      24,
       "apply_hiding_rules"
     ],
     [
       "src/aryx/cpq/hiding_rules/apply.py",
-      196,
+      214,
       "apply_hiding_rules"
     ],
     [
@@ -12973,13 +12988,13 @@
     ],
     [
       "src/aryx/cpq/hiding_rules/master_string.py",
-      150,
+      177,
       "<if>"
     ],
     [
       "src/aryx/cpq/hiding_rules/master_string.py",
-      161,
-      "hide_with_master_string"
+      194,
+      "_hide_with_master_string"
     ],
     [
       "src/aryx/cpq/hiding_rules/type11.py",
@@ -13828,63 +13843,78 @@
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      95,
+      115,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      106,
+      126,
       "<try>"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      120,
+      140,
       "_get_or_open"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      145,
+      165,
       "_log_fired"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      166,
+      186,
       "record_fire"
     ],
     [
       "src/aryx/cpq/rule_trace/rule_trace.py",
-      216,
+      292,
+      "flush_pending"
+    ],
+    [
+      "src/aryx/cpq/rule_trace/rule_trace.py",
+      309,
       "seal"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      24,
+      26,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop.py",
-      157,
+      171,
       "evaluate_rules_loop"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_autofill.py",
-      15,
+      16,
       "run_autofill_step"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_early.py",
-      23,
+      24,
       "run_early_pass"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_late.py",
-      29,
+      30,
       "run_late_pass"
     ],
     [
       "src/aryx/cpq/rules_loop/rules_loop_pass_late.py",
-      176,
+      182,
       "run_late_pass"
+    ],
+    [
+      "src/aryx/cpq/rules_loop/rules_loop_timing.py",
+      24,
+      "stage_done"
+    ],
+    [
+      "src/aryx/cpq/rules_loop/rules_loop_timing.py",
+      28,
+      "stage_done"
     ],
     [
       "src/aryx/cpq/session_guard/session_guard_snapshot.py",
