@@ -15,6 +15,7 @@ from aryx.raven_log import raven_log, would_log
 from aryx.cpq.data_table.data_table_resolver import (
     discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
+    resolve_sibling_models_with_sequence_rows as dt_resolve_sibling_models,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,
 )
 
@@ -122,7 +123,8 @@ def _cpq_model_candidates(
             product_name, workspace_id, catalog_prefix, cache,
         )
         if family:
-            primary = (family, f"{family}_BOM")
+            siblings = dt_resolve_sibling_models(product_name, workspace_id, catalog_prefix, cache)
+            primary = tuple(m for s in siblings for m in (s, f"{s}_BOM")) + (family, f"{family}_BOM")
             tier = "tier2_model_resolution"
     if primary is None:
         if get_settings().data_table_candidates_empty_on_no_match_enabled:
