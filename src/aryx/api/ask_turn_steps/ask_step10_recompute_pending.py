@@ -29,6 +29,7 @@ from aryx.api.ask_turn_steps.post_loop_executor import (
 )
 from aryx.config import get_settings
 from aryx.cpq.grid_quantity.narrow import grid_narrow_kwargs
+from aryx.cpq.guard_anchor_hint import guard_anchor_hint_kwargs
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.raven_log import raven_log
 
@@ -52,6 +53,10 @@ def _step10_recompute_pending(
     # post-loop auto_fill (dev-rv-msi #371/#372). Flag off: today's behavior.
     _dt_cache: "dict | None" = {} if _bounded else None
     _loop_kwargs = {"_dt_cache": _dt_cache} if _bounded else {}
+    # Neither call below used to receive the customer's own wording, so the not-applicable guard (it resolves the device
+    # from that wording) was a silent no-op for every /ask turn. Both get it while the guard's flag is on and there is
+    # wording; otherwise the kwargs are unchanged.
+    _loop_kwargs.update(guard_anchor_hint_kwargs(session))
 
     v_attrs, f, d_filled, c_opts = _cpq_engine.evaluate_rules_loop(
         attrs, cur_hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
