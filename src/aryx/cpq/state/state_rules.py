@@ -133,6 +133,10 @@ class RecommendationRule:
     script: str | None = None
     conditions: list[tuple[int, str, str]] | None = None
     condition_script: str | None = None
+    writer_conditions: list[tuple[int, str, str]] | None = None
+    """A script-backed rule's own declarative inputs (flag `cpq_script_rec_rule_conditions_enabled`). Read ONLY by the
+    master-string writer test; kept apart from `conditions` so rule ranking and the dependency graph, which read
+    `conditions`, see the same rule as before."""
     condition_operator: str = "4"
     ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
 

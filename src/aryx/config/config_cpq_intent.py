@@ -298,6 +298,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "Override with ARYX_CPQ_HIDE_INDEX_ALIAS_ENABLED=true."
         ),
     )
+    cpq_script_rec_rule_conditions_enabled: bool = Field(
+        default=False,
+        description=(
+            "A script-backed recommendation rule keeps its own declarative inputs (`bm_config_rule_input`) as "
+            "`conditions`. They were dropped (condition_attr_id hard-coded to 0), so a master-string WRITER such as "
+            "\"Set Hidden Master String For Astro Portable\" (input: attribute not blank) had no condition and its "
+            "hide rules (~340 on ws 1267) could not be decided. They are kept as `RecommendationRule.writer_conditions`, "
+            "apart from `conditions`, and only the master-string writer test reads them: rule ranking, the dependency "
+            "graph and when the rule fires are unchanged. Off by default. "
+            "Override with ARYX_CPQ_SCRIPT_REC_RULE_CONDITIONS_ENABLED=true."
+        ),
+    )
     cpq_find_function_enabled: bool = Field(
         default=False,
         description=(
