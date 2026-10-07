@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from aryx.cpq.bml.bml_declarative import _operator_hit
+from aryx.cpq.bml.bml_declarative import _MULTI_SELECT_OPERATORS, _operator_hit
 from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, RecommendationRule
 from aryx.cpq.validation.models import ValidationIssue
 from aryx.cpq.validation.script_oracle import DeterministicBmlOracle
@@ -42,6 +42,7 @@ class ConditionEvaluator:
             if attribute_id not in operator_by_attr:
                 operator_by_attr[attribute_id] = operator
             grouped[attribute_id].append(value)
+        saw_unknown = False
         for attribute_id, values in grouped.items():
             attribute = self.by_id.get(attribute_id)
             variable = attribute.variable_name if attribute else ""
@@ -50,14 +51,26 @@ class ConditionEvaluator:
                 else (filled_multi or {}).get(variable, ())
             )
             if not actual_values:
-                return None
+                saw_unknown = True
+                continue
             operator = operator_by_attr[attribute_id]
-            hits = [_operator_hit(actual, values, operator) for actual in actual_values]
+            # "7"/"8" are defined on the WHOLE current-selection set (per
+            # _operator_hit's docstring), not per selected value -- e.g.
+            # "8" (disjoint from) must see {L1, ADDON} as one set to know
+            # it intersects, rather than OR-ing per-value hits, which would
+            # wrongly fire on the ADDON value alone even though the set as
+            # a whole isn't disjoint.
+            if operator in _MULTI_SELECT_OPERATORS:
+                hits = [_operator_hit("~".join(actual_values), values, operator)]
+            else:
+                hits = [_operator_hit(actual, values, operator) for actual in actual_values]
             if any(hit is True for hit in hits):
                 continue
             if all(hit is False for hit in hits):
                 return False
-            return None  # unresolved (e.g. unparseable numeric) -- never guessed
+            saw_unknown = True  # unresolved (e.g. unparseable numeric) -- never guessed
+        if saw_unknown:
+            return None
         return True
 
     def target(self, rule: Rule, issues: list[ValidationIssue]) -> ConfigAttr | None:
