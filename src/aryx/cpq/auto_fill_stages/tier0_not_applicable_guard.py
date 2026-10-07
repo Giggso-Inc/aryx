@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 def _log_device_once(ctx: "FillContext", scope: "FillScope") -> None:
-    """One DEBUG line per turn: the wording the guard resolves the device from and the models it found.
+    """A DEBUG line per cache (a few per turn: the rules loop shares one, the summary and payload paths build their
+    own): the models the guard resolves from the customer's wording. Only the LENGTH of the wording is logged, never
+    its text (Raven decision records hold no customer text); the models are catalog data.
 
     The guard does nothing when the wording does not resolve to a confident set of models, and it said nothing about
     that (ws 1267, 2026-10-07: APX 4500 dropped its irrelevant attributes, APX N30 dropped none, and the logs could not
@@ -48,7 +50,7 @@ def _log_device_once(ctx: "FillContext", scope: "FillScope") -> None:
             "selected_option": "device_resolved" if models else "device_unresolved",
             "available_options": ["device_resolved", "device_unresolved"],
             "reason_code": "GUARD_DEVICE_RESOLVED" if models else "GUARD_DEVICE_UNRESOLVED_NO_OP",
-            "hint": str(hint or "")[:160], "models": list(models)[:12], "model_count": len(models)})
+            "hint_len": len(hint or ""), "models": list(models)[:12], "model_count": len(models)})
     except Exception:  # noqa: BLE001 -- a diagnostic must never change the fill
         return
 
@@ -84,8 +86,8 @@ def stage_not_applicable_guard(
     if vn in ctx.filled:
         logger.info(
             "cpq: clearing previously blind-filled %r=%r -- confirmed no "
-            "concept for this resolved device (hint=%r)",
-            vn, ctx.filled[vn], scope.product_anchor_hint,
+            "concept for this resolved device (hint_len=%d)",
+            vn, ctx.filled[vn], len(scope.product_anchor_hint or ""),
         )
     ctx.filled.pop(vn, None)
     ctx.display_filled.pop(vn, None)

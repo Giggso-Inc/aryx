@@ -2,6 +2,7 @@
 (or that it resolved none and is therefore a no-op)."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,7 +26,7 @@ def test_a_resolved_device_is_logged_with_its_models():
     (line,), _ = _run(("APXN30", "APXN30_BOM"))
     assert (line["reason_code"], line["model_count"], line["models"]) == (
         "GUARD_DEVICE_RESOLVED", 2, ["APXN30", "APXN30_BOM"])
-    assert line["hint"].startswith("I want a quote")
+    assert line["hint_len"] == len("I want a quote for APX N30 for US") and "hint" not in line
 
 
 def test_an_unresolved_device_is_named_as_a_no_op():
@@ -56,3 +57,24 @@ def test_a_failing_resolver_never_breaks_the_fill():
     scope = SimpleNamespace(workspace_id=1, catalog_prefix="", product_anchor_hint="x")
     with patch.object(guard, "would_log", return_value=True), patch(RESOLVE, side_effect=RuntimeError("boom")):
         guard._log_device_once(ctx, scope)          # no exception
+
+
+SENTINEL = "ZZ-CUSTOMER-NAME-SENTINEL-8841"
+
+
+def test_the_customer_text_is_never_logged():
+    out, _ = _run(("APXN30",), hint=f"{SENTINEL} wants APX N30 at the Springfield depot")
+    assert out and SENTINEL not in json.dumps(out) and "Springfield" not in json.dumps(out)
+
+
+def test_the_clearing_line_logs_only_the_wording_length(caplog):
+    import logging
+    ctx = SimpleNamespace(dt_cache={}, sources={}, filled={"x_astro": "v"}, display_filled={}, filled_multi={})
+    scope = SimpleNamespace(workspace_id=1267, catalog_prefix="p", product_anchor_hint=f"{SENTINEL} APX N30")
+    state = SimpleNamespace(done=False, vn="x_astro")
+    engine = SimpleNamespace(_is_hardware_version_attr=lambda a: False, _is_product_line_selector=lambda a: False,
+                             _named_attr_confirmed_not_applicable=lambda *a, **k: True)
+    attr = SimpleNamespace(required=False)
+    with patch.object(guard, "would_log", return_value=False),             patch.object(guard, "get_settings", return_value=SimpleNamespace(cpq_not_applicable_guard_enabled=True)),             caplog.at_level(logging.INFO, logger=guard.logger.name):
+        guard.stage_not_applicable_guard(engine, attr, ctx, scope, state)
+    assert state.done and "x_astro" in caplog.text and SENTINEL not in caplog.text and "hint_len=" in caplog.text
