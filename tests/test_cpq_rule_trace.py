@@ -28,7 +28,7 @@ def _reset_module_state(tmp_path, monkeypatch):
     settings = MagicMock()
     settings.cpq_rule_trace_dir = str(tmp_path)
     settings.cpq_rule_trace_orphan_timeout_hours = 24
-    settings.cpq_rule_trace_flush_batch_size = 50
+    settings.cpq_rule_trace_flush_batch_size = 100
     monkeypatch.setattr("aryx.config.get_settings", lambda: settings)
 
     mock_store = MagicMock()

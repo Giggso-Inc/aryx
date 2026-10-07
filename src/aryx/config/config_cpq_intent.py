@@ -813,7 +813,7 @@ class CpqIntentSettingsMixin(BaseSettings):
         ),
     )
     cpq_rule_trace_flush_batch_size: int = Field(
-        default=50,
+        default=100,
         description=(
             "PR #458 review (Low finding 4): fired-rule rows buffered by "
             "record_fire() before being durably written as one "
@@ -822,10 +822,15 @@ class CpqIntentSettingsMixin(BaseSettings):
             "confirmed live, a fresh connection acquire costs ~0.44s just "
             "for the pool's dead-connection ping on top of the insert's "
             "own round trip, and a single turn can fire 1000+ rules). "
-            "Also flushed at evaluate_rules_loop's end and at seal(), so "
-            "this only bounds how large an in-progress turn's in-memory "
-            "buffer can grow between those points. Override with "
-            "ARYX_CPQ_RULE_TRACE_FLUSH_BATCH_SIZE."
+            "100 (raised from an initial 50) roughly halves the round-trip "
+            "count again on a 1000+-fire turn (~20 -> ~10 flushes), at the "
+            "cost of up to 100 buffered-but-not-yet-durable rows in memory "
+            "if the process crashes mid-turn before the next flush point "
+            "(evaluate_rules_loop's end, ask_api._run_cpq_turn's finally, "
+            "and seal() all still flush regardless of count) -- diminishing "
+            "returns past this, since the fix's main win (~1000 round trips "
+            "-> a handful) is already captured well before 100. Override "
+            "with ARYX_CPQ_RULE_TRACE_FLUSH_BATCH_SIZE."
         ),
     )
     cpq_tables_cache_lock_enabled: bool = Field(
