@@ -16,7 +16,7 @@ from aryx.cpq.data_table.data_table_cache import (
     _invalidate_on_marker_change,
 )
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
-from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped
+from aryx.cpq.data_table.data_table_shapes import _attr_val_col_pairs, _is_attr_var_mapping_shaped, _normalize_label
 from aryx.cpq.data_table.data_table_stale_models import _is_stale_cpq_model
 from aryx.cpq.rdb.rdb import get_cpq_rdb
 from aryx.cpq.rdb.rdb_workspace_tables import groups_from as workspace_table_groups
@@ -239,6 +239,30 @@ def resolve_sibling_models_with_sequence_rows(
         if len(sibling_display) == best_len:
             found.add(model)
     return tuple(sorted(found))
+
+
+def resolve_models_by_hierarchy_display(
+    product_name: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> tuple[str, ...]:
+    """Models whose own hierarchy row (blank Product) is displayed exactly as `product_name`, when they hold sequence rows.
+
+    Live case (ws 1267, 2026-10-07): "APX 1500", "APX 1500 Enhanced", "APX 4500" and "APX 4500 Enhanced" have a
+    hierarchy row each with a BLANK Product (cpqModelName APX1500, APX1500ENH, ... and displayCPQModel "APX 1500 Enhanced"
+    ...), so no Product matches and the product fell to the static APX NEXT fallback, which scopes nothing (about 2,900
+    attributes visible, ~45 guessed fills a turn). The row's own display is the product's name, so it is matched exactly
+    (whitespace and case normalised, at least two words) and only when the model has sequence rows. Used only after the
+    Product-keyed lookups found nothing, so it can only replace the static fallback.
+    """
+    norm = _normalize_label(product_name or "")        # case, whitespace and trademark symbols (a real label may carry one)
+    if len(norm.split()) < 2:
+        return ()
+    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+    sequence_models = _sequence_model_codes(workspace_id, catalog_prefix, cache)
+    return tuple(sorted({
+        str(row["cpqModelName"]).strip() for row in hierarchy_rows
+        if not row.get("Product") and row.get("cpqModelName") and _normalize_label(_hierarchy_display(row)) == norm
+        and str(row["cpqModelName"]).strip().upper() in sequence_models}))
 
 
 def resolve_product_cpq_models_from_rows(
