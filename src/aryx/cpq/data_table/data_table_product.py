@@ -183,7 +183,8 @@ def resolve_sibling_models_with_sequence_rows(
     while the same hierarchy has a row with a BLANK Product, cpqModelName APX900 and displayCPQModel "APX 900"
     (334 sequence rows). The product's own display ("APX 900 FLASHport") starts with that row's display, in the same
     product family. Nothing is returned unless the data proves it: the matched family has no sequence rows, and the
-    sibling model does. Candidates only ever get ADDED in front of the family, never replace it, and a product whose
+    sibling model does, and the sibling's display is at least two words (a one-word display such as a bare brand name
+    would match every product of the family). Candidates only ever get ADDED in front of the family, never replace it, and a product whose
     family already has sequence rows is untouched. No model or product name appears here.
     """
     _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
@@ -204,7 +205,7 @@ def resolve_sibling_models_with_sequence_rows(
     for row in hierarchy_rows:
         model = str(row.get("cpqModelName") or "").strip()
         sibling_display = _hierarchy_display(row)
-        if (row.get("Product") or not model or not sibling_display or model.upper() not in sequence_models
+        if (row.get("Product") or not model or len(sibling_display.split()) < 2 or model.upper() not in sequence_models
                 or str(row.get("productFamily") or "").strip().upper() != family
                 or not (display == sibling_display or display.startswith(sibling_display + " "))):
             continue

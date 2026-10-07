@@ -106,3 +106,25 @@ def test_without_a_cache_or_bound_turn_nothing_is_remembered(tables, monkeypatch
     _cpq_model_candidates("APX900FLASHPORT", 1267)
     _cpq_model_candidates("APX900FLASHPORT", 1267)
     assert len(calls) == 2
+
+
+def test_a_one_word_sibling_display_never_matches(tables):
+    rows = HIERARCHY + [_hier("GENERIC", "", "APX")]
+    tables(["GENERIC"], rows)
+    assert dtp.resolve_sibling_models_with_sequence_rows("APX900FLASHPORT", 1267) == ()
+
+
+def test_a_bound_turn_memo_is_used_instead_of_a_passed_cache(tables, monkeypatch):
+    from unittest.mock import MagicMock
+    from aryx.cpq import model_resolution as mr
+    tables(["APX900"])
+    monkeypatch.setattr("aryx.cpq.data_table_bridge.candidates.dt_resolve_product_cpq_models_from_rows", lambda *a, **k: ())
+    ctx = mr.TurnModelContext(resolution=MagicMock(resolved=False), workspace_id=1267, catalog_prefix="")
+    mr.bind_turn(ctx)
+    try:
+        cache: dict = {}
+        _cpq_model_candidates("APX900FLASHPORT", 1267, "", cache)
+        assert not any(k[0] == "_cpq_model_candidates" for k in cache if isinstance(k, tuple))
+        assert any(k[0] == "_cpq_model_candidates" for k in ctx.memo)
+    finally:
+        mr.bind_turn(None)

@@ -79,14 +79,15 @@ def _prepend_resolved_model(
 
 
 def _memo_store(cache: dict | None) -> dict | None:
-    """The per-turn dict a repeated lookup can be remembered in: the caller's own cache, else the bound turn's memo."""
-    if cache is not None:
-        return cache
+    """Where a repeated lookup is remembered: the bound turn's memo when a turn is bound (turn-scoped by
+    construction, so it can never replay another turn's answer), else the caller's own cache, else nowhere."""
     try:
         ctx = _model_resolution.get_turn()
     except Exception:  # noqa: BLE001 -- memo is an optimisation, never a failure
-        return None
-    return ctx.memo if ctx is not None else None
+        ctx = None
+    if ctx is not None:
+        return ctx.memo
+    return cache
 
 
 def _cpq_model_candidates(
@@ -98,8 +99,8 @@ def _cpq_model_candidates(
     ~25 call sites ask this on every pass (ws 1267, 2026-10-07: 25,232 identical resolutions in 10 minutes). The
     result depends only on the arguments and on data/turn state that is fixed for a turn, so one resolution per
     distinct argument set is enough. Without a per-turn dict (no cache, no bound turn) nothing is remembered.
-    `cache` MUST live no longer than one turn: the result reads this turn's model resolution (`_prepend_resolved_model`),
-    so a cache that outlives the turn would replay another turn's answer.
+    With no turn bound the caller's `cache` is used, and it MUST then live no longer than one turn (the result reads
+    this turn's model resolution in `_prepend_resolved_model`).
     """
     store = _memo_store(cache)
     key = ("_cpq_model_candidates", product_name, workspace_id, catalog_prefix, base_model)
