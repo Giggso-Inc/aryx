@@ -30,6 +30,13 @@ def _seq(*models):
     return [{"CPQModel": m, "AttrName": "x"} for m in models]
 
 
+@pytest.fixture(autouse=True)
+def _clear_codes_cache():
+    dtp._clear_sequence_model_codes_cache()
+    yield
+    dtp._clear_sequence_model_codes_cache()
+
+
 @pytest.fixture
 def tables(monkeypatch):
     def install(sequence_models, hierarchy=HIERARCHY):
@@ -128,3 +135,36 @@ def test_a_bound_turn_memo_is_used_instead_of_a_passed_cache(tables, monkeypatch
         assert any(k[0] == "_cpq_model_candidates" for k in ctx.memo)
     finally:
         mr.bind_turn(None)
+
+
+def test_without_a_cache_the_sequence_model_codes_are_built_once_within_the_ttl(monkeypatch):
+    builds = []
+
+    def loader(*a, **k):
+        builds.append(1)
+        return ([], _seq("APX900"), list(HIERARCHY), [], [])
+    monkeypatch.setattr(dtp, "_load_all_tables", loader)
+    for _ in range(5):
+        dtp._sequence_model_codes(1267, "", None)
+    assert len(builds) == 1
+    dtp._clear_sequence_model_codes_cache()
+    dtp._sequence_model_codes(1267, "", None)
+    assert len(builds) == 2
+
+
+def test_the_module_cache_expires(monkeypatch):
+    builds = []
+    monkeypatch.setattr(dtp, "_load_all_tables",
+                        lambda *a, **k: builds.append(1) or ([], _seq("APX900"), [], [], []))
+    clock = [1000.0]
+    monkeypatch.setattr(dtp.time, "monotonic", lambda: clock[0])
+    dtp._sequence_model_codes(1267, "", None)
+    clock[0] += dtp._SEQUENCE_MODEL_CODES_TTL_SECONDS + 1
+    dtp._sequence_model_codes(1267, "", None)
+    assert len(builds) == 2
+
+
+def test_a_passed_cache_never_touches_the_module_cache(tables):
+    tables(["APX900"])
+    dtp._sequence_model_codes(1267, "", {})
+    assert dtp._SEQUENCE_MODEL_CODES_CACHE == {}

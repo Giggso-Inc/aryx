@@ -157,19 +157,39 @@ def _hierarchy_display(row: dict[str, Any]) -> str:
     return ""
 
 
+# Used only when the caller passes no per-turn cache: `_load_all_tables` is itself cached, but rebuilding the set over
+# every sequence row on each call is not free. Short TTL, same staleness tradeoff as data_table_loader._TABLES_CACHE.
+_SEQUENCE_MODEL_CODES_CACHE: dict[tuple[int, str], tuple[float, frozenset[str]]] = {}
+_SEQUENCE_MODEL_CODES_TTL_SECONDS = 30.0
+
+
+def _clear_sequence_model_codes_cache() -> None:
+    _SEQUENCE_MODEL_CODES_CACHE.clear()
+
+
 def _sequence_model_codes(
     workspace_id: int, catalog_prefix: str, cache: dict[tuple[int, str], tuple] | None,
 ) -> frozenset[str]:
-    """Upper-cased, non-stale CPQModel codes that have at least one sequence row (memoised per workspace/prefix)."""
+    """Upper-cased, non-stale CPQModel codes that have at least one sequence row.
+
+    Memoised in the caller's per-turn `cache` when one is passed, else in a short-lived module-level cache.
+    """
     key = ("_sequence_model_codes", workspace_id, catalog_prefix)
     if cache is not None and key in cache:
         return cache[key]
+    now = time.monotonic()
+    if cache is None:
+        hit = _SEQUENCE_MODEL_CODES_CACHE.get((workspace_id, catalog_prefix))
+        if hit is not None and now - hit[0] < _SEQUENCE_MODEL_CODES_TTL_SECONDS:
+            return hit[1]
     _, sequence_rows, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
     codes = frozenset(
         str(row.get("CPQModel")).strip().upper() for row in sequence_rows
         if row.get("CPQModel") and not _is_stale_cpq_model(row.get("CPQModel")))
     if cache is not None:
         cache[key] = codes
+    else:
+        _SEQUENCE_MODEL_CODES_CACHE[(workspace_id, catalog_prefix)] = (now, codes)
     return codes
 
 
