@@ -167,3 +167,10 @@ validator, and the table gets the same ownership stamp. Any other CSV no script 
 
 Opt out with `ARYX_CSV_BML_LOAD_ENGINE_TABLES=false` (restores the old skip). The workspace-table reader
 (`cpq/rdb/rdb_workspace_tables.py`) restores the `baseModel` / `displayModel` spellings that shape needs.
+
+Notes: the derived widths apply to a table created by this build. A table created earlier keeps its widths (the saved
+`sql/<table>/` directory and `CREATE TABLE IF NOT EXISTS` are never re-derived); to widen one, delete the saved
+directory and the table, then upload again. Two engine shapes are **not** loaded without a script because they are
+too loose to create a table from (`countryCode` + `region`; `BaseModel` + `attr1` + `val1`): an unrelated CSV with
+those columns would be read by the engine as geo or default data. Real tables of those shapes are read by scripts
+and load as before.

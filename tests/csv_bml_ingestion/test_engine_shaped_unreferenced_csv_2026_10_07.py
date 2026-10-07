@@ -164,9 +164,6 @@ def test_a_table_over_the_engines_row_cap_is_warned_about(bml_index, tmp_path, m
 # --- review follow-ups: the engine's standalone shapes, reserved-word columns, switch location ----------------------
 @pytest.mark.parametrize("header,shape", [
     (["countryCode", "countryDesc", "RTTE", "nonRTTE", "TA"], "rtte_ta"),
-    (["countryCode", "countryDesc", "region", "emsParent", "marketParent", "Enabled", "language", "regionGroup",
-      "Embargo"], "country_region"),
-    (["_update_action", "key", "BaseModel", "attr1", "val1", "attr2", "val2", "PartNumber", "Qty"], "defaultinattr"),
     (["cpqModel", "group", "attributeName", "attributeVariable"], "attr_var_mapping"),
     (["_update_action", "key", "seriesCPQModel", "childCPQModel", "attr1", "op1", "val1"], "series_mapping"),
     (["_update_action", "key", "model", "UDCC", "region", "ruleType", "attribute", "value"], "region_rule"),
@@ -204,3 +201,24 @@ def test_the_switch_lives_with_the_other_csv_bml_switch():
     from aryx.csv_bml_ingestion import config
     assert config.load_engine_tables_enabled is load_engine_tables_enabled
     assert config.LOAD_ENGINE_TABLES_ENV == LOAD_ENGINE_TABLES_ENV
+
+
+# --- review N5: the two loose standalone shapes do not create a table without a script -------------------------------
+@pytest.mark.parametrize("header", [
+    ["countryCode", "region", "dealerName"],                                  # a customer's own country/region list
+    ["countryCode", "countryDesc", "region", "emsParent", "marketParent", "Enabled", "language", "regionGroup",
+     "Embargo"],                                                              # the real newCountryRegion header
+    ["BaseModel", "attr1", "val1", "dealerName"],
+    ["_update_action", "key", "BaseModel", "attr1", "val1", "attr2", "val2", "PartNumber", "Qty"],   # defaultInAttr
+])
+def test_loose_shapes_are_not_loaded_without_a_script(header):
+    assert engine_shape_of_columns(_columns(header)) is None
+
+
+def test_an_unreferenced_customer_csv_with_country_and_region_columns_is_still_skipped(bml_index, tmp_path):
+    p = write_csv(tmp_path / "dealerRegions.csv", ["countryCode", "region", "dealerName"], ["String"] * 3,
+                  [["US", "NA", "Acme"]])
+    db = FakeDb()
+    r = ingest_csv(p, bml_index, db)
+    assert (r.status, r.error_code) == ("skipped", "CBI_BML_NOT_FOUND")
+    assert db.log == []

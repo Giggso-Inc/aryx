@@ -26,12 +26,14 @@ def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
     from aryx.cpq.rdb.rdb_workspace_tables import recase  # noqa: PLC0415
 
     # the pooled shapes first (sequence, series mapping, region rule, constraint, hierarchy), then the ones the engine
-    # reads through its own standalone loaders (base model, attr-var mapping, default-in-attr, country region, RTTE/TA)
+    # reads through its own standalone loaders that need several specific columns (base model, attr-var mapping,
+    # RTTE/TA). NOT included: `_is_country_region_shaped` (just countryCode + region) and `_is_defaultinattr_shaped`
+    # (BaseModel + attr1 + val1, no model column) are too loose to create a table from: an unrelated customer CSV
+    # with those columns would be loaded and then read by the engine as geo / default data. Those two tables are
+    # read by scripts in practice, so they still load through the script path exactly as before.
     standalone = (
         ("basemodel_to_config", _is_basemodel_to_config_shaped),
         ("attr_var_mapping", shapes._is_attr_var_mapping_shaped),
-        ("defaultinattr", shapes._is_defaultinattr_shaped),
-        ("country_region", shapes._is_country_region_shaped),
         ("rtte_ta", shapes._is_rtte_ta_shaped),
     )
     for variant in (0, 1):
