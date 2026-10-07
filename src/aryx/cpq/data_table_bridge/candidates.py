@@ -98,6 +98,8 @@ def _cpq_model_candidates(
     ~25 call sites ask this on every pass (ws 1267, 2026-10-07: 25,232 identical resolutions in 10 minutes). The
     result depends only on the arguments and on data/turn state that is fixed for a turn, so one resolution per
     distinct argument set is enough. Without a per-turn dict (no cache, no bound turn) nothing is remembered.
+    `cache` MUST live no longer than one turn: the result reads this turn's model resolution (`_prepend_resolved_model`),
+    so a cache that outlives the turn would replay another turn's answer.
     """
     store = _memo_store(cache)
     key = ("_cpq_model_candidates", product_name, workspace_id, catalog_prefix, base_model)
