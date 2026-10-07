@@ -1,5 +1,5 @@
 """Declarative bm_config_rule_input condition evaluation (operator codes
-1/2/3/4/5/7/8), independent of BML script parsing entirely.
+1/2/3/4/5/6/7/8), independent of BML script parsing entirely.
 
 Split out of `cpq/bml.py` (Raven Style Compliance Plan, Phase 2a,
 2026-09-03). See `bml_text.py`'s docstring for the zero-patch-risk basis.
@@ -8,7 +8,22 @@ from __future__ import annotations
 
 from aryx.config import get_settings
 
-_NUMERIC_OPERATORS = frozenset({"1", "2", "5"})  # <, <=, >
+_NUMERIC_OPERATORS = frozenset({"1", "2", "5", "6"})  # <, <=, >, >=
+_GREATER_THAN_OR_EQUAL_OPERATOR = "6"
+# "6" = ">=" -- confirmed 2026-10-07 against ws 1267/Astro25Configdata.
+# Rule NAMES alone are ambiguous/misleading here (most literally say ">1",
+# a few say "non zero", i.e. >=1 for a non-negative quantity) -- what
+# actually resolved it was the validation MESSAGE/constraint ACTION text:
+# e.g. "Constrain qty >1 When select is false..." fires with message
+# "Please change the quantity to 0 or blank," which only makes business
+# sense if the rule fires for qty=1 too (not just 2+) -- a strict ">1"
+# reading would silently let qty=1 pass despite the rule clearly meaning
+# "quantity must be 0 when unselected." Same for "Restrict Blank
+# Selection for Power Supply if SNT Unit ISGREATER than 1": a blank
+# Power Supply selection should be disallowed as soon as there's ANY SNT
+# unit (qty>=1), not only once there are 2+. ">=" also completes the
+# numeric-operator pairing symmetrically: "1"/"2" are the </<=  pair,
+# "5"/"6" are the >/>= pair.
 _NOT_EQUAL_OPERATOR = "3"
 # "7"/"8" — multi-select ("~"-joined current-selection set) membership,
 # confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md
@@ -51,7 +66,8 @@ def _operator_hit(actual: str, expected_values: list[str], operator: str) -> boo
     for "3"), "3"="<>", "1"="<", "2"="<=", "5"=">", "7"="intersects"/
     "8"="disjoint from" (Phase 2, 104/110 real rows target a
     select_type=="multi" attr, cross-checked against 4 independently
-    -authored rule names — see the constants above for detail).
+    -authored rule names — see the constants above for detail). "6"=">="
+    (see _GREATER_THAN_OR_EQUAL_OPERATOR above for the confirmation).
 
     For "7"/"8", `actual` is itself allowed to be a "~"-joined SET (a
     multi-select attr's current selections), not just a scalar — checked
@@ -72,6 +88,8 @@ def _operator_hit(actual: str, expected_values: list[str], operator: str) -> boo
             return actual_num < expected_num
         if operator == "2":
             return actual_num <= expected_num
+        if operator == _GREATER_THAN_OR_EQUAL_OPERATOR:  # "6"
+            return actual_num >= expected_num
         return actual_num > expected_num  # "5"
 
     expanded = {
