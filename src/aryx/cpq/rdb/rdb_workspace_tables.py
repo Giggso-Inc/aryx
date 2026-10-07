@@ -38,6 +38,7 @@ CANONICAL_COLUMNS: tuple[str, ...] = (
     "CPQModel", "BaseModel", "AttrName", "Seq", "optionOrReqFlag", "Product", "cpqModelName", "childCPQModel",
     "cpqModel", "group", "attributeName", "attributeVariable", "model", "value", "region", "ruleType", "attribute",
     "UDCC", "countryCode", "RTTE", "nonRTTE", "TA", "startDate", "endDate", "partNumber",
+    "baseModel", "displayModel",     # BaseModelToConfig shape (data_table_inference._is_basemodel_to_config_shaped)
 )
 # two shapes spell one column differently ("CPQModel" vs "cpqModel"), so a lower-case name can have several spellings
 _CANONICAL: dict[str, tuple[str, ...]] = {}

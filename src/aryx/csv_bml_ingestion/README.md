@@ -152,3 +152,18 @@ query needs no manual step.
 * Querying the stored graph needs the Oracle graph backend; on FalkorDB use `--xml`. Step 2 with `--xml` builds the graph from the file; with `--workspace-id` it searches the stored graph via the query lists written at XML-ingest time (not the clipped script text).
 * Run-time authoring needs the project's LLM configured and its SDK importable (OCI GenAI needs the `oci` package, present in the app image).
 * `IF NOT EXISTS` does not alter an existing table: if a column is widened in `schema.sql`, apply the `ALTER TABLE ... MODIFY` (or drop/recreate) yourself.
+
+## Tables the engine reads that no script queries (2026-10-07)
+
+Some Data Tables are read by the CPQ engine itself, not by a script (`BaseModelToConfig` maps a device name such as
+"APX 3000" to its CPQ model; without it model resolution falls back to a fixed product). Step 2 used to skip them
+(`CBI_BML_NOT_FOUND`), so they never became a `ws<id>_*` table and the engine could not read them.
+
+A CSV no script reads is now **still loaded** when its columns match a table shape the engine reads
+(`engine_shapes.engine_shape_of_columns`, which calls the engine's own shape tests, so no table name is listed
+anywhere). The schema is derived from the CSV's own header and type row (`sql_author.author_sql_from_layout`: no LLM,
+no index; `VARCHAR2(n)` with n = twice the longest value, at least 64; `Integer` -> `NUMBER`), goes through the same
+validator, and the table gets the same ownership stamp. Any other CSV no script reads is skipped as before.
+
+Opt out with `ARYX_CSV_BML_LOAD_ENGINE_TABLES=false` (restores the old skip). The workspace-table reader
+(`cpq/rdb/rdb_workspace_tables.py`) restores the `baseModel` / `displayModel` spellings that shape needs.

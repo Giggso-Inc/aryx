@@ -20,6 +20,7 @@ from aryx.csv_bml_ingestion import constants as C
 from aryx.csv_bml_ingestion.bml_index import BmlIndex, BmlLookup
 from aryx.csv_bml_ingestion.csv_reader import profile_max_bytes, read_layout
 from aryx.csv_bml_ingestion.db import ConnectionFactory, execute_statements
+from aryx.csv_bml_ingestion.engine_shapes import engine_shape_of_columns, load_engine_tables_enabled
 from aryx.csv_bml_ingestion.errors import (
     CsvBmlIngestionError, SqlArtifactsMissingError, SqlAuthoringError, SqlUnsafeError,
 )
@@ -27,7 +28,7 @@ from aryx.csv_bml_ingestion.options import IngestOptions, IngestResult
 from aryx.csv_bml_ingestion.ownership import claim_new_table, require_owned_or_absent
 from aryx.csv_bml_ingestion.overflow import OverflowPolicy
 from aryx.csv_bml_ingestion.rows_step import load_csv_into_table
-from aryx.csv_bml_ingestion.sql_author import Completer, author_sql
+from aryx.csv_bml_ingestion.sql_author import Completer, author_sql, author_sql_from_layout
 from aryx.csv_bml_ingestion.sql_catalog import load_sql_artifacts
 from aryx.csv_bml_ingestion.sql_validate import validate_statements
 from aryx.csv_bml_ingestion.table_name import extract_table_name
@@ -94,10 +95,10 @@ def ingest_csv(
 def _run(result: IngestResult, tracker: RunTracker, csv_path, bml_index: BmlIndex,
          factory: ConnectionFactory, opts: IngestOptions) -> None:
     table = _step_table_name(result, tracker, csv_path)
-    lookup = _step_bml_lookup(result, tracker, bml_index, table)
+    csv_file = Path(str(csv_path))
+    lookup = _step_bml_lookup(result, tracker, bml_index, table, csv_file)
     if lookup is None:
         return
-    csv_file = Path(str(csv_path))
     read_layout(csv_file)  # fail on a malformed CSV before any SQL is authored or run
     physical = opts.physical_table(table) if opts.physical_table else table   # only after step 2
     result.physical_table = physical
@@ -120,13 +121,23 @@ def _step_table_name(result: IngestResult, tracker: RunTracker, csv_path) -> str
 
 
 def _step_bml_lookup(result: IngestResult, tracker: RunTracker, bml_index: BmlIndex,
-                     table: str) -> BmlLookup | None:
-    """Step 2 — both sides lowercase; returns None (run skipped) when no BML query reads the table."""
+                     table: str, csv_file: Path | None = None) -> BmlLookup | None:
+    """Step 2 — both sides lowercase; returns None (run skipped) when no BML query reads the table.
+
+    A table no script reads is still loaded when the CPQ engine reads that table shape (``engine_shapes``): the
+    returned lookup then has no matches, and step 3 derives the schema from the CSV header instead of from queries.
+    """
     lookup = bml_index.lookup(table)
     result.bml_scripts = [m.label for m in lookup.matches]
     if lookup.matches:
         _log_matches(tracker, lookup)
         return lookup
+    shape = _engine_shape(csv_file) if csv_file is not None else None
+    if shape:
+        tracker.info(C.STEP_BML_LOOKUP, f"no BML query reads table {table!r}, but the engine reads this table shape "
+                     f"({shape}); loading it with a schema derived from the CSV header", table=table,
+                     engine_shape=shape, source_graph=lookup.source)
+        return BmlLookup(table=table, matches=(), near_misses=lookup.near_misses, source=lookup.source)
     result.status, result.error_code = "skipped", "CBI_BML_NOT_FOUND"
     result.message = f"no BML query reads table {table!r}" + (f" (searched the {lookup.source})" if lookup.source else "")
     tracker.error(C.STEP_BML_LOOKUP, result.message + " — skipping (no schema can be derived)",
@@ -153,11 +164,14 @@ def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: s
     try:
         artifacts = load_sql_artifacts(table, opts.sql_root)
     except SqlArtifactsMissingError:
-        if opts.sql_author is None:
-            raise
         layout = read_layout(csv_file)
-        author_sql(table, layout, profile_max_bytes(csv_file, layout), lookup, opts.sql_author, tracker,
-                   opts.sql_root)
+        if not lookup.matches:       # no script reads it: the engine does (step 2), so derive the schema from the CSV
+            author_sql_from_layout(table, layout, profile_max_bytes(csv_file, layout), tracker, opts.sql_root)
+        elif opts.sql_author is None:
+            raise
+        else:
+            author_sql(table, layout, profile_max_bytes(csv_file, layout), lookup, opts.sql_author, tracker,
+                       opts.sql_root)
         artifacts = load_sql_artifacts(table, opts.sql_root)
     try:
         validate_statements(artifacts.schema_statements, artifacts.index_statements, table)
@@ -176,3 +190,13 @@ def _step_apply_schema(tracker: RunTracker, factory: ConnectionFactory, table: s
     ran += execute_statements(factory, statements[n_schema:])
     tracker.info(C.STEP_APPLY_SCHEMA, f"applied {ran} DDL statements", table=table, physical_table=physical,
                  created=not existed)
+
+
+def _engine_shape(csv_file: Path) -> str | None:
+    """The engine Data Table shape of this CSV's columns, or None (also None when the switch is off or unreadable)."""
+    if not load_engine_tables_enabled():
+        return None
+    try:
+        return engine_shape_of_columns(read_layout(csv_file).columns)
+    except Exception:  # noqa: BLE001 -- a malformed CSV is reported by the step that reads it, not here
+        return None

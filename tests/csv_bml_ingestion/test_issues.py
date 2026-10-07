@@ -587,6 +587,9 @@ def test_a_failed_or_skipped_reupload_does_not_supersede_a_run_whose_table_is_st
     dirty = write_csv(tmp_path / "d.csv", SEQ_HEADER, ["String"] * 15,
                       [["modify", "k", "x" * 1500, "B", "", "", "a", "2", "R", "", "", "", "", "", ""]]).read_bytes()
     partial = sess.ingest(dirty, "attrSequence.csv").run_id               # loaded with a reject: A is open
+    # attrSequence is an engine table shape, which is now loaded even when no script reads it; this test is about the
+    # skipped path, so switch that loading off
+    monkeypatch.setenv("ARYX_CSV_BML_LOAD_ENGINE_TABLES", "false")
     # the same file again, but the graph lookup now finds nothing -> skipped, the table is NOT touched
     monkeypatch.setattr(sess, "_lookup", SimpleNamespace(lookup=lambda t: SimpleNamespace(
         matches=(), near_misses=(), table=t, source=""), script_count=0))
