@@ -135,3 +135,34 @@ def test_end_to_end_the_attribute_present_in_the_computed_master_is_shown_when_o
 def test_end_to_end_flag_off_keeps_the_old_undecided_behaviour():
     with _flags(False):
         assert _hidden({"modelVar": "M1", "baseVar": "B2", "countryVar": "ZZ"}) == set()
+
+
+# --- review follow-ups ---------------------------------------------------------------------------------------
+def test_each_strict_pattern_has_exactly_one_index_test_so_the_alias_derivation_stays_valid():
+    from aryx.cpq.bml import bml_hide_idioms as idioms
+    token = r'(?P=idx)\s*=='
+    for strict, alias in ((idioms._HIDE_MASTER_LIST_RE, idioms._HIDE_MASTER_LIST_ALIAS_RE),
+                          (idioms._HIDE_MASTER_LIST_UNGUARDED_RE, idioms._HIDE_MASTER_LIST_UNGUARDED_ALIAS_RE)):
+        assert strict.pattern.count(token) == 1                  # a second one would break the replace below
+        assert alias.pattern.count("(?P<tested>") == 1 and token not in alias.pattern
+
+
+def _unknown_reasons(alias: bool) -> tuple[list[str], set[str]]:
+    from aryx.cpq.hiding_rules import unknown_log
+    out: list[str] = []
+    unknown_log._SEEN.clear()
+    with _flags(alias), patch.object(unknown_log, "would_log", return_value=True), \
+            patch.object(unknown_log, "raven_log", side_effect=lambda *a, **k: out.append(k["context"]["reason_code"])):
+        hidden = _hidden({"modelVar": "M1", "baseVar": "B2", "countryVar": "ZZ"})
+    return out, hidden
+
+
+def test_an_unrecognised_idiom_is_reported_as_such_not_as_blocked():
+    reasons, hidden = _unknown_reasons(alias=False)
+    assert hidden == set()
+    assert "MASTER_SCRIPT_IDIOM_NOT_RECOGNIZED" in reasons and "MASTER_SCRIPT_EVALUATION_BLOCKED" not in reasons
+
+
+def test_with_the_alias_on_nothing_is_reported_undecided():
+    reasons, hidden = _unknown_reasons(alias=True)
+    assert hidden == {"widgetAttr"} and reasons == []

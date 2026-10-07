@@ -187,6 +187,8 @@ def _hide_with_master_string(
     if res is None and not blocked:
         res, blocked = evaluate_hide_master_list_unguarded(
             rule.script, variables, trust_empty_master=True, alias_unassigned_index=alias)
-    if blocked or res is None:
-        why.append("MASTER_SCRIPT_EVALUATION_BLOCKED")
+    if blocked:
+        why.append("MASTER_SCRIPT_EVALUATION_BLOCKED")          # the idiom matched, an input is missing
+    elif res is None:
+        why.append("MASTER_SCRIPT_IDIOM_NOT_RECOGNIZED")        # the script is not a shape the evaluator knows
     return None if blocked else res
