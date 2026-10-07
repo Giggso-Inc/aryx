@@ -13,6 +13,7 @@ batch of CSVs keeps going past one bad file.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable
 
@@ -106,6 +107,8 @@ def _run(result: IngestResult, tracker: RunTracker, csv_path, bml_index: BmlInde
         tracker.info(C.STEP_BML_LOOKUP, f"workspace table name {physical}", table=table, physical_table=physical)
     _step_apply_schema(tracker, factory, table, physical, opts, csv_file, lookup)
     load_csv_into_table(csv_file, physical, factory, opts, tracker, result, logical=table)
+    if not lookup.matches:
+        _warn_over_read_cap(tracker, table, physical, result.rows_loaded)
 
 
 def _step_table_name(result: IngestResult, tracker: RunTracker, csv_path) -> str:
@@ -198,5 +201,21 @@ def _engine_shape(csv_file: Path) -> str | None:
         return None
     try:
         return engine_shape_of_columns(read_layout(csv_file).columns)
-    except Exception:  # noqa: BLE001 -- a malformed CSV is reported by the step that reads it, not here
+    except CsvBmlIngestionError:
+        return None          # a malformed CSV is reported by the step that reads it, not here
+    except Exception:  # noqa: BLE001 -- e.g. an ImportError from the engine package: say so, then behave as before
+        logging.getLogger(__name__).warning(
+            "csv_bml_ingestion: engine table shape check failed for %s; treating it as not an engine table",
+            csv_file.name, exc_info=True)
         return None
+
+
+def _warn_over_read_cap(tracker: RunTracker, table: str, physical: str, rows_loaded: int) -> None:
+    """An engine table no script reads was loaded in full; the engine reader stops at its own row cap."""
+    from aryx.cpq.rdb.rdb_workspace_tables import MAX_ROWS_ENV, max_rows  # noqa: PLC0415
+
+    cap = max_rows()
+    if rows_loaded > cap:
+        tracker.warn(C.STEP_CSV_INGEST, f"{physical} holds {rows_loaded} rows, more than the engine reads "
+                     f"({MAX_ROWS_ENV}={cap}); the engine will see only the first {cap}", table=table,
+                     physical_table=physical, rows_loaded=rows_loaded, read_cap=cap)

@@ -132,3 +132,30 @@ def test_the_workspace_table_reader_restores_the_spelling_the_base_model_shape_n
     assert any(_is_basemodel_to_config_shaped({wt.recase(c, v) for c in columns}) for v in (0, 1))
     # the spelling the shape needs is one of the two variants the reader tries
     assert {"displayModel", "cpqModel", "baseModel"} <= {wt.recase(c, 1) for c in columns}
+
+
+# --- review follow-ups: no silent failure, row-cap warning -----------------------------------------------------
+def test_an_unexpected_failure_of_the_shape_check_is_logged_and_falls_back_to_skip(bml_index, tmp_path, monkeypatch, caplog):
+    import logging
+
+    from aryx.csv_bml_ingestion import pipeline
+
+    def boom(columns):
+        raise ImportError("engine package unavailable")
+
+    monkeypatch.setattr(pipeline, "engine_shape_of_columns", boom)
+    db = FakeDb()
+    with caplog.at_level(logging.WARNING, logger=pipeline.__name__):
+        r = ingest_csv(_base_model_csv(tmp_path), bml_index, db)
+    assert (r.status, r.error_code) == ("skipped", "CBI_BML_NOT_FOUND")
+    assert any("engine table shape check failed" in rec.getMessage() for rec in caplog.records)
+
+
+def test_a_table_over_the_engines_row_cap_is_warned_about(bml_index, tmp_path, monkeypatch):
+    monkeypatch.setenv("ARYX_CPQ_WS_TABLE_MAX_ROWS", "1")
+    warnings = []
+    from aryx.csv_bml_ingestion import pipeline
+    monkeypatch.setattr(pipeline.RunTracker, "warn", lambda self, step, msg, **kw: warnings.append((msg, kw)))
+    db = FakeDb()
+    assert ingest_csv(_base_model_csv(tmp_path), bml_index, db).rows_loaded == 2
+    assert any("more than the engine reads" in m and kw["rows_loaded"] == 2 and kw["read_cap"] == 1 for m, kw in warnings)
