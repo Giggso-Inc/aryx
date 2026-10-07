@@ -11,6 +11,7 @@ from typing import Any
 
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.catalog_hints_negation import find_negated_vns
+from aryx.cpq.catalog_hints_product import product_selector_entries
 
 
 def extract_catalog_hints(
@@ -37,14 +38,22 @@ def extract_catalog_hints(
 
     Never guesses (D2), several ways:
       - Same option text real for 2+ different attrs -> neither is
-        hinted, no tie-break. A tie-break via a distinguishing word from
-        the attr's own variable_name was tried and REJECTED after two
-        confirmed false positives: "software" in "baseline release
-        software" self-referentially anchored softwareBundlesBundleType_
-        astro (the word only overlapped because it's also in that attr's
-        own name), and "SIM" anchored selectSecondarySIMCard_astro over
-        the intended sIMCardSelection_astro (an artifact of the latter's
-        leading lowercase "s" splitting under camelCase parsing).
+        hinted, EXCEPT the one narrow case `product_selector_entries`
+        carves out: when one of the owning attrs is the platform's
+        product selector (catalog_profile.PRODUCT_LITERAL), that one
+        wins and the others stay unhinted -- a quote request names the
+        product being quoted, so the ambiguity is resolved in its favor
+        specifically (ws 1267, 2026-10-07: "APX 900" is also an option
+        of the DMS picker productSelectionDMSO_astro). Every other
+        multi-owner case is still never-guess. A broader tie-break via a
+        distinguishing word from the attr's own variable_name was tried
+        and REJECTED after two confirmed false positives: "software" in
+        "baseline release software" self-referentially anchored
+        softwareBundlesBundleType_astro (the word only overlapped
+        because it's also in that attr's own name), and "SIM" anchored
+        selectSecondarySIMCard_astro over the intended
+        sIMCardSelection_astro (an artifact of the latter's leading
+        lowercase "s" splitting under camelCase parsing).
       - A candidate phrase must be multi-word OR contain a digit/slash
         to be trusted as a positive hint, even with a single owner — a
         lone dictionary word is too easily coincidental (e.g. "SOFTWARE"
@@ -124,16 +133,15 @@ def extract_catalog_hints(
         idx = _engine_module._find_plural_tolerant(q_norm, phrase)
         if idx == -1:
             continue
-        entries = candidates[phrase]
-        owners = {vn for vn, _iv in entries}
-        if len(owners) > 1:
-            continue  # real option for 2+ different attrs — never guess
+        # 2+ owning attrs: never guess, unless one is the product selector
+        # (see product_selector_entries); [] means skip this phrase.
+        entries = product_selector_entries(candidates[phrase])
+        if not entries:
+            continue
         if len(set(entries)) > 1:
             # Same attr, but 2+ genuinely different real values share
             # this phrase (e.g. a "(4G LTE+5G)" variant suffix shared by
-            # sibling products "APX NEXT"/"APX NEXT XE") — widens once
-            # _parenthetical_suffix contributes candidate text. Never
-            # guess which one the customer meant.
+            # sibling products "APX NEXT"/"APX NEXT XE"). Never guess.
             continue
         vn, item_value = entries[0]
         if vn in hints:
