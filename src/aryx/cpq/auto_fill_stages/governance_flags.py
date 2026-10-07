@@ -134,6 +134,11 @@ def stage_governance_flags(
         # expression -- none of them gate on it either.
         or "basemodel" in state.vn_flat
     )
+    # Base model narrowing (flag): an attribute that separates the model's base models is asked, never guessed, so the
+    # derivation can fill the base model from the customer's answers.
+    narrowing = scope.base_model_narrowing
+    if narrowing is not None and not state.is_decision_attr and state.vn in narrowing.ask_first:
+        state.is_decision_attr = True
     state.is_governed = attr.entity_id in scope.governed
     state.governed_source = "rule" if attr.entity_id in scope.rule_governed else "optional"
     state.filled_multi_now = False

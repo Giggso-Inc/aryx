@@ -34,6 +34,28 @@ def _base_models(model_rows: list[dict[str, Any]]) -> set[str]:
     }
 
 
+def model_rows_and_base_models(
+    cpq_model: str, workspace_id: int, catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """The constraint rows of `cpq_model` and its real base models (blank and "ALL" excluded)."""
+    norm_model = (cpq_model or "").strip().upper()
+    if not norm_model:
+        return [], set()
+    rows = _model_rows(norm_model, workspace_id, catalog_prefix, cache)
+    return rows, _base_models(rows)
+
+
+def row_attr_values(row: dict[str, Any]) -> list[tuple[str, str]]:
+    """(attribute, UPPER-CASE value) for every attr/val slot of a constraint row that has both."""
+    out: list[tuple[str, str]] = []
+    for n in (1, *CONDITION_COLUMN_SLOTS):
+        attr = str(row.get(f"attr{n}") or "").strip()
+        value = str(row.get(f"val{n}") or "").strip().upper()
+        if attr and value:
+            out.append((attr, value))
+    return out
+
+
 def model_base_models(
     cpq_model: str, workspace_id: int, catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
 ) -> set[str]:
@@ -95,28 +117,19 @@ def explain_known_attrs(
     return out[:20]
 
 
-def derive_base_model_from_known_attrs(
-    cpq_model: str, known_attrs: dict[str, str], workspace_id: int,
-    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+def narrowed_base_models(
+    model_rows: list[dict[str, Any]], known_attrs: dict[str, str],
     ignore_attrs: frozenset[str] | set[str] = frozenset(),
-) -> str | None:
-    """The single BaseModel left after intersecting this model's real base
-    models (blank/"ALL" excluded) with every known attr/value's Whitelist
-    evidence; None when ambiguous or no coverage. Never guesses.
+) -> set[str]:
+    """The base models of `model_rows` that the known attr/value pairs leave, applied one after another in
+    `known_attrs` order (the derivation's own narrowing, shared so nothing else can drift from it).
 
-    A base model with NO rows at all for an attr is unrestricted for it, not
-    illegal: it is only excluded when it has rows for that attr and none of
-    them allow this value. `ignore_attrs` names attrs whose values are
-    guesses (blind-filled) and must not drive the derivation."""
-    norm_model = (cpq_model or "").strip().upper()
-    if not norm_model:
-        return None
-    model_rows = _model_rows(norm_model, workspace_id, catalog_prefix, cache)
+    A base model with NO rows at all for an attr is unrestricted for it, not illegal: it is only excluded when it has
+    rows for that attr and none of them allow this value. An attribute narrows only when some remaining base model
+    matches its value. `ignore_attrs` names attrs whose values are guesses and must not drive the narrowing."""
     candidates = _base_models(model_rows)
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return next(iter(candidates))
+    if len(candidates) <= 1:
+        return candidates
     for attr_name, value in known_attrs.items():
         if not value or attr_name in ignore_attrs:
             continue
@@ -134,5 +147,23 @@ def derive_base_model_from_known_attrs(
             }
             candidates &= matched | (candidates - has_rows)
         if len(candidates) == 1:
-            return next(iter(candidates))
-    return None
+            return candidates
+    return candidates
+
+
+def derive_base_model_from_known_attrs(
+    cpq_model: str, known_attrs: dict[str, str], workspace_id: int,
+    catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
+    ignore_attrs: frozenset[str] | set[str] = frozenset(),
+) -> str | None:
+    """The single BaseModel left after intersecting this model's real base
+    models (blank/"ALL" excluded) with every known attr/value's Whitelist
+    evidence (`narrowed_base_models`); None when ambiguous or no coverage.
+    Never guesses. `ignore_attrs` names attrs whose values are guesses
+    (blind-filled) and must not drive the derivation."""
+    norm_model = (cpq_model or "").strip().upper()
+    if not norm_model:
+        return None
+    remaining = narrowed_base_models(_model_rows(norm_model, workspace_id, catalog_prefix, cache),
+                                     known_attrs, ignore_attrs)
+    return next(iter(remaining)) if len(remaining) == 1 else None

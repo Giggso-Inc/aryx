@@ -721,6 +721,21 @@ class CpqIntentSettingsMixin(BaseSettings):
             "read again. Override with ARYX_CPQ_CATALOG_MODEL_KEY_TTL_SECONDS."
         ),
     )
+    cpq_base_model_narrowing_enabled: bool = Field(
+        default=False,
+        description=(
+            "Base model from the model's own answers, both directions (ws 1267, 'I want a quote for APX 900': the "
+            "base model was asked from 660 options and the typed frequency band and keypad were guessed). When on, "
+            "(1) the attributes that separate a model's base models, read from that model's own whitelist rows "
+            "(every base model has exactly one value for them and the values differ), are asked and never guessed; "
+            "(2) the base model question is deferred while one is unanswered, so the existing derivation fills it; "
+            "(3) a part-number base-model attribute the layout hides is not asked; (4) a known base model fills its "
+            "unanswered separating attributes; (5) a typed phrase owned by several attributes is hinted for the one "
+            "owner those rows use. Behaviours 1-4 also need ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED (the derivation fills "
+            "the base model); 5 does not. Off by default. "
+            "Override with ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED=true."
+        ),
+    )
     cpq_derive_base_model_enabled: bool = Field(
         default=False,
         description=(
