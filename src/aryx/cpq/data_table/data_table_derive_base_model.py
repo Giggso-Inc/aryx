@@ -42,6 +42,45 @@ def model_base_models(
     return _base_models(_model_rows(norm_model, workspace_id, catalog_prefix, cache)) if norm_model else set()
 
 
+def explain_known_attrs(
+    cpq_model: str, known_attrs: dict[str, str], workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple, Any] | None = None, ignore_attrs: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Why the known attributes do or do not narrow `cpq_model`'s base models (diagnostics only).
+
+    One entry per known attribute that some base model's rows mention: how many base models have rows for it, how
+    many of them match the known value (the same test the derivation uses), and a sample of the values those rows
+    hold (catalog data). The known value itself is never returned, so no customer text can reach a log."""
+    norm_model = (cpq_model or "").strip().upper()
+    if not norm_model:
+        return []
+    rows = _model_rows(norm_model, workspace_id, catalog_prefix, cache)
+    base_models = _base_models(rows)
+    out: list[dict[str, Any]] = []
+    for attr_name, value in known_attrs.items():
+        if not value or attr_name in ignore_attrs:
+            continue
+        norm_value = str(value).strip().upper()
+        with_rows: set[str] = set()
+        matching: set[str] = set()
+        row_values: set[str] = set()
+        for row in rows:
+            base_model = str(row.get("BaseModel") or "").strip()
+            if base_model not in base_models:
+                continue
+            for n in (1, *CONDITION_COLUMN_SLOTS):
+                if row.get(f"attr{n}") == attr_name:
+                    with_rows.add(base_model)
+                    row_values.add(str(row.get(f"val{n}") or "").strip().upper())
+            if _row_mentions(row, attr_name, norm_value):
+                matching.add(base_model)
+        if with_rows:
+            out.append({"attr": attr_name, "base_models_with_rows": len(with_rows),
+                        "base_models_matching": len(matching), "row_value_count": len(row_values),
+                        "row_values_sample": sorted(row_values)[:6]})
+    return out[:20]
+
+
 def derive_base_model_from_known_attrs(
     cpq_model: str, known_attrs: dict[str, str], workspace_id: int,
     catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
