@@ -17,7 +17,13 @@ from aryx.cpq.bml.bml_conditions import (
     _eval_boolean_expr,
     _BoolExpr,
 )
-from aryx.cpq.bml.bml_find import FIND_OP, find_enabled, find_haystack, find_hit, starts_with_if
+from aryx.cpq.bml.bml_find import (
+    FIND_OP,
+    find_haystack,
+    find_hit,
+    nested_if_enabled,
+    starts_with_if,
+)
 from aryx.cpq.bml.bml_hide_idioms import evaluate_hide_master_list, evaluate_hide_master_list_unguarded
 from aryx.cpq.bml.bml_text import _split_on_plus_outside_quotes, _split_statements
 
@@ -28,7 +34,7 @@ def _descend(body: str, variables: dict[str, str]) -> tuple[str | None, bool]:
     """Matched branch body; when it is itself an if-chain (plan F14, flag
     `cpq_find_function_enabled`) resolve the nested chain the same way.
     Flag off or a plain body: `(body, False)` -- unchanged behaviour."""
-    if find_enabled() and starts_with_if(body):
+    if nested_if_enabled() and starts_with_if(body):
         return _first_matching_branch(body, variables)
     return body, False
 

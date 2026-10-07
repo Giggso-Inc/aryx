@@ -14,7 +14,13 @@ import re
 
 from aryx.config import get_settings
 from aryx.cpq.bml.bml_conditions import _parse_boolean_expr, _parse_condition
-from aryx.cpq.bml.bml_find import find_enabled, is_plain_return, is_tail_return, starts_with_if
+from aryx.cpq.bml.bml_find import (
+    find_enabled,
+    is_plain_return,
+    is_tail_return,
+    nested_if_enabled,
+    starts_with_if,
+)
 from aryx.cpq.bml.bml_text import _find_block, _strip_block_comments, _strip_line_comments
 
 logger = logging.getLogger(__name__)
@@ -194,7 +200,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
         if block is None:
             return None
         body, after = block
-        if _if_re().search(body) and not (find_enabled() and starts_with_if(body)):
+        if _if_re().search(body) and not (nested_if_enabled() and starts_with_if(body)):
             return None  # nested if → Tier 2 (plan F14: a body that IS an if-chain is walked)
         if _TIER1_BLOCKERS.search(body):
             return None
@@ -218,7 +224,7 @@ def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] 
             if block2 is None:
                 return None
             body2, _ = block2
-            if _if_re().search(body2) and not (find_enabled() and starts_with_if(body2)):
+            if _if_re().search(body2) and not (nested_if_enabled() and starts_with_if(body2)):
                 return None
             if _TIER1_BLOCKERS.search(body2):
                 return None

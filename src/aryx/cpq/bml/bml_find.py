@@ -31,6 +31,16 @@ def find_enabled() -> bool:
     return bool(get_settings().cpq_find_function_enabled)
 
 
+def nested_if_enabled() -> bool:
+    """True when a branch body that is itself an if-chain may be walked.
+
+    Its own flag (``cpq_bml_nested_if_enabled``, on by default) or F14, which
+    first introduced nested-chain walking, turns it on.
+    """
+    settings = get_settings()
+    return bool(getattr(settings, "cpq_bml_nested_if_enabled", True)) or find_enabled()
+
+
 def match_find(cond: str) -> tuple[str, str, str] | None:
     """Match one ``find(...) <op> <n>`` clause -> ``(var, FIND_OP, packed)``.
 
