@@ -164,7 +164,7 @@ def evaluate_rules_loop(
             "passes": pass_num + 1, "total_ms": int((time.monotonic() - _loop_t0) * 1000),
             "stage_ms": {name: int(seconds * 1000) for name, seconds in state.stage_s.items()}})
     # Durably flush this turn's buffered rule-trace fires in one round
-    # trip (see rule_trace.py's record_fire/_FLUSH_BATCH_SIZE) so the
+    # trip (see rule_trace.py's record_fire/_flush_batch_size()) so the
     # trace is fully durable by the time this turn's response returns,
     # even though individual fires are no longer written one at a time.
     rule_trace.flush_pending()

@@ -1,11 +1,11 @@
 # Attribution — src/aryx/cpq/rules_loop/rules_loop.py
 
-Last updated: 2026-10-07T10:34:02.199929+00:00
+Last updated: 2026-10-07T11:00:42.962337+00:00
 Total lines: 163
-Lines AI-generated: 38 (23.3%)
+Lines AI-generated: 29 (17.8%)
 Lines human-typed: 19
 Lines joint: 0
-Lines unattributed: 106
+Lines unattributed: 115
 Owner (most recent author): m.munir@giggso.com
 
 | Line Range | Human Author | AI Model | Mode | Skill | Signed By | Commit | Date (UTC) | Reason |
@@ -24,6 +24,8 @@ Owner (most recent author): m.munir@giggso.com
 | 134-142 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.055977+00:00 |  |
 | 143-144 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.578752+00:00 | pre-commit gap — unattributed by the local hook |
 | 145-151 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:56:52.055977+00:00 |  |
-| 152-152 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.578821+00:00 | pre-commit gap — unattributed by the local hook |
-| 153-162 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-07T10:06:02.191995+00:00 |  |
+| 152-157 | m.munir@giggso.com | — | — | — | — | — | 2026-10-03T08:58:03.578821+00:00 | pre-commit gap — unattributed by the local hook |
+| 158-158 | m.munir@giggso.com | — | — | — | — | — | 2026-10-07T11:00:42.691642+00:00 | pre-commit gap — unattributed by the local hook |
+| 159-159 | m.munir@giggso.com | claude-sonnet-5 | auto | — | — | — | 2026-10-07T10:59:56.249560+00:00 |  |
+| 160-162 | m.munir@giggso.com | — | — | — | — | — | 2026-10-07T11:00:42.691899+00:00 | pre-commit gap — unattributed by the local hook |
 | 163-163 | m.munir@giggso.com | — | — | — | — | — | 2026-10-07T10:34:01.878505+00:00 | pre-commit gap — unattributed by the local hook |
