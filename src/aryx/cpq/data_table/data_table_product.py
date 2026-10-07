@@ -241,6 +241,43 @@ def resolve_sibling_models_with_sequence_rows(
     return tuple(sorted(found))
 
 
+def _alnum(text: str) -> str:
+    """Letters and digits only, upper-cased."""
+    return "".join(ch for ch in text.upper() if ch.isalnum())
+
+
+def _extends_by_letters(code: str, entry: str) -> bool:
+    """True when `code` is `entry` or continues it with a letter, never a digit (X900 must not claim X9000)."""
+    return code.startswith(entry) and not code[len(entry):len(entry) + 1].isdigit()
+
+
+def resolve_punctuated_sequence_models(
+    product_name: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> tuple[str, ...]:
+    """Sequence model codes written with punctuation (e.g. "X8/XE") for a family whose own code has no sequence rows.
+
+    Live case (ws 1267, 2026-10-07): hierarchy family APX8000SERIES lists displayCPQModel "APX 8000, APX 8000H,
+    APX 8000XE, ..." but its sequence rows sit under APX8000/XE and APX8000H/HXE/H-SRX, which no hierarchy row names.
+    Each comma-separated display entry is reduced to letters and digits; a sequence code qualifies only when it
+    contains punctuation itself and its letters-and-digits form starts with one of those entries. Nothing is returned
+    when the family already has sequence rows. Candidates are only ever added, and no model name appears here.
+    """
+    _, _, hierarchy_rows, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+    norm = (product_name or "").strip().upper()
+    matched = next((row for row in hierarchy_rows
+                    if str(row.get("Product") or "").strip().upper() == norm and row.get("cpqModelName")), None)
+    if matched is None:
+        return ()
+    sequence_models = _sequence_model_codes(workspace_id, catalog_prefix, cache)
+    if str(matched["cpqModelName"]).strip().upper() in sequence_models:
+        return ()
+    entries = {_alnum(part) for part in _hierarchy_display(matched).split(",")} - {""}
+    return tuple(sorted(
+        code for code in sequence_models
+        if not code.isalnum() and any(_extends_by_letters(_alnum(code), entry) for entry in entries)))
+
+
 def resolve_models_by_hierarchy_display(
     product_name: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,

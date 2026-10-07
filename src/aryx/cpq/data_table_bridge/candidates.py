@@ -17,14 +17,16 @@ from aryx.cpq.data_table.data_table_resolver import (
     resolve_models_by_hierarchy_display as dt_resolve_models_by_display,
     resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family,
     resolve_sibling_models_with_sequence_rows as dt_resolve_sibling_models,
+    resolve_punctuated_sequence_models as dt_resolve_punctuated_models,
     resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows,
 )
+from aryx.cpq.data_table.model_key_map import front_mapped_key as dt_front_mapped_key
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
 _TIERS = ["tier1_text_match", "tier2_model_resolution", "tier2_hierarchy_display_match", "tier3_base_model",
-          "resolved_model_prepend", "real_models_first", "static_fallback"]
+          "resolved_model_prepend", "catalog_model_key", "real_models_first", "static_fallback"]
 
 
 def _log_candidates(tier: str, result: tuple, product_name: str, workspace_id: int | None,
@@ -162,6 +164,9 @@ def _resolve_cpq_model_candidates(
         )
         if family:
             siblings = dt_resolve_sibling_models(product_name, workspace_id, catalog_prefix, cache)
+            if get_settings().cpq_catalog_model_key_enabled:
+                siblings = tuple(dict.fromkeys(
+                    (*siblings, *dt_resolve_punctuated_models(product_name, workspace_id, catalog_prefix, cache))))
             primary = tuple(m for s in siblings for m in (s, f"{s}_BOM")) + (family, f"{family}_BOM")
             tier = "tier2_model_resolution"
     if primary is None and workspace_id is not None:
@@ -193,6 +198,10 @@ def _resolve_cpq_model_candidates(
         # A turn-resolved cpqModel was put in front: the static pair is no
         # longer what callers try first, so it is not a static fallback.
         tier = "resolved_model_prepend"
+    if original != _DEFAULT_CPQ_MODEL_CANDIDATES:
+        fronted = dt_front_mapped_key(primary, product_name, workspace_id, catalog_prefix, cache)
+        if fronted != primary:
+            primary, tier = fronted, "catalog_model_key"
     if not (base_model and workspace_id is not None):
         _log_candidates(tier, primary, product_name, workspace_id)
         return primary
