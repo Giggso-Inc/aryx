@@ -34,9 +34,9 @@ class ConditionEvaluator:
                 **{key: "~".join(values) for key, values in multi.items()},
             }
             return self.scripts.condition(condition_script, variables)
-        pairs = rule.conditions or [(rule.condition_attr_id, rule.condition_value)]
+        pairs = rule.conditions or [(rule.condition_attr_id, rule.condition_value, "4")]
         grouped: dict[int, list[str]] = defaultdict(list)
-        for attribute_id, value in pairs:
+        for attribute_id, value, _operator in pairs:
             grouped[attribute_id].append(value)
         for attribute_id, values in grouped.items():
             attribute = self.by_id.get(attribute_id)

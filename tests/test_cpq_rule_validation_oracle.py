@@ -33,6 +33,23 @@ def test_oracle_tilde_condition_matches_every_member() -> None:
     assert all(outcome.hidden == frozenset({"target"}) for outcome in outcomes)
 
 
+def test_oracle_multi_row_conditions_match_on_value_not_operator() -> None:
+    """rule.conditions is [(attr_id, value, operator), ...] -- a prior bug
+    unpacked each entry as a 2-tuple and crashed with ValueError on any
+    rule using this (common, real-catalog) field instead of the single
+    condition_attr_id/condition_value pair."""
+    attrs = [_attr(1, "condition", "A", "B"), _attr(2, "target", "X")]
+    rule = HidingRule(
+        "hide target", 0, "", 2,
+        conditions=[(1, "A", "4"), (1, "B", "4")],
+    )
+    oracle = DeterministicRuleOracle(attrs, [rule], [], [])
+
+    outcomes = [oracle.evaluate_rules({"condition": value}) for value in ("A", "B")]
+
+    assert all(outcome.hidden == frozenset({"target"}) for outcome in outcomes)
+
+
 def test_oracle_conflicting_hide_show_is_order_independent() -> None:
     """Conflicting visibility actions must be reported, never list-order resolved."""
     attrs = [_attr(1, "condition", "A"), _attr(2, "target", "X")]
