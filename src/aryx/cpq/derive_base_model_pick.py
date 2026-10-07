@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
 
-def _blind_attrs(sources: dict[str, str] | None) -> frozenset[str]:
+def blind_attrs(sources: dict[str, str] | None) -> frozenset[str]:
     """Attributes whose value was guessed (blind-filled): never derivation evidence."""
     return frozenset(vn for vn, src in (sources or {}).items() if str(src).startswith(_BLIND_SOURCE_PREFIXES))
 
@@ -59,7 +59,7 @@ def derived_base_model_option(
     seen: _Seen = {"candidates": [], "results": {}, "reason": "NOT_NARROWED_TO_ONE"}
     try:
         product = filled.get("productSelectionProduct_all", "")
-        ignore = _blind_attrs(sources)
+        ignore = blind_attrs(sources)
         candidates = resolved_model_first_candidates(product, workspace_id, catalog_prefix, cache)
         seen["candidates"] = candidates
         if not candidates:
@@ -108,7 +108,7 @@ def _log_not_derived(
     try:
         if not would_log("DEBUG"):
             return
-        ignore = _blind_attrs(sources)
+        ignore = blind_attrs(sources)
         known = frozenset(k for k, v in filled.items() if v and k not in ignore)
         key = ("_derive_base_model_not_derived_logged", workspace_id, catalog_prefix,
                seen["reason"], tuple(seen["candidates"][:6]), known)
@@ -142,4 +142,4 @@ def _explain_first_model_with_rows(
     model = next((m for m in candidates if counts.get(m)), None)
     if model is None:
         return []
-    return explain_known_attrs(model, filled, workspace_id, catalog_prefix, cache, ignore_attrs=_blind_attrs(sources))
+    return explain_known_attrs(model, filled, workspace_id, catalog_prefix, cache, ignore_attrs=blind_attrs(sources))

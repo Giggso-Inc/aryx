@@ -7,6 +7,7 @@ Logic unchanged from the original inline block.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from aryx.config import get_settings
@@ -14,6 +15,34 @@ from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_o
 from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
 from aryx.cpq.engine import FillContext, FillScope
+
+logger = logging.getLogger(__name__)
+
+
+def _base_model_narrowing(
+    attrs: list[Any], filled: dict[str, str], sources: dict[str, str], display_filled: dict[str, str],
+    workspace_id: int | None, catalog_prefix: str, dt_cache: dict[tuple[int, str], tuple],
+) -> Any:
+    """The base model narrowing for this pass, or None (flag off, nothing to narrow, or any failure).
+
+    Needs the derivation flag too: without it the base model would wait for the answers and then be asked from the
+    full list anyway. A guess made earlier is reopened so the attribute is asked; an error leaves the fill exactly as
+    it was without the feature."""
+    settings = get_settings()
+    if not (settings.cpq_base_model_narrowing_enabled and settings.cpq_derive_base_model_enabled):
+        return None
+    try:
+        from aryx.cpq.base_model_narrowing import (  # noqa: PLC0415 -- flag-gated
+            build_base_model_narrowing, reopen_guessed_values,
+        )
+        narrowing = build_base_model_narrowing(
+            attrs, filled, sources, filled.get("productSelectionProduct_all", ""),
+            workspace_id, catalog_prefix, dt_cache)
+        reopen_guessed_values(narrowing, filled, display_filled, sources)
+        return narrowing
+    except Exception:  # noqa: BLE001 -- never fails the fill pass
+        logger.debug("cpq: base model narrowing failed; filling without it", exc_info=True)
+        return None
 
 
 def build_fill_context_and_scope(
@@ -87,12 +116,8 @@ def build_fill_context_and_scope(
 
     conflicted_optional_ids = compute_conflicted_optional_ids(engine, attrs, governed, rule_governed)
 
-    base_model_narrowing = None
-    if get_settings().cpq_base_model_narrowing_enabled:
-        from aryx.cpq.base_model_narrowing import build_base_model_narrowing  # noqa: PLC0415 -- flag-gated
-        base_model_narrowing = build_base_model_narrowing(
-            attrs, filled, filled_source, filled.get("productSelectionProduct_all", ""),
-            workspace_id, catalog_prefix, dt_cache)
+    base_model_narrowing = _base_model_narrowing(attrs, filled, sources, display_filled, workspace_id,
+                                                 catalog_prefix, dt_cache)
 
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,

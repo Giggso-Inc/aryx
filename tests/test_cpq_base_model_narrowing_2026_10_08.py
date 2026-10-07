@@ -194,8 +194,10 @@ def test_the_base_model_waits_while_a_separating_attribute_is_unanswered(rows):
 
 def test_the_base_model_is_asked_once_nothing_separating_is_left_unanswered(rows):
     attrs = {a.variable_name: a for a in _attrs()}
-    answered = _build(filled={FREQ: "VHF", KEYPAD: "FULL KEYPAD"}, sources={FREQ: "user", KEYPAD: "user"})
-    assert answered.ask_first == frozenset() and _base_model_stage(attrs[BASE], answered).done is False
+    # both answered: one base model is left, so there is nothing to narrow and the derivation fills it
+    assert _build(filled={FREQ: "VHF", KEYPAD: "FULL KEYPAD"}, sources={FREQ: "user", KEYPAD: "user"}) is None
+    # an explicit empty ask set also leaves the base model question alone
+    assert _base_model_stage(attrs[BASE], bmn.BaseModelNarrowing(base_model_codes=frozenset(CODES))).done is False
 
 
 def test_a_part_number_attribute_the_layout_hides_is_not_asked(rows):
@@ -207,8 +209,10 @@ def test_a_part_number_attribute_the_layout_hides_is_not_asked(rows):
 
 def test_a_part_number_attribute_the_layout_places_is_left_alone(rows):
     attrs = {a.variable_name: a for a in _attrs()}
-    answered = _build(filled={FREQ: "VHF", KEYPAD: "FULL KEYPAD"}, sources={FREQ: "user", KEYPAD: "user"})
-    assert _base_model_stage(attrs[MSL], answered, {MSL: 3}).done is False
+    ask = _build()
+    assert _base_model_stage(attrs[MSL], ask, {MSL: 3}).done is True            # still waits for the answers
+    done = bmn.BaseModelNarrowing(base_model_codes=frozenset(CODES))
+    assert _base_model_stage(attrs[MSL], done, {MSL: 3}).done is False          # placed, nothing left to wait for
 
 
 def test_with_the_flag_off_the_base_model_stage_is_unchanged(rows):
@@ -323,7 +327,8 @@ def test_the_setup_builds_the_narrowing_only_with_the_flag_on(rows):
             patch.object(auto_fill_setup, "compute_conflicted_optional_ids", return_value=set()):
         for flag, expect_none in ((False, True), (True, False)):
             with patch.object(auto_fill_setup, "get_settings",
-                              return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=flag)):
+                              return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=flag,
+                                                           cpq_derive_base_model_enabled=True)):
                 _ctx, scope = auto_fill_setup.build_fill_context_and_scope(**kwargs)
             assert (scope.base_model_narrowing is None) is expect_none
         assert scope.base_model_narrowing.ask_first == {FREQ, KEYPAD}
@@ -413,3 +418,111 @@ def test_end_to_end_a_base_model_the_customer_gives_fills_frequency_and_keypad(p
 def test_end_to_end_one_answer_still_leaves_the_other_to_ask_and_the_base_model_waiting(pipeline):
     filled, pending, _ = _fill(True, filled={FREQ: "VHF"}, sources={FREQ: "user"})
     assert KEYPAD in pending and BASE not in pending and BASE not in filled
+
+
+# --- review of #473 -----------------------------------------------------------------------------------------------
+GUESSES = ["blind_pick_rule_governed", "default_first_available"]
+
+
+@pytest.mark.parametrize("source", GUESSES)
+def test_end_to_end_an_earlier_guess_is_reopened_so_the_attribute_is_asked(pipeline, source):
+    """A session that already holds a guessed frequency band and keypad (ws 1267 has `blind_pick_rule_governed` ones)
+    must not end up with nothing asked and the base model waiting forever."""
+    filled, pending, sources = _fill(True, filled={FREQ: "VHF", KEYPAD: "FULL KEYPAD"},
+                                     sources={FREQ: source, KEYPAD: source})
+    assert {FREQ, KEYPAD} <= pending and BASE not in pending
+    assert FREQ not in filled and KEYPAD not in filled and BASE not in filled
+    assert FREQ not in sources and KEYPAD not in sources                    # the guess is forgotten with its value
+
+
+def test_end_to_end_only_the_guessed_attribute_is_reopened(pipeline):
+    filled, pending, sources = _fill(True, filled={FREQ: "VHF", KEYPAD: "FULL KEYPAD"},
+                                     sources={FREQ: "user", KEYPAD: "blind_pick_rule_governed"})
+    assert filled[FREQ] == "VHF" and sources[FREQ] == "user"                # the answer is untouched
+    assert KEYPAD in pending and KEYPAD not in filled and BASE not in pending
+
+
+def test_end_to_end_a_guessed_base_model_is_reopened_for_the_forward_fill_only_when_answered(pipeline):
+    filled, pending, _ = _fill(True, filled={BASE: "H92KDF9PW6AN"}, sources={BASE: "default_first_available"})
+    assert BASE in pending or BASE not in filled          # a guessed base model is not a known one
+    assert FREQ in pending and KEYPAD in pending
+
+
+def test_reopening_forgets_only_guessed_values_of_the_attributes_the_narrowing_uses():
+    narrowing = bmn.BaseModelNarrowing(ask_first=frozenset({FREQ}), forward={KEYPAD: "FULL KEYPAD"})
+    filled = {FREQ: "VHF", KEYPAD: "FULL KEYPAD", BASE: "x", "other_astro": "v"}
+    display = {FREQ: "Vhf", KEYPAD: "Full Keypad"}
+    sources = {FREQ: "blind_pick_rule_governed", KEYPAD: "default_first_available", BASE: "blind_pick_x",
+               "other_astro": "blind_pick_y"}
+    reopened = bmn.reopen_guessed_values(narrowing, filled, display, sources)
+    assert sorted(reopened) == sorted([FREQ, KEYPAD])
+    assert filled == {BASE: "x", "other_astro": "v"} and display == {} and set(sources) == {BASE, "other_astro"}
+    assert bmn.reopen_guessed_values(None, filled, display, sources) == []
+    assert bmn.reopen_guessed_values(narrowing, filled, display, None) == []
+
+
+def test_end_to_end_a_failure_building_the_narrowing_leaves_the_fill_as_it_was(pipeline):
+    with patch.object(bmn, "resolved_model_first_candidates", side_effect=RuntimeError("db down")):
+        filled, pending, _ = _fill(True)                                    # no exception
+    assert BASE in pending and BASE not in filled                          # asked, exactly as with the flag off
+
+
+def test_the_narrowing_needs_the_derivation_flag_too(pipeline):
+    pipeline.cpq_derive_base_model_enabled = False
+    filled, pending, _ = _fill(True)
+    assert BASE in pending                                                  # not deferred: nothing would fill it
+    pipeline.cpq_derive_base_model_enabled = True
+    assert BASE not in _fill(True)[1]
+
+
+def test_a_base_model_or_part_number_attribute_is_never_a_separating_attribute_to_ask():
+    rows = [{"CPQModel": "M", "BaseModel": bm, "attr1": MSL, "val1": part, "attr2": FREQ, "val2": band}
+            for bm, part, band in (("A", "T1", "VHF"), ("B", "T2", "UHF"))]
+    attrs = [_attr(MSL, [("T1", "T1"), ("T2", "T2")]), _attr(FREQ, [("VHF", "VHF"), ("UHF", "UHF")])]
+    with patch.object(bmn, "resolved_model_first_candidates", return_value=["M"]), \
+            patch.object(bmn, "model_rows_and_base_models", return_value=(rows, {"A", "B"})):
+        narrowing = bmn.build_base_model_narrowing(attrs, {}, None, "P", 1267, "p", {})
+    assert narrowing.ask_first == {FREQ}                                    # MSL has one value per base model too
+
+
+def test_separating_attributes_are_worked_out_over_the_base_models_the_answers_have_left():
+    """The country excludes some base models; an attribute whose value is then already decided is not asked."""
+    rows = []
+    for bm, country, band, keypad in (("A", "US", "VHF", "FULL"), ("B", "US", "VHF", "LIMITED"),
+                                       ("C", "CA", "UHF", "FULL"), ("D", "CA", "UHF", "LIMITED")):
+        rows.append({"CPQModel": "M", "BaseModel": bm, "attr1": COUNTRY, "val1": country,
+                     "attr2": FREQ, "val2": band, "attr3": KEYPAD, "val3": keypad})
+    attrs = [_attr(FREQ, [("VHF", "VHF"), ("UHF", "UHF")]), _attr(KEYPAD, [("FULL", "FULL"), ("LIMITED", "LIMITED")])]
+
+    def build(filled):
+        with patch.object(bmn, "resolved_model_first_candidates", return_value=["M"]), \
+                patch.object(bmn, "model_rows_and_base_models", return_value=(rows, {"A", "B", "C", "D"})):
+            return bmn.build_base_model_narrowing(attrs, filled, {COUNTRY: "user"}, "P", 1267, "p", {})
+
+    assert build({}).ask_first == {FREQ, KEYPAD}                            # nothing known: both separate the four
+    us = build({COUNTRY: "US"})
+    assert us.ask_first == {KEYPAD}                                         # US leaves A and B: only the keypad differs
+    assert build({COUNTRY: "US", KEYPAD: "FULL"}) is None                    # one left: the derivation fills it
+
+
+def test_a_guess_does_not_narrow_the_base_models_left():
+    rows = [{"CPQModel": "M", "BaseModel": bm, "attr1": COUNTRY, "val1": c, "attr2": FREQ, "val2": b}
+            for bm, c, b in (("A", "US", "VHF"), ("B", "CA", "UHF"))]
+    attrs = [_attr(FREQ, [("VHF", "VHF"), ("UHF", "UHF")])]
+    with patch.object(bmn, "resolved_model_first_candidates", return_value=["M"]), \
+            patch.object(bmn, "model_rows_and_base_models", return_value=(rows, {"A", "B"})):
+        guessed = bmn.build_base_model_narrowing(attrs, {COUNTRY: "US"}, {COUNTRY: "default_first_available"},
+                                                 "P", 1267, "p", {})
+    assert guessed.ask_first == {FREQ}
+
+
+def test_the_option_matching_rule_is_shared_by_the_typed_tie_break_and_the_forward_fill():
+    assert bmn.value_matches({"700/800 MHZ"}, "F700", "700/800 MHz") is True          # by display name
+    assert bmn.value_matches({"700/800 MHZ"}, "700/800 mhz", "x") is True             # by item value
+    assert bmn.value_matches({"700/800 MHZ"}, "F700", "VHF") is False
+    attrs = [_attr(FREQ, [("F700", "700/800 MHz"), ("FV", "VHF")]), _attr(ANT, [("F700", "700/800 MHz")])]
+    disc = {FREQ: frozenset({"700/800 MHZ"})}                       # the rows hold display names, not item values
+    hints = CpqEngine().extract_catalog_hints("quote for APX 900, 700/800 MHz", attrs, disc)[0]
+    assert hints == {FREQ: "F700"}
+    state = _forward(attrs[0], bmn.BaseModelNarrowing(forward={FREQ: "700/800 MHZ"}))
+    assert (state.value, state.source) == ("F700", "derived_from_base_model")

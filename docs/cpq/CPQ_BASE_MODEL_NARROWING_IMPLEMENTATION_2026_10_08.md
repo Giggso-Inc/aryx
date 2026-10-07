@@ -2,7 +2,9 @@
 
 Date: 2026-10-08. Workspace 1267 (Astro25), catalog prefix `Astro25Configdata`.
 Flag: `cpq_base_model_narrowing_enabled` (`ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED`), **off by default**.
-Needs `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true` for the derivation step that already exists.
+The fill-pass behaviours run only when `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true` is on as well (without the existing
+derivation the base model would wait for the answers and then be asked from the full list anyway). The typed-phrase
+hint tie-break needs only the narrowing flag.
 
 ## 1. The problem
 
@@ -41,12 +43,15 @@ Everything is read from the model's own whitelist rows; no model or attribute na
 
 ### 4.1 Which attributes separate a model's base models (`base_model_narrowing.single_valued_discriminators`)
 
-An attribute separates the base models of a model when:
-- **every** base model (blank and `ALL` excluded) has rows for it,
+An attribute separates the base models still **in play** when:
+- **every** one of them (blank and `ALL` excluded) has rows for it,
 - each base model holds **exactly one** value for it, and
 - at least **two different** values exist.
 
-For APX 900 that gives the frequency band and the keypad type. Left out on purpose: the country (several values per
+"In play" means the base models the known answers (the country, ...) have not already excluded, using the same
+narrowing as the derivation (`narrowed_base_models`, shared so the two cannot drift). An attribute whose value is
+already decided is therefore not asked. For APX 900 with nothing known that gives the frequency band and the keypad
+type. Left out on purpose: the country (several values per
 base model), housing (only some base models), and `productSelectionProduct_all` (the same value everywhere).
 
 ### 4.2 Per fill pass (`build_base_model_narrowing`, called from `auto_fill_setup` only when the flag is on)
@@ -56,11 +61,18 @@ The first candidate model with two or more base models is used (candidates come 
 
 | Field | Meaning |
 |---|---|
-| `ask_first` | visible, unanswered separating attributes with options, excluding the country and region keys (they have their own path). A guessed value counts as unanswered |
+| `ask_first` | visible, unanswered separating attributes with options, excluding the country and region keys (they have their own path) and any base model / part-number attribute (`basemodel` in the name). A guessed value counts as unanswered |
 | `forward` | when the customer already has a base model, `{attribute: value}` read off that base model for the unanswered separating attributes |
 | `base_model_codes` | the model's base model codes, to tell a base model attribute from a part-number one |
 
-It is `None` when there is no product, the model has fewer than two base models, or nothing separates them.
+It is `None` when there is no product, the model has fewer than two base models, nothing separates them, or the known
+answers already leave a single base model (the derivation fills it).
+
+**Earlier guesses are reopened** (`reopen_guessed_values`, in the same setup): a guessed value of an attribute the
+narrowing asks or forward-fills is forgotten (value, display and source), because the "already filled" stage keeps a
+`blind_pick_rule_governed` value and the attribute would never be asked while the base model waits for it. Only
+guesses are reopened, never an answer. Any error while building the narrowing is caught and logged at debug level, and
+the pass fills exactly as it does with the flag off.
 
 ### 4.3 The four behaviours
 
@@ -118,9 +130,8 @@ The derivation (`derive_base_model_from_known_attrs`) and the whitelist data are
 - **Flag off:** `scope.base_model_narrowing` is `None`, the hint call is the same two-argument call, and no stage changes
   an outcome (pinned by tests, including an end-to-end flag-off case that still asks the base model).
 - **One-sided:** it only changes order and fills from the model's own rows; it never overrides an answered attribute
-  (user or hint source). A guessed value is never treated as an answer, and on a fresh turn the separating attributes
-  are asked instead of guessed. (A value guessed by an earlier turn, before the flag was on, is not cleared by this
-  change.)
+  (user or hint source). A guessed value is never treated as an answer: a guess made earlier (an earlier turn, or an
+  earlier pass before the product was known) is reopened so the attribute is asked.
 - **Fallback:** if the answers still leave two or more base models, the existing always-ask base model question
   applies. Nothing is guessed.
 - **No customer text** is added to any log.
@@ -140,7 +151,7 @@ The derivation (`derive_base_model_from_known_attrs`) and the whitelist data are
 
 ## 9. Tests
 
-`tests/test_cpq_base_model_narrowing_2026_10_08.py` (33), built from the real shapes: the 10 APX 900 base models
+`tests/test_cpq_base_model_narrowing_2026_10_08.py` (44), built from the real shapes: the 10 APX 900 base models
 (5 bands × 2 keypads), the multi-owner phrases "700/800 MHz" and "Limited Keypad", and the real `auto_fill` pipeline with
 only the RDB faked.
 
@@ -150,7 +161,9 @@ only the RDB faked.
 | Build | bare quote; hidden / optionless attributes; answered; guess is not an answer; nothing to narrow |
 | Forward | known base model fills; never overrides; a guessed base model is not known |
 | Stages | decision attribute; defer and resume; part-number attribute (layout hides / places / no layout); flag off |
-| Hints | dropped today; hinted with the discriminators; exactly-one-owner rule; single owner and product selector unchanged; flag-gated and failure-safe |
+| Hints | dropped today; hinted with the discriminators (by item value or display name, the rule the forward fill uses); exactly-one-owner rule; single owner and product selector unchanged; flag-gated and failure-safe |
+| Reopening | a `blind_pick_rule_governed` or `default_first_available` guess is reopened and asked (red without the fix); only the guessed attribute; answers untouched; a build failure leaves the fill as it was; needs the derivation flag |
+| Remaining base models | an attribute decided by the country is not asked; a guessed country does not narrow; a part-number attribute is never asked |
 | End to end | bare quote asks both and not the base model; flag off asks as before; answers derive the base model; typed hints derive it; a given base model fills the two; one answer leaves the other |
 
 ## 10. Rollout and verification on dev

@@ -81,6 +81,7 @@ def extract_catalog_hints(
     q_norm, q_index_map = _engine_module._normalize_for_hint_with_map(question)
     q_lower = question.lower()
     candidates: dict[str, list[tuple[str, str]]] = {}
+    displays: dict[tuple[str, str], str] = {}      # (attribute, item value) -> display name, for the model tie-break
     # Every real option's normalized text and its owning attr(s) — used
     # for negation-suppression below regardless of word count or
     # ambiguity (suppressing a blind fallback is low-risk: worst case is
@@ -129,6 +130,7 @@ def extract_catalog_hints(
                     continue
                 candidates.setdefault(norm, []).append(
                     (attr.variable_name, opt.item_value))
+                displays[(attr.variable_name, opt.item_value)] = opt.display_name
 
     hints: dict[str, str] = {}
     for phrase in sorted(candidates, key=len, reverse=True):
@@ -137,7 +139,7 @@ def extract_catalog_hints(
             continue
         # 2+ owning attrs: never guess, unless one is the product selector
         # (see product_selector_entries); [] means skip this phrase.
-        entries = product_selector_entries(candidates[phrase], discriminators)
+        entries = product_selector_entries(candidates[phrase], discriminators, displays)
         if not entries:
             continue
         # Same attr, but 2+ genuinely different real values can share this

@@ -8,6 +8,7 @@ from aryx.raven_log import raven_log, would_log
 
 def product_selector_entries(
     entries: list[tuple[str, str]], discriminators: dict[str, frozenset[str]] | None = None,
+    displays: dict[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, str]]:
     """The (variable_name, item_value) entries a matched phrase may hint.
 
@@ -28,7 +29,9 @@ def product_selector_entries(
     models by, read from the model's own whitelist rows. When no owner is the product selector, an owner whose value
     for this phrase is one of those values is preferred, but only if exactly ONE owner qualifies (ws 1267: "700/800
     MHz" is an option of the frequency-band attribute and of several antenna attributes, "Limited Keypad" of the keypad
-    and the display-type attribute, so typing them hinted nothing and both were then guessed).
+    and the display-type attribute, so typing them hinted nothing and both were then guessed). `displays` maps an
+    entry to its option's display name; an option matches by item value or display name, the same rule the forward
+    fill uses (`base_model_narrowing.value_matches`).
     """
     owners = {vn for vn, _iv in entries}
     if len(owners) == 1:
@@ -36,7 +39,9 @@ def product_selector_entries(
     from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # lazy: avoids an import cycle
     preferred = [e for e in entries if e[0] == PRODUCT_LITERAL]
     if not preferred and discriminators:
-        by_model = [e for e in entries if e[1].strip().upper() in discriminators.get(e[0], ())]
+        from aryx.cpq.base_model_narrowing import value_matches  # noqa: PLC0415 -- flag-gated; avoids an import cycle
+        by_model = [e for e in entries
+                    if value_matches(discriminators.get(e[0], ()), e[1], (displays or {}).get(e, ""))]
         if len({vn for vn, _iv in by_model}) == 1:
             preferred = by_model
             if would_log("DEBUG"):

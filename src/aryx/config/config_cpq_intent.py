@@ -731,7 +731,8 @@ class CpqIntentSettingsMixin(BaseSettings):
             "(2) the base model question is deferred while one is unanswered, so the existing derivation fills it; "
             "(3) a part-number base-model attribute the layout hides is not asked; (4) a known base model fills its "
             "unanswered separating attributes; (5) a typed phrase owned by several attributes is hinted for the one "
-            "owner those rows use. Needs ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED for the derivation. Off by default. "
+            "owner those rows use. Behaviours 1-4 also need ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED (the derivation fills "
+            "the base model); 5 does not. Off by default. "
             "Override with ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED=true."
         ),
     )

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
+from aryx.cpq.base_model_narrowing import value_matches
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -30,7 +31,7 @@ def stage_forward_fill(
         return
     target = narrowing.forward[state.vn]
     for option in attr.options:
-        if option.item_value.strip().upper() == target or option.display_name.strip().upper() == target:
+        if value_matches({target}, option.item_value, option.display_name):
             state.value = option.item_value
             state.display = option.display_name
             state.source = "derived_from_base_model"
