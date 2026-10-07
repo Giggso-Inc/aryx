@@ -12,6 +12,7 @@ from typing import Any
 from aryx.cpq import engine as _engine_module
 from aryx.cpq.catalog_hints_negation import find_negated_vns
 from aryx.cpq.catalog_hints_product import product_selector_entries
+from aryx.cpq.catalog_hints_tie import single_entry
 
 
 def extract_catalog_hints(
@@ -138,12 +139,15 @@ def extract_catalog_hints(
         entries = product_selector_entries(candidates[phrase])
         if not entries:
             continue
-        if len(set(entries)) > 1:
-            # Same attr, but 2+ genuinely different real values share
-            # this phrase (e.g. a "(4G LTE+5G)" variant suffix shared by
-            # sibling products "APX NEXT"/"APX NEXT XE"). Never guess.
+        # Same attr, but 2+ genuinely different real values can share this
+        # phrase (e.g. a "(4G LTE+5G)" variant suffix shared by sibling
+        # products "APX NEXT"/"APX NEXT XE"). Never guess between them --
+        # unless exactly one value's own code IS the phrase, which means the
+        # customer typed that value's code rather than a shared label.
+        selected = single_entry(entries, phrase)
+        if selected is None:
             continue
-        vn, item_value = entries[0]
+        vn, item_value = selected
         if vn in hints:
             continue  # a longer, more specific phrase already matched this attr
         if _engine_module._is_negated_before(q_lower, q_index_map[idx]):
