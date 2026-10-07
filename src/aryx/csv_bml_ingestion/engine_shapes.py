@@ -16,11 +16,13 @@ __all__ = ["LOAD_ENGINE_TABLES_ENV", "engine_shape_of_columns", "load_engine_tab
 
 # Two of the engine's standalone shapes are loose as the engine defines them: country region is just countryCode +
 # region, default-in-attr is BaseModel + attr1 + val1 with no model column. A customer CSV with those columns would
-# be loaded and then read by the engine as geo / default data, so for the script-free path they must also carry the
-# distinguishing columns of the real tables (newCountryRegion has countryDesc and emsParent; defaultInAttr has
-# PartNumber and Qty). The engine's own detectors are unchanged.
-_LOOSE_SHAPE_EXTRA_COLUMNS: dict[str, frozenset[str]] = {
-    "country_region": frozenset({"countrydesc", "emsparent"}),
+# be loaded and then read by the engine as geo / default data, so for the script-free path they must also carry AT
+# LEAST ONE column that distinguishes the real table (newCountryRegion: emsParent, marketParent, regionGroup, Embargo;
+# defaultInAttr: PartNumber, Qty). One of several, so a later export that drops a single column still qualifies. This is
+# a hand-written list of the real exports' column names: it must track them (see the README); if an export drops every
+# one of them the table is skipped again with CBI_BML_NOT_FOUND. The engine's own detectors are unchanged.
+_LOOSE_SHAPE_ANY_OF_COLUMNS: dict[str, frozenset[str]] = {
+    "country_region": frozenset({"emsparent", "marketparent", "regiongroup", "embargo"}),
     "defaultinattr": frozenset({"partnumber", "qty"}),
 }
 
@@ -52,6 +54,12 @@ def engine_shape_of_columns(columns: tuple[str, ...] | list[str]) -> str | None:
         if shape:
             return shape
         for name, detector in standalone:
-            if detector(keys) and _LOOSE_SHAPE_EXTRA_COLUMNS.get(name, frozenset()) <= lowered:
+            if detector(keys) and _has_distinguishing_column(name, lowered):
                 return name
     return None
+
+
+def _has_distinguishing_column(shape: str, lowered_columns: set[str]) -> bool:
+    """True for a strict shape, or when a loose shape carries at least one column of the real table."""
+    wanted = _LOOSE_SHAPE_ANY_OF_COLUMNS.get(shape)
+    return wanted is None or bool(wanted & lowered_columns)

@@ -214,13 +214,22 @@ def test_the_real_country_region_and_default_in_attr_headers_still_qualify(heade
     assert engine_shape_of_columns(_columns(header)) == shape
 
 
+@pytest.mark.parametrize("header,shape", [
+    (["countryCode", "region", "emsParent"], "country_region"),               # one distinguishing column is enough
+    (["countryCode", "region", "regionGroup"], "country_region"),
+    (["BaseModel", "attr1", "val1", "Qty"], "defaultinattr"),
+    (["BaseModel", "attr1", "val1", "PartNumber"], "defaultinattr"),
+])
+def test_one_distinguishing_column_is_enough_so_a_later_export_dropping_another_still_loads(header, shape):
+    assert engine_shape_of_columns(_columns(header)) == shape
+
+
 @pytest.mark.parametrize("header", [
     ["countryCode", "region", "dealerName"],                       # a customer's own country/region list
-    ["countryCode", "countryDesc", "region"],                      # missing emsParent
+    ["countryCode", "countryDesc", "region"],                      # countryDesc alone is a generic column
     ["BaseModel", "attr1", "val1", "dealerName"],
-    ["BaseModel", "attr1", "val1", "PartNumber"],                  # missing Qty
 ])
-def test_loose_shapes_without_the_distinguishing_columns_are_not_loaded(header):
+def test_loose_shapes_without_a_distinguishing_column_are_not_loaded(header):
     assert engine_shape_of_columns(_columns(header)) is None
 
 
@@ -239,3 +248,12 @@ def test_an_unreferenced_new_country_region_csv_is_loaded(bml_index, tmp_path):
     db = FakeDb()
     r = ingest_csv(p, bml_index, db)
     assert (r.status, r.table, r.rows_loaded) == ("loaded", "newcountryregion", 1)
+
+
+def test_an_unreferenced_default_in_attr_csv_is_loaded(bml_index, tmp_path):
+    p = write_csv(tmp_path / "defaultInAttr.csv", DEFAULT_IN_ATTR, ["String"] * len(DEFAULT_IN_ATTR),
+                  [["modify", "k1", "B1", "attrA", "x", "", "", "P1", "1"]])
+    db = FakeDb()
+    r = ingest_csv(p, bml_index, db)
+    assert (r.status, r.table, r.rows_loaded) == ("loaded", "defaultinattr", 1)
+    assert any(e[1].startswith("CREATE TABLE IF NOT EXISTS defaultinattr") for e in db.statements("execute"))
