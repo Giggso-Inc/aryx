@@ -65,3 +65,15 @@ questions asked. Rollback: unset the flags.
 `tests/test_cpq_model_scoped_questions_2026_10_08.py` (15): tree fallback (leaf only, digit guard, table wins, flag off), scoped
 attributes (anchors, system variables, answers kept; guesses not protected; flag off unchanged), the two list consumers, the
 optional multi-select.
+
+## 8. Review follow-ups (PR #475 review, N1-N4)
+
+| # | Finding | Change |
+|---|---|---|
+| N1 | scoped drops used the same log reason as the old rule, so a replay could not tell them apart | `_suppress_ungoverned_attrs(..., scoped_out)` reports the attributes the new scoping dropped; the early pass logs them as `SUPPRESSED_NOT_IN_MODEL_SEQUENCE` (the old rule keeps `SUPPRESSED_UNGOVERNED`). Replay: `grep SUPPRESSED_NOT_IN_MODEL_SEQUENCE` |
+| N2 | the final list scoping dropped the attribute but left a rule's / guess's value in `filled` | `rules_loop._scoped_attrs` now also pops the value from `filled`, `display_filled`, `sources` and `multi`, like the early pass. `_applicable_attrs` (completeness check) only reads the list; the loop's state it runs after is already scoped |
+| N3 | the tree fallback could pick a non-model leaf whose name is in the wording | the longest name wins, and when more than one leaf still ties (the name is not unique in the tree) the model stays unresolved, so no rule is scoped out on a guess. A second catalog in the replay is still the real check |
+| N4 | prerequisites of the scoped-questions flag were not listed | its description now names `cpq_model_resolution_enabled`, `cpq_rule_scope_filter_enabled`, `cpq_base_model_placeholder_guard_enabled`, `cpq_derive_base_model_enabled` (with the base model empty it changes nothing) |
+
+Re-run locally after these changes (ws 281): APX N30 and N50 complete after "United States", 0 pending, 8 `SUPPRESSED_NOT_IN_MODEL_SEQUENCE`
+records and none of the old reason; 19 tests in `test_cpq_model_scoped_questions_2026_10_08.py` pass.

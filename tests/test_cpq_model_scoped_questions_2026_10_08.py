@@ -78,6 +78,29 @@ def test_a_longer_model_number_is_not_matched_by_a_shorter_name(flags):
     assert _resolve("APX N300").chosen.node_name == "aPXN300"        # never aPXN30 inside aPXN300
 
 
+def test_two_leaves_with_the_same_specificity_are_not_guessed(flags):
+    """Review N3: a name that is not unique in the tree (an option group sharing a model's name) must not scope rules out
+    on a guess: the model stays unresolved and nothing is filtered."""
+    flags.cpq_model_resolution_tree_fallback_enabled = True
+    nodes = dict(NODES)
+    nodes["400"] = ("APX N30", "250")                 # another leaf with the same normalised name under another parent
+    nodes["250"] = ("optionGroups", "100")
+    catalog = _catalog()
+    catalog.nodes_by_id = nodes
+    with patch.object(mr, "load_catalog", return_value=catalog):
+        assert not mr.resolve_model("I want to quote for APX N30", 1, "p").resolved
+
+
+def test_the_most_specific_leaf_still_wins_over_a_shorter_one(flags):
+    flags.cpq_model_resolution_tree_fallback_enabled = True
+    nodes = dict(NODES)
+    nodes["410"] = ("aPXN30Plus", "200")
+    catalog = _catalog()
+    catalog.nodes_by_id = nodes
+    with patch.object(mr, "load_catalog", return_value=catalog):
+        assert mr.resolve_model("quote the APX N30 Plus", 1, "p").chosen.node_name == "aPXN30Plus"
+
+
 def test_rows_of_the_table_win_over_the_tree(flags):
     flags.cpq_model_resolution_tree_fallback_enabled = True
     models = {"APXN30": {"display": {"APX N30"}, "varnames": {"aPXN30"}, "base_models": {"H15UCF9PW6AN"}, "node_id": "300"}}
@@ -147,6 +170,20 @@ def test_a_value_the_engine_only_guessed_does_not_protect_an_unlisted_attribute(
     assert "typedByCustomer_astro" in suppressed
 
 
+def test_the_scoped_drops_are_reported_apart_from_the_old_rule(flags):
+    """Review N1: `scoped_out` names exactly the attributes dropped by the new scoping, so the caller can log a distinct
+    reason and a before/after replay can tell them from what the old rule suppressed."""
+    flags.cpq_model_scoped_questions_enabled = True
+    filled = {BASE: "H15UCF9PW6AN", PRODUCT: "APX N30", "elsewhere_astro": "x"}     # the customer answered elsewhere_astro
+    scoped: set[str] = set()
+    with patch.object(ag, "resolve_base_model_vn", return_value=BASE),             patch.object(ag, "_cpq_model_candidates", return_value=["APXN30"]),             patch.object(ag, "dt_governed_attr_names_for_base_model", return_value=set(LISTED)),             patch.object(ag, "dt_attr_ever_governed_for_cpq_model", side_effect=lambda cm, vn, *a, **k: vn == "elsewhere_astro"):
+        _visible, suppressed = ag._suppress_ungoverned_attrs(
+            [_attr("plainOther_astro"), _attr("elsewhere_astro"), _attr("batteryType_astro")], filled, 1, "p", {},
+            {"elsewhere_astro": "user"}, scoped)
+    assert scoped == {"plainOther_astro"}                    # dropped by the new scoping
+    assert suppressed == {"plainOther_astro", "elsewhere_astro"}   # elsewhere_astro: the old 'tracked for another model' rule
+
+
 def test_without_the_flag_nothing_new_is_suppressed(flags):
     flags.cpq_model_scoped_questions_enabled = False
     visible, suppressed = _suppress()
@@ -158,7 +195,7 @@ class _Engine:
     def __init__(self):
         self.calls = 0
 
-    def _suppress_ungoverned_attrs(self, attrs, filled, ws, prefix, cache, sources):
+    def _suppress_ungoverned_attrs(self, attrs, filled, ws, prefix, cache, sources, scoped_out=None):
         self.calls += 1
         return [a for a in attrs if a.variable_name != "isFLASHcodeAvailable_astro"], {"isFLASHcodeAvailable_astro"}
 
@@ -179,15 +216,36 @@ def test_the_required_check_ignores_attributes_the_model_does_not_list(flags):
     assert reask._applicable_attrs(engine, attrs, _session(), None, "p") is attrs        # no workspace: unchanged
 
 
+def _loop_state():
+    return SimpleNamespace(attrs=[_attr("isFLASHcodeAvailable_astro"), _attr("batteryType_astro")],
+                           filled={"isFLASHcodeAvailable_astro": "YES", "batteryType_astro": "B"},
+                           display_filled={"isFLASHcodeAvailable_astro": "Yes"}, sources={"isFLASHcodeAvailable_astro": "rule"},
+                           multi={"isFLASHcodeAvailable_astro": ["a"]}, dt_cache={})
+
+
 def test_the_loops_returned_list_is_scoped_only_with_the_flag(flags):
     from aryx.cpq.rules_loop import rules_loop
 
-    state = SimpleNamespace(attrs=[_attr("isFLASHcodeAvailable_astro"), _attr("batteryType_astro")], filled={}, sources={}, dt_cache={})
     scope = SimpleNamespace(workspace_id=1, catalog_prefix="p")
     flags.cpq_model_scoped_questions_enabled = False
-    assert rules_loop._scoped_attrs(_Engine(), state, scope) is state.attrs
+    state = _loop_state()
+    assert rules_loop._scoped_attrs(_Engine(), state, scope) is state.attrs and "isFLASHcodeAvailable_astro" in state.filled
     flags.cpq_model_scoped_questions_enabled = True
+    state = _loop_state()
     assert [a.variable_name for a in rules_loop._scoped_attrs(_Engine(), state, scope)] == ["batteryType_astro"]
+
+
+def test_a_dropped_attribute_keeps_no_value_in_the_loops_state(flags):
+    """Review N2: the early pass pops a suppressed attribute's value from filled / display / sources / multi; the final
+    scoping of the returned list does the same, so a rule's or a guess's value does not survive for the rest of the turn."""
+    from aryx.cpq.rules_loop import rules_loop
+
+    flags.cpq_model_scoped_questions_enabled = True
+    state = _loop_state()
+    rules_loop._scoped_attrs(_Engine(), state, SimpleNamespace(workspace_id=1, catalog_prefix="p"))
+    assert "isFLASHcodeAvailable_astro" not in state.filled and "isFLASHcodeAvailable_astro" not in state.display_filled
+    assert "isFLASHcodeAvailable_astro" not in state.sources and "isFLASHcodeAvailable_astro" not in state.multi
+    assert state.filled == {"batteryType_astro": "B"}                        # the listed attribute keeps its value
 
 
 # --- an optional multi-select nothing defaults stays empty -------------------------------------------------------------

@@ -179,6 +179,15 @@ def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
             base_models=frozenset(), match="exact", is_upgrade=False,
             soft_deleted=bool(_SOFT_DELETED_RE.search(name)), match_len=len(norm),
         ))
+    if len(out) > 1:
+        # Several leaves named in the wording: keep the most specific name; if that is still more than one node (the
+        # name is not unique in the tree: an option group sharing a model's name, say), do not guess -- unresolved,
+        # so no rule is scoped out on a guess.
+        longest = max(c.match_len for c in out)
+        out = [c for c in out if c.match_len == longest]
+        if len(out) > 1:
+            logger.debug("cpq: model_resolution tree fallback ambiguous (%d leaves) -> unresolved", len(out))
+            return []
     return out
 
 

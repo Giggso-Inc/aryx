@@ -657,6 +657,9 @@ class CpqIntentSettingsMixin(BaseSettings):
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(
+            "Needs the base model to be known first: cpq_model_resolution_enabled and cpq_rule_scope_filter_enabled (so "
+            "other products' rules do not fire), cpq_base_model_placeholder_guard_enabled (so a rule's '*' is not taken "
+            "as the base model) and cpq_derive_base_model_enabled; with the base model empty it changes nothing. "
             "Once the base model is known and the model has AttrSequence rows for it, an attribute those rows do not "
             "list is not applicable: not asked and not filled, and a value an earlier pass only guessed for it is "
             "dropped (ws 281, APX N30: 'LORA Region', 'regionalSrvMgrName', ~600 attributes of other families asked or "

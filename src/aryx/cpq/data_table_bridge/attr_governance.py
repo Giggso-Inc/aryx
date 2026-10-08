@@ -84,6 +84,7 @@ def _suppress_ungoverned_attrs(
     workspace_id: int | None, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
     sources: dict[str, str] | None = None,
+    scoped_out: set[str] | None = None,
 ) -> tuple[list[ConfigAttr], set[str]]:
     """Drop attrs the real ingested attrSequence Data Table confidently
     says do NOT belong to the active base model -- returns (visible,
@@ -141,6 +142,8 @@ def _suppress_ungoverned_attrs(
             # a question of this model, whatever its name contains. The exact decision anchors the engine resolves
             # itself stay; the name-fragment protection below is for the unscoped behaviour.
             suppressed.add(vn)
+            if scoped_out is not None:
+                scoped_out.add(vn)
         elif any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
             visible.append(attr)
         elif vn in governed_names:
