@@ -33,8 +33,8 @@ The existing `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` was tried on its own: n
 | File | What |
 |---|---|
 | `cpq/base_model_defaults.py` (new) | `base_model_defaults(base_model, ...)`: the `{attribute: default}` map of one base model, built in one walk and cached in the per-turn cache (the existing `resolve_defaultinattr_value` walks the whole table per attribute; ~3,000 attributes per pass is too slow). Same rules: exact base model beats `ALL`; two distinct defaults in the winning tier = none |
-| `auto_fill_stages/tier0_base_model_default.py` (new) | stage right after the not-applicable guard and before `tier0_already_filled`. With a real (non-guessed) base model, an attribute gets its default when the default is an option of the attribute that the active constraints still allow. It replaces a value only when its source is `rule` or a guess, and not when a recommendation rule that targets the attribute is satisfied now. A value from the customer / their wording / the session (`user`, `hint`, `auto`, ...) stays. Hidden attributes, multi-selects (their own flag) and the decision anchors are not touched. The value it sets has the source `defaultinattr`, which no later pass replaces |
-| `auto_fill_stages/coordinator.py` | registers the stage |
+| `auto_fill_stages/tier0_base_model_default.py` (new) | two stages. `stage_base_model_default_clear` (right after the not-applicable guard, before `tier0_already_filled`): with a real (non-guessed) base model, empties an attribute whose earlier pick has source `rule`, a guess or `defaultinattr` and differs from the base model's default. `stage_base_model_default_fill` (after `tier2_satisfied_rec`, before `tier3_default_value`): writes the default only if the hint stage and the recommendation stage left the attribute empty. The default must be an option (matched by item value or display name) that the active constraints still allow. Values from the customer / their wording / the session (`user`, `hint`, `auto`, `data_table`) stay. Hidden attributes, multi-selects (their own flag), the decision anchors and the attributes the governance stage always asks (country, region, hardware version, select-model, base model) are not touched. The value written has the source `defaultinattr`; it is replaced when the base model changes and its default differs |
+| `auto_fill_stages/coordinator.py` | registers the two stages |
 | `config/config_cpq_intent.py`, `cpq/model_scoping_flags.py` | the flag and its one reader |
 
 ## 4. Result (local, ws 281, dev's flag set + this flag; "i want to quote APX N30 / N50 for US")
@@ -57,13 +57,16 @@ The two not matched, for both products:
 
 * Flag off: the stage returns at its first line (a settings read); nothing changes. Tests pin it.
 * Needs the base model to be derived first (the flags of #475 / #480 and `cpq_derive_base_model_enabled`).
-* A recommendation rule that only becomes satisfiable after the stage has set a default does not override it: the in-loop rule
-  application does not revisit a filled attribute (existing behaviour). The stage defers to a rule that applies at the time.
+* Precedence with the flag on: the customer's words, then a recommendation rule that applies now, then the base model's default, then
+  the generic default. This is why the work is split in two stages (review of #481: a single early stage wiped a typed hint and a
+  satisfied recommendation).
+* The base model code is compared case-insensitively, like `ALL`.
 * Replay one quote per model with the flag off and on and compare the values (a model with a `Defaultinattr` row for an attribute
   now gets that value instead of the first option).
-* Tests: `tests/test_cpq_base_model_defaults_2026_10_08.py` (14): the map (exact over ALL, ambiguous = none, built once), the
-  stage (replaces a pick and a guess; keeps a customer / hint / auto / data-table / earlier-default value; keeps a satisfied
-  recommendation; not-an-option and constrained-out defaults; hidden / multi / anchors; no real base model; flag off; stage order).
+* Tests: `tests/test_cpq_base_model_defaults_2026_10_08.py` (16, through the real `CpqEngine.auto_fill`): the map (exact over ALL,
+  ambiguous = none, case-insensitive, built once); default fill and replacement of a rule pick / a guess; a typed hint wins; a satisfied
+  recommendation wins; a base-model change replaces the old default; customer / hint / auto / data-table values stay; always-asked
+  attributes get no default; display-name defaults; not-an-option defaults unused; guessed base model; flag off; stage order.
 
 Existing tests: 45 files that mention auto_fill / the stage pipeline (755 tests, flag off): 698 pass, 47 skipped, 9 fail; the 9 are in the
 list that also fails on untouched `dev_oci` (they need the Docker-internal Oracle host name from the machine running pytest).

@@ -55,13 +55,14 @@ if TYPE_CHECKING:
 # and sets `state.done` where the original returned out of the function.
 _STAGES = (
     tier0_not_applicable_guard.stage_not_applicable_guard,
-    tier0_base_model_default.stage_base_model_default,
+    tier0_base_model_default.stage_base_model_default_clear,
     tier0_already_filled.stage_already_filled,
     tier0_already_filled_multi.stage_already_filled_multi,
     tier0_hidden.stage_hidden,
     tier0_forward_fill.stage_forward_fill,
     tier1_hint_match.stage_hint_match,
     tier2_satisfied_rec.stage_satisfied_recommendation,
+    tier0_base_model_default.stage_base_model_default_fill,
     tier3_default_value.stage_default_value,
     governance_flags.stage_governance_flags,
     region_and_base_model.stage_region_and_base_model,
