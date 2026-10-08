@@ -8,6 +8,7 @@ Logic unchanged from the original inline block.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from aryx.config import get_settings
@@ -15,8 +16,63 @@ from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_o
 from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
 from aryx.cpq.engine import FillContext, FillScope
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
+
+
+_DEPENDENCY_WARNED = False          # the missing-dependency warning is logged once per process
+
+
+def _required_ask_vns(
+    engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
+    sources: dict[str, str], display_order: dict[str, int] | None, workspace_id: int | None,
+    catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
+) -> frozenset[str]:
+    """Variable names of the derived required set the fill pass must ask, not guess (flag-gated, failure-safe).
+
+    The set is the one config_data and the summary already use (`derive_required_vns`): attrSequence R, a
+    blank-disallow rule that fires, a message-only rule that fires; visible; not filled by the catalog itself; with a
+    legal value left. A failure leaves the pass exactly as it was."""
+    settings = get_settings()
+    if not (getattr(settings, "cpq_required_set_asks_enabled", False) and workspace_id is not None):
+        return frozenset()
+    if not getattr(settings, "cpq_required_set_guards_assumed_open", False):
+        # A guarded blank-disallow rule (the TER-gated encryption rule) does not fire without it, so the set would be
+        # incomplete and the rollout different from the one that was tested: say so once per process and ask nothing extra.
+        global _DEPENDENCY_WARNED
+        if not _DEPENDENCY_WARNED:
+            _DEPENDENCY_WARNED = True
+            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the guard flag, skipped",
+                      context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
+                               "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
+        return frozenset()
+    try:
+        from aryx.cpq.fill_signature import _fill_signature  # noqa: PLC0415 -- flag-gated
+        from aryx.cpq.payload_building.required_set import derive_required_vns  # noqa: PLC0415
+
+        # The set depends on the answers and on where each value came from, so it is reused only for an identical
+        # state: the fill passes of one turn that change nothing (dt_cache lives for the turn).
+        key = ("required_ask_vns", workspace_id, catalog_prefix, product_anchor_hint or "",
+               _fill_signature(filled, filled_multi, {a.entity_id for a in attrs}), tuple(sorted(sources.items())))
+        if dt_cache is not None and key in dt_cache:
+            return dt_cache[key]
+        hidden = {a.variable_name for a in attrs if getattr(a, "hidden", False)}
+        started = time.monotonic()
+        derived = derive_required_vns(
+            engine, attrs, filled, filled_multi, sources, hidden, display_order,
+            workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.required_set.derived derived required set computed for asking", context={
+                "selected_option": "computed", "available_options": ["computed", "reused"],
+                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived),
+                "duration_ms": int((time.monotonic() - started) * 1000)})
+        if dt_cache is not None:
+            dt_cache[key] = derived
+        return derived
+    except Exception:  # noqa: BLE001 -- asking more is a nicety, never a reason to break the pass
+        logger.debug("cpq: derived required set for asking failed", exc_info=True)
+        return frozenset()
 
 
 def _base_model_narrowing(
@@ -119,6 +175,9 @@ def build_fill_context_and_scope(
     base_model_narrowing = _base_model_narrowing(attrs, filled, sources, display_filled, workspace_id,
                                                  catalog_prefix, dt_cache)
 
+    required_ask_vns = _required_ask_vns(engine, attrs, filled, filled_multi, sources, display_order,
+                                         workspace_id, catalog_prefix, product_anchor_hint, dt_cache)
+
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,
         dropped=dropped, dt_cache=dt_cache,
@@ -144,6 +203,6 @@ def build_fill_context_and_scope(
         is_pointer_default=is_pointer_default,
         satisfied_recommendation=satisfied_recommendation,
         dt_never_governed_anywhere=dt_setup.dt_never_governed_anywhere,
-        base_model_narrowing=base_model_narrowing,
+        base_model_narrowing=base_model_narrowing, required_ask_vns=required_ask_vns,
     )
     return ctx, scope

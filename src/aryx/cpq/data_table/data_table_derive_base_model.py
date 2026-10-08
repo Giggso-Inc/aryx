@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_inference import CONDITION_COLUMN_SLOTS
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
 
@@ -56,6 +57,57 @@ def row_attr_values(row: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
+def single_valued_discriminators(
+    rows: list[dict[str, Any]], base_models: set[str],
+) -> dict[str, dict[str, str]]:
+    """{attribute: {base model: UPPER value}} for the attributes that separate `base_models`.
+
+    Every base model has rows for the attribute, each base model holds exactly one value, and at least two different
+    values exist. Attributes a base model lists several values for (a country list) or only some base models use are
+    not separating, so they are left out."""
+    per_attr: dict[str, dict[str, set[str]]] = {}
+    for row in rows:
+        base_model = str(row.get("BaseModel") or "").strip()
+        if base_model not in base_models:
+            continue
+        for attr, value in row_attr_values(row):
+            per_attr.setdefault(attr, {}).setdefault(base_model, set()).add(value)
+    out: dict[str, dict[str, str]] = {}
+    for attr, by_base_model in per_attr.items():
+        if len(by_base_model) != len(base_models):
+            continue
+        if any(len(values) != 1 for values in by_base_model.values()):
+            continue
+        single = {bm: next(iter(values)) for bm, values in by_base_model.items()}
+        if len(set(single.values())) >= 2:
+            out[attr] = single
+    return out
+
+
+def _in_application_order(
+    model_rows: list[dict[str, Any]], candidates: set[str], known_attrs: dict[str, str],
+) -> list[tuple[str, str]]:
+    """`known_attrs` as the narrowing applies them.
+
+    Flag `cpq_derive_discriminators_first_enabled`. A whitelist row is "target attribute (attr1) = value, when the
+    condition columns (attr2..8) hold". An attribute that only ever appears as a condition column, of rows about OTHER
+    attributes, says when those values are legal; it does not say which base models may be sold. ws 1267, APX 900:
+    country is only ever a condition ("delete narrowbanding waiver: country US", "housing GREEN: country BR"), the two
+    700/800 MHz base models are only mentioned with BR / MX, so country US dropped them (10 -> 8) although no row
+    excludes them from the US, and the 700/800 MHz answer then matched nothing. So with the flag only two kinds of
+    known attribute narrow: the ones that separate the model's base models (each base model holds exactly one value:
+    frequency band, keypad type, the product), and the ones the rows treat as a target (attr1) somewhere. The
+    separating ones go first, the rest keep their given order. Without the flag every known attribute narrows in
+    the given order, as before."""
+    items = list(known_attrs.items())
+    if not get_settings().cpq_derive_discriminators_first_enabled:
+        return items
+    separating = single_valued_discriminators(model_rows, candidates)
+    targets = {str(row.get("attr1") or "") for row in model_rows}
+    kept = [item for item in items if item[0] in separating or item[0] in targets]
+    return sorted(kept, key=lambda item: item[0] not in separating)          # stable: the given order within a group
+
+
 def model_base_models(
     cpq_model: str, workspace_id: int, catalog_prefix: str = "", cache: dict[tuple, Any] | None = None,
 ) -> set[str]:
@@ -84,7 +136,7 @@ def explain_known_attrs(
     base_models = _base_models(rows)
     remaining = set(base_models)
     out: list[dict[str, Any]] = []
-    for order, (attr_name, value) in enumerate(known_attrs.items()):
+    for order, (attr_name, value) in enumerate(_in_application_order(rows, base_models, known_attrs)):
         if not value or attr_name in ignore_attrs:
             continue
         norm_value = str(value).strip().upper()
@@ -113,6 +165,16 @@ def explain_known_attrs(
                     "base_models_matching": len(matching), "matching_among_remaining": len(matched),
                     "remaining_before": before, "remaining_after": len(remaining),
                     "row_value_count": len(row_values), "row_values_sample": sorted(row_values)[:6]})
+    applied = {attr for attr, _value in _in_application_order(rows, base_models, known_attrs)}
+    for attr_name, value in known_attrs.items():          # the flag drops condition-only attributes: say so
+        if attr_name in applied or not value or attr_name in ignore_attrs:
+            continue
+        mentioned = {str(row.get("BaseModel") or "").strip() for row in rows
+                     if any(row.get(f"attr{n}") == attr_name for n in (1, *CONDITION_COLUMN_SLOTS))} & base_models
+        if mentioned:
+            out.append({"attr": attr_name, "applied_order": None, "skipped": "CONDITION_ONLY_ATTRIBUTE",
+                        "base_models_with_rows": len(mentioned), "matching_among_remaining": 0,
+                        "remaining_before": len(remaining), "remaining_after": len(remaining)})
     out.sort(key=lambda e: e["matching_among_remaining"] != 0)          # stable: ignored attributes first
     return out[:20]
 
@@ -130,7 +192,7 @@ def narrowed_base_models(
     candidates = _base_models(model_rows)
     if len(candidates) <= 1:
         return candidates
-    for attr_name, value in known_attrs.items():
+    for attr_name, value in _in_application_order(model_rows, candidates, known_attrs):
         if not value or attr_name in ignore_attrs:
             continue
         norm_value = str(value).strip().upper()

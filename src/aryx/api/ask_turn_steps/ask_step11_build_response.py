@@ -29,6 +29,52 @@ from aryx.cpq.auto_fill_stages import fill_log
 from aryx.raven_log import raven_log
 
 
+def _with_model_option_limits(
+    session: Any, attrs: list, filled: dict, pending: list, constrained_opts: dict, workspace_id: Any, catalog_prefix: str,
+) -> dict:
+    """`constrained_opts` plus the model's own values for the pending attributes that separate its base models.
+
+    Base model narrowing (flag): the frequency band / keypad question lists the values the model's base models hold,
+    not every option the catalog defines for the attribute. A rule's own constraint is only ever tightened. Any
+    failure leaves the options as they were."""
+    try:
+        from aryx.config import get_settings  # noqa: PLC0415
+        if not (pending and get_settings().cpq_base_model_narrowing_enabled):
+            return constrained_opts
+        from aryx.cpq.base_model_narrowing import discriminator_option_limits  # noqa: PLC0415
+        from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # noqa: PLC0415
+
+        product = (session.filled or {}).get(PRODUCT_LITERAL) or session.product_name
+        limits = discriminator_option_limits(
+            attrs, filled, session.filled_source, product, workspace_id, catalog_prefix)
+        pending_ids = {getattr(a, "entity_id", None) for a in pending}
+        limits = {eid: vals for eid, vals in limits.items() if eid in pending_ids}
+        if not limits:
+            return constrained_opts
+        merged = dict(constrained_opts)
+        for eid, vals in limits.items():
+            existing = merged.get(eid)
+            merged[eid] = vals if existing is None else [v for v in vals if v in existing] or existing
+        _log_model_limits(session, pending, limits, merged)
+        return merged
+    except Exception as exc:  # noqa: BLE001 -- never affects the question
+        raven_log("DEBUG", "P4", "ask.options.model_limits failed", context={
+            "run_id": session.run_id, "error_class": type(exc).__name__})
+        return constrained_opts
+
+
+def _log_model_limits(session: Any, pending: list, limits: dict, merged: dict) -> None:
+    """One DEBUG record per limited question: how many options are offered of how many the catalog has."""
+    for attr in pending:
+        eid = getattr(attr, "entity_id", None)
+        if eid in limits:
+            raven_log("DEBUG", "P4", "ask.options.model_limits options limited to the model's own values", context={
+                "selected_option": "limited", "available_options": ["limited", "full_list"],
+                "reason_code": "MODEL_DISCRIMINATOR_VALUES", "attribute": getattr(attr, "variable_name", None),
+                "offered_count": len(merged.get(eid) or []), "catalog_option_count": len(getattr(attr, "options", None) or []),
+                "run_id": session.run_id, "turn": getattr(session, "turn", None)})
+
+
 def _step11_build_turn_response(
     req: "Any", session: Any, attrs: list, hints: dict, visible_attrs: list,
     filled: dict, display_filled: dict, pending: list, constrained_opts: dict,
@@ -44,6 +90,8 @@ def _step11_build_turn_response(
         session.run_id, len(pending),
     )
 
+    constrained_opts = _with_model_option_limits(
+        session, visible_attrs, filled, pending, constrained_opts, req.workspace_id, catalog_prefix)
     _branch = "on_request_next_question"
     if not pending:
         _branch = "grid_gap"

@@ -187,3 +187,95 @@ only the RDB faked.
 - The order dependence of the derivation.
 - Forward-filling from a part number typed in the message (needs a mapping from part number to base model; the
   `BaseModelToConfig` table has `pvPartNumber` for only 9 rows).
+
+## Follow-up (2026-10-08): the question lists only the model's own values
+
+Live run after #473: the bot asked Keypad Type and Frequency Bands (not the 660-option base model), but listed the
+catalog's full lists (4 keypads, 20 bands) although APX 900's base models hold 2 keypads and 5 bands.
+
+`discriminator_option_limits` (`base_model_narrowing.py`) returns, per separating attribute still to ask, the item values
+the base models still in play hold. `_with_model_option_limits` (`ask_step11_build_response.py`) merges them into
+`constrained_opts` before the question is built (flag `cpq_base_model_narrowing_enabled`; only tightens an existing
+rule constraint; failure leaves the list as it was). An attribute whose options all belong to the model keeps its list.
+The shortened list is also what the next reply is matched against (`_remember_attr_scope` builds the pending scope from it), so a
+typed value that was left out gets the scoped "did you mean" re-ask from the shown list, not a silent accept. Each limited question
+logs `ask.options.model_limits` (DEBUG: offered vs catalog option count) so an over-trim is visible.
+
+## Combined PR (2026-10-08): what it contains and what to set
+
+Replaces #474 (option limits) and #477 (grid quantities) and adds the fixes found while replaying APX 900 on dev.
+
+| Change | Flag (all off by default) | Evidence |
+|---|---|---|
+| Frequency / keypad lists show only the model's own values | `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED` | 20 bands / 4 keypads shown, whitelist holds 5 / 2 |
+| Narrowing questions follow the model's AttrSequence `Seq` (frequency 33, keypad 39) | same | keypad was asked before frequency |
+| Derivation applies the separating attributes first and ignores an attribute the rows only use as a condition | `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED` | country US dropped the two 700/800 MHz base models (10 -> 8): `ask.base_model.not_derived`, `known_attr_match` |
+| "700/800 MHz" typed in the first message is hinted: the model is read from the wording, the Product is not filled yet | `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED` + `ARYX_CPQ_MODEL_RESOLUTION_ENABLED` | hints run before the turn's model is bound |
+| Grid quantity questions only for a selector the pass left pending | `ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED` | APX N30 asked 7 holders after 0 pending |
+
+Environment (dev): set `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED`, `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED`,
+`ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED` to `true`. Already on and required: `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED`,
+`ARYX_CPQ_MODEL_RESOLUTION_ENABLED`, `ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED`, `ARYX_CPQ_BASE_MODEL_PLACEHOLDER_GUARD_ENABLED`,
+`ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED`. Recreate the container (a restart does not read new variables).
+
+Replay on dev after deploy: "I want a quote for APX 900 in the US" -> frequency (5 options) then keypad (2 options) -> base model
+derived, no 660-option question; "I want a quote for APX 900 with 700/800 MHz in the US" -> only the keypad is asked.
+Also quote APX 8000H (check the derived base model is never `H91TGD9PW4AN`, which belongs to the SRX / XE models only).
+
+Not in this PR: the Product being stored as `APX900FLASHPORT` (the catalog's only "APX 900" Product item is the upgrade series).
+
+### Defaults from the Defaultinattr table (existing flag, no code change in this PR)
+
+Live run (ws 1267, APX 900, 700/800 MHz, Full Keypad, US, base model `H92UCH9PW7AN`): three "System-Configured / Recommended"
+values were first-option guesses (`blind_pick_rule_governed`, `default_first_available`) although `WS1267_DEFAULTINATTR` holds
+the real default for that base model:
+
+| Attribute | Table default | Quote showed |
+|---|---|---|
+| `antennasType_astro` | WHIP (STANDARD) | STUBBY |
+| `modelSelectionHazardousLocation_astro` | N/A | TIA4950(UL) |
+| `packingPackageType_astro` | BULK | SINGLE |
+
+The table is read only with `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` (`cpq_defaultinattr_shape_enabled`, off by default). With
+it on, the default of the known base model is used when the whitelist gave no single legal value and the default is a real option.
+Set it with the other flags and recreate the container. Replay "APX 900 in the US" (700/800 MHz, Full Keypad) and confirm the three
+values above; the table also holds defaults for about 15 more attributes of this base model (submersible NO, belt clip
+2.0 INCH (STANDARD), manual NO, operation mode DIGITAL TRUNKING (P25 PHASE I), multikey NO MULTIKEY, housing BLACK, service type
+ESSENTIAL, service duration 7 YEAR, ...). Not verified live yet: whether the flag was already on, and whether the defaults are applied
+in the same turn the base model is derived.
+
+### Ask the derived required set (flag `cpq_required_set_asks_enabled`)
+
+Live run + the user's sheet (APX 4500 Enhanced Configurations V6, APX 900 section): Encryption Type is mandatory, four options. In
+the data it is `O` (optional) in attrSequence for APX 900 (EDA, "mandatory in the sheet but not required in the data"), and the
+derived required set already lists it as required through a **blank-disallow validation rule that is TER-gated**
+(`docs/oci-oracle/ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`, APX 900: frequency bands, keypad type, country - attrSequence R,
+battery type - attrSequence R, encryption type - blank-disallow rule). Only the payload and the summary read that set, so Ask never
+asked it and the quote completed without it.
+
+With `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true` the fill pass computes the same set (`derive_required_vns`) and the governance stage
+makes each member an 'always ask, never guess' decision attribute. The catalog's own defaults and rules still run first, so a
+required attribute they fill is not asked; only the blind first-option pick is replaced by a question (battery type, for
+example, was guessed as 2900 mAh).
+
+Needs `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN=true`: the blank-disallow rule is wrapped in `if(TER <> "")`, a variable the host
+supplies; without the flag the rule does not fire and encryption is not in the set.
+
+Replay APX 900 in the US: after frequency and keypad, Encryption Type (4 options) is asked. Expect more questions than before for
+every model whose required set holds an attribute that used to be guessed or skipped; replay one quote per model before wider use.
+
+#### Verified caveats of the required-set questions
+
+- **Wider reach of `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN`.** `guard_open` reads it in two places: the derived required set and
+  `constraint_rules_apply.py` (guarded ALLOW/DISALLOW constraint rules). Setting it also lets every guarded constraint rule fire
+  when its guard variable is absent from the quote, so option narrowing changes for all models, not only encryption.
+- **More questions.** Extra required attributes beyond frequency / keypad / country, from the derived sets of the 14 products
+  (`ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`; an upper bound, catalog-filled attributes are already dropped): APX 900 2,
+  APX 1500 Enhanced 6, APX 3000 2, APX 4000 5, APX 4500 Enhanced 5, APX 6000 4, APX 6500 about 10, APX 8000 5, APX 8500 about 7,
+  APX N70 7, SRX 2200 1, **APX N30 / N50 1 (Encryption Type)**. #475 made N30 / N50 finish after "United States"; with this flag they
+  ask Encryption Type. Replay N30 / N50 before enabling it there.
+- **Cost.** Synthetic tables of the real size (47k attrSequence rows, 50k whitelist rows): one `get_constraint_vals` about 10 ms,
+  `r_flagged_names` for 4 models about 18 ms, one derivation for APX 900 (5 candidates x 4 models) about 200 ms, six fill passes
+  about 1.2 s; a model with 10-13 candidates about 2-3 s per turn (the N30 log shows `post_loop_ms` 25,689). Not measured on dev, and
+  the rule evaluation part is not in the benchmark. The set is therefore reused for an identical state within the turn
+  (`dt_cache`, key = fill signature + sources + product hint); a changed answer recomputes it.

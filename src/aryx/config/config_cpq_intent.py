@@ -352,6 +352,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "options) instead of the hand-listed tiers. Off by default."
         ),
     )
+    cpq_required_set_asks_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_required_set_guards_assumed_open. Ask asks the attributes the derived required set marks "
+            "required (attrSequence R, a blank-disallow rule, a message-only rule) instead of leaving them empty or "
+            "guessing them: they become 'always ask, never guess' decision attributes, after the catalog's own "
+            "defaults and rules have had their say. Today only the payload and the summary read the derived set, so "
+            "ws 1267, APX 900: Encryption Type (required by a blank-disallow rule, optional in attrSequence) was never "
+            "asked and the quote completed without it. Off by default. Override with "
+            "ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true."
+        ),
+    )
     cpq_required_set_guards_assumed_open: bool = Field(
         default=False,
         description=(
@@ -652,6 +664,32 @@ class CpqIntentSettingsMixin(BaseSettings):
             "(cpq/model_scope_pick.py). Off by default -- when off, "
             "behaviour is byte-identical. Override with "
             "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
+        ),
+    )
+    cpq_grid_quantity_pending_selectors_only_enabled: bool = Field(
+        default=False,
+        description=(
+            "The upfront grid-quantity flow asks a quantity for every option of a grid selector that has no selection "
+            "yet. With this flag it does that only for a selector the pass actually left pending (or one that already "
+            "holds a selection): a selector the engine decided is not applicable for the model (not-applicable guard, "
+            "model-scoped questions) is not resurrected as 7 quantity questions after auto-fill finished with 0 pending "
+            "(ws 1267, APX N30: 'hiddenConventionalOptionsMaxQuantityAry_astro', 'backplaneQuantityHolder_astro', ...). "
+            "Callers that name one selector (selector_vns) are unchanged. Off by default. Override with "
+            "ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED=true."
+        ),
+    )
+    cpq_derive_discriminators_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_derive_base_model_enabled. The base model narrowing applies every known answer as a "
+            "restriction, so an attribute the whitelist only uses as a CONDITION of other attributes' rows (country: "
+            "'delete narrowbanding waiver when country US') excludes base models that merely have no such row. With "
+            "this flag only the attributes that separate the model's base models (each holds exactly one value: "
+            "frequency band, keypad type) and the attributes the rows treat as a target narrow, the separating ones "
+            "first. ws 1267, APX 900: country US dropped the two 700/800 MHz base models (10 -> 8), the 700/800 MHz "
+            "answer then matched nothing and the base model was asked from 660 options; the same exclusion would "
+            "remove 700/800 MHz from the frequency question. Off by default. Override with "
+            "ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true."
         ),
     )
     cpq_model_scoped_questions_enabled: bool = Field(

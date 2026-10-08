@@ -13,6 +13,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.cpq.auto_fill import auto_fill_resolve, auto_fill_setup
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import log_rec_script_stats
+from aryx.cpq.base_model_narrowing import order_ask_first
 
 
 def run_auto_fill(
@@ -263,6 +264,9 @@ def run_auto_fill(
         pending = engine._attrs_confirmed_not_applicable_for_hint(
             pending, product_anchor_hint, workspace_id, catalog_prefix, _dt_cache,
         )
+
+    # Base model narrowing (flag): its questions follow the model's own AttrSequence order (no-op without a narrowing).
+    pending = order_ask_first(pending, scope.base_model_narrowing)
 
     log_rec_script_stats(scope.satisfied_recommendation)
     return ctx.filled, ctx.display_filled, pending

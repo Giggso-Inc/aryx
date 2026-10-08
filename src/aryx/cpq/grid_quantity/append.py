@@ -14,6 +14,13 @@ from aryx.cpq.grid_quantity.finalize import _finalize_grid_selections_from_quant
 from aryx.cpq.grid_quantity.links import resolve_array_grid_links
 from aryx.cpq.grid_quantity.pending import resolve_pending_grid_quantities
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log, would_log
+
+
+def _pending_selectors_only() -> bool:
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    return bool(get_settings().cpq_grid_quantity_pending_selectors_only_enabled)
 
 
 def append_pending_grid_quantities(
@@ -80,6 +87,7 @@ def append_pending_grid_quantities(
     one (Raven review, PR #283).
     """
     pre_existing_multi = set(filled_multi.keys())
+    pending_before = {a.variable_name for a in pending}
     _finalize_grid_selections_from_quantities(
         attrs, filled, filled_multi, filled_source, constrained_opts)
     links = resolve_array_grid_links(attrs)
@@ -94,6 +102,16 @@ def append_pending_grid_quantities(
         if not (a.variable_name in links and a.variable_name not in pre_existing_multi)
     ]
     seen = {a.variable_name for a in pending}
+    if selector_vns is None and _pending_selectors_only():
+        # A selector the pass did not leave pending was decided (not applicable, answered, declined): its options are
+        # not seeded as quantity questions.
+        selector_vns = {vn for vn in links if vn in pending_before or vn in filled_multi or vn in filled}
+        skipped = sorted(set(links) - selector_vns)
+        if skipped and would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.grid_quantity.selectors_skipped selectors the pass left unasked are not seeded",
+                      context={"selected_option": "skipped", "available_options": ["seeded", "skipped"],
+                               "reason_code": "SELECTOR_NOT_PENDING", "skipped_count": len(skipped),
+                               "skipped_selectors": skipped[:20]})
     for qty_attr in resolve_pending_grid_quantities(
         attrs, filled, filled_multi, constrained_opts, selector_vns=selector_vns,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix, dt_cache=dt_cache,
