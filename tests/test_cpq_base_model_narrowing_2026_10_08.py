@@ -193,7 +193,7 @@ def test_with_the_flag_off_no_attribute_changes(rows):
 def _base_model_stage(attr, narrowing, display_order=None):
     state = _state(attr)
     ctx = SimpleNamespace(filled={}, dt_cache={}, sources={})
-    with patch.object(region_and_base_model, "derived_base_model_option", return_value=None):
+    with patch.object(region_and_base_model, "derived_base_model_choice", return_value=None):
         region_and_base_model.stage_region_and_base_model(
             SimpleNamespace(), attr, ctx, _scope(narrowing, display_order), state)
     return state

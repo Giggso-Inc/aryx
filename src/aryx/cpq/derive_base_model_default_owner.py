@@ -6,6 +6,8 @@ asks the customer for details that belong to the base model (flashcode digits, b
 which of them is the model's default configuration: that base model defines defaults for every attribute its
 siblings do, and more (the band among them). With 2+ base models left it is derived only when
 
+* no attribute still separates the left base models (a frequency band or keypad each base model holds one value
+  of): that attribute is asked, the default owner is never picked over it,
 * every left base model has Defaultinattr rows (no data means no evidence),
 * exactly one of them defines defaults for a strict superset of the attributes each of the others defines, and
 * no value the customer gave (a typed answer or a wording match) differs from that base model's default for the
@@ -19,10 +21,14 @@ from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq.base_model_defaults import base_model_own_defaults
-from aryx.cpq.data_table.data_table_derive_base_model import model_rows_and_base_models, narrowed_base_models
+from aryx.cpq.data_table.data_table_derive_base_model import (
+    model_rows_and_base_models, narrowed_base_models, single_valued_discriminators,
+)
 
 # Source tags of values the customer gave (not the engine's picks).
 CUSTOMER_SOURCES = ("user", "hint")
+# The source tag of a base model derived this way: replaceable, re-checked every pass.
+DEFAULT_OWNER_SOURCE = "derived_default_owner"
 
 
 def default_owner_enabled() -> bool:
@@ -42,6 +48,8 @@ def default_owner_base_model(
     remaining = narrowed_base_models(rows, filled, ignore_attrs)
     if len(remaining) < 2:
         return None
+    if single_valued_discriminators(rows, remaining):
+        return None                # an attribute still separates them: ask it, do not pick the default owner
     own = {bm: base_model_own_defaults(bm, workspace_id, catalog_prefix, cache) for bm in remaining}
     if any(not defaults for defaults in own.values()):
         return None

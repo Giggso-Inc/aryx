@@ -31,6 +31,16 @@ The Defaultinattr table does separate them: the 700/800 MHz base model of each m
 | `cpq/derive_base_model_pick.py` | calls it when the Whitelist derivation returns None; logs `DERIVED_FROM_DEFAULT_OWNER` |
 | `config/config_cpq_intent.py` | the flag |
 
+### Review follow-ups (#488)
+
+* Only when no attribute still separates the left base models (`single_valued_discriminators`, e.g. the APX 900 band / keypad): that
+  attribute is asked, the default owner is never picked over it.
+* Its own source `derived_default_owner`; the new stage `tier0_default_owner_recheck` (after the defaults clear stage, before
+  `tier0_already_filled`) re-runs the derivation each pass and empties the base model when it no longer gives the same base model
+  through the same path (the customer named another band later), so it is derived again or asked.
+* `derived_base_model_choice` returns the path; the not-derived diagnostic carries `paths`.
+* Not done: showing the choice in the summary as "the default configuration"; the typed-band-in-the-first-message limit below.
+
 ## 4. Result (local, ws 281, dev's flags + `ARYX_CPQ_BASE_MODEL_DEFAULTS_ENABLED`)
 
 | | before | after |
