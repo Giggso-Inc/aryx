@@ -161,9 +161,14 @@ def derive_required_vns(
     filled_multi: dict[str, list[str]] | None, filled_source: dict[str, str] | None,
     hidden_vns: set[str] | None, display_order: dict[str, int] | None,
     workspace_id: int | None, catalog_prefix: str = "", product_hint: str = "",
-    cache: dict | None = None,
+    cache: dict | None = None, rule_required_only: bool = False,
 ) -> frozenset[str]:
-    """The derived required variable names (see the module docstring)."""
+    """The derived required variable names (see the module docstring).
+
+    `rule_required_only`: candidates come only from the rules (a firing blank-disallow constraint action or message-only
+    validation rule), not from attrSequence `R`. Used when the set decides what Ask must ASK: an `R` attribute the
+    engine cannot see a default for is very often filled by a script the real CPQ runs (ws 1267, APX 900: Do You Require
+    Radio FCC Trigger? is `R` on every base model, was filled YES by the blind pick, and is not red on the real screen)."""
     if not attrs or workspace_id is None:
         return frozenset()
     base_model = filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, cache), "")
@@ -175,7 +180,8 @@ def derive_required_vns(
             product, workspace_id, catalog_prefix, cache, base_model=base_model or ""))
         if get_settings().cpq_series_model_narrowing_enabled:
             models = narrow_models_by_series(models, filled, workspace_id, catalog_prefix, cache)    # plan F8
-        candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
+        if not rule_required_only:
+            candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
     rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     candidates |= rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules)
     candidates -= script_filled_quantity_vns(engine, attrs, rules[0])

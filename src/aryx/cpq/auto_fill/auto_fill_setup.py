@@ -61,11 +61,11 @@ def _required_ask_vns(
         started = time.monotonic()
         derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
-            workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache)
+            workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache, rule_required_only=True)
         if would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ask.required_set.derived derived required set computed for asking", context={
                 "selected_option": "computed", "available_options": ["computed", "reused"],
-                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived),
+                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived), "required_vns": sorted(derived)[:20],
                 "duration_ms": int((time.monotonic() - started) * 1000)})
         if dt_cache is not None:
             dt_cache[key] = derived
