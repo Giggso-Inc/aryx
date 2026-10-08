@@ -2072,14 +2072,14 @@ class CpqEngine:
     ) -> list[ConfigAttr] | None:
         return turn_intent.detect_change_request_collision(question, attrs, filled, filled_multi)
 
-    @staticmethod
     def count_turn_intents(
+        self,
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
     ) -> list[str]:
-        return turn_intent.count_turn_intents(question, attrs, filled, filled_multi)
+        return turn_intent.count_turn_intents(self, question, attrs, filled, filled_multi)
 
     @staticmethod
     def detect_attr_query(question: str, attrs: list[ConfigAttr]) -> ConfigAttr | None:

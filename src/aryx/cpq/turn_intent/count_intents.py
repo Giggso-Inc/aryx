@@ -1,8 +1,11 @@
 """``count_turn_intents`` -- read-only diagnostic counting how many
 distinct intents a single message contains (Phase 4 step 2 extraction
 from ``cpq/engine.py``, see docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md).
-Fans out to sibling turn_intent detectors; needs no engine-instance
-callback itself.
+Fans out to sibling turn_intent detectors; takes a leading ``engine``
+argument purely to forward to ``detect_change_request``/
+``detect_change_requests_multi``, which need it (see
+``change_request.py``'s module docstring) -- this function does
+nothing with it directly.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def count_turn_intents(
+    engine,
     question: str,
     attrs: list[ConfigAttr],
     filled: dict[str, str],
@@ -63,14 +67,14 @@ def count_turn_intents(
     except Exception:  # noqa: BLE001
         logger.debug("count_turn_intents: detect_change_request_collision failed", exc_info=True)
     try:
-        multi = detect_change_requests_multi(question, attrs, filled, filled_multi)
+        multi = detect_change_requests_multi(engine, question, attrs, filled, filled_multi)
         for attr, _hint in multi:
             hits.append(f"change:{attr.variable_name}")
     except Exception:  # noqa: BLE001
         logger.debug("count_turn_intents: detect_change_requests_multi failed", exc_info=True)
     if not any(h.startswith("change:") for h in hits):
         try:
-            single = detect_change_request(question, attrs, filled, filled_multi)
+            single = detect_change_request(engine, question, attrs, filled, filled_multi)
             if single:
                 hits.append(f"change:{single[0].variable_name}")
         except Exception:  # noqa: BLE001
