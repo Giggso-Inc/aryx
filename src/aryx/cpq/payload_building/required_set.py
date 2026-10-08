@@ -105,7 +105,9 @@ def rule_required_vns(
     message-only validation rule."""
     by_id = _attr_index(attrs)
     by_rule_id = _filled_by_rule_id(attrs, filled, filled_multi)
-    assume_open = get_settings().cpq_required_set_guards_assumed_open
+    settings = get_settings()
+    assume_open = bool(getattr(settings, "cpq_required_set_guards_assumed_open", False)
+                       or getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True)
     out: set[str] = set()
     _rec, con_rules = rules or engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     for rule in con_rules:

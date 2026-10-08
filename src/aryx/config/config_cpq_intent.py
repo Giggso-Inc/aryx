@@ -355,13 +355,24 @@ class CpqIntentSettingsMixin(BaseSettings):
     cpq_required_set_asks_enabled: bool = Field(
         default=False,
         description=(
-            "Needs cpq_required_set_guards_assumed_open. Ask asks the attributes the derived required set marks "
+            "Needs cpq_required_set_rule_guards_assumed_open (or the older cpq_required_set_guards_assumed_open). Ask asks the attributes the derived required set marks "
             "required (attrSequence R, a blank-disallow rule, a message-only rule) instead of leaving them empty or "
             "guessing them: they become 'always ask, never guess' decision attributes, after the catalog's own "
             "defaults and rules have had their say. Today only the payload and the summary read the derived set, so "
             "ws 1267, APX 900: Encryption Type (required by a blank-disallow rule, optional in attrSequence) was never "
             "asked and the quote completed without it. Off by default. Override with "
             "ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true."
+        ),
+    )
+    cpq_required_set_rule_guards_assumed_open: bool = Field(
+        default=False,
+        description=(
+            "Like cpq_required_set_guards_assumed_open, but read ONLY by the derived required set (rule_required_vns): "
+            "a guard variable the quote never carries (the host supplies TER in production) counts as populated, so the "
+            "TER-gated blank-disallow rule for Encryption Type is in the required set. Unlike the older setting it "
+            "does NOT change the constraint-rule applier, so option narrowing on every model keeps today's behaviour. "
+            "Use this one with cpq_required_set_asks_enabled. Off by default. Override with "
+            "ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN=true."
         ),
     )
     cpq_required_set_guards_assumed_open: bool = Field(

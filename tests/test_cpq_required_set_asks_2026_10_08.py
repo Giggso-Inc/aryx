@@ -85,7 +85,7 @@ def test_without_the_guard_flag_nothing_is_asked_and_the_missing_dependency_is_r
         _ask(True, {ENC}, cache={}, guards=False)          # another turn, same process
     assert out == frozenset() and not derive.called
     assert [c.args[2] for c in log.call_args_list].count(
-        "ask.required_set.dependency_missing asks flag needs the guard flag, skipped") == 1
+        "ask.required_set.dependency_missing asks flag needs the rule-guard flag, skipped") == 1
 
 
 def test_the_asks_helper_asks_only_for_rule_required_attributes():
@@ -95,3 +95,13 @@ def test_the_asks_helper_asks_only_for_rule_required_attributes():
         auto_fill_setup._required_ask_vns(
             SimpleNamespace(), [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
     assert derive.call_args.kwargs.get("rule_required_only") is True
+
+
+def test_the_new_rule_guard_setting_alone_satisfies_the_dependency():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=False,
+                               cpq_required_set_rule_guards_assumed_open=True)
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})):
+        out = auto_fill_setup._required_ask_vns(
+            SimpleNamespace(), [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert out == frozenset({ENC})

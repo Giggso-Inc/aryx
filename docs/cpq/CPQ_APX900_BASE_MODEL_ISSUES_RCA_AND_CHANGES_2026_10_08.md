@@ -421,3 +421,27 @@ Sources in this repo: `CPQ_REQUIRED_INPUT_DERIVATION_PLAN_2026_10_05.md` (screen
 **Not verified:** a real N30 / N50 screen **after** choosing United States. That one screenshot decides it: if Encryption Type goes red,
 the flag should be global (option B) and N30 / N50 asking it is correct; if it stays absent, something outside the rules above applies and
 needs a new RCA (a per-model list is a last resort).
+
+## Fix plan 2026-10-08 (RCA 1-3 of the "900 MHz" run) and final environment
+
+Run: "APX 900 in the US", answer 900 MHz: the quote completed with Keypad = Full and Base Model `H92WCH9PW7AN`; the summary held 5 guessed attributes
+and no Encryption Type.
+
+1. **Silent keypad.** The engine's country filter drops `H92UCF9PW6AN` and `H92WCF9PW6AN` (no US row among OTHER attributes' rows), so 900 MHz leaves one
+   base model and the keypad is forward-filled. The real UI keys band and keypad by region (NA rows exist for all 10 base models) and offers Limited and
+   Full. Fix: `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true` (code from #478, config only).
+2. **Missing attributes.** `WS1267_DEFAULTINATTR` holds 18 defaults for `H92WCH9PW7AN` (no `languageLanguageType_astro` row; an extra
+   `antennasFrequency_astro` = 900 MHZ); only 5 attributes showed, all blind picks. Fix: `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` plus PR #482 (a blind pick
+   yields to the table default once the base model is known). Battery has no default row; Language has none for WCH.
+3. **Encryption Type** (mandatory in the sheet, O in attrSequence, required by a TER-gated blank-disallow rule). Fix: the asks flag takes only
+   rule-required attributes (not attrSequence R), with its own guard setting `ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN` that only the required set
+   reads: the constraint-rule applier keeps today's behaviour on every model (the older `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` also changes it).
+
+Environment for dev (recreate the container): 
+`ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true`, `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true`, `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true`,
+`ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN=true`; keep the prerequisites listed above. Do NOT set `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN`.
+
+Replay (one step at a time): (A) answer 900 MHz: the keypad is asked with 2 options; Limited + 700/800 derives `H92UCF9PW6AN`.
+(B) the summary lists the 18 defaults (antenna Whip, hazardous N/A, carry 2.0 inch, package Bulk). (C) after band and keypad, Encryption Type is asked
+with 4 options and no FCC Trigger question appears. Expected side effect: APX N30 / N50 also ask Encryption Type (same rule); confirm with one real
+screenshot after the country is chosen.

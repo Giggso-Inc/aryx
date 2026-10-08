@@ -37,13 +37,14 @@ def _required_ask_vns(
     settings = get_settings()
     if not (getattr(settings, "cpq_required_set_asks_enabled", False) and workspace_id is not None):
         return frozenset()
-    if not getattr(settings, "cpq_required_set_guards_assumed_open", False):
+    if not (getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True
+            or getattr(settings, "cpq_required_set_guards_assumed_open", False)):
         # A guarded blank-disallow rule (the TER-gated encryption rule) does not fire without it, so the set would be
         # incomplete and the rollout different from the one that was tested: say so once per process and ask nothing extra.
         global _DEPENDENCY_WARNED
         if not _DEPENDENCY_WARNED:
             _DEPENDENCY_WARNED = True
-            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the guard flag, skipped",
+            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the rule-guard flag, skipped",
                       context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
                                "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
         return frozenset()
