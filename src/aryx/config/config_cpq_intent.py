@@ -703,6 +703,21 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true."
         ),
     )
+    cpq_base_model_defaults_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs the base model to be derived (cpq_derive_base_model_enabled and the flags that let it "
+            "resolve). Once the base model is known, an attribute the customer did not answer gets the base "
+            "model's Defaultinattr default, replacing the value an earlier pass picked before the base model "
+            "existed (the first or only option, tagged 'rule'). ws 281, APX N30: antenna STANDARD instead of "
+            "WHIP, keypad NO KEYPAD instead of LIMITED KEYPAD, data cable YES instead of NO, ... A value from "
+            "the customer, their wording, or a recommendation rule that is satisfied now is kept; the default "
+            "must be a real, currently allowed option; hidden attributes, multi-selects, the decision anchors "
+            "and the attributes the engine always asks (country, region, hardware version, select-model, "
+            "base model) are not touched. Off by default. Override with "
+            "ARYX_CPQ_BASE_MODEL_DEFAULTS_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(
@@ -743,6 +758,19 @@ class CpqIntentSettingsMixin(BaseSettings):
             "model's node, one of its ancestors, or unbound (empty). Off by "
             "default -- when off, rule loading is byte-identical. Override "
             "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
+        ),
+    )
+    cpq_defaultinattr_resolves_ambiguity_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_defaultinattr_shape_enabled. When the Whitelist leaves 2+ legal values for an attribute and the "
+            "resolved base model's Defaultinattr default is ONE of them, take that default. It does not override the "
+            "Whitelist: it breaks the tie the Whitelist leaves. Today (ws 1267, APX 900) antenna type, carry type, package "
+            "type and hazardous location were AMBIGUOUS_DISCARDED on every pass and fell to a first-option guess although "
+            "Defaultinattr names the real default (Whip (Standard), 2.0 inch, Bulk, N/A); a guessed battery then forced "
+            "hazardous to TIA-4950 (UL) through the Whitelist. A default outside the legal values, a single legal value "
+            "and an attribute without Whitelist rows behave as before. Off by default. Override with "
+            "ARYX_CPQ_DEFAULTINATTR_RESOLVES_AMBIGUITY_ENABLED=true."
         ),
     )
     cpq_defaultinattr_shape_enabled: bool = Field(

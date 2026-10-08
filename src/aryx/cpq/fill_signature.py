@@ -89,7 +89,7 @@ def _fill_signature(
     visible_ids: set[int],
 ) -> tuple:
     """docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md — a broad, unhashed
-    snapshot of everything a "default_first_available" blind guess could
+    snapshot of everything a blind guess (source "default_first_available" or any "blind_pick_*") could
     plausibly depend on: every filled single/multi value plus the current
     visible-attribute-id set (a hiding-rule-driven visibility change can
     alter legal options too, not just a value change). Deliberately NOT

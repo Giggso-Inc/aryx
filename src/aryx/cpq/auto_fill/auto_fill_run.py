@@ -64,7 +64,8 @@ def run_auto_fill(
 
     _default_fill_signatures — docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_
     2026_08_19.md: optional, mutated in place. When supplied, a
-    "default_first_available"-sourced attribute is only re-derived when
+    blind-guess-sourced attribute ("default_first_available" or any "blind_pick_*" tag, the
+    `_BLIND_SOURCE_PREFIXES` family) is only re-derived when
     `_fill_signature(...)` has changed since it was last (re)derived --
     `None` (the default) is a complete no-op, identical to every caller
     that doesn't pass it (every existing direct test call site included).
@@ -82,7 +83,7 @@ def run_auto_fill(
     pairing conflict that `_invalidate_inconsistent_paired_values`
     re-evicts every single pass without ever resolving) would otherwise
     change the WHOLE-dict signature every pass for every OTHER
-    `default_first_available` attribute too, defeating
+    blind-guess-sourced attribute too, defeating
     `_default_fill_signatures`'s gate for the entire turn even though
     only a handful of attributes are actually still in flux. Owned by
     `evaluate_rules_loop`, which grows this set only once the SAME
