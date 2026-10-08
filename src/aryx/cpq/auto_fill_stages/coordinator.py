@@ -33,6 +33,7 @@ from aryx.cpq.auto_fill_stages import (
     region_and_base_model,
     tier0_already_filled,
     tier0_base_model_default,
+    tier0_default_owner_recheck,
     tier0_already_filled_multi,
     tier0_forward_fill,
     tier0_hidden,
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
 _STAGES = (
     tier0_not_applicable_guard.stage_not_applicable_guard,
     tier0_base_model_default.stage_base_model_default_clear,
+    tier0_default_owner_recheck.stage_default_owner_recheck,
     tier0_already_filled.stage_already_filled,
     tier0_already_filled_multi.stage_already_filled_multi,
     tier0_hidden.stage_hidden,

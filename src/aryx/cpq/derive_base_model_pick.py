@@ -14,6 +14,7 @@ from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_derive_base_model import (
     derive_base_model_from_known_attrs, explain_known_attrs, model_base_models,
 )
+from aryx.cpq.derive_base_model_default_owner import CUSTOMER_SOURCES, default_owner_base_model
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
@@ -35,6 +36,7 @@ class _Seen(TypedDict):
     """What one derivation attempt saw, for the not-derived diagnostic."""
     candidates: list[str]
     results: dict[str, str | None]
+    paths: dict[str, str]              # candidate -> the path that produced its result (when it has one)
     reason: str
 
 
@@ -44,19 +46,30 @@ def derived_base_model_option(
     cache: dict[tuple[int, str], tuple] | None,
     sources: dict[str, str] | None = None,
 ) -> MenuOption | None:
-    """The Base Model option derived from `filled`, or None (flag off / no
-    workspace / no options / not narrowed to one real option). Never raises. When `sources` (the
-    per-turn source tags) is given, blind-filled values (source tag starting
-    ``blind_pick`` or ``default_first_available``) are not used as evidence.
+    """The Base Model option derived from `filled` (see `derived_base_model_choice`), or None."""
+    choice = derived_base_model_choice(options, filled, workspace_id, catalog_prefix, cache, sources)
+    return None if choice is None else choice[0]
+
+
+def derived_base_model_choice(
+    options: list[MenuOption], filled: dict[str, str],
+    workspace_id: int | None, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+    sources: dict[str, str] | None = None,
+) -> tuple[MenuOption, str] | None:
+    """(Base Model option, the path that derived it: ``DERIVED_FROM_KNOWN_ATTRS`` or
+    ``DERIVED_FROM_DEFAULT_OWNER``) derived from `filled`, or None (flag off / no workspace / no options / not
+    narrowed to one real option). Never raises. When `sources` (the per-turn source tags) is given, blind-filled
+    values (source tag starting ``blind_pick`` or ``default_first_available``) are not used as evidence.
 
     When nothing is derived and DEBUG is on, the diagnostic records why. With several candidate models its
     `reason_code` describes the last candidate that produced a code (`DERIVED_CODE_NOT_AN_OPTION`) and otherwise
-    `NOT_NARROWED_TO_ONE`; `results` has each candidate's own outcome."""
+    `NOT_NARROWED_TO_ONE`; `results` has each candidate's own outcome and `paths` the path of each derived one."""
     if workspace_id is None or not options:
         return None
     if not get_settings().cpq_derive_base_model_enabled:
         return None
-    seen: _Seen = {"candidates": [], "results": {}, "reason": "NOT_NARROWED_TO_ONE"}
+    seen: _Seen = {"candidates": [], "results": {}, "paths": {}, "reason": "NOT_NARROWED_TO_ONE"}
     try:
         product = filled.get("productSelectionProduct_all", "")
         ignore = blind_attrs(sources)
@@ -64,12 +77,20 @@ def derived_base_model_option(
         seen["candidates"] = candidates
         if not candidates:
             seen["reason"] = "NO_CANDIDATE_MODEL_PRODUCT_BLANK" if not product else "NO_CANDIDATE_MODEL"
+        customer = frozenset(vn for vn, src in (sources or {}).items() if src in CUSTOMER_SOURCES)
         for cpq_model in candidates:
             derived = derive_base_model_from_known_attrs(
                 cpq_model, filled, workspace_id, catalog_prefix, cache,
                 ignore_attrs=ignore,
             )
+            reason_code = "DERIVED_FROM_KNOWN_ATTRS"
+            if derived is None:
+                derived = default_owner_base_model(cpq_model, filled, workspace_id, catalog_prefix, cache,
+                                                   ignore, customer)
+                reason_code = "DERIVED_FROM_DEFAULT_OWNER"
             seen["results"][cpq_model] = derived
+            if derived is not None:
+                seen["paths"][cpq_model] = reason_code
             if derived is None:
                 continue
             match = next((o for o in options if o.item_value == derived), None)
@@ -79,9 +100,9 @@ def derived_base_model_option(
             logger.info("cpq: derived_base_model cpq_model=%r derived=%r", cpq_model, derived)
             raven_log("INFO", "P4", "ask.base_model.derived base model derived from known attributes",
                       context={"selected_option": derived, "available_options": [o.item_value for o in options][:20],
-                               "reason_code": "DERIVED_FROM_KNOWN_ATTRS", "policy_version": "derive_base_model_v1",
+                               "reason_code": reason_code, "policy_version": "derive_base_model_v1",
                                "cpq_model": cpq_model, "ignored_blind_attrs": len(ignore)})
-            return match
+            return match, reason_code
     except Exception as exc:  # noqa: BLE001 -- derivation must never break the fill pass
         logger.exception("cpq: derive base model failed")
         raven_log("WARN", "P3", "ask.base_model.derive_failed derivation skipped, fill pass continues",
@@ -127,6 +148,7 @@ def _log_not_derived(
             "reason_code": reason, "candidates": seen["candidates"][:6],
             "base_models_per_candidate": counts,
             "results": {m: r for m, r in list(seen["results"].items())[:6]},
+            "paths": dict(list(seen["paths"].items())[:6]),
             "option_count": len(options), "product_filled": bool(filled.get("productSelectionProduct_all")),
             "known_attr_count": sum(1 for v in filled.values() if v), "known_attr_match": explained,
             "blind_attr_count": len(ignore)})

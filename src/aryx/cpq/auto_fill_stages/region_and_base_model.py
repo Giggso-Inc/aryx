@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
-from aryx.cpq.derive_base_model_pick import derived_base_model_option
+from aryx.cpq.derive_base_model_default_owner import DEFAULT_OWNER_SOURCE
+from aryx.cpq.derive_base_model_pick import derived_base_model_choice
 
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
@@ -58,14 +59,16 @@ def stage_region_and_base_model(
     # Port of aryxent D10 (PR 8): no per-region default -- derive the base
     # model from the attrs already known this turn. Flag-gated no-op.
     if not state.value and "basemodel" in state.vn_flat and attr.options:
-        derived = derived_base_model_option(
+        choice = derived_base_model_choice(
             attr.options, ctx.filled, scope.workspace_id, scope.catalog_prefix, ctx.dt_cache,
             sources=ctx.sources,
         )
-        if derived is not None:
+        if choice is not None:
+            derived, path = choice
             state.value = derived.item_value
             state.display = derived.display_name
-            state.source = "derived_from_known_attrs"
+            # The default owner's pick has its own source: it is re-checked every pass (tier0_default_owner_recheck).
+            state.source = DEFAULT_OWNER_SOURCE if path == "DERIVED_FROM_DEFAULT_OWNER" else "derived_from_known_attrs"
 
     _defer_base_model_question(attr, scope, state)
 
