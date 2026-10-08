@@ -263,3 +263,19 @@ supplies; without the flag the rule does not fire and encryption is not in the s
 
 Replay APX 900 in the US: after frequency and keypad, Encryption Type (4 options) is asked. Expect more questions than before for
 every model whose required set holds an attribute that used to be guessed or skipped; replay one quote per model before wider use.
+
+#### Verified caveats of the required-set questions
+
+- **Wider reach of `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN`.** `guard_open` reads it in two places: the derived required set and
+  `constraint_rules_apply.py` (guarded ALLOW/DISALLOW constraint rules). Setting it also lets every guarded constraint rule fire
+  when its guard variable is absent from the quote, so option narrowing changes for all models, not only encryption.
+- **More questions.** Extra required attributes beyond frequency / keypad / country, from the derived sets of the 14 products
+  (`ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`; an upper bound, catalog-filled attributes are already dropped): APX 900 2,
+  APX 1500 Enhanced 6, APX 3000 2, APX 4000 5, APX 4500 Enhanced 5, APX 6000 4, APX 6500 about 10, APX 8000 5, APX 8500 about 7,
+  APX N70 7, SRX 2200 1, **APX N30 / N50 1 (Encryption Type)**. #475 made N30 / N50 finish after "United States"; with this flag they
+  ask Encryption Type. Replay N30 / N50 before enabling it there.
+- **Cost.** Synthetic tables of the real size (47k attrSequence rows, 50k whitelist rows): one `get_constraint_vals` about 10 ms,
+  `r_flagged_names` for 4 models about 18 ms, one derivation for APX 900 (5 candidates x 4 models) about 200 ms, six fill passes
+  about 1.2 s; a model with 10-13 candidates about 2-3 s per turn (the N30 log shows `post_loop_ms` 25,689). Not measured on dev, and
+  the rule evaluation part is not in the benchmark. The set is therefore reused for an identical state within the turn
+  (`dt_cache`, key = fill signature + sources + product hint); a changed answer recomputes it.

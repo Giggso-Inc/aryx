@@ -33,12 +33,22 @@ def _required_ask_vns(
     if not (getattr(settings, "cpq_required_set_asks_enabled", False) and workspace_id is not None):
         return frozenset()
     try:
-        from aryx.cpq.payload_building.required_set import derive_required_vns  # noqa: PLC0415 -- flag-gated
+        from aryx.cpq.fill_signature import _fill_signature  # noqa: PLC0415 -- flag-gated
+        from aryx.cpq.payload_building.required_set import derive_required_vns  # noqa: PLC0415
 
+        # The set depends on the answers and on where each value came from, so it is reused only for an identical
+        # state: the fill passes of one turn that change nothing (dt_cache lives for the turn).
+        key = ("required_ask_vns", workspace_id, catalog_prefix, product_anchor_hint or "",
+               _fill_signature(filled, filled_multi, {a.entity_id for a in attrs}), tuple(sorted(sources.items())))
+        if dt_cache is not None and key in dt_cache:
+            return dt_cache[key]
         hidden = {a.variable_name for a in attrs if getattr(a, "hidden", False)}
-        return derive_required_vns(
+        derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
             workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache)
+        if dt_cache is not None:
+            dt_cache[key] = derived
+        return derived
     except Exception:  # noqa: BLE001 -- asking more is a nicety, never a reason to break the pass
         logger.debug("cpq: derived required set for asking failed", exc_info=True)
         return frozenset()

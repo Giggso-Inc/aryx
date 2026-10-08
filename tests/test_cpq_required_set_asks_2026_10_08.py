@@ -22,13 +22,14 @@ def _attr(vn):
                       default_value="", select_type="single", hidden=False, options=[])
 
 
-def _ask(flag, derived=None, raises=False, workspace_id=1267):
+def _ask(flag, derived=None, raises=False, workspace_id=1267, cache=None, filled=None):
     settings = SimpleNamespace(cpq_required_set_asks_enabled=flag)
     side = {"side_effect": RuntimeError("boom")} if raises else {"return_value": frozenset(derived or ())}
     with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
             patch("aryx.cpq.payload_building.required_set.derive_required_vns", **side) as derive:
         out = auto_fill_setup._required_ask_vns(
-            SimpleNamespace(), [_attr(ENC), _attr(OTHER)], {}, {}, {}, None, workspace_id, "p", "APX 900", {})
+            SimpleNamespace(), [_attr(ENC), _attr(OTHER)], dict(filled or {}), {}, {}, None, workspace_id, "p",
+            "APX 900", {} if cache is None else cache)
     return out, derive
 
 
@@ -66,3 +67,12 @@ def test_a_required_attribute_becomes_a_decision_attribute_and_others_are_untouc
     assert _governance(_attr(ENC), {ENC}).is_decision_attr is True
     assert _governance(_attr(OTHER), {ENC}).is_decision_attr is False
     assert _governance(_attr(ENC), set()).is_decision_attr is False
+
+
+def test_an_identical_state_reuses_the_set_and_a_changed_answer_recomputes_it():
+    cache: dict = {}
+    first, derive = _ask(True, {ENC}, cache=cache)
+    again, derive_again = _ask(True, {ENC}, cache=cache)
+    assert first == again == frozenset({ENC}) and derive.call_count == 1 and derive_again.call_count == 0
+    changed, derive_changed = _ask(True, {OTHER}, cache=cache, filled={"modelSelectionKeypadType_astro": "FULL KEYPAD"})
+    assert changed == frozenset({OTHER}) and derive_changed.call_count == 1          # a new answer, a new set
