@@ -8,6 +8,7 @@ wrapper over already-external ``data_table_resolver`` calls.
 from __future__ import annotations
 
 from aryx.cpq.catalog_profile import resolve_base_model_vn
+from aryx.cpq.model_scoping_flags import scoped_anchor_vns, scoped_questions_enabled
 from aryx.cpq.data_table_bridge.candidates import _cpq_model_candidates
 from aryx.cpq.data_table.data_table_resolver import (
     attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model,
@@ -46,21 +47,6 @@ _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
     "modelSelectionFrequencyBands_astro",
     "modelSelectionFrequencyBandPlus_astro",
 })
-
-
-def _scoped_questions_on() -> bool:
-    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
-
-    return bool(get_settings().cpq_model_scoped_questions_enabled)
-
-
-def _scoped_anchor_vns() -> frozenset[str]:
-    """The exact variable names the engine resolves itself (country, hardware version, product, base model, region).
-    They are kept even when the model's sequence rows do not list them."""
-    from aryx.cpq.catalog_profile import REGION_LITERAL  # noqa: PLC0415
-    from aryx.cpq.fill_signature import _DECISION_ANCHOR_VNS  # noqa: PLC0415
-
-    return frozenset((*_DECISION_ANCHOR_VNS, REGION_LITERAL))
 
 
 # Sources of a value that came from the customer or the engine's own context (their wording, an answer, the account /
@@ -129,8 +115,8 @@ def _suppress_ungoverned_attrs(
         if s:
             governed_names |= s
 
-    scoped_questions = _scoped_questions_on()
-    anchors = _scoped_anchor_vns() if scoped_questions else frozenset()
+    scoped_questions = scoped_questions_enabled()
+    anchors = scoped_anchor_vns() if scoped_questions else frozenset()
     visible: list[ConfigAttr] = []
     suppressed: set[str] = set()
     for attr in attrs:

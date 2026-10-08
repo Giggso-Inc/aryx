@@ -79,3 +79,39 @@ Re-run locally after these changes (ws 281): APX N30 and N50 complete after "Uni
 records and none of the old reason; 19 tests in `test_cpq_model_scoped_questions_2026_10_08.py` pass.
 
 | N5 | the tie rule was by name length, so two different models named together stayed unresolved, and an upgrade leaf with the same name made the fallback do nothing | `_tree_candidates` now builds `is_upgrade` from `upgrade_node_ids`, prefers a sellable (non-upgrade, non-soft-deleted) leaf, then the longest name, and leaves different models of equal length to `rank_candidates` (as on the table path). Only the SAME name on several leaves stays unresolved. 2 new tests (21 in the file) |
+
+## 9. Dev finding: the not-applicable guard cleared the base model (ws 1267)
+
+Dev still asked `hiddenConventionalOptionsMaxQuantityAry_astro` with every flag of this PR on. Dev logs showed model resolution and
+rule scoping correct (`APXN30`, node `aPXN30`, recommendation rules 4,732 -> 1,878) but, for `modelSelectionbaseModel_astro`,
+`TIER0_NOT_APPLICABLE_GUARD` / `left_open` / `unset` in every pass and `SCOPED drops 0`. Dev has
+`ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true`; the local runs had not.
+
+| Finding | Evidence | Change (flag `cpq_model_scoped_questions_enabled`) |
+|---|---|---|
+| the guard clears an attribute the model's sequence rows never list; N30's rows do not list the base model attribute, so it was cleared before the derivation ran and nothing downstream could be scoped | local repro with the guard on: base model None, 16 pending (Software Bundles asked) | `tier0_not_applicable_guard._is_resolved_anchor`: the decision anchors the engine resolves itself (the same list the scoping uses) are never cleared by the guard |
+| an optional multi-select left empty on purpose was reopened by the post-loop pass ("emptied by a constraint") and asked among 227 options | fill log: `filled []` in passes 0-3, then `deferred_pending` in the post-loop pass | the empty fill carries its own source (`optional_multi_empty`); `stage_already_filled_multi` keeps it as settled |
+| flag reads used `get_settings().<flag>`; a test that fakes the settings object broke | `test_the_clearing_line_logs_only_the_wording_length` | every read of the two new flags is `getattr(get_settings(), flag, False)` |
+
+Local re-run with dev's full flag set including the guard (ws 281, "i want to quote APX N30 for US" and "...N50 for US"):
+"Configuration complete", base models `H15UCF9PW6AN` / `H25UCF9PW6AN`, 0 pending. 27 tests in
+`test_cpq_model_scoped_questions_2026_10_08.py` pass. In the group of 440 tests that touch these stages, 5 fail and also
+fail on untouched `dev_oci` (they need the Docker-internal Oracle host name); the one new failure was the settings-fake
+test above, fixed.
+
+Dev table checks: `ws1267_basemodeltoconfig` has `APXN30 / aPXN30 / APX N30` (+ flashport rows); `BmCatalog` node `aPXN30` id
+5261103698, parent 39185814: the same as the local data.
+
+## 10. Review of the follow-up (PR #480): N1-N3
+
+| # | Finding | Change |
+|---|---|---|
+| N1 | a settled empty optional multi-select was never re-resolved, so a recommendation rule that only becomes satisfiable later (after the base model is derived, or after a later answer) could not fill it | `stage_already_filled_multi` keeps the settled empty only when no recommendation rule that targets the attribute is satisfied by what is filled now (`_recommendation_now_satisfied`, via the existing `scope.satisfied_recommendation`); otherwise it falls into the normal reopen. A failing check keeps the settled empty. 3 new tests |
+| N2 | `_is_resolved_anchor` rebuilt the anchor frozenset for every attribute of every pass (~3,000 per turn) | the list is built once (`functools.cache`) in the new `cpq/model_scoping_flags.py` |
+| N3a | the miss was a flag-set mismatch: dev has the not-applicable guard on, the local runs did not | `docs/cpq/local_replay_flags.example.yml` is the compose override holding the dev flag set (verified from `docker inspect aryx-api-1`); local replays use it |
+| N3b | production code carried `getattr(get_settings(), flag, False)` at eight call sites because tests fake the settings object | the two flags are read in one place, `cpq/model_scoping_flags.py` (`scoped_questions_enabled`, `tree_fallback_enabled`); the default for a settings double lives there. A test covers both the default and the real value. A shared settings fixture for the existing tests that fake the settings object is a separate, wider change |
+
+`dev_oci` (with #478) merges into the branch without conflicts. Local re-run with the dev flag set including the guard: see the PR.
+
+| N4 | `_recommendation_now_satisfied` can evaluate BML scripts once per settled-empty multi-select per pass | measured first: one fill pass evaluates 231 script rules in 0.135 s, the later passes 14 in ~0 s (`log_rec_script_stats`, ws 281, APX N30), so ~0.1 s per turn. A fill-signature memo would cost more than the check, so there is none. The call is skipped unless a rule targets the attribute (test). Check the same line on the dev replay before enabling widely |
+| N5 | the replay flag file covered only the #475/#480 flags | it now says so, and lists the flags of #473 and #478 (`ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED`, `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED`, `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED`, `ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED`) commented out, with the `docker inspect` command to list dev's real set; which of them dev has on is not verified here |

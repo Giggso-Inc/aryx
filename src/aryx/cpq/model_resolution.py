@@ -162,9 +162,9 @@ def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
     """Models named by the catalog tree alone (flag ``cpq_model_resolution_tree_fallback_enabled``): the LEAF nodes whose
     name appears in the wording. Used only when ``Basemodeltoconfig`` names no model for it. A leaf, because a model is
     a leaf of the catalog tree; a family or folder node would scope every model below it out."""
-    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.model_scoping_flags import tree_fallback_enabled  # noqa: PLC0415 -- flag-gated
 
-    if not get_settings().cpq_model_resolution_tree_fallback_enabled or not hint_norm:
+    if not tree_fallback_enabled() or not hint_norm:
         return []
     parents = {parent for _name, parent in data.nodes_by_id.values() if parent}
     upgrade_nodes = getattr(data, "upgrade_node_ids", frozenset())

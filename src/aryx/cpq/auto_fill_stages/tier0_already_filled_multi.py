@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.auto_fill_stages.multi_fallback_unconstrained import OPTIONAL_MULTI_EMPTY_SOURCE
+from aryx.cpq.model_scoping_flags import scoped_questions_enabled
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
@@ -25,6 +27,24 @@ from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
 if TYPE_CHECKING:
     from aryx.cpq.engine import CpqEngine, FillContext, FillScope
     from aryx.cpq.state import ConfigAttr
+
+
+def _recommendation_now_satisfied(attr: "ConfigAttr", scope: "FillScope") -> bool:
+    """True when a recommendation rule that targets `attr` is satisfied by what is filled now, i.e. tier 2 would give the
+    attribute a value. Only an attribute some rule targets is checked at all (the call, which can evaluate BML scripts, is
+    skipped for the rest). Measured on the full aSTRO25 catalog (ws 281, APX N30): one fill pass evaluates 231 script rules
+    in 0.135 s and the later passes 14 in ~0 s (`log_rec_script_stats`), so there is no memo: building a fill signature per
+    attribute would cost more than the check. Any failure counts as 'not satisfied' (the settled empty stays)."""
+    satisfied = getattr(scope, "satisfied_recommendation", None)
+    rec_by_target = getattr(scope, "rec_by_target", None)
+    if satisfied is None or not rec_by_target:
+        return False
+    if attr.entity_id not in rec_by_target and attr.source_id not in rec_by_target:
+        return False                      # no rule targets this attribute: nothing to evaluate
+    try:
+        return satisfied(attr, list(attr.options)) is not None
+    except Exception:  # noqa: BLE001 -- a check must never break a fill
+        return False
 
 
 def stage_already_filled_multi(
@@ -105,6 +125,17 @@ def stage_already_filled_multi(
                 # (non-user sources) fall through to re-resolution.
                 ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
                 fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "USER_CHOSE_EMPTY_MULTI")
+                state.done = True
+                return
+            if (ctx.sources.get(state.vn) == OPTIONAL_MULTI_EMPTY_SOURCE and scoped_questions_enabled()
+                    and not _recommendation_now_satisfied(attr, scope)):
+                # An optional multi-select left empty on purpose (scoped questions): settled, not re-resolved. Without
+                # this the post-loop pass reopened it as "emptied by a constraint" and asked it among 200+ options.
+                # Not when a recommendation rule has become satisfiable for it since (one that fires only after the base
+                # model is derived, or after a later answer): that falls through to the reopen below, so the rule can
+                # fill it.
+                ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
+                fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "OPTIONAL_MULTI_LEFT_EMPTY")
                 state.done = True
                 return
             fill_log.log_pruned(state.vn, "EMPTY_MULTI_REOPENED", "stage_already_filled_multi", state="reopened")

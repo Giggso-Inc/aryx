@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
+from aryx.cpq.model_scoping_flags import scoped_questions_enabled
 from aryx.cpq.model_policy import resolve_select_all_narrowed_legal_multi_membership
 
 if TYPE_CHECKING:
@@ -20,12 +21,15 @@ if TYPE_CHECKING:
     from aryx.cpq.state import ConfigAttr
 
 
+# Source tag of an optional multi-select left empty on purpose. It is its own tag (not "default") so the already-filled
+# stage can tell a settled empty selection from one a constraint emptied, which that stage re-resolves.
+OPTIONAL_MULTI_EMPTY_SOURCE = "optional_multi_empty"
+
+
 def _optional_multi_stays_empty(attr: "ConfigAttr", state: AttrResolution) -> bool:
     """True when the scoped-questions flag is on and `attr` is an optional multi-select that no decision attribute
     path asked for."""
-    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
-
-    return bool(get_settings().cpq_model_scoped_questions_enabled
+    return bool(scoped_questions_enabled()
                 and attr.select_type == "multi" and not attr.required and not state.is_decision_attr)
 
 
@@ -42,10 +46,11 @@ def blind_pick_narrowed(
         # Scoped questions (flag): an optional multi-select nothing defaults or recommends is left unchecked, as the
         # catalog's own screen does, instead of taking its first option (ws 281, APX N30: 'ADAPTIVE NOISE SUPPRESSION'
         # picked for System Enhancements, then rejected by a constraint and re-asked among 227 options).
-        fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, "default", "optional_multi_left_empty", multi=True)
+        fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, OPTIONAL_MULTI_EMPTY_SOURCE,
+                           "optional_multi_left_empty", multi=True)
         ctx.filled_multi[state.vn] = []
         ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
-        ctx.sources.setdefault(state.vn, "default")
+        ctx.sources.setdefault(state.vn, OPTIONAL_MULTI_EMPTY_SOURCE)
         return
     # Tagged with a DISTINCT source (not "default") so the
     # re-validation step above (`if vn in filled_multi:`)
