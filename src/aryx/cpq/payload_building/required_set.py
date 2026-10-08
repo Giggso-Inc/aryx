@@ -96,6 +96,22 @@ def script_filled_quantity_vns(engine: Any, attrs: list[Any], rec_rules: list[An
     return quantity & filled_by_rule
 
 
+def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> dict[int, str]:
+    """Flag `cpq_required_set_master_string_present_enabled`: entity/source ids of the hidden, option-less 'MasterString'
+    attributes the quote does not fill, mapped to a non-blank stand-in value (see the setting's description)."""
+    if getattr(get_settings(), "cpq_required_set_master_string_present_enabled", False) is not True:
+        return {}
+    out: dict[int, str] = {}
+    for a in attrs:
+        vn = a.variable_name
+        if (getattr(a, "hidden", False) and "masterstring" in vn.lower() and not getattr(a, "options", None)
+                and vn not in filled and not (filled_multi or {}).get(vn)):
+            out[a.entity_id] = "ASSUMED_PRESENT"
+            if a.source_id is not None:
+                out[a.source_id] = "ASSUMED_PRESENT"
+    return out
+
+
 def rule_required_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str],
     filled_multi: dict[str, list[str]] | None, workspace_id: int, catalog_prefix: str,
@@ -104,7 +120,7 @@ def rule_required_vns(
     """Targets of a firing blank-disallow constraint action or a firing
     message-only validation rule."""
     by_id = _attr_index(attrs)
-    by_rule_id = _filled_by_rule_id(attrs, filled, filled_multi)
+    by_rule_id = {**_assumed_master_strings(attrs, filled, filled_multi), **_filled_by_rule_id(attrs, filled, filled_multi)}
     settings = get_settings()
     assume_open = bool(getattr(settings, "cpq_required_set_guards_assumed_open", False)
                        or getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True)

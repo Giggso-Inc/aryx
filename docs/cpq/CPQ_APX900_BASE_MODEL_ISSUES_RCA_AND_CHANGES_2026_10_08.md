@@ -524,3 +524,25 @@ fallback). Not changed: Constrain/Constraint rules, script-backed rules, `cpq/va
 
 Risk: reads about 196 declarative actions the other way for every model, so option lists change widely; the reading rests on names and values, not on Oracle's
 definition. Replay: APX 4000 offers only 900 MHz; check other models whose Restrict rules fire. Turn time not measured.
+
+### Hidden master strings count as non-blank for the required set (2026-10-09)
+
+With `ARYX_CPQ_CONSTRAINT_MODE_ENABLED` on, `ask.required_set.derived` still never listed Encryption Type. Inputs of "Restrict blank value for Encryption Type for US or FED
+customers (Portable)" on ws 1267 (operator `3` = `<>`): base model not blank; `hiddenConstraintMasterString_astro` not blank; country US or (Customer Type FEDERAL and a FED FCC
+trigger feature); a model from a list (aPX900, aPX3000, aPX4000, aPX1000, aPX6000/5000, sRX2200, aPXNext; aPX8000Series only without CBP TRIGGER; aPXN30/aPXN50 only without
+ESSENTIAL CORE BUNDLE); product not APX4000XH. The N30/N50 clause is why a real N30 with Essential Core Bundle shows no Encryption Type. Three things stop it in Aryx:
+(1) the OR between country and Customer Type needs `ARYX_CPQ_CONDITION_EXPRESSION_ENABLED` (F3); (2) nothing in the engine fills `hiddenConstraintMasterString_astro`, so its "not blank"
+input is never true; (3) `_bm_model_variable_name` must be in the quote (not checked).
+
+Hidden attributes used as an "is not blank" rule input (ws 1267): master strings `hiddenConstraintMasterString_astro` (74 rules), `...ForBaseModel_astro` (37), `defaultAttrValuesMasterString_astro` (10),
+`hiddenMasterStringForRelatedServices_astro`, `hiddenAccesoriesMasterString_astro` (2 each), `hiddenMasterStringForAstroMobile_astro`, `hiddenSeriesModelsMasterString_all` (1 each); and not master
+strings: `pdKey_astro` (24), `modelSelectionRegion_astro` (14), `configAction_all` (2), and four with 1 rule each (incl. `customerUIN`).
+
+Change: new flag `ARYX_CPQ_REQUIRED_SET_MASTER_STRING_PRESENT_ENABLED` (off by default; required-set derivation only). A hidden, option-less attribute whose name contains "MasterString" that the quote
+does not fill is given a non-blank stand-in when a blank-disallow or message-only rule tests it. The rule's other inputs still decide, so the model, bundle and product exclusions above are untouched.
+pdKey, Region, Customer UIN and attributes with options are never assumed. Needs `ARYX_CPQ_CONSTRAINT_MODE_ENABLED`, `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED`, `ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN` and, for the
+country-or-FED OR, `ARYX_CPQ_CONDITION_EXPRESSION_ENABLED`.
+
+Risk: Encryption Type (and any other rule gated on a master string) can be asked where real CPQ's master string would be blank (a base model with no rows); the match is by name, so another catalog that names
+its master strings differently is unaffected. F3 changes how every multi-input rule is evaluated. Replay APX 900 / 3000 / 4000 / 8500: `ask.required_set.derived` lists `secureEncryptionType_astro`; N30 with
+Essential Core Bundle does not.
