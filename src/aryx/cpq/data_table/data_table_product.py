@@ -459,6 +459,21 @@ def resolve_product_cpq_models_from_hint(
     return tuple(sorted(product_to_models[next(iter(matched_products))]))
 
 
+# Trademark / registered / copyright marks and service-mark signs: a typography detail of a display name, not part of it.
+_NAME_MARKS = str.maketrans("", "", "\u2122\u00ae\u00a9\u2120")
+
+
+def _display_key(text: str | None, ignore_marks: bool) -> str:
+    """Upper-case text with its whitespace collapsed (internal spacing is kept: a catalog can map "APX3000" and "APX 3000"
+    to different models). With `ignore_marks` the marks are removed first, so a catalog display name "APX\u2122 N50"
+    matches a customer's "APX N50" (ws 1267, 2026-10-08: only the plain-spelled flashport rows matched, the real model
+    never did)."""
+    value = (text or "").strip()
+    if ignore_marks:
+        value = value.translate(_NAME_MARKS)
+    return " ".join(value.upper().split())
+
+
 def resolve_cpq_model_from_display_name(
     hint_text: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple, Any] | None = None,
@@ -477,11 +492,13 @@ def resolve_cpq_model_from_display_name(
     """
     from aryx.cpq import engine as _engine_module
     from aryx.cpq.data_table.data_table_inference import _load_basemodel_to_config_rows
+    from aryx.cpq.model_scoping_flags import scoped_questions_enabled
 
     rows = _load_basemodel_to_config_rows(workspace_id, catalog_prefix, cache)
     if not rows:
         return ()
-    hint_norm = " ".join((hint_text or "").strip().upper().split())
+    ignore_marks = scoped_questions_enabled()
+    hint_norm = _display_key(hint_text, ignore_marks)
     if not hint_norm:
         return ()
 
@@ -492,12 +509,15 @@ def resolve_cpq_model_from_display_name(
         cpq_model = row.get("cpqModel")
         if not display_model or not cpq_model:
             continue
-        candidate = " ".join(display_model.upper().split())
+        candidate = _display_key(display_model, ignore_marks)
         if len(candidate) < _engine_module._HINT_MIN_PHRASE_LEN:
             continue
         if candidate in hint_norm:
-            matched_models.setdefault(display_model, set()).add(cpq_model)
-            matched_norms[display_model] = candidate
+            # With the marks ignored, "APX(TM) N50" and "APX N50" are one name: group by the comparable text, so both
+            # models of that name are returned (one raw spelling must not hide the other's cpqModel).
+            key = candidate if ignore_marks else display_model
+            matched_models.setdefault(key, set()).add(cpq_model)
+            matched_norms[key] = candidate
 
     if len(matched_models) == 1:
         return tuple(sorted(next(iter(matched_models.values()))))
