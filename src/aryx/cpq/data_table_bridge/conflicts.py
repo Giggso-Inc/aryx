@@ -154,7 +154,7 @@ def _resolve_via_data_tables(
     )))
     _ambiguous = 0
     _widest = 0
-    _ambiguous_legal: list[str] = []      # the legal values of the first candidate that left 2+ of them
+    _ambiguous_sets: list[list[str]] = []    # the legal values of EVERY candidate that left 0 or 2+ of them
     any_whitelist_coverage = False
     for cpq_model in _models:
         values = dt_resolve_whitelist_values(
@@ -169,14 +169,16 @@ def _resolve_via_data_tables(
             # abort" contract `_resolve_narrowed_legal_values` uses below).
             _ambiguous += 1
             _widest = max(_widest, len(values))
-            if len(values) > 1 and not _ambiguous_legal:
-                _ambiguous_legal = list(values)
+            _ambiguous_sets.append(list(values))
             continue
         _hit = next((o for o in valid_opts if o.item_value == values[0]), None)
         _log_lookup("_resolve_via_data_tables", vn, "single_match", "SINGLE_LEGAL_VALUE", models=_models,
                     candidate_count=len(values), legal=list(values),
                     falls_to=None if _hit is not None else "value_not_in_valid_opts")
         return _hit
+    # The tie-break may only pick a value EVERY ambiguous candidate allows; a candidate whose Whitelist is empty
+    # (nothing legal) vetoes it.
+    _ambiguous_legal = _common_legal(_ambiguous_sets)
     _tie = _defaultinattr_breaks_tie(vn, base_model, valid_opts, _ambiguous_legal, workspace_id, catalog_prefix, cache)
     if _tie is not None:
         _log_lookup("_resolve_via_data_tables", vn, "single_match", "DEFAULTINATTR_AMONG_LEGAL", models=_models,
@@ -206,6 +208,14 @@ def _resolve_via_data_tables(
     return _opt
 
 
+def _common_legal(legal_sets: list[list[str]]) -> list[str]:
+    """The values (case/space-insensitive) every candidate's legal set contains, in the first set's order."""
+    if not legal_sets or any(not legal for legal in legal_sets):
+        return []
+    common = set.intersection(*({str(v).strip().upper() for v in legal} for legal in legal_sets))
+    return [v for v in legal_sets[0] if str(v).strip().upper() in common]
+
+
 def _defaultinattr_breaks_tie(
     vn: str, base_model: str, valid_opts: list[MenuOption], legal: list[str],
     workspace_id: int, catalog_prefix: str, cache: dict[tuple[int, str], tuple] | None,
@@ -217,12 +227,12 @@ def _defaultinattr_breaks_tie(
     if not (settings.cpq_defaultinattr_shape_enabled
             and getattr(settings, "cpq_defaultinattr_resolves_ambiguity_enabled", False) is True):
         return None
-    if len(legal) < 2:
+    if not legal:       # the candidates share no legal value (or one allows none): nothing to break a tie with
         return None
     default = resolve_defaultinattr_value(base_model, vn, workspace_id, catalog_prefix, cache)
     if default is None:
         return None
-    wanted = default.strip().upper()
+    wanted = str(default).strip().upper()
     if wanted not in {str(v).strip().upper() for v in legal}:
         return None
     return next((o for o in valid_opts if o.item_value.strip().upper() == wanted), None)

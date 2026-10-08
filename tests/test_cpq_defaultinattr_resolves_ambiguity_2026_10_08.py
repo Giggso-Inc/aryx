@@ -91,3 +91,20 @@ def test_hazardous_is_decided_by_its_default_before_a_battery_guess_can_force_it
     # no default row for the battery: still ambiguous, so it is not resolved here (and 2900 mAh is not among the legal values)
     assert _resolve(BAT, _opts(*battery_legal, "LI-ION 2900 MAH"), {"APX900": battery_legal}, None) is None
     assert "LI-ION 2900 MAH" not in battery_legal
+
+
+def test_the_default_must_be_legal_under_every_ambiguous_candidate():
+    options = _opts("WHIP (STANDARD)", "STUBBY", "NO ANTENNA")
+    both = {"M1": ["WHIP (STANDARD)", "STUBBY"], "M2": ["whip (standard)", "NO ANTENNA"]}
+    assert _resolve(ANT, options, both, "WHIP (STANDARD)").item_value == "WHIP (STANDARD)"
+    narrower = {"M1": ["WHIP (STANDARD)", "STUBBY"], "M2": ["STUBBY", "NO ANTENNA"]}
+    assert _resolve(ANT, options, narrower, "WHIP (STANDARD)") is None      # M2's Whitelist excludes the default
+
+
+def test_a_candidate_with_nothing_legal_vetoes_the_tie_break():
+    options = _opts("WHIP (STANDARD)", "STUBBY")
+    assert _resolve(ANT, options, {"M1": ["WHIP (STANDARD)", "STUBBY"], "M2": []}, "WHIP (STANDARD)") is None
+
+
+def test_a_non_string_default_does_not_raise():
+    assert _resolve(ANT, _opts("1", "2"), {"M1": ["1", "2"]}, 1).item_value == "1"
