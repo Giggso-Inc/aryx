@@ -158,6 +158,44 @@ def rank_candidates(
     return chosen, tuple(c for c in cands if c is not chosen), step
 
 
+def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
+    """Models named by the catalog tree alone (flag ``cpq_model_resolution_tree_fallback_enabled``): the LEAF nodes whose
+    name appears in the wording. Used only when ``Basemodeltoconfig`` names no model for it. A leaf, because a model is
+    a leaf of the catalog tree; a family or folder node would scope every model below it out."""
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    if not get_settings().cpq_model_resolution_tree_fallback_enabled or not hint_norm:
+        return []
+    parents = {parent for _name, parent in data.nodes_by_id.values() if parent}
+    upgrade_nodes = getattr(data, "upgrade_node_ids", frozenset())
+    out: list[ModelCandidate] = []
+    for node_id, (name, _parent) in data.nodes_by_id.items():
+        if node_id in parents:
+            continue
+        norm = _norm(name)
+        if len(norm) < _MIN_NAME_LEN or not _occurs(norm, hint_norm):
+            continue
+        out.append(ModelCandidate(
+            cpq_model=name, display_names=frozenset({name}), node_name=name, node_id=node_id,
+            base_models=frozenset(), match="exact", is_upgrade=node_id in upgrade_nodes,
+            soft_deleted=bool(_SOFT_DELETED_RE.search(name)), match_len=len(norm),
+        ))
+    if len(out) > 1:
+        # Same preference as the table path (`rank_candidates`): a sellable radio before an upgrade or a soft-deleted
+        # leaf, then the most specific name. Different models of equal length named together ("compare APX N30 and
+        # APX N50") are left to `rank_candidates`' deterministic pick, as on the table path. What is never guessed is the
+        # SAME name on several leaves (the name is not unique in the tree: an option group sharing a model's name, say):
+        # unresolved, so no rule is scoped out on a guess.
+        live = [c for c in out if not c.is_upgrade and not c.soft_deleted]
+        out = live or out
+        longest = max(c.match_len for c in out)
+        out = [c for c in out if c.match_len == longest]
+        if len({_norm(c.node_name) for c in out}) < len(out):
+            logger.debug("cpq: model_resolution tree fallback ambiguous (same name on %d leaves) -> unresolved", len(out))
+            return []
+    return out
+
+
 def resolve_model(
     hint_text: str, workspace_id: int, catalog_prefix: str, rdb: Any | None = None,
 ) -> ModelResolution:
@@ -185,6 +223,8 @@ def resolve_model(
         if matched is None:
             continue
         cands.append(build(cpq, m, matched[0], matched[1]))
+    if not cands:
+        cands = _tree_candidates(data, hint_norm)
     chosen, alternatives, step = rank_candidates(sorted(cands, key=lambda c: c.cpq_model))
     scope = frozenset(_ancestors(chosen.node_id, data.nodes_by_id)) if chosen else frozenset()
     return ModelResolution(

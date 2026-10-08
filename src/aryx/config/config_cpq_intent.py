@@ -654,6 +654,37 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
         ),
     )
+    cpq_model_scoped_questions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs the base model to be known first: cpq_model_resolution_enabled and cpq_rule_scope_filter_enabled (so "
+            "other products' rules do not fire), cpq_base_model_placeholder_guard_enabled (so a rule's '*' is not taken "
+            "as the base model) and cpq_derive_base_model_enabled; with the base model empty it changes nothing. "
+            "Once the base model is known and the model has AttrSequence rows for it, an attribute those rows do not "
+            "list is not applicable: not asked and not filled, and a value an earlier pass only guessed for it is "
+            "dropped (ws 281, APX N30: 'LORA Region', 'regionalSrvMgrName', ~600 attributes of other families asked or "
+            "filled). Kept: attributes the rows list, the exact decision anchors the engine already resolves itself "
+            "(country, hardware version, product, base model, region), and any attribute holding a value that came from the "
+            "customer or the engine's own context (an answer, a wording match, the session variables it fills) or a "
+            "hidden attribute's own default; values only a rule or a guess put there are dropped. Without it such an "
+            "attribute stays visible ('silence is not a confident exclusion'), and any name containing 'region' or "
+            "'product' is protected. Models with no AttrSequence rows for the base "
+            "model are untouched. Off by default. Override with ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED=true."
+        ),
+    )
+    cpq_model_resolution_tree_fallback_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_model_resolution_enabled. When the Basemodeltoconfig rows name no model for the customer's "
+            "wording (the table is missing or has no row for it), resolve the model from the BmCatalog tree itself: "
+            "a LEAF catalog node whose name appears in the wording (longest name wins). The resolved node's "
+            "ancestors are then the scope cpq_rule_scope_filter_enabled keeps, so recommendation / hiding / "
+            "constraint rules authored under another model's node stop firing for this one (ws 281, APX N30: rules "
+            "of other products filled the base model with a code of another family, then '*'). With Basemodeltoconfig "
+            "rows present nothing changes. Off by default. Override with "
+            "ARYX_CPQ_MODEL_RESOLUTION_TREE_FALLBACK_ENABLED=true."
+        ),
+    )
     cpq_rule_scope_filter_enabled: bool = Field(
         default=False,
         description=(

@@ -48,10 +48,43 @@ _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
 })
 
 
+def _scoped_questions_on() -> bool:
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    return bool(get_settings().cpq_model_scoped_questions_enabled)
+
+
+def _scoped_anchor_vns() -> frozenset[str]:
+    """The exact variable names the engine resolves itself (country, hardware version, product, base model, region).
+    They are kept even when the model's sequence rows do not list them."""
+    from aryx.cpq.catalog_profile import REGION_LITERAL  # noqa: PLC0415
+    from aryx.cpq.fill_signature import _DECISION_ANCHOR_VNS  # noqa: PLC0415
+
+    return frozenset((*_DECISION_ANCHOR_VNS, REGION_LITERAL))
+
+
+# Sources of a value that came from the customer or the engine's own context (their wording, an answer, the account /
+# session variables the engine fills), not from a rule or a guess. A hidden attribute's own XML default (source "default")
+# is also kept: BML scripts read it. These are the engine's existing source tags, not attribute names.
+_KEPT_VALUE_SOURCES: frozenset[str] = frozenset({"user", "hint", "auto"})
+
+
+def _is_unlisted_model_attr(attr: ConfigAttr, filled: dict[str, str], sources: dict[str, str] | None) -> bool:
+    """True when an attribute the model's AttrSequence never lists may be treated as not applicable: it holds no value,
+    or a value only a rule or a guess put there. No attribute name or prefix is involved."""
+    vn = attr.variable_name
+    if vn not in filled:
+        return True
+    source = (sources or {}).get(vn)
+    return not (source in _KEPT_VALUE_SOURCES or (attr.hidden and source == "default"))
+
+
 def _suppress_ungoverned_attrs(
     attrs: list[ConfigAttr], filled: dict[str, str],
     workspace_id: int | None, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
+    sources: dict[str, str] | None = None,
+    scoped_out: set[str] | None = None,
 ) -> tuple[list[ConfigAttr], set[str]]:
     """Drop attrs the real ingested attrSequence Data Table confidently
     says do NOT belong to the active base model -- returns (visible,
@@ -96,12 +129,22 @@ def _suppress_ungoverned_attrs(
         if s:
             governed_names |= s
 
+    scoped_questions = _scoped_questions_on()
+    anchors = _scoped_anchor_vns() if scoped_questions else frozenset()
     visible: list[ConfigAttr] = []
     suppressed: set[str] = set()
     for attr in attrs:
         vn = attr.variable_name
         vn_flat = vn.lower().replace("_", "")
-        if any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
+        if (scoped_questions and vn not in governed_names and vn not in anchors
+                and _is_unlisted_model_attr(attr, filled, sources)):
+            # The model's own sequence rows (this base model has coverage, checked above) do not list it, so it is not
+            # a question of this model, whatever its name contains. The exact decision anchors the engine resolves
+            # itself stay; the name-fragment protection below is for the unscoped behaviour.
+            suppressed.add(vn)
+            if scoped_out is not None:
+                scoped_out.add(vn)
+        elif any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
             visible.append(attr)
         elif vn in governed_names:
             visible.append(attr)

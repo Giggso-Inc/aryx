@@ -20,6 +20,15 @@ if TYPE_CHECKING:
     from aryx.cpq.state import ConfigAttr
 
 
+def _optional_multi_stays_empty(attr: "ConfigAttr", state: AttrResolution) -> bool:
+    """True when the scoped-questions flag is on and `attr` is an optional multi-select that no decision attribute
+    path asked for."""
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    return bool(get_settings().cpq_model_scoped_questions_enabled
+                and attr.select_type == "multi" and not attr.required and not state.is_decision_attr)
+
+
 def blind_pick_narrowed(
     engine: "CpqEngine",
     attr: "ConfigAttr",
@@ -29,6 +38,15 @@ def blind_pick_narrowed(
     candidate_opts: list,
 ) -> None:
     """Blind-pick (or select-all) from the real narrowed legal set."""
+    if _optional_multi_stays_empty(attr, state):
+        # Scoped questions (flag): an optional multi-select nothing defaults or recommends is left unchecked, as the
+        # catalog's own screen does, instead of taking its first option (ws 281, APX N30: 'ADAPTIVE NOISE SUPPRESSION'
+        # picked for System Enhancements, then rejected by a constraint and re-asked among 227 options).
+        fill_log.log_write(ctx, attr, state.vn, [], NONE_DISPLAY_PLACEHOLDER, "default", "optional_multi_left_empty", multi=True)
+        ctx.filled_multi[state.vn] = []
+        ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
+        ctx.sources.setdefault(state.vn, "default")
+        return
     # Tagged with a DISTINCT source (not "default") so the
     # re-validation step above (`if vn in filled_multi:`)
     # can tell "guessed with nothing to justify it" apart

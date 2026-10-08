@@ -140,8 +140,9 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # data is suppressed the same way an explicit hiding rule removes
     # one from view. `None`/no workspace_id is a no-op.
     _t0 = time.monotonic()
+    scoped_vns: set[str] = set()      # the ones dropped by cpq_model_scoped_questions_enabled, for a distinct log reason
     state.attrs, suppressed_vns = engine._suppress_ungoverned_attrs(
-        state.attrs, state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
+        state.attrs, state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache, state.sources, scoped_vns,
     )
     logger.info(
         "cpq_perf: _suppress_ungoverned_attrs took %.3fs pass=%d attrs=%d suppressed=%d",
@@ -149,7 +150,8 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     )
     add_stage(state, "suppress_ungoverned_attrs", _t0)
     for k in suppressed_vns:
-        fill_log.log_pruned(k, "SUPPRESSED_UNGOVERNED", "run_early_pass", state="suppressed")
+        fill_log.log_pruned(k, "SUPPRESSED_NOT_IN_MODEL_SEQUENCE" if k in scoped_vns else "SUPPRESSED_UNGOVERNED",
+                            "run_early_pass", state="suppressed")
         state.filled.pop(k, None)
         state.display_filled.pop(k, None)
         state.sources.pop(k, None)
