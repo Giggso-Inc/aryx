@@ -488,3 +488,18 @@ Added work and how to measure it: each carried-over `blind_pick_*` value is re-d
 starts empty) and afterwards only when the signature changes. The log reason is `BLIND_PICK_REDERIVE` (the old reason
 `DEFAULT_FIRST_AVAILABLE_REDERIVE` is unchanged), so for one turn:
 `docker logs aryx-api-1 --since 10m 2>&1 | grep -c BLIND_PICK_REDERIVE`, next to `ask.rules_loop.timing`.
+
+### Optional attributes with no basis are left unanswered (2026-10-09)
+
+APX 3000 / US on dev: Mission Critical Wireless Accessory Bundle is optional (`O` in attrSequence), has no Defaultinattr default and the Whitelist leaves 3
+values (`AMBIGUOUS_DISCARDED`), yet it was filled "Accessory Bundle Pack 1" by `default_first_available`, then re-sourced `blind_pick_governed` /
+`blind_pick_rule_governed`, and went into the BOM. The real screen offers "None" first. (Surveillance Package Beige and the Carry Type default are
+`defaultinattr`-sourced and are not changed here.)
+
+Change: new flag `ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_ENABLED` (off by default). A single-select that is not catalog-required, not a decision / forced-ask /
+derived-required attribute and that no earlier stage resolved is left open (log `OPTIONAL_NO_BASIS`) by the blind stages
+(`tier6_single_b` first-by-order branches, `ask_or_pending` before `try_dt_governed_blind` / `try_rule_governed_blind`). The menu's sole explicit opt-out
+option is still taken. Not changed: multi-selects, required attributes, anything with a hint, recommendation, Data Table or default.
+
+Risk: a rule cascade that relied on the blind value stays open; the summary carries fewer filled values; reaches every model; turn time not measured. Replay
+APX 3000: the accessory bundle is absent from the summary and the log shows `OPTIONAL_NO_BASIS`.

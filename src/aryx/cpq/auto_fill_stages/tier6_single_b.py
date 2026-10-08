@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aryx.cpq.auto_fill_stages import fill_log
+from aryx.cpq.auto_fill_stages import fill_log, optional_blind_guard
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.engine import (
     _no_real_fill_justification,
@@ -71,6 +71,10 @@ def single_chain_tail(
         state.display = opt_out_match.display_name
         state.source = "opt_out_default"
         fill_log.log_decision(state.vn, "single_chain_tail", "picked", "SOLE_OPT_OUT_OPTION")
+    elif optional_blind_guard.optional_without_basis(attr, state):
+        # Optional, nothing justified a value, and the menu declares no explicit "nothing needed" option: a first-option
+        # pick would be a guess that lands in the BOM (flag `cpq_no_blind_fill_optional_enabled`).
+        fill_log.log_decision(state.vn, "single_chain_tail", "left_open", "OPTIONAL_NO_BASIS")
     elif (
         scope.display_order is not None and state.vn in scope.display_order
         and not (
