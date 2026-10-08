@@ -88,14 +88,29 @@ def _rule_hidden_vns(
     attribute is not on the screen, so it is never asked. Failure-safe: nothing extra is hidden."""
     try:
         from aryx.cpq.catalog_profile import resolve_base_model_vn  # noqa: PLC0415
-        if not filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""):
+        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        base_known = bool(filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""))
+        blank_host = getattr(get_settings(), "cpq_ask_hide_assumes_blank_host_context_enabled", False) is True
+        if not base_known and not blank_host:
             return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
         rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
-        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        hidden: set[str] = set()
         with untraced():        # a query, not a decision: it must not add fired-rule rows to the trace
-            return set(engine.apply_hiding_rules(
-                attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
-                catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+            if base_known:
+                hidden |= set(engine.apply_hiding_rules(
+                    attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
+                    catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+            if blank_host:
+                # Declarative rules only (a script or master-string rule is never evaluated with invented blanks), with
+                # the host-supplied context the quote never carries counted as blank, as the real screen has it.
+                blanks = {a.variable_name: "" for a in attrs
+                          if a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)
+                          and not getattr(a, "options", None) and a.select_type != "multi"}
+                declarative = [r for r in rules if not getattr(r, "script", None)]
+                hidden |= set(engine.apply_hiding_rules(
+                    attrs, {**blanks, **filled}, declarative, None, filled_multi, workspace_id=workspace_id,
+                    catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+        return hidden
     except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
         logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
         return set()

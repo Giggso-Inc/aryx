@@ -546,3 +546,21 @@ country-or-FED OR, `ARYX_CPQ_CONDITION_EXPRESSION_ENABLED`.
 Risk: Encryption Type (and any other rule gated on a master string) can be asked where real CPQ's master string would be blank (a base model with no rows); the match is by name, so another catalog that names
 its master strings differently is unaffected. F3 changes how every multi-input rule is evaluated. Replay APX 900 / 3000 / 4000 / 8500: `ask.required_set.derived` lists `secureEncryptionType_astro`; N30 with
 Essential Core Bundle does not.
+
+### The ask-set hide check counts host-supplied context as blank (2026-10-09)
+
+With `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` and the guard flag on, `ask.required_set.derived` listed one attribute on SRX 2200, APX 8500 and APX 900
+(`required_count 1`, `requireForRadioFEDFCCTriggerSS_astro`) and "Do You Require Radio FCC Trigger?" was asked first. No real screen (APX 3000, 4000, 8500) shows
+it. Rules on ws 1267: about 14 script-backed `Constrain "None" for ...` / `Constraint Radio FED FCC Trigger for US customer` (`set_type -1`, blank-disallow once
+`cpq_constraint_mode_enabled` loads them) require it from the country alone; "Hide ... on Non FED Customer", "Associate Recommendation Rule: Hide ... when <> FEDERAL"
+and per-product hides remove it, but need Customer Type, which a quote does not carry (the host supplies it). `evaluate_declarative_conditions` treats an unfilled
+attribute as unknown, so the hide never fires; the real screen counts it blank.
+
+Change: new flag `ARYX_CPQ_ASK_HIDE_ASSUMES_BLANK_HOST_CONTEXT_ENABLED` (off by default; only affects the hide check inside the required-set ask). A second pass runs the
+DECLARATIVE hide rules (never script-backed or master-string ones) with every free-text attribute that has no menu options and is absent from the quote counted as blank,
+and it runs before the base model is known too. The existing pass (all rules, real answers, base model known) is unchanged. Attributes with options or answers are never
+blanked.
+
+Risk: a Federal customer's quote skips a question the real screen asks (keep the flag off, or supply Customer Type, for Federal quotes); another declarative hide that
+matches on a blank free-text attribute can now hide an attribute earlier. Replay: the FCC question is not asked on SRX 2200 / APX 8500 / APX 900; `required_vns` no
+longer lists it.
