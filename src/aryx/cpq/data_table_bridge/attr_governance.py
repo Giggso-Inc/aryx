@@ -48,10 +48,6 @@ _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
 })
 
 
-# An answer the customer gave (typed, or matched from their wording) is never dropped by the scoped-questions rule.
-_ANSWER_SOURCES: frozenset[str] = frozenset({"user", "hint", "auto"})
-
-
 def _scoped_questions_on() -> bool:
     from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
 
@@ -67,13 +63,20 @@ def _scoped_anchor_vns() -> frozenset[str]:
     return frozenset((*_DECISION_ANCHOR_VNS, REGION_LITERAL))
 
 
-def _is_unlisted_model_attr(vn: str, filled: dict[str, str], sources: dict[str, str] | None) -> bool:
-    """True when an attribute the model's AttrSequence never lists may be treated as not applicable: not a system
-    attribute (leading underscore or CRM_, e.g. the model-context and customer variables) and not an answer the customer
-    gave."""
-    if vn.startswith(("_", "CRM_")):
-        return False
-    return not (vn in filled and (sources or {}).get(vn) in _ANSWER_SOURCES)
+# Sources of a value that came from the customer or the engine's own context (their wording, an answer, the account /
+# session variables the engine fills), not from a rule or a guess. A hidden attribute's own XML default (source "default")
+# is also kept: BML scripts read it. These are the engine's existing source tags, not attribute names.
+_KEPT_VALUE_SOURCES: frozenset[str] = frozenset({"user", "hint", "auto"})
+
+
+def _is_unlisted_model_attr(attr: ConfigAttr, filled: dict[str, str], sources: dict[str, str] | None) -> bool:
+    """True when an attribute the model's AttrSequence never lists may be treated as not applicable: it holds no value,
+    or a value only a rule or a guess put there. No attribute name or prefix is involved."""
+    vn = attr.variable_name
+    if vn not in filled:
+        return True
+    source = (sources or {}).get(vn)
+    return not (source in _KEPT_VALUE_SOURCES or (attr.hidden and source == "default"))
 
 
 def _suppress_ungoverned_attrs(
@@ -133,7 +136,7 @@ def _suppress_ungoverned_attrs(
         vn = attr.variable_name
         vn_flat = vn.lower().replace("_", "")
         if (scoped_questions and vn not in governed_names and vn not in anchors
-                and _is_unlisted_model_attr(vn, filled, sources)):
+                and _is_unlisted_model_attr(attr, filled, sources)):
             # The model's own sequence rows (this base model has coverage, checked above) do not list it, so it is not
             # a question of this model, whatever its name contains. The exact decision anchors the engine resolves
             # itself stay; the name-fragment protection below is for the unscoped behaviour.

@@ -6,8 +6,8 @@ Four flag-gated pieces fix it without a model name in the code:
 
 * model resolution from the BmCatalog tree when Basemodeltoconfig names no model (rule scoping then drops the rules of
   other products),
-* attributes the model's sequence rows do not list are not applicable (the exact decision anchors, system variables and
-  the customer's answers stay),
+* attributes the model's sequence rows do not list are not applicable (the exact decision anchors and any
+  non-guessed value stay),
 * the completeness check and the loop's returned list use the same scoping,
 * an optional multi-select nothing defaults or recommends stays empty instead of taking its first option.
 
@@ -104,36 +104,41 @@ def test_a_catalog_with_a_tree_but_no_table_is_kept_only_with_the_flag(flags, fl
 
 
 # --- attributes the model's sequence rows do not list ----------------------------------------------------------------
-def _attr(vn, options=0, multi=False, required=False):
+def _attr(vn, options=0, multi=False, required=False, hidden=False):
     return ConfigAttr(entity_id=abs(hash(vn)) % 1_000_000, variable_name=vn, display_label=vn, required=required,
-                      default_value="", select_type="multi" if multi else "single",
+                      default_value="", select_type="multi" if multi else "single", hidden=hidden,
                       options=[MenuOption(item_value=f"o{i}", display_name=f"o{i}", order=i) for i in range(options)])
 
 
 LISTED = {"batteryType_astro", "ultimateDestinationCountry"}
 ATTRS = ["batteryType_astro", "ultimateDestinationCountry", "cloudRegion_astro", "regionalSrvMgrName_astro", "plainOther_astro",
-         BASE, PRODUCT, "CRM_BILL_COUNTRY", "_bm_model_variable_name", "typedByCustomer_astro", "modelSelectionBaseModelMsl_astro"]
+         BASE, PRODUCT, "CRM_BILL_COUNTRY", "_bm_model_variable_name", "typedByCustomer_astro", "someRuleValue_astro",
+         "hiddenDefault_astro", "modelSelectionBaseModelMsl_astro"]
 
 
 def _suppress(sources=None):
-    filled = {BASE: "H15UCF9PW6AN", PRODUCT: "APX N30", "typedByCustomer_astro": "x"}
+    filled = {BASE: "H15UCF9PW6AN", PRODUCT: "APX N30", "typedByCustomer_astro": "x", "CRM_BILL_COUNTRY": "United States",
+              "_bm_model_variable_name": "aPXN30", "someRuleValue_astro": "v", "hiddenDefault_astro": "d"}
     with patch.object(ag, "resolve_base_model_vn", return_value=BASE), \
             patch.object(ag, "_cpq_model_candidates", return_value=["APXN30"]), \
             patch.object(ag, "dt_governed_attr_names_for_base_model", return_value=set(LISTED)), \
             patch.object(ag, "dt_attr_ever_governed_for_cpq_model", return_value=False):
-        return ag._suppress_ungoverned_attrs([_attr(v) for v in ATTRS], filled, 1, "p", {},
-                                             sources or {"typedByCustomer_astro": "user"})
+        return ag._suppress_ungoverned_attrs([_attr(v, hidden=(v == "hiddenDefault_astro")) for v in ATTRS], filled, 1, "p", {},
+                                             sources or {"typedByCustomer_astro": "user", "CRM_BILL_COUNTRY": "hint",
+                                                         "_bm_model_variable_name": "hint", "someRuleValue_astro": "rule",
+                                                         "hiddenDefault_astro": "default"})
 
 
 def test_with_the_flag_an_unlisted_attribute_is_not_applicable_whatever_its_name_contains(flags):
     flags.cpq_model_scoped_questions_enabled = True
     visible, suppressed = _suppress()
-    assert suppressed == {"cloudRegion_astro", "regionalSrvMgrName_astro", "plainOther_astro", "modelSelectionBaseModelMsl_astro"}
+    assert {"cloudRegion_astro", "regionalSrvMgrName_astro", "plainOther_astro", "modelSelectionBaseModelMsl_astro"} <= suppressed
     kept = {a.variable_name for a in visible}
     assert LISTED <= kept                                                    # the model's own rows
     assert {BASE, PRODUCT} <= kept                                           # exact decision anchors
-    assert {"CRM_BILL_COUNTRY", "_bm_model_variable_name"} <= kept           # system variables
-    assert "typedByCustomer_astro" in kept                                   # the customer's answer
+    # values from the customer or the engine's own context are kept whatever the name; a hidden attribute's own default too
+    assert {"CRM_BILL_COUNTRY", "_bm_model_variable_name", "typedByCustomer_astro", "hiddenDefault_astro"} <= kept
+    assert "someRuleValue_astro" in suppressed                               # only a rule put a value on an unlisted attribute
 
 
 def test_a_value_the_engine_only_guessed_does_not_protect_an_unlisted_attribute(flags):

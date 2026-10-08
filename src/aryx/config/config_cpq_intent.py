@@ -658,12 +658,14 @@ class CpqIntentSettingsMixin(BaseSettings):
         default=False,
         description=(
             "Once the base model is known and the model has AttrSequence rows for it, an attribute those rows do not "
-            "list is not applicable: not asked and not filled, and a value an earlier pass guessed for it is dropped "
-            "(ws 281, APX N30: 'LORA Region', 'regionalSrvMgrName', ~600 attributes of other families asked or "
-            "filled). Kept: attributes the rows list, the exact decision anchors the engine resolves itself (country, "
-            "hardware version, product, base model, region), system variables (leading '_', 'CRM_') and answers the "
-            "customer gave. Without it such an attribute stays visible ('silence is not a confident exclusion'), and "
-            "any name containing 'region' or 'product' is protected. Models with no AttrSequence rows for the base "
+            "list is not applicable: not asked and not filled, and a value an earlier pass only guessed for it is "
+            "dropped (ws 281, APX N30: 'LORA Region', 'regionalSrvMgrName', ~600 attributes of other families asked or "
+            "filled). Kept: attributes the rows list, the exact decision anchors the engine already resolves itself "
+            "(country, hardware version, product, base model, region), and any attribute holding a value that came from the "
+            "customer or the engine's own context (an answer, a wording match, the session variables it fills) or a "
+            "hidden attribute's own default; values only a rule or a guess put there are dropped. Without it such an "
+            "attribute stays visible ('silence is not a confident exclusion'), and any name containing 'region' or "
+            "'product' is protected. Models with no AttrSequence rows for the base "
             "model are untouched. Off by default. Override with ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED=true."
         ),
     )
