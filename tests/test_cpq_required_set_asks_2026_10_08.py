@@ -134,3 +134,15 @@ def test_hide_rules_are_not_counted_while_the_base_model_is_blank():
     with patch.object(auto_fill_setup, "get_settings", return_value=settings),             patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"),             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
         auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
     assert ENC not in derive.call_args.args[5]
+
+
+def test_the_hiding_query_records_no_rule_trace_rows():
+    from aryx.cpq.rule_trace import rule_trace_state as state
+    seen = []
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: (seen.append(state._ctx_var.get()) or ([], [], set())))
+    state._ctx_var.set((1267, "p"))
+    with patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"):
+        auto_fill_setup._rule_hidden_vns(engine, [], {"base_vn": "X"}, {}, 1267, "p", "APX 900", {}, None)
+    assert seen == [None]                              # record_fire is a no-op inside the query
+    assert state._ctx_var.get() == (1267, "p")         # and the binding is restored afterwards

@@ -47,7 +47,7 @@ def _required_ask_vns(
             _DEPENDENCY_WARNED = True
             raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the rule-guard flag, skipped",
                       context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
-                               "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
+                               "reason_code": "REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN_OFF"})
         return frozenset()
     try:
         from aryx.cpq.fill_signature import _fill_signature  # noqa: PLC0415 -- flag-gated
@@ -91,9 +91,11 @@ def _rule_hidden_vns(
         if not filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""):
             return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
         rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
-        return set(engine.apply_hiding_rules(
-            attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
-            catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        with untraced():        # a query, not a decision: it must not add fired-rule rows to the trace
+            return set(engine.apply_hiding_rules(
+                attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
+                catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
     except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
         logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
         return set()

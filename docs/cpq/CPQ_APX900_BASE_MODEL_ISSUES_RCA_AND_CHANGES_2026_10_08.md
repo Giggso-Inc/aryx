@@ -445,3 +445,13 @@ Replay (one step at a time): (A) answer 900 MHz: the keypad is asked with 2 opti
 (B) the summary lists the 18 defaults (antenna Whip, hazardous N/A, carry 2.0 inch, package Bulk). (C) after band and keypad, Encryption Type is asked
 with 4 options and no FCC Trigger question appears. Expected side effect: APX N30 / N50 also ask Encryption Type (same rule); confirm with one real
 screenshot after the country is chosen.
+
+### Review follow-ups on the required-set ask (2026-10-08)
+
+- Hiding rules are applied to the ask set only once the base model is known (master-string hide rules say "hide" while it is blank), without
+  writing rule-trace rows (`rule_trace_state.untraced`). The `cpq_perf: apply_hiding_rules` info line is still logged, and the call runs once per
+  distinct fill state (cached for the turn). Script-backed hide rules need the BML evaluator: when none is passed they leave the attribute visible,
+  so it is still asked (safe direction).
+- Two guard settings can satisfy the asks flag: `ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN` (use this one) and the older
+  `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` (also changes the constraint-rule applier; do not set). The WARN reason code is now
+  `REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN_OFF`. Retiring the old flag is a separate change.

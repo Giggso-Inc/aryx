@@ -5,6 +5,7 @@ Split out of `cpq/rule_trace.py` (Raven Style Compliance Plan, Phase 2b,
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import threading
 from dataclasses import dataclass, field
@@ -77,6 +78,16 @@ def bind_context(workspace_id: int, catalog_prefix: str) -> None:
     ask_api.py right after the CpqSession is loaded/created.
     """
     _ctx_var.set((int(workspace_id), catalog_prefix or ""))
+
+
+@contextlib.contextmanager
+def untraced():
+    """Rule evaluations inside the block record no fired-rule rows (a 'what would be hidden' query is not a decision)."""
+    token = _ctx_var.set(None)
+    try:
+        yield
+    finally:
+        _ctx_var.reset(token)
 
 
 def bind_pass(pass_num: int) -> None:
