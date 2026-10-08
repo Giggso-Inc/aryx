@@ -223,3 +223,23 @@ derived, no 660-option question; "I want a quote for APX 900 with 700/800 MHz in
 Also quote APX 8000H (check the derived base model is never `H91TGD9PW4AN`, which belongs to the SRX / XE models only).
 
 Not in this PR: the Product being stored as `APX900FLASHPORT` (the catalog's only "APX 900" Product item is the upgrade series).
+
+### Defaults from the Defaultinattr table (existing flag, no code change in this PR)
+
+Live run (ws 1267, APX 900, 700/800 MHz, Full Keypad, US, base model `H92UCH9PW7AN`): three "System-Configured / Recommended"
+values were first-option guesses (`blind_pick_rule_governed`, `default_first_available`) although `WS1267_DEFAULTINATTR` holds
+the real default for that base model:
+
+| Attribute | Table default | Quote showed |
+|---|---|---|
+| `antennasType_astro` | WHIP (STANDARD) | STUBBY |
+| `modelSelectionHazardousLocation_astro` | N/A | TIA4950(UL) |
+| `packingPackageType_astro` | BULK | SINGLE |
+
+The table is read only with `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` (`cpq_defaultinattr_shape_enabled`, off by default). With
+it on, the default of the known base model is used when the whitelist gave no single legal value and the default is a real option.
+Set it with the other flags and recreate the container. Replay "APX 900 in the US" (700/800 MHz, Full Keypad) and confirm the three
+values above; the table also holds defaults for about 15 more attributes of this base model (submersible NO, belt clip
+2.0 INCH (STANDARD), manual NO, operation mode DIGITAL TRUNKING (P25 PHASE I), multikey NO MULTIKEY, housing BLACK, service type
+ESSENTIAL, service duration 7 YEAR, ...). Not verified live yet: whether the flag was already on, and whether the defaults are applied
+in the same turn the base model is derived.
