@@ -113,7 +113,8 @@ def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any
         "no changes made" response when the user declined.
     """
     target_display = session.pending_model_switch_display or session.pending_model_switch
-    current_display = session.display_filled.get(PRODUCT_LITERAL, "")
+    current_display = (
+        session.display_filled.get(PRODUCT_LITERAL, "") or session.filled.get(PRODUCT_LITERAL, ""))
     reply = req.question or ""
     deterministic_yes = bool(_YES_RE.match(reply)) or (
         bool(_norm(target_display)) and _norm(reply) == _norm(target_display))

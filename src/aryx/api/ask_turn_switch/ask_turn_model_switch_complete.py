@@ -75,6 +75,7 @@ def _complete_model_switch(session: Any, new_value: str, new_display: str) -> No
         session.display_filled = {}
         session.filled_source = {}
         session.negated_vns = []
+        session.product_entity_id = 0
         session.model_leaf_resolved = False
     session.filled[PRODUCT_LITERAL] = new_value
     session.display_filled[PRODUCT_LITERAL] = new_display

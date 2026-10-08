@@ -96,6 +96,25 @@ def test_yes_switches_to_a_clean_slate_keeping_family_and_country(flag_on):
     assert s.model_snapshots["MODEL_A"]["filled"]["band"] == "VHF"
 
 
+def test_clean_start_resets_the_product_entity_and_restore_brings_it_back(flag_on):
+    s = _session_on_model_a()
+    s.product_entity_id = 42
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert s.product_entity_id == 0
+    _offer(s, "model a")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert s.product_entity_id == 42
+
+
+def test_decline_text_falls_back_to_the_item_value_without_a_display_name(flag_on):
+    s = _session_on_model_a()
+    s.display_filled.pop(PRODUCT_LITERAL)
+    _offer(s, "model b")
+    resp = ms._handle_confirm_model_switch_anchor(_req("no"), s)
+    assert "stays on **MODEL_A**" in resp["answer"]
+
+
 def test_switching_back_restores_the_first_model_answers(flag_on):
     s = _session_on_model_a()
     _offer(s, "model b")
