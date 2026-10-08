@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from aryx.cpq.catalog_profile import PRODUCT_LITERAL
+from aryx.cpq.catalog_profile import PRODUCT_LITERAL, resolve_base_model_vn
+from aryx.cpq.pending_scope.pending_scope import clear_pending_scope
 from aryx.cpq.session_guard.session_guard import push_snapshot
 from aryx.raven_log import raven_log, would_log
 
@@ -33,13 +34,16 @@ def _snapshot_session_answers(session: Any) -> dict[str, Any]:
     }
 
 
-def _complete_model_switch(session: Any, new_value: str, new_display: str) -> None:
+def _complete_model_switch(
+    session: Any, new_value: str, new_display: str, workspace_id: int | None = None,
+) -> None:
     """Save the current model's answers, restore or reset for the new model.
 
     Args:
         session: The live CpqSession; mutated in place.
         new_value: The new Product answer's item value (also the snapshot key).
         new_display: The new Product answer's display name.
+        workspace_id: Used to find the real Base Model key on a restore.
     """
     from_value = session.filled.get(PRODUCT_LITERAL, "")
     push_snapshot(session, reason="model_switch")
@@ -69,6 +73,12 @@ def _complete_model_switch(session: Any, new_value: str, new_display: str) -> No
         session.negated_vns = list(snap["negated_vns"])
         session.product_entity_id = snap["product_entity_id"]
         session.model_leaf_resolved = bool(snap.get("model_leaf_resolved", False))
+        # Base Model is derived from Product and Country; the country may have
+        # changed since this snapshot, so drop it and let it re-derive (always
+        # safe, see _invalidate_stale_base_model).
+        base_model_vn = resolve_base_model_vn(session.filled, workspace_id)
+        for answers in (session.filled, session.display_filled, session.filled_source):
+            answers.pop(base_model_vn, None)
     else:
         session.filled = {}
         session.filled_multi = {}
@@ -82,6 +92,8 @@ def _complete_model_switch(session: Any, new_value: str, new_display: str) -> No
     session.filled_source[PRODUCT_LITERAL] = "user"
     session.pending_variables = []
     session.pending_model_leaf_candidates = []
+    # A pending option scope belongs to the old model's last question.
+    clear_pending_scope(session)
     session.status = "configuring"
     session.pending_model_switch = ""
     session.pending_model_switch_display = ""

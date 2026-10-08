@@ -107,6 +107,29 @@ def test_clean_start_resets_the_product_entity_and_restore_brings_it_back(flag_o
     assert s.product_entity_id == 42
 
 
+def test_restore_drops_base_model_so_it_rederives_for_the_current_country(flag_on):
+    from aryx.cpq.catalog_profile import BASE_MODEL_LITERAL
+    s = _session_on_model_a()
+    s.filled[BASE_MODEL_LITERAL] = "BM_FOR_US"
+    s.display_filled[BASE_MODEL_LITERAL] = "BM_FOR_US"
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    s.country = "Canada"
+    _offer(s, "model a")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert BASE_MODEL_LITERAL not in s.filled and BASE_MODEL_LITERAL not in s.display_filled
+    assert s.filled["band"] == "VHF"
+
+
+def test_switch_clears_a_pending_option_scope(flag_on):
+    from aryx.cpq.pending_scope.pending_scope import set_pending_scope
+    s = _session_on_model_a()
+    set_pending_scope(s, kind="attr_options", candidates=["X"], origin_question="q", attr_vn="band", asked_turn=3)
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert s.pending_scope_kind == ""
+
+
 def test_decline_text_falls_back_to_the_item_value_without_a_display_name(flag_on):
     s = _session_on_model_a()
     s.display_filled.pop(PRODUCT_LITERAL)

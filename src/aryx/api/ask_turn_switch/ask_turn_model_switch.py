@@ -134,7 +134,7 @@ def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any
         "reply_len": len(reply), "turn": getattr(session, "turn", None),
         "target_model": session.pending_model_switch})
     if affirmative:
-        _complete_model_switch(session, session.pending_model_switch, target_display)
+        _complete_model_switch(session, session.pending_model_switch, target_display, req.workspace_id)
         return None
     session.pending_model_switch = ""
     session.pending_model_switch_display = ""
