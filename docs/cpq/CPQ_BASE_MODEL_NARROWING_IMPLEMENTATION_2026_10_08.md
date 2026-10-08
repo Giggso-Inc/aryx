@@ -200,3 +200,26 @@ rule constraint; failure leaves the list as it was). An attribute whose options 
 The shortened list is also what the next reply is matched against (`_remember_attr_scope` builds the pending scope from it), so a
 typed value that was left out gets the scoped "did you mean" re-ask from the shown list, not a silent accept. Each limited question
 logs `ask.options.model_limits` (DEBUG: offered vs catalog option count) so an over-trim is visible.
+
+## Combined PR (2026-10-08): what it contains and what to set
+
+Replaces #474 (option limits) and #477 (grid quantities) and adds the fixes found while replaying APX 900 on dev.
+
+| Change | Flag (all off by default) | Evidence |
+|---|---|---|
+| Frequency / keypad lists show only the model's own values | `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED` | 20 bands / 4 keypads shown, whitelist holds 5 / 2 |
+| Narrowing questions follow the model's AttrSequence `Seq` (frequency 33, keypad 39) | same | keypad was asked before frequency |
+| Derivation applies the separating attributes first and ignores an attribute the rows only use as a condition | `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED` | country US dropped the two 700/800 MHz base models (10 -> 8): `ask.base_model.not_derived`, `known_attr_match` |
+| "700/800 MHz" typed in the first message is hinted: the model is read from the wording, the Product is not filled yet | `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED` + `ARYX_CPQ_MODEL_RESOLUTION_ENABLED` | hints run before the turn's model is bound |
+| Grid quantity questions only for a selector the pass left pending | `ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED` | APX N30 asked 7 holders after 0 pending |
+
+Environment (dev): set `ARYX_CPQ_BASE_MODEL_NARROWING_ENABLED`, `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED`,
+`ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED` to `true`. Already on and required: `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED`,
+`ARYX_CPQ_MODEL_RESOLUTION_ENABLED`, `ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED`, `ARYX_CPQ_BASE_MODEL_PLACEHOLDER_GUARD_ENABLED`,
+`ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED`. Recreate the container (a restart does not read new variables).
+
+Replay on dev after deploy: "I want a quote for APX 900 in the US" -> frequency (5 options) then keypad (2 options) -> base model
+derived, no 660-option question; "I want a quote for APX 900 with 700/800 MHz in the US" -> only the keypad is asked.
+Also quote APX 8000H (check the derived base model is never `H91TGD9PW4AN`, which belongs to the SRX / XE models only).
+
+Not in this PR: the Product being stored as `APX900FLASHPORT` (the catalog's only "APX 900" Product item is the upgrade series).
