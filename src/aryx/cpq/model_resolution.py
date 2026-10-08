@@ -164,7 +164,7 @@ def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
     a leaf of the catalog tree; a family or folder node would scope every model below it out."""
     from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
 
-    if not get_settings().cpq_model_resolution_tree_fallback_enabled or not hint_norm:
+    if not getattr(get_settings(), "cpq_model_resolution_tree_fallback_enabled", False) or not hint_norm:
         return []
     parents = {parent for _name, parent in data.nodes_by_id.values() if parent}
     upgrade_nodes = getattr(data, "upgrade_node_ids", frozenset())

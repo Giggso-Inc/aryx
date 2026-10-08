@@ -51,7 +51,7 @@ _cache_lock = threading.Lock()
 def _tree_fallback_on() -> bool:
     """cpq_model_resolution_tree_fallback_enabled (a nodes-only catalog is then usable)."""
     from aryx.config import get_settings  # noqa: PLC0415
-    return bool(get_settings().cpq_model_resolution_tree_fallback_enabled)
+    return bool(getattr(get_settings(), "cpq_model_resolution_tree_fallback_enabled", False))
 
 
 def cached(workspace_id: int, catalog_prefix: str) -> CatalogData | None:

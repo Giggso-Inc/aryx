@@ -51,7 +51,7 @@ _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
 def _scoped_questions_on() -> bool:
     from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
 
-    return bool(get_settings().cpq_model_scoped_questions_enabled)
+    return bool(getattr(get_settings(), "cpq_model_scoped_questions_enabled", False))
 
 
 def _scoped_anchor_vns() -> frozenset[str]:

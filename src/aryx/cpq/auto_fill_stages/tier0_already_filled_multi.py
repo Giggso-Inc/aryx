@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aryx.config import get_settings
 from aryx.cpq import engine as _engine_module
+from aryx.cpq.auto_fill_stages.multi_fallback_unconstrained import OPTIONAL_MULTI_EMPTY_SOURCE
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
@@ -105,6 +107,13 @@ def stage_already_filled_multi(
                 # (non-user sources) fall through to re-resolution.
                 ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
                 fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "USER_CHOSE_EMPTY_MULTI")
+                state.done = True
+                return
+            if ctx.sources.get(state.vn) == OPTIONAL_MULTI_EMPTY_SOURCE and getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
+                # An optional multi-select left empty on purpose (scoped questions): settled, not re-resolved. Without
+                # this the post-loop pass reopened it as "emptied by a constraint" and asked it among 200+ options.
+                ctx.display_filled[state.vn] = NONE_DISPLAY_PLACEHOLDER
+                fill_log.log_decision(state.vn, "stage_already_filled_multi", "kept", "OPTIONAL_MULTI_LEFT_EMPTY")
                 state.done = True
                 return
             fill_log.log_pruned(state.vn, "EMPTY_MULTI_REOPENED", "stage_already_filled_multi", state="reopened")

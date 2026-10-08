@@ -286,7 +286,8 @@ def _blind_pick(attr, flag, flags):
 
 def test_an_optional_multi_select_stays_empty_with_the_flag(flags):
     attr = _attr("systemEnhancementFeatureType_astro", options=3, multi=True)
-    assert _blind_pick(attr, True, flags).filled_multi == {attr.variable_name: []}
+    ctx = _blind_pick(attr, True, flags)
+    assert ctx.filled_multi == {attr.variable_name: []} and ctx.sources == {attr.variable_name: "optional_multi_empty"}
 
 
 def test_without_the_flag_it_still_takes_its_first_option(flags):
@@ -297,3 +298,74 @@ def test_without_the_flag_it_still_takes_its_first_option(flags):
 def test_a_required_multi_select_is_still_filled(flags):
     attr = _attr("someRequiredMulti_astro", options=3, multi=True, required=True)
     assert _blind_pick(attr, True, flags).filled_multi == {attr.variable_name: ["o0"]}
+
+
+# --- the not-applicable guard must not clear the decision anchors ---------------------------------------------------------
+def _guard(vn, flag, flags, not_applicable=True):
+    from aryx.cpq.auto_fill_stages import tier0_not_applicable_guard as guard
+
+    flags.cpq_model_scoped_questions_enabled = flag
+    settings = get_settings()
+    previous = settings.cpq_not_applicable_guard_enabled
+    settings.cpq_not_applicable_guard_enabled = True
+    try:
+        engine = SimpleNamespace(_is_hardware_version_attr=lambda a: False, _is_product_line_selector=lambda a: False,
+                                 _named_attr_confirmed_not_applicable=lambda *a, **k: not_applicable)
+        ctx = SimpleNamespace(filled={vn: "x"}, display_filled={vn: "x"}, sources={vn: "default"}, filled_multi={},
+                              dt_cache={})
+        scope = SimpleNamespace(workspace_id=1, catalog_prefix="p", product_anchor_hint="APX N30")
+        state = AttrResolution(vn=vn, vn_flat=vn.lower())
+        with patch.object(guard, "_log_device_once"):
+            guard.stage_not_applicable_guard(engine, _attr(vn), ctx, scope, state)
+        return state, ctx
+    finally:
+        settings.cpq_not_applicable_guard_enabled = previous
+
+
+def test_the_guard_does_not_clear_the_base_model_with_the_flag(flags):
+    """ws 1267, APX N30: the model's sequence rows do not list the base model attribute, so the guard cleared it in every
+    pass and nothing was derived."""
+    state, ctx = _guard(BASE, True, flags)
+    assert not state.done and BASE in ctx.filled
+
+
+def test_the_guard_still_clears_another_unlisted_attribute_with_the_flag(flags):
+    state, ctx = _guard("someOtherFamilyAttr_astro", True, flags)
+    assert state.done and "someOtherFamilyAttr_astro" not in ctx.filled
+
+
+def test_without_the_flag_the_guard_behaves_as_before(flags):
+    state, ctx = _guard(BASE, False, flags)
+    assert state.done and BASE not in ctx.filled
+
+
+# --- the settled empty selection is not reopened by the already-filled stage ------------------------------------------------
+def _revalidate(source, flag, flags):
+    from aryx.cpq.auto_fill_stages import tier0_already_filled_multi as stage
+
+    flags.cpq_model_scoped_questions_enabled = flag
+    attr = _attr("systemEnhancementFeatureType_astro", options=3, multi=True)
+    vn = attr.variable_name
+    ctx = SimpleNamespace(filled_multi={vn: []}, sources={vn: source}, display_filled={}, dt_cache={}, dropped={},
+                          default_fill_signatures=None, filled={})
+    scope = SimpleNamespace(constrained_opts=None, grid_selector_vns=set(), grid_declined_vns=None, attrs=[attr])
+    state = AttrResolution(vn=vn, vn_flat=vn.lower())
+    with patch.object(stage.fill_log, "log_decision"), patch.object(stage.fill_log, "log_pruned"):
+        stage.stage_already_filled_multi(SimpleNamespace(), attr, ctx, scope, state)
+    return state, ctx, vn
+
+
+def test_a_settled_empty_optional_multi_select_is_kept_not_reopened(flags):
+    """The final post-loop pass reopened it as 'emptied by a constraint' and asked it among 227 options (ws 1267 shape)."""
+    state, ctx, vn = _revalidate("optional_multi_empty", True, flags)
+    assert state.done and vn in ctx.filled_multi and ctx.display_filled[vn]
+
+
+def test_an_empty_multi_select_a_constraint_emptied_is_still_reopened(flags):
+    state, ctx, vn = _revalidate("default", True, flags)
+    assert not state.done and vn not in ctx.filled_multi
+
+
+def test_without_the_flag_an_empty_multi_select_is_reopened_as_before(flags):
+    state, ctx, vn = _revalidate("optional_multi_empty", False, flags)
+    assert not state.done and vn not in ctx.filled_multi

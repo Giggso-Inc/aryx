@@ -55,6 +55,19 @@ def _log_device_once(ctx: "FillContext", scope: "FillScope") -> None:
         return
 
 
+def _is_resolved_anchor(vn: str) -> bool:
+    """With `cpq_model_scoped_questions_enabled`: the decision anchors the engine resolves itself (country, product, base
+    model, region) are never cleared as 'not applicable'. A model's sequence rows often do not list the base model
+    attribute, so the guard cleared it (ws 1267, APX N30: `TIER0_NOT_APPLICABLE_GUARD` on `modelSelectionbaseModel_astro`
+    in every pass), the derivation that follows never ran, and with no base model nothing else could be scoped. Off:
+    the guard behaves as before."""
+    if not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
+        return False
+    from aryx.cpq.data_table_bridge.attr_governance import _scoped_anchor_vns  # noqa: PLC0415 -- the one anchor list
+
+    return vn in _scoped_anchor_vns()
+
+
 def stage_not_applicable_guard(
     engine: "CpqEngine",
     attr: "ConfigAttr",
@@ -75,6 +88,8 @@ def stage_not_applicable_guard(
             ctx.dt_cache,
         )
     elif attr.required or engine._is_product_line_selector(attr):
+        return
+    elif _is_resolved_anchor(vn):
         return
     else:
         not_applicable = engine._named_attr_confirmed_not_applicable(

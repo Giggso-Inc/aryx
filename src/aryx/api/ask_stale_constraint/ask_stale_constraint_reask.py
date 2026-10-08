@@ -31,7 +31,7 @@ def _applicable_attrs(engine: Any, attrs: list, session: Any, workspace_id: int 
     returns the list unchanged."""
     from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
 
-    if workspace_id is None or not get_settings().cpq_model_scoped_questions_enabled:
+    if workspace_id is None or not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
         return attrs
     try:
         kept, _suppressed = engine._suppress_ungoverned_attrs(

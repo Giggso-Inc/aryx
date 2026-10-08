@@ -79,3 +79,25 @@ Re-run locally after these changes (ws 281): APX N30 and N50 complete after "Uni
 records and none of the old reason; 19 tests in `test_cpq_model_scoped_questions_2026_10_08.py` pass.
 
 | N5 | the tie rule was by name length, so two different models named together stayed unresolved, and an upgrade leaf with the same name made the fallback do nothing | `_tree_candidates` now builds `is_upgrade` from `upgrade_node_ids`, prefers a sellable (non-upgrade, non-soft-deleted) leaf, then the longest name, and leaves different models of equal length to `rank_candidates` (as on the table path). Only the SAME name on several leaves stays unresolved. 2 new tests (21 in the file) |
+
+## 9. Dev finding: the not-applicable guard cleared the base model (ws 1267)
+
+Dev still asked `hiddenConventionalOptionsMaxQuantityAry_astro` with every flag of this PR on. Dev logs showed model resolution and
+rule scoping correct (`APXN30`, node `aPXN30`, recommendation rules 4,732 -> 1,878) but, for `modelSelectionbaseModel_astro`,
+`TIER0_NOT_APPLICABLE_GUARD` / `left_open` / `unset` in every pass and `SCOPED drops 0`. Dev has
+`ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true`; the local runs had not.
+
+| Finding | Evidence | Change (flag `cpq_model_scoped_questions_enabled`) |
+|---|---|---|
+| the guard clears an attribute the model's sequence rows never list; N30's rows do not list the base model attribute, so it was cleared before the derivation ran and nothing downstream could be scoped | local repro with the guard on: base model None, 16 pending (Software Bundles asked) | `tier0_not_applicable_guard._is_resolved_anchor`: the decision anchors the engine resolves itself (the same list the scoping uses) are never cleared by the guard |
+| an optional multi-select left empty on purpose was reopened by the post-loop pass ("emptied by a constraint") and asked among 227 options | fill log: `filled []` in passes 0-3, then `deferred_pending` in the post-loop pass | the empty fill carries its own source (`optional_multi_empty`); `stage_already_filled_multi` keeps it as settled |
+| flag reads used `get_settings().<flag>`; a test that fakes the settings object broke | `test_the_clearing_line_logs_only_the_wording_length` | every read of the two new flags is `getattr(get_settings(), flag, False)` |
+
+Local re-run with dev's full flag set including the guard (ws 281, "i want to quote APX N30 for US" and "...N50 for US"):
+"Configuration complete", base models `H15UCF9PW6AN` / `H25UCF9PW6AN`, 0 pending. 27 tests in
+`test_cpq_model_scoped_questions_2026_10_08.py` pass. In the group of 440 tests that touch these stages, 5 fail and also
+fail on untouched `dev_oci` (they need the Docker-internal Oracle host name); the one new failure was the settings-fake
+test above, fixed.
+
+Dev table checks: `ws1267_basemodeltoconfig` has `APXN30 / aPXN30 / APX N30` (+ flashport rows); `BmCatalog` node `aPXN30` id
+5261103698, parent 39185814: the same as the local data.

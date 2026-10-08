@@ -179,7 +179,7 @@ def _scoped_attrs(engine: Any, state: LoopState, scope: LoopScope) -> list:
     attribute is removed with it. Off: nothing changes."""
     from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
 
-    if not get_settings().cpq_model_scoped_questions_enabled:
+    if not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
         return state.attrs
     try:
         kept, suppressed = engine._suppress_ungoverned_attrs(
