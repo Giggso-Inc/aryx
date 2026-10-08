@@ -692,6 +692,21 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true."
         ),
     )
+    cpq_base_model_defaults_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs the base model to be derived (cpq_derive_base_model_enabled and the flags that let it "
+            "resolve). Once the base model is known, an attribute the customer did not answer gets the base "
+            "model's Defaultinattr default, replacing the value an earlier pass picked before the base model "
+            "existed (the first or only option, tagged 'rule'). ws 281, APX N30: antenna STANDARD instead of "
+            "WHIP, keypad NO KEYPAD instead of LIMITED KEYPAD, data cable YES instead of NO, ... A value from "
+            "the customer, their wording, or a recommendation rule that is satisfied now is kept; the default "
+            "must be a real, currently allowed option; hidden attributes, multi-selects, the decision anchors "
+            "and the attributes the engine always asks (country, region, hardware version, select-model, "
+            "base model) are not touched. Off by default. Override with "
+            "ARYX_CPQ_BASE_MODEL_DEFAULTS_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(
