@@ -412,6 +412,15 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ask which one instead of silently picking A. Off by default."
         ),
     )
+    cpq_model_switch_snapshot_enabled: bool = Field(
+        default=False,
+        description=(
+            "Changing the Product (model) answer inside one family asks to confirm "
+            "first, saves the old model's answers and restores the new model's "
+            "saved answers (or starts clean), the same as a family switch. "
+            "Off by default: the change runs today's cascade with no prompt."
+        ),
+    )
     cpq_blank_free_text_in_conditions_enabled: bool = Field(
         default=False,
         description=(

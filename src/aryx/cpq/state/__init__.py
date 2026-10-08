@@ -162,6 +162,14 @@ class CpqSession:
     # growth. Each snapshot dict has keys: filled, filled_multi,
     # display_filled, filled_source, country, negated_vns, product_entity_id.
     product_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Same idea one level down: per-MODEL snapshot inside one family, keyed by
+    # the Product answer's item value (cpq_model_switch_snapshot_enabled).
+    # Same keys as product_snapshots plus model_leaf_resolved. The pending
+    # pair holds the offered target model's item value and display name while
+    # pending_anchor == "confirm_model_switch". Old payloads default to empty.
+    model_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pending_model_switch: str = ""
+    pending_model_switch_display: str = ""
     # Set when a change request's target attr was ambiguous (two attrs share
     # a display_label — see detect_change_request_collision) and the
     # "which one did you mean?" prompt was shown. The candidate
