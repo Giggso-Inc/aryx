@@ -776,6 +776,29 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
         ),
     )
+    cpq_no_blind_fill_optional_enabled: bool = Field(
+        default=False,
+        description=(
+            "An optional single-select attribute (not catalog-required, not a decision, forced-ask or derived-required "
+            "attribute) that no earlier stage could resolve is left unanswered instead of being filled with the first "
+            "option (`default_first_available`, `blind_pick_governed`, `blind_pick_rule_governed`). Today (ws 1267, "
+            "APX 3000) Mission Critical Wireless Accessory Bundle went into the BOM as Pack 1 although it is optional, "
+            "has no default and the real screen offers None. Can leave a rule cascade that needed the value open. Off "
+            "by default. Override with ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_ENABLED=true."
+        ),
+    )
+    cpq_restrict_hide_lists_are_remove_enabled: bool = Field(
+        default=False,
+        description=(
+            "A declarative constraint action (`set_type -1`) of a rule whose name starts with Restrict or Hide carries the "
+            "values to TAKE AWAY, not the values that stay (loaded today as an allow-list). Only applied when at least one "
+            "listed value is a real option of the target and something would remain; otherwise the old reading is kept "
+            "(quantity limits, numbers, a list that would empty the attribute). Constrain... rules are not touched. Today "
+            "(ws 1267, APX 4000) 'Restrict Frequency Band except 900MHz' (VHF, 700/800, UHF R1, UHF R2, 8/900) offered "
+            "exactly those bands and left out 900 MHz, the only one the real screen offers. Off by default. Override with "
+            "ARYX_CPQ_RESTRICT_HIDE_LISTS_ARE_REMOVE_ENABLED=true."
+        ),
+    )
     cpq_defaultinattr_resolves_ambiguity_enabled: bool = Field(
         default=False,
         description=(

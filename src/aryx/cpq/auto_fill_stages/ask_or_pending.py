@@ -18,6 +18,7 @@ from aryx.cpq.auto_fill_stages import ask_data_gap
 from aryx.cpq.auto_fill_stages import ask_rule_governed_blind
 from aryx.cpq.auto_fill_stages import ask_final_pending
 from aryx.cpq.auto_fill_stages import fill_log
+from aryx.cpq.auto_fill_stages import optional_blind_guard
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 
 if TYPE_CHECKING:
@@ -129,6 +130,9 @@ def resolve_ask_or_pending(
                                   is_decision_attr=state.is_decision_attr)
         else:
             if ask_data_gap.try_missing_data_skip(engine, attr, ctx, scope, state):
+                return True
+            if optional_blind_guard.optional_without_basis(attr, state):
+                fill_log.log_decision(state.vn, "ask_or_pending", "left_open", "OPTIONAL_NO_BASIS")
                 return True
             if ask_data_gap.try_dt_governed_blind(engine, attr, ctx, scope, state):
                 return True

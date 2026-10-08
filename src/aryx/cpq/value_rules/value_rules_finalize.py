@@ -8,9 +8,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.bml.bml_condition_expression import copy_conditions
 from aryx.cpq.engine import ConstraintRule, HidingRule, RecommendationRule, logger
 from aryx.cpq.value_rules.value_rules_state import RuleLoadState
+
+
+def _remove_list_by_name(rule_name: str) -> bool:
+    """Flag `cpq_restrict_hide_lists_are_remove_enabled`: a rule named Restrict.../Hide... lists the values it takes away."""
+    if getattr(get_settings(), "cpq_restrict_hide_lists_are_remove_enabled", False) is not True:
+        return False
+    first = (rule_name or "").strip().split(" ", 1)[0].upper().rstrip(":")
+    return first in ("RESTRICT", "HIDE")
 
 
 def finalize_rule_actions(
@@ -52,6 +61,7 @@ def finalize_rule_actions(
             allowed_values=allowed,
             conditions=copy_conditions(inp_list) if condition_script is None else None,
             condition_script=condition_script,
+            remove_list=_remove_list_by_name(rule_name),
         ))
     for target_attr_id, rec_val in recommend_by_target.items():
         if declarative_condition_collision:
