@@ -32,6 +32,7 @@ from aryx.cpq.auto_fill_stages import (
     governed_boolean_fallback,
     region_and_base_model,
     tier0_already_filled,
+    tier0_base_model_default,
     tier0_already_filled_multi,
     tier0_forward_fill,
     tier0_hidden,
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 # and sets `state.done` where the original returned out of the function.
 _STAGES = (
     tier0_not_applicable_guard.stage_not_applicable_guard,
+    tier0_base_model_default.stage_base_model_default,
     tier0_already_filled.stage_already_filled,
     tier0_already_filled_multi.stage_already_filled_multi,
     tier0_hidden.stage_hidden,
