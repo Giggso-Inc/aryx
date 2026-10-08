@@ -375,6 +375,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN=true."
         ),
     )
+    cpq_required_set_master_string_present_enabled: bool = Field(
+        default=False,
+        description=(
+            "Required set only. A hidden, option-less attribute whose name contains 'MasterString' (hiddenConstraintMaster"
+            "String_astro and the like), that the quote never fills, counts as NON-BLANK when a blank-disallow or message-"
+            "only rule tests it. Real CPQ fills these strings from rules at run time; nothing in the engine does, so the "
+            "'is not blank' input of 'Restrict blank value for Encryption Type for US or FED customers' (and 70+ rules like "
+            "it) could never be true and Encryption Type was never required. The rule's other inputs (country, model list, "
+            "bundle, product) still decide. Other hidden attributes (pdKey, Region, Customer UIN) are not assumed. Off by "
+            "default. Override with ARYX_CPQ_REQUIRED_SET_MASTER_STRING_PRESENT_ENABLED=true."
+        ),
+    )
     cpq_required_set_guards_assumed_open: bool = Field(
         default=False,
         description=(
