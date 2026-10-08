@@ -182,6 +182,69 @@ def test_pending_anchor_router_sends_the_reply_to_the_model_handler(flag_on):
     assert s.filled[PRODUCT_LITERAL] == "MODEL_B"
 
 
+def test_undo_after_a_switch_does_not_bring_the_question_back(flag_on):
+    from aryx.cpq.session_guard.session_guard_snapshot import restore_last_snapshot
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert restore_last_snapshot(s)
+    assert s.filled[PRODUCT_LITERAL] == "MODEL_A"
+    assert s.pending_anchor == "" and s.pending_model_switch == ""
+
+
+def test_reply_naming_another_model_hands_back_to_the_turn(flag_on):
+    for reply in ("switch to model a instead", "no, model a"):
+        s = _session_on_model_a()
+        s.filled[PRODUCT_LITERAL] = "MODEL_C"
+        s.display_filled[PRODUCT_LITERAL] = "Model C"
+        _offer(s, "model b")
+        assert ms._handle_confirm_model_switch_anchor(_req(reply), s) is None
+        assert s.filled[PRODUCT_LITERAL] == "MODEL_C", reply
+        assert s.pending_anchor == "" and s.pending_model_switch == "", reply
+
+
+def test_reply_with_a_longer_model_name_is_not_the_offered_model(flag_on):
+    assert ms._names_model("model bb", "Model B") is False
+    assert ms._names_model("yes, model b please", "Model B") is True
+
+
+def test_unclear_reply_the_llm_does_not_accept_hands_back(flag_on):
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    assert ms._handle_confirm_model_switch_anchor(_req("hmm"), s) is None
+    assert s.filled[PRODUCT_LITERAL] == "MODEL_A" and s.pending_anchor == ""
+
+
+def test_batch_with_a_model_change_asks_alone_and_applies_nothing(flag_on):
+    band = SimpleNamespace(variable_name="band", select_type="single")
+    s = _session_on_model_a()
+    resp = ms._offer_model_switch_in_batch(
+        _req("model b and band UHF"), s, [], [(band, "UHF"), (_PRODUCT_ATTR, "model b")])
+    assert resp is not None and "not been applied yet" in resp["answer"]
+    assert s.filled["band"] == "VHF" and s.pending_model_switch == "MODEL_B"
+
+
+def test_batch_without_a_model_change_is_left_alone(flag_on):
+    band = SimpleNamespace(variable_name="band", select_type="single")
+    keypad = SimpleNamespace(variable_name="keypad", select_type="single")
+    assert ms._offer_model_switch_in_batch(
+        _req("x"), _session_on_model_a(), [], [(band, "UHF"), (keypad, "full")]) is None
+
+
+def test_handle_cascade_multi_returns_the_offer_before_applying(flag_on, monkeypatch):
+    from aryx.api.ask_handle import ask_handle_cascade_multi as multi_mod
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("multi cascade applied changes before the user confirmed")
+
+    monkeypatch.setattr(multi_mod, "_apply_cascade_multi_changes", _must_not_run)
+    band = SimpleNamespace(variable_name="band", select_type="single")
+    s = _session_on_model_a()
+    resp = multi_mod._handle_cascade_multi(
+        _req("model b and band UHF"), s, [], [(_PRODUCT_ATTR, "model b"), (band, "UHF")], [], [], [])
+    assert resp["tools_called"] == ["cpq_model_switch_candidate()"]
+
+
 def test_snapshot_cap_evicts_the_oldest_model():
     s = _session_on_model_a()
     for i in range(msc._MODEL_SNAPSHOT_CAP + 1):

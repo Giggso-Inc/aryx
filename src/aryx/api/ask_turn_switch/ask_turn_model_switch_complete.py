@@ -46,6 +46,11 @@ def _complete_model_switch(
         workspace_id: Used to find the real Base Model key on a restore.
     """
     from_value = session.filled.get(PRODUCT_LITERAL, "")
+    # Clear the offer BEFORE the undo point, so an "undo" after the switch
+    # never brings the yes/no question back.
+    session.pending_model_switch = ""
+    session.pending_model_switch_display = ""
+    session.pending_anchor = ""
     push_snapshot(session, reason="model_switch")
     session.cascade_log.append({
         "event": "model_switch", "from": from_value, "to": new_value,
@@ -95,9 +100,6 @@ def _complete_model_switch(
     # A pending option scope belongs to the old model's last question.
     clear_pending_scope(session)
     session.status = "configuring"
-    session.pending_model_switch = ""
-    session.pending_model_switch_display = ""
-    session.pending_anchor = ""
     raven_log("INFO", "P4", "ask.model_switch.completed model switch committed", context={
         "selected_option": "restore_snapshot" if snap else "reset_config",
         "available_options": ["restore_snapshot", "reset_config"],

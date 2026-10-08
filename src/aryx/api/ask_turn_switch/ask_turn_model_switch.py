@@ -1,16 +1,16 @@
 """Offering and answering a model switch inside one product family.
 
 `_offer_model_switch` runs inside `_handle_cascade` (the shared single-change
-handler every change path goes through) when the change targets the Product
-(model) answer and `cpq_model_switch_snapshot_enabled` is on. Instead of
-wiping Product and its dependents straight away, it asks the user to confirm.
-`_handle_confirm_model_switch_anchor` reads the next turn's yes/no reply with the
-same rules as the family switch (regex first, LLM only for unclear replies) and
-completes the switch via `_complete_model_switch`, or keeps the current model.
-
-ponytail: only the single-change path (`_handle_cascade`) is gated; a message
-naming Product together with other changes (`_handle_cascade_multi`) still runs
-today's cascade. Gate that path too if multi-change model switches show up.
+handler) when the change targets the Product (model) answer and
+`cpq_model_switch_snapshot_enabled` is on. Instead of wiping Product and its
+dependents straight away, it asks the user to confirm. A message that changes
+the model together with other answers goes through `_offer_model_switch_in_batch`
+(from `_handle_cascade_multi` and the compound-split path): the model question
+is asked on its own and the other changes wait, so they never land on the old
+model. `_handle_confirm_model_switch_anchor` reads the next turn's reply and
+completes the switch via `_complete_model_switch`, declines, or hands a reply
+that names something else back to the normal turn (which re-offers if it names
+another model).
 """
 
 from __future__ import annotations
@@ -27,9 +27,19 @@ from aryx.cpq.catalog_profile import PRODUCT_LITERAL
 from aryx.raven_log import raven_log
 
 CONFIRM_MODEL_SWITCH_ANCHOR = "confirm_model_switch"
-_YES_RE = re.compile(r"^\s*(y|yes|switch|confirm)\b", re.IGNORECASE)
+_YES_RE = re.compile(r"^\s*(y|yes|yeah|yep|switch|confirm)\b", re.IGNORECASE)
 _NO_RE = re.compile(r"^\s*(n|no|nope|nah|never|not\s+now|not\s+really)\b", re.IGNORECASE)
+# Words that add nothing after a yes/no ("yes please", "no thanks, keep it").
+_FILLER = frozenset({
+    "please", "thanks", "thank", "you", "ok", "okay", "sure", "go", "ahead", "do", "it",
+    "switch", "confirm", "keep", "stay", "current", "one", "the", "that", "this", "fine",
+})
 _OFFER_OPTIONS = ["offer_model_switch", "flag_off", "not_model_attr", "no_new_model"]
+_REPLY_OPTIONS = ["switch", "stay", "hand_back"]
+_BATCH_NOTE = (
+    "\n\nThe other changes in your message have not been applied yet. "
+    "Send them again after you answer, so they go on the right model."
+)
 
 
 def _norm(text: str) -> str:
@@ -56,7 +66,7 @@ def _log_offer(reason: str, selected: str, session: Any) -> None:
 
 
 def _offer_model_switch(
-    req: Any, session: Any, attrs: list, changed_attr: Any, new_value_hint: str,
+    req: Any, session: Any, attrs: list, changed_attr: Any, new_value_hint: str, note: str = "",
 ) -> dict[str, Any] | None:
     """Ask to confirm a change of the Product answer; None to run the cascade.
 
@@ -66,6 +76,7 @@ def _offer_model_switch(
         attrs: The catalog's config attributes (unused, kept for call symmetry).
         changed_attr: The attribute the change request targets.
         new_value_hint: The wording that names the new value.
+        note: Extra text appended to the question (used for batched changes).
 
     Returns:
         The confirmation response, or None when this change is not a model
@@ -90,55 +101,108 @@ def _offer_model_switch(
     raven_log("INFO", "P4", "ask.model_switch.offered model change needs confirmation", context={
         "selected_option": "offer_model_switch", "available_options": _OFFER_OPTIONS,
         "reason_code": "MODEL_ANSWER_CHANGED", "current_model": current,
-        "target_model": match[0],
+        "target_model": match[0], "batched": bool(note),
         "has_snapshot": match[0] in session.model_snapshots,
         "turn": getattr(session, "turn", None)})
     answer = (
         f"This quote is for **{current_display}**. Switch to **{match[1]}**? "
         f"Your {current_display} answers will be saved, and you can switch back later. (yes/no)"
+        f"{note}"
     )
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return _cpq_response(session, answer, "cpq_model_switch_candidate()")
 
 
+def _offer_model_switch_in_batch(
+    req: Any, session: Any, attrs: list, changes: list,
+) -> dict[str, Any] | None:
+    """Offer the model switch alone when a batch of changes includes Product.
+
+    Args:
+        req: The ask request for the whole message.
+        session: The live CpqSession.
+        attrs: The catalog's config attributes.
+        changes: (attribute, value_hint) pairs named in one message.
+
+    Returns:
+        The confirmation response (the other changes are not applied), or None
+        when no change in the batch is a model switch.
+    """
+    model_change = next((c for c in changes if c[0].variable_name == PRODUCT_LITERAL), None)
+    if model_change is None or len(changes) < 2:
+        return None
+    offer = _offer_model_switch(req, session, attrs, model_change[0], model_change[1], note=_BATCH_NOTE)
+    raven_log("DEBUG", "P4", "ask.model_switch.batch model change inside a multi-change message", context={
+        "selected_option": "offer_alone" if offer is not None else "apply_all",
+        "available_options": ["offer_alone", "apply_all"],
+        "reason_code": "MODEL_SWITCH_OFFERED" if offer is not None else "NOT_A_MODEL_SWITCH",
+        "change_count": len(changes), "turn": getattr(session, "turn", None)})
+    return offer
+
+
+def _names_model(reply: str, model_display: str) -> bool:
+    """Return True when whole words of the reply spell the model's name."""
+    target = _norm(model_display)
+    words = re.findall(r"[a-z0-9]+", (reply or "").lower())
+    return bool(target) and any(
+        "".join(words[i:j]) == target
+        for i in range(len(words)) for j in range(i + 1, len(words) + 1)
+    )
+
+
+def _reply_rest(reply: str, head: "re.Match[str] | None") -> list[str]:
+    """Return the words after a yes/no head, minus filler words."""
+    tail = reply[head.end():] if head else reply
+    return [w for w in re.findall(r"[a-z0-9]+", tail.lower()) if w not in _FILLER]
+
+
 def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any] | None:
-    """Read the yes/no reply; None after switching so the turn continues.
+    """Read the reply to the switch question and act on it.
 
     Args:
         req: The ask request whose question is the reply to the confirm prompt.
         session: The live CpqSession with `pending_model_switch` set.
 
     Returns:
-        None when the switch completed (the caller continues the turn), or the
-        "no changes made" response when the user declined.
+        None when the switch completed or the reply is handed back to the
+        normal turn (it names something else); the "no changes made"
+        response when the user declined.
     """
     target_display = session.pending_model_switch_display or session.pending_model_switch
     current_display = (
         session.display_filled.get(PRODUCT_LITERAL, "") or session.filled.get(PRODUCT_LITERAL, ""))
     reply = req.question or ""
-    deterministic_yes = bool(_YES_RE.match(reply)) or (
-        bool(_norm(target_display)) and _norm(reply) == _norm(target_display))
-    clear_no = bool(_NO_RE.match(reply))
-    affirmative = deterministic_yes
-    if not deterministic_yes and not clear_no:
-        affirmative = _llm_classify_switch_reply(
+    yes_head, no_head = _YES_RE.match(reply), _NO_RE.match(reply)
+    rest = _reply_rest(reply, yes_head or no_head)
+    names_target = _names_model(reply, target_display)
+    llm_consulted = False
+    if names_target and not no_head:
+        decision, reason = "switch", "NAMES_OFFERED_MODEL"
+    elif (yes_head or no_head) and not rest:
+        decision, reason = ("switch", "CLEAR_YES") if yes_head else ("stay", "CLEAR_NO")
+    elif yes_head or no_head:
+        decision, reason = "hand_back", "REPLY_NAMES_SOMETHING_ELSE"
+    else:
+        llm_consulted = True
+        accepted = _llm_classify_switch_reply(
             reply, target_display, current_display, req.workspace_id) == "accept"
+        decision, reason = ("switch", "LLM_ACCEPT") if accepted else ("hand_back", "LLM_NOT_ACCEPT")
     raven_log("DEBUG", "P4", "ask.model_switch.confirm_reply model switch reply classified", context={
-        "selected_option": "switch" if affirmative else "stay",
-        "available_options": ["switch", "stay"],
-        "reason_code": (
-            "DETERMINISTIC_AFFIRMATIVE" if deterministic_yes
-            else "CLEAR_DECLINE" if clear_no
-            else "LLM_ACCEPT" if affirmative else "LLM_NOT_ACCEPT"),
-        "llm_consulted": not deterministic_yes and not clear_no,
+        "selected_option": decision, "available_options": _REPLY_OPTIONS,
+        "reason_code": reason, "llm_consulted": llm_consulted,
         "reply_len": len(reply), "turn": getattr(session, "turn", None),
         "target_model": session.pending_model_switch})
-    if affirmative:
+    if decision == "switch":
         _complete_model_switch(session, session.pending_model_switch, target_display, req.workspace_id)
         return None
     session.pending_model_switch = ""
     session.pending_model_switch_display = ""
     session.pending_anchor = ""
+    if decision == "hand_back":
+        # The reply carries its own request ("no, APX 8000", "switch to X
+        # instead"): the normal turn handles it and re-offers if it names
+        # another model.
+        return None
     answer = f"No changes made — the quote stays on **{current_display}**."
     _ask_core_helpers_module._persist_cpq_history(req.workspace_id, req.question, answer)
     return _cpq_response(session, answer, "cpq_model_switch_declined()")

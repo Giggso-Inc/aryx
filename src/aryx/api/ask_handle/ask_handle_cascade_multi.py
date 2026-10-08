@@ -20,6 +20,7 @@ from aryx.api.ask_attr_recompute.ask_cascade_multi_note import (
 )
 from aryx.api.ask_attr_recompute.ask_cascade_multi_recompute import _recompute_after_cascade_multi
 from aryx.api.ask_attr_recompute.ask_cascade_multi_response import _build_cascade_multi_response
+from aryx.api.ask_turn_switch.ask_turn_model_switch import _offer_model_switch_in_batch
 from aryx.cpq.session_guard.session_guard import drain_intent_queue_into_pending, push_snapshot
 
 
@@ -47,6 +48,11 @@ def _handle_cascade_multi(
     """
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
+    # A model change in the batch is asked on its own first (flag-gated), so
+    # the other changes never land on the old model.
+    model_switch_offer = _offer_model_switch_in_batch(req, session, attrs, matches)
+    if model_switch_offer is not None:
+        return model_switch_offer
     push_snapshot(session, reason="cascade_multi")
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)

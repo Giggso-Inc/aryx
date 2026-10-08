@@ -18,6 +18,7 @@ from aryx.api import ask_core_helpers as _ask_core_helpers_module
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.api.ask_handle.ask_handle_cascade import _handle_cascade
 from aryx.api.ask_llm.ask_llm_split_multi_attr_change import _llm_split_multi_attr_change_request
+from aryx.api.ask_turn_switch.ask_turn_model_switch import _offer_model_switch_in_batch
 
 
 def _try_compound_split_on_clarify(
@@ -113,6 +114,12 @@ def _try_compound_split_on_clarify(
     # path unchanged.
     if not all(hint is not None for _, hint in _resolved_changes):
         return None
+    # A model change among the parts is asked on its own first (flag-gated),
+    # so the other parts never land on the old model.
+    _model_switch_offer = _offer_model_switch_in_batch(
+        req, session, attrs, [hint for _, hint in _resolved_changes])
+    if _model_switch_offer is not None:
+        return _model_switch_offer
     _mc_results = []
     for _mc_text, _mc_hint in _resolved_changes:
         _mc_attr, _mc_value_hint = _mc_hint
