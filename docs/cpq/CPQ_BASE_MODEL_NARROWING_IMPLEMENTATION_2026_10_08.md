@@ -197,4 +197,6 @@ catalog's full lists (4 keypads, 20 bands) although APX 900's base models hold 2
 the base models still in play hold. `_with_model_option_limits` (`ask_step11_build_response.py`) merges them into
 `constrained_opts` before the question is built (flag `cpq_base_model_narrowing_enabled`; only tightens an existing
 rule constraint; failure leaves the list as it was). An attribute whose options all belong to the model keeps its list.
-Answers outside the list are still accepted by the normal answer path; only what is offered changes.
+The shortened list is also what the next reply is matched against (`_remember_attr_scope` builds the pending scope from it), so a
+typed value that was left out gets the scoped "did you mean" re-ask from the shown list, not a silent accept. Each limited question
+logs `ask.options.model_limits` (DEBUG: offered vs catalog option count) so an over-trim is visible.

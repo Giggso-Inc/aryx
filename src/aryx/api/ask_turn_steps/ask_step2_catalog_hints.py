@@ -27,12 +27,29 @@ from aryx.raven_log import raven_log, would_log
 logger = logging.getLogger(__name__)
 
 
+def _model_from_wording(req: "Any", session: Any, catalog_prefix: str) -> str:
+    """The CPQ model the customer's own words name, or "".
+
+    Hints are extracted before the turn's model is bound (`_resolve_model_leaf` runs after this step), and on the
+    first message the Product is not filled yet, so the wording is the only place the model can come from (ws 1267:
+    "I want a quote for APX 900 with 700/800 MHz in the US" -> APX900). Needs `cpq_model_resolution_enabled`."""
+    from aryx.cpq import model_resolution as _model_resolution  # noqa: PLC0415 -- flag-gated
+
+    if not get_settings().cpq_model_resolution_enabled:
+        return ""
+    res = _model_resolution.resolve_model_turn_first(
+        getattr(req, "question", "") or "", getattr(session, "product_anchor_question", "") or "",
+        req.workspace_id, catalog_prefix)
+    return res.chosen.cpq_model if res.resolved and res.chosen is not None else ""
+
+
 def _model_discriminators(req: "Any", session: Any, catalog_prefix: str) -> "dict[str, frozenset[str]] | None":
     """The attributes (and values) the anchored product's model separates its base models by, or None.
 
     Base model narrowing (flag): a typed "700/800 MHz" or "Limited Keypad" is an option of several attributes, so the
-    never-guess rule drops it; with these the phrase is hinted for the one owner the model's own rows use. Any
-    failure leaves hint extraction exactly as it was."""
+    never-guess rule drops it; with these the phrase is hinted for the one owner the model's own rows use. The model
+    comes from the customer's wording when it names one, else from the stored product. Any failure leaves hint
+    extraction exactly as it was."""
     try:
         if not get_settings().cpq_base_model_narrowing_enabled:
             return None
@@ -40,11 +57,11 @@ def _model_discriminators(req: "Any", session: Any, catalog_prefix: str) -> "dic
         from aryx.cpq.catalog_profile import PRODUCT_LITERAL  # noqa: PLC0415
 
         product = (getattr(session, "filled", {}) or {}).get(PRODUCT_LITERAL) or getattr(session, "product_name", "")
-        return discriminator_values(product, req.workspace_id, catalog_prefix) or None
+        model = _model_from_wording(req, session, catalog_prefix)
+        return discriminator_values(product, req.workspace_id, catalog_prefix, cpq_model=model) or None
     except Exception:  # noqa: BLE001 -- never affects hint extraction
         logger.debug("cpq: model discriminators for hints failed", exc_info=True)
         return None
-
 
 
 def _step2_catalog_hints_and_negation(

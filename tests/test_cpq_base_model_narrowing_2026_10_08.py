@@ -63,13 +63,25 @@ def _attrs() -> list[ConfigAttr]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _no_database_for_the_sequence_order(request):
+    """The narrowing reads AttrSequence rows for its question order; unit tests have no database, so it sees none.
+    The end-to-end tests use the fake RDB through the real loader and the order tests patch their own rows."""
+    if "pipeline" in request.fixturenames:
+        yield
+        return
+    with patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], [], [], [], [])):
+        yield
+
+
 @pytest.fixture
 def rows():
     """APX900 resolves to its own rows; other candidate models (`_BOM`) have none."""
     def model_rows(model, *a, **k):
         return (_rows(), set(CODES)) if model == "APX900" else ([], set())
     with patch.object(bmn, "resolved_model_first_candidates", return_value=["APX900", "APX900_BOM"]), \
-            patch.object(bmn, "model_rows_and_base_models", side_effect=model_rows):
+            patch.object(bmn, "model_rows_and_base_models", side_effect=model_rows), \
+            patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], [], [], [], [])):
         yield
 
 
@@ -295,9 +307,9 @@ def test_the_hint_for_the_step_is_built_only_with_the_flag_on(rows):
     from aryx.api.ask_turn_steps import ask_step2_catalog_hints as step2
     req = SimpleNamespace(workspace_id=1267)
     session = SimpleNamespace(filled={PRODUCT: "APX 900"}, product_name="APX 900")
-    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=False)):
+    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=False, cpq_model_resolution_enabled=False)):
         assert step2._model_discriminators(req, session, "p") is None
-    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=True)):
+    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=True, cpq_model_resolution_enabled=False)):
         assert step2._model_discriminators(req, session, "p") == DISC_FROM_ROWS
 
 
@@ -307,7 +319,7 @@ DISC_FROM_ROWS = {FREQ: frozenset(BANDS.values()), KEYPAD: frozenset(KEYPADS.val
 def test_a_failure_while_reading_the_rows_leaves_hint_extraction_as_it_was():
     from aryx.api.ask_turn_steps import ask_step2_catalog_hints as step2
     req, session = SimpleNamespace(workspace_id=1267), SimpleNamespace(filled={}, product_name="APX 900")
-    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=True)), \
+    with patch.object(step2, "get_settings", return_value=SimpleNamespace(cpq_base_model_narrowing_enabled=True, cpq_model_resolution_enabled=False)), \
             patch.object(bmn, "resolved_model_first_candidates", side_effect=RuntimeError("boom")):
         assert step2._model_discriminators(req, session, "p") is None
 
@@ -556,3 +568,161 @@ def test_an_answered_attribute_is_not_limited_and_nothing_is_limited_without_a_p
     attrs = _wide_attrs()
     assert attrs[0].entity_id not in _limits(attrs, {FREQ: "VHF"})
     assert bmn.discriminator_option_limits(attrs, {}, None, "", 1267, "p", {}) == {}
+
+
+# --- the narrowing questions follow the model's own AttrSequence order ---------------------------------------------
+def _sequence_rows(freq_seq="33", keypad_seq="39"):
+    out = []
+    for code in CODES:
+        out.append({"CPQModel": "APX900", "BaseModel": code, "AttrName": FREQ, "Seq": freq_seq})
+        out.append({"CPQModel": "APX900", "BaseModel": code, "AttrName": KEYPAD, "Seq": keypad_seq})
+    out.append({"CPQModel": "OTHER", "BaseModel": "X", "AttrName": FREQ, "Seq": "1"})
+    return out
+
+
+def _tables(rows):
+    return patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], rows, [], [], []))
+
+
+def test_the_sequence_order_is_the_lowest_seq_of_the_models_own_rows():
+    with _tables(_sequence_rows()):
+        order = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+    assert order == {FREQ: 33, KEYPAD: 39}
+
+
+def test_a_non_numeric_seq_is_skipped_and_an_attribute_without_a_seq_is_left_out():
+    with _tables(_sequence_rows(freq_seq="n/a")):
+        order = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+    assert order == {KEYPAD: 39}
+
+
+def test_the_build_carries_the_order_so_frequency_comes_before_keypad(rows):
+    attrs = [_attrs()[1], _attrs()[0], *_attrs()[2:]]          # keypad listed before frequency in the catalog
+    with _tables(_sequence_rows()):
+        narrowing = _build(filled={COUNTRY: "US", PRODUCT: "APX 900"}, attrs=attrs)
+    assert narrowing.order == {FREQ: 33, KEYPAD: 39}
+    ordered = bmn.order_ask_first(attrs, narrowing)
+    names = [a.variable_name for a in ordered]
+    assert names.index(FREQ) < names.index(KEYPAD)
+
+
+def test_only_the_narrowing_questions_swap_places_and_everything_else_stays():
+    narrowing = bmn.BaseModelNarrowing(ask_first=frozenset({FREQ, KEYPAD}), order={FREQ: 33, KEYPAD: 39})
+    pending = [_attr(KEYPAD), _attr("other_a"), _attr(FREQ), _attr("other_b")]
+    assert [a.variable_name for a in bmn.order_ask_first(pending, narrowing)] == [FREQ, "other_a", KEYPAD, "other_b"]
+
+
+def test_without_a_narrowing_or_an_order_the_list_is_untouched():
+    pending = [_attr(KEYPAD), _attr(FREQ)]
+    assert bmn.order_ask_first(pending, None) is pending
+    assert bmn.order_ask_first(pending, bmn.BaseModelNarrowing(ask_first=frozenset({FREQ, KEYPAD}))) is pending
+
+
+# --- the step-11 merge of the model's values into the question's allowed options -------------------------------------
+from aryx.api.ask_turn_steps import ask_step11_build_response as step11    # noqa: E402
+
+
+def _merge(constrained, flag=True, pending=None, limits=None, session=None, raises=False):
+    attrs = _wide_attrs()
+    pending = attrs[:2] if pending is None else pending
+    session = session or SimpleNamespace(filled={PRODUCT: "APX 900"}, product_name="", filled_source={}, run_id="r", turn=1)
+    limits = {attrs[0].entity_id: ["VHF", "UHF R1"]} if limits is None else limits
+    settings = SimpleNamespace(cpq_base_model_narrowing_enabled=flag)
+    side = {"side_effect": RuntimeError("boom")} if raises else {"return_value": limits}
+    with patch("aryx.config.get_settings", return_value=settings), \
+            patch("aryx.cpq.base_model_narrowing.discriminator_option_limits", **side) as limit_fn:
+        out = step11._with_model_option_limits(session, attrs, {}, pending, constrained, 1267, "p")
+    return out, limit_fn, attrs
+
+
+def test_the_merge_returns_the_input_with_the_flag_off_or_nothing_pending():
+    constrained = {1: ["x"]}
+    out, limit_fn, _ = _merge(constrained, flag=False)
+    assert out is constrained and not limit_fn.called
+    out, limit_fn, _ = _merge(constrained, pending=[])
+    assert out is constrained and not limit_fn.called
+
+
+def test_the_merge_adds_the_models_values_for_a_pending_attribute():
+    out, _, attrs = _merge({})
+    assert out[attrs[0].entity_id] == ["VHF", "UHF R1"]
+
+
+def test_the_merge_only_tightens_a_rule_constraint_and_keeps_it_when_nothing_overlaps():
+    attrs = _wide_attrs()
+    eid = attrs[0].entity_id
+    out, _, _ = _merge({eid: ["VHF", "DUAL"]})
+    assert out[eid] == ["VHF"]
+    out, _, _ = _merge({eid: ["DUAL", "SINGLE"]})
+    assert out[eid] == ["DUAL", "SINGLE"]
+    out, _, _ = _merge({eid: []})
+    assert out[eid] == []
+
+
+def test_the_merge_ignores_limits_for_attributes_that_are_not_pending():
+    attrs = _wide_attrs()
+    constrained = {}
+    out, _, _ = _merge(constrained, pending=[attrs[1]], limits={attrs[0].entity_id: ["VHF"]})
+    assert out is constrained
+
+
+def test_the_merge_falls_back_to_the_product_name_and_survives_a_failure():
+    session = SimpleNamespace(filled={}, product_name="APX 900", filled_source={}, run_id="r", turn=1)
+    _, limit_fn, _ = _merge({}, session=session)
+    assert limit_fn.call_args.args[3] == "APX 900"
+    constrained = {1: ["x"]}
+    out, _, _ = _merge(constrained, raises=True)
+    assert out is constrained
+
+
+def test_the_next_reply_is_matched_against_the_shortened_list():
+    """The pending scope is built from the options shown, so a hidden option gets the scoped re-ask."""
+    from aryx.cpq.pending_scope.pending_scope_state import candidates_from_attr_options
+    attr = _wide_attrs()[0]
+    shown = candidates_from_attr_options(attr.options, ["VHF", "UHF R1"])
+    assert set(shown) == {"Vhf", "Uhf R1"} and "Dual" not in shown
+
+# --- the first message: the model comes from the customer's wording, the Product is not filled yet -------------------
+def _step2():
+    from aryx.api.ask_turn_steps import ask_step2_catalog_hints as step2
+    return step2
+
+
+def _wording_settings(resolution):
+    return SimpleNamespace(cpq_base_model_narrowing_enabled=True, cpq_model_resolution_enabled=resolution)
+
+
+def _resolution(model):
+    chosen = SimpleNamespace(cpq_model=model) if model else None
+    return SimpleNamespace(resolved=chosen is not None, chosen=chosen)
+
+
+def test_the_first_message_names_the_model_so_the_phrase_is_hinted_before_the_product_is_filled(rows):
+    step2 = _step2()
+    req = SimpleNamespace(workspace_id=1267, question="I want a quote for APX 900 with 700/800 MHz in the US")
+    session = SimpleNamespace(filled={}, product_name="", product_anchor_question="")
+    with patch.object(step2, "get_settings", return_value=_wording_settings(True)),             patch("aryx.cpq.model_resolution.resolve_model_turn_first", return_value=_resolution("APX900")) as resolve:
+        assert step2._model_discriminators(req, session, "p") == DISC_FROM_ROWS
+    assert resolve.call_args.args[0] == req.question
+
+
+def test_a_wording_that_names_no_model_falls_back_to_the_stored_product(rows):
+    step2 = _step2()
+    req = SimpleNamespace(workspace_id=1267, question="Limited Keypad")
+    session = SimpleNamespace(filled={PRODUCT: "APX 900"}, product_name="", product_anchor_question="a quote for APX 900")
+    with patch.object(step2, "get_settings", return_value=_wording_settings(True)),             patch("aryx.cpq.model_resolution.resolve_model_turn_first", return_value=_resolution(None)):
+        assert step2._model_discriminators(req, session, "p") == DISC_FROM_ROWS
+
+
+def test_nothing_is_resolved_from_wording_with_model_resolution_off_and_no_product(rows):
+    step2 = _step2()
+    req = SimpleNamespace(workspace_id=1267, question="a quote for APX 900")
+    session = SimpleNamespace(filled={}, product_name="", product_anchor_question="")
+    with patch.object(step2, "get_settings", return_value=_wording_settings(False)),             patch("aryx.cpq.model_resolution.resolve_model_turn_first") as resolve:
+        assert step2._model_discriminators(req, session, "p") is None
+    assert not resolve.called
+
+
+def test_a_named_model_without_two_base_models_uses_the_product_lookup(rows):
+    with patch.object(bmn, "model_rows_and_base_models", return_value=([], {"ONE"})):
+        assert bmn.discriminator_values("", 1267, "p", cpq_model="TINY") == {}

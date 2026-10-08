@@ -55,10 +55,24 @@ def _with_model_option_limits(
         for eid, vals in limits.items():
             existing = merged.get(eid)
             merged[eid] = vals if existing is None else [v for v in vals if v in existing] or existing
+        _log_model_limits(session, pending, limits, merged)
         return merged
-    except Exception:  # noqa: BLE001 -- never affects the question
-        raven_log("DEBUG", "P4", "ask.options.model_limits failed", context={"run_id": session.run_id})
+    except Exception as exc:  # noqa: BLE001 -- never affects the question
+        raven_log("DEBUG", "P4", "ask.options.model_limits failed", context={
+            "run_id": session.run_id, "error_class": type(exc).__name__})
         return constrained_opts
+
+
+def _log_model_limits(session: Any, pending: list, limits: dict, merged: dict) -> None:
+    """One DEBUG record per limited question: how many options are offered of how many the catalog has."""
+    for attr in pending:
+        eid = getattr(attr, "entity_id", None)
+        if eid in limits:
+            raven_log("DEBUG", "P4", "ask.options.model_limits options limited to the model's own values", context={
+                "selected_option": "limited", "available_options": ["limited", "full_list"],
+                "reason_code": "MODEL_DISCRIMINATOR_VALUES", "attribute": getattr(attr, "variable_name", None),
+                "offered_count": len(merged.get(eid) or []), "catalog_option_count": len(getattr(attr, "options", None) or []),
+                "run_id": session.run_id, "turn": getattr(session, "turn", None)})
 
 
 def _step11_build_turn_response(

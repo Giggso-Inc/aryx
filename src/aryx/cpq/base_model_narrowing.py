@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aryx.cpq.data_table.data_table_derive_base_model import (
-    model_rows_and_base_models, narrowed_base_models, row_attr_values,
+    model_rows_and_base_models, narrowed_base_models, row_attr_values, single_valued_discriminators,
 )
 from aryx.cpq.derive_base_model_pick import blind_attrs
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
@@ -33,11 +33,14 @@ class BaseModelNarrowing:
     forward     -- {attribute: UPPER value} read off a base model the customer already has, for the separating
                    attributes that are still unanswered.
     base_model_codes -- the model's base model codes (UPPER), to tell a base model attribute from a part-number one.
+    order       -- {attribute: Seq} the model's own AttrSequence rows give the `ask_first` attributes: the order the
+                   real screen shows them in (empty when the rows have none).
     """
 
     ask_first: frozenset[str] = frozenset()
     forward: dict[str, str] = field(default_factory=dict)
     base_model_codes: frozenset[str] = frozenset()
+    order: dict[str, int] = field(default_factory=dict)
 
 
 def value_matches(allowed: Collection[str], item_value: str, display_name: str) -> bool:
@@ -48,51 +51,69 @@ def value_matches(allowed: Collection[str], item_value: str, display_name: str) 
     return item_value.strip().upper() in allowed or display_name.strip().upper() in allowed
 
 
-def single_valued_discriminators(
-    rows: list[dict[str, Any]], base_models: set[str],
-) -> dict[str, dict[str, str]]:
-    """{attribute: {base model: UPPER value}} for the attributes that separate `base_models`.
-
-    Every base model has rows for the attribute, each base model holds exactly one value, and at least two different
-    values exist. Attributes a base model lists several values for (a country list) or only some base models use are
-    not separating, so they are left out."""
-    per_attr: dict[str, dict[str, set[str]]] = {}
-    for row in rows:
-        base_model = str(row.get("BaseModel") or "").strip()
-        if base_model not in base_models:
-            continue
-        for attr, value in row_attr_values(row):
-            per_attr.setdefault(attr, {}).setdefault(base_model, set()).add(value)
-    out: dict[str, dict[str, str]] = {}
-    for attr, by_base_model in per_attr.items():
-        if len(by_base_model) != len(base_models):
-            continue
-        if any(len(values) != 1 for values in by_base_model.values()):
-            continue
-        single = {bm: next(iter(values)) for bm, values in by_base_model.items()}
-        if len(set(single.values())) >= 2:
-            out[attr] = single
-    return out
+def _named_model_with_base_models(
+    product: str, workspace_id: int, catalog_prefix: str, cache: dict | None,
+) -> tuple[str, list[dict[str, Any]], set[str]]:
+    """Name, rows and base models of the first candidate model that has two or more base models."""
+    for cpq_model in resolved_model_first_candidates(product, workspace_id, catalog_prefix, cache):
+        rows, base_models = model_rows_and_base_models(cpq_model, workspace_id, catalog_prefix, cache)
+        if len(base_models) >= 2:
+            return cpq_model, rows, base_models
+    return "", [], set()
 
 
 def _model_with_base_models(
     product: str, workspace_id: int, catalog_prefix: str, cache: dict | None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rows and base models of the first candidate model that has two or more base models."""
-    for cpq_model in resolved_model_first_candidates(product, workspace_id, catalog_prefix, cache):
-        rows, base_models = model_rows_and_base_models(cpq_model, workspace_id, catalog_prefix, cache)
-        if len(base_models) >= 2:
-            return rows, base_models
-    return [], set()
+    _model, rows, base_models = _named_model_with_base_models(product, workspace_id, catalog_prefix, cache)
+    return rows, base_models
+
+
+def attr_sequence_order(
+    cpq_model: str, base_models: Collection[str], attr_names: Collection[str],
+    workspace_id: int, catalog_prefix: str, cache: dict | None = None,
+) -> dict[str, int]:
+    """{attribute: lowest Seq} of `attr_names` in the model's AttrSequence rows for `base_models`.
+
+    The sequence is the order the real screen asks the attributes in (ws 1267, APX 900: Frequency Bands 33, Keypad
+    Type 39, for every base model). A non-numeric Seq is skipped; an attribute with no usable Seq is left out."""
+    from aryx.cpq.data_table.data_table_loader import _load_all_tables  # noqa: PLC0415 -- data layer, flag-gated callers
+
+    wanted, bms, model = set(attr_names), set(base_models), (cpq_model or "").strip().upper()
+    out: dict[str, int] = {}
+    try:
+        sequence_rows = _load_all_tables(workspace_id, catalog_prefix, cache)[1]
+    except Exception:  # noqa: BLE001 -- the order is a nicety, never a reason to lose the narrowing
+        return {}
+    for row in sequence_rows:
+        name = str(row.get("AttrName") or "")
+        if (name not in wanted or str(row.get("CPQModel") or "").strip().upper() != model
+                or str(row.get("BaseModel") or "").strip() not in bms):
+            continue
+        try:
+            seq = int(float(row.get("Seq")))
+        except (TypeError, ValueError):
+            continue
+        out[name] = min(seq, out.get(name, seq))
+    return out
 
 
 def discriminator_values(
-    product: str, workspace_id: int | None, catalog_prefix: str, cache: dict | None = None,
+    product: str, workspace_id: int | None, catalog_prefix: str, cache: dict | None = None, cpq_model: str = "",
 ) -> dict[str, frozenset[str]]:
-    """{attribute: UPPER values} the product's model separates its base models by (for the hint tie-break)."""
-    if workspace_id is None or not product:
+    """{attribute: UPPER values} the product's model separates its base models by (for the hint tie-break).
+
+    `cpq_model`, when the caller already knows the model (resolved from the customer's wording), is used directly;
+    otherwise the model is looked up from `product`."""
+    if workspace_id is None or not (product or cpq_model):
         return {}
-    rows, base_models = _model_with_base_models(product, workspace_id, catalog_prefix, cache)
+    if cpq_model:
+        rows, base_models = model_rows_and_base_models(cpq_model, workspace_id, catalog_prefix, cache)
+        if len(base_models) < 2:
+            rows, base_models = _model_with_base_models(product, workspace_id, catalog_prefix, cache) if product else ([], set())
+    else:
+        rows, base_models = _model_with_base_models(product, workspace_id, catalog_prefix, cache)
     return {attr: frozenset(by_bm.values())
             for attr, by_bm in single_valued_discriminators(rows, base_models).items()}
 
@@ -110,7 +131,7 @@ def build_base_model_narrowing(
     fills it)."""
     if workspace_id is None or not product:
         return None
-    rows, base_models = _model_with_base_models(product, workspace_id, catalog_prefix, cache)
+    cpq_model, rows, base_models = _named_model_with_base_models(product, workspace_id, catalog_prefix, cache)
     if len(base_models) < 2:
         return None
     from aryx.cpq.engine import _DECISION_REQUIRED_KEYS  # noqa: PLC0415 -- the engine imports this module's callers
@@ -139,7 +160,28 @@ def build_base_model_narrowing(
     if len(remaining) < 2:
         return None
     ask_first = frozenset(vn for vn in single_valued_discriminators(rows, remaining) if askable(vn))
-    return BaseModelNarrowing(ask_first=ask_first, base_model_codes=frozenset(codes)) if ask_first else None
+    if not ask_first:
+        return None
+    return BaseModelNarrowing(
+        ask_first=ask_first, base_model_codes=frozenset(codes),
+        order=attr_sequence_order(cpq_model, remaining, ask_first, workspace_id, catalog_prefix, cache))
+
+
+def order_ask_first(pending: list[Any], narrowing: BaseModelNarrowing | None) -> list[Any]:
+    """`pending` with the narrowing's own questions asked in the model's AttrSequence order.
+
+    Only the positions those questions already hold are reshuffled, among themselves, so nothing else moves and
+    an attribute without a Seq keeps its place. No narrowing / no order: the list as it was."""
+    if narrowing is None or not narrowing.order:
+        return pending
+    slots = [i for i, attr in enumerate(pending) if attr.variable_name in narrowing.order]
+    if len(slots) < 2:
+        return pending
+    ordered = sorted((pending[i] for i in slots), key=lambda attr: narrowing.order[attr.variable_name])
+    out = list(pending)
+    for i, attr in zip(slots, ordered):
+        out[i] = attr
+    return out
 
 
 def reopen_guessed_values(

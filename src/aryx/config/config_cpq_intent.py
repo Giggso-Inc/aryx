@@ -666,6 +666,20 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED=true."
         ),
     )
+    cpq_derive_discriminators_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_derive_base_model_enabled. The base model narrowing applies every known answer as a "
+            "restriction, so an attribute the whitelist only uses as a CONDITION of other attributes' rows (country: "
+            "'delete narrowbanding waiver when country US') excludes base models that merely have no such row. With "
+            "this flag only the attributes that separate the model's base models (each holds exactly one value: "
+            "frequency band, keypad type) and the attributes the rows treat as a target narrow, the separating ones "
+            "first. ws 1267, APX 900: country US dropped the two 700/800 MHz base models (10 -> 8), the 700/800 MHz "
+            "answer then matched nothing and the base model was asked from 660 options; the same exclusion would "
+            "remove 700/800 MHz from the frequency question. Off by default. Override with "
+            "ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(
