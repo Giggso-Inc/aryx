@@ -394,3 +394,30 @@ be derived from this data. Open question for the owner: is the N30 / N50 observa
 a run without it? If both products behave differently in production, the difference lives in something not found yet. Options:
 (A) leave `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` off (APX 900 does not ask encryption either); (B) turn it on and accept the question for
 N30 / N50 (consistent with the rules); (C) a per-model list in configuration (cpq models allowed to use it), no model name in code.
+
+### RCA: why the real UI shows Encryption Type for APX 900 and not for N30 / N50
+
+Sources in this repo: `CPQ_REQUIRED_INPUT_DERIVATION_PLAN_2026_10_05.md` (screenshot ground truth and the rule analysis),
+`CONFIG_DATA_REQUIRED_FIELDS_FINDINGS_AND_CODE_CHANGES_2026-10-05.md`, `CONFIG_DATA_ALL_PRODUCTS_US_2026-10-06.md`,
+`ASTRO25_APX_PRODUCT_EDA_2026-10-03.md` section 10.4. Nothing below was run live.
+
+1. **The screenshots are at different states.** Ground truth used for the derivation: APX 900 shows "Country, Frequency Bands, Keypad Type,
+   Encryption Type" (taken after the band and keypad were chosen, so the base model was resolved); APX N30 shows "Country only" (the
+   initial state). The derivation plan says so itself: "APX N30 Encryption Type in pass 2, a state later than its screenshot".
+2. **Encryption Type is state dependent, not product dependent.** It is `O` in attrSequence. It is required by the blank-disallow rule
+   "Restrict blank value for Encryption Type for US or FED customers (Portable)", whose condition needs **the base model resolved AND
+   country US** (or Federal plus the FCC feature). The rule is also gated on the host variable `TER`
+   (`if(sessionVariable_TER <> "")`); the production screenshots show the TER-gated message "Please make at least one selection from
+   Encryption Type", so TER is populated in production.
+3. **Same rule for all three products.** The derived sets list the rule as true for APX 900, N30 and N50 alike; N30 also has a rule
+   for PR / VI that fires without TER. N30 / N50 have a package-bundle default (`softwareBundlesBundleType_astro = STANDARD BUNDLE`) that fires
+   a recommendation chain and fills Operation Type; it restricts one encryption value ("ADP ONLY <- packageTypeBundles") but does not fill
+   Encryption Type.
+4. **So the difference is when the screenshot was taken.** APX 900 needs two answers before its base model resolves, so the red field was
+   captured; N30's initial screen shows only the country, and the prototype predicts Encryption Type after country US and a resolved base
+   model. #475's acceptance ("nothing asked after the country") was compared with that initial-state screenshot, not with a screen after
+   the country was chosen.
+
+**Not verified:** a real N30 / N50 screen **after** choosing United States. That one screenshot decides it: if Encryption Type goes red,
+the flag should be global (option B) and N30 / N50 asking it is correct; if it stays absent, something outside the rules above applies and
+needs a new RCA (a per-model list is a last resort).
