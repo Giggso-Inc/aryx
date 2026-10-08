@@ -360,8 +360,15 @@ five guessed attributes, `ask.base_model.not_derived` should not appear after bo
 
 ### Expected result for APX N30 / N50 (one place)
 
-#475 accepted "ask nothing after the country" for N30 / N50; that was measured **without** the required-set flags. The derived required set
-(`ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`) lists Encryption Type as required for both (a TER-gated blank-disallow rule). With
-`ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` and `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` on, N30 / N50 ask Encryption Type after the country.
-Recommended and to be confirmed by the owner: ask it, because the real required set marks it required. The flag is global; to keep N30 / N50
-silent, leave `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` off until a per-model switch exists.
+**Decision (owner): N30 and N50 ask only the Ultimate Destination Country. APX 900 asks Encryption Type.** This matches #475's
+acceptance. It must come from the data, not from model names in code.
+
+How the data can give it: the derived required set never contains an attribute the catalog itself filled with a default or a rule
+value, and the fill stages run the catalog defaults before the "always ask" decision. With `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED` on, an
+encryption default in `WS1267_DEFAULTINATTR` for the N30 / N50 base models keeps them silent, while APX 900 (no encryption row for
+`H92UCH9PW7AN`, all rows seen) asks it.
+
+**Not verified:** that those N30 / N50 rows exist (query: `SELECT BASEMODEL, ATTR1, VAL1 FROM WS1267_DEFAULTINATTR WHERE ATTR1 =
+'secureEncryptionType_astro'`). If they do not, the engine would ask them Encryption Type and the cause of the real CPQ's silence is
+elsewhere (for example the conditions of the blank-disallow rule); a per-model switch is a last resort. Replay N30 / N50 with all flags
+on before relying on it.
