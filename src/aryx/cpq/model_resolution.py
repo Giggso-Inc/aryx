@@ -167,6 +167,7 @@ def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
     if not get_settings().cpq_model_resolution_tree_fallback_enabled or not hint_norm:
         return []
     parents = {parent for _name, parent in data.nodes_by_id.values() if parent}
+    upgrade_nodes = getattr(data, "upgrade_node_ids", frozenset())
     out: list[ModelCandidate] = []
     for node_id, (name, _parent) in data.nodes_by_id.items():
         if node_id in parents:
@@ -176,17 +177,21 @@ def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
             continue
         out.append(ModelCandidate(
             cpq_model=name, display_names=frozenset({name}), node_name=name, node_id=node_id,
-            base_models=frozenset(), match="exact", is_upgrade=False,
+            base_models=frozenset(), match="exact", is_upgrade=node_id in upgrade_nodes,
             soft_deleted=bool(_SOFT_DELETED_RE.search(name)), match_len=len(norm),
         ))
     if len(out) > 1:
-        # Several leaves named in the wording: keep the most specific name; if that is still more than one node (the
-        # name is not unique in the tree: an option group sharing a model's name, say), do not guess -- unresolved,
-        # so no rule is scoped out on a guess.
+        # Same preference as the table path (`rank_candidates`): a sellable radio before an upgrade or a soft-deleted
+        # leaf, then the most specific name. Different models of equal length named together ("compare APX N30 and
+        # APX N50") are left to `rank_candidates`' deterministic pick, as on the table path. What is never guessed is the
+        # SAME name on several leaves (the name is not unique in the tree: an option group sharing a model's name, say):
+        # unresolved, so no rule is scoped out on a guess.
+        live = [c for c in out if not c.is_upgrade and not c.soft_deleted]
+        out = live or out
         longest = max(c.match_len for c in out)
         out = [c for c in out if c.match_len == longest]
-        if len(out) > 1:
-            logger.debug("cpq: model_resolution tree fallback ambiguous (%d leaves) -> unresolved", len(out))
+        if len({_norm(c.node_name) for c in out}) < len(out):
+            logger.debug("cpq: model_resolution tree fallback ambiguous (same name on %d leaves) -> unresolved", len(out))
             return []
     return out
 

@@ -91,6 +91,29 @@ def test_two_leaves_with_the_same_specificity_are_not_guessed(flags):
         assert not mr.resolve_model("I want to quote for APX N30", 1, "p").resolved
 
 
+def test_a_duplicate_name_under_an_upgrade_node_prefers_the_sellable_leaf(flags):
+    """Review N5: the same name on an upgrade branch must not make the fallback do nothing: the non-upgrade leaf wins,
+    as on the table path."""
+    flags.cpq_model_resolution_tree_fallback_enabled = True
+    nodes = dict(NODES)
+    nodes["250"] = ("upgrades", "100")
+    nodes["400"] = ("aPXN30", "250")                  # the same model name on an upgrade branch
+    catalog = _catalog()
+    catalog.nodes_by_id = nodes
+    catalog.upgrade_node_ids = frozenset({"400"})
+    with patch.object(mr, "load_catalog", return_value=catalog):
+        res = mr.resolve_model("I want to quote for APX N30", 1, "p")
+    assert res.resolved and res.chosen.node_id == "300" and not res.chosen.is_upgrade
+
+
+def test_two_different_models_named_together_resolve_like_the_table_path(flags):
+    """Review N5: "compare APX N30 and APX N50" names two different models of equal length; the deterministic pick of
+    `rank_candidates` (alphabetical, last step) applies, with the other kept as an alternative, instead of nothing."""
+    flags.cpq_model_resolution_tree_fallback_enabled = True
+    res = _resolve("compare APX N30 and APX N50")
+    assert res.resolved and res.chosen.node_name == "aPXN30" and [a.node_name for a in res.alternatives] == ["aPXN50"]
+
+
 def test_the_most_specific_leaf_still_wins_over_a_shorter_one(flags):
     flags.cpq_model_resolution_tree_fallback_enabled = True
     nodes = dict(NODES)

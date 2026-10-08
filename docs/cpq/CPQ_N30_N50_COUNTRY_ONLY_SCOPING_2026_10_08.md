@@ -77,3 +77,5 @@ optional multi-select.
 
 Re-run locally after these changes (ws 281): APX N30 and N50 complete after "United States", 0 pending, 8 `SUPPRESSED_NOT_IN_MODEL_SEQUENCE`
 records and none of the old reason; 19 tests in `test_cpq_model_scoped_questions_2026_10_08.py` pass.
+
+| N5 | the tie rule was by name length, so two different models named together stayed unresolved, and an upgrade leaf with the same name made the fallback do nothing | `_tree_candidates` now builds `is_upgrade` from `upgrade_node_ids`, prefers a sellable (non-upgrade, non-soft-deleted) leaf, then the longest name, and leaves different models of equal length to `rank_candidates` (as on the table path). Only the SAME name on several leaves stays unresolved. 2 new tests (21 in the file) |
