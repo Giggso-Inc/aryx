@@ -28,6 +28,7 @@ def _required_ask_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
     sources: dict[str, str], display_order: dict[str, int] | None, workspace_id: int | None,
     catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
+    bml_eval: Any | None = None,
 ) -> frozenset[str]:
     """Variable names of the derived required set the fill pass must ask, not guess (flag-gated, failure-safe).
 
@@ -37,15 +38,16 @@ def _required_ask_vns(
     settings = get_settings()
     if not (getattr(settings, "cpq_required_set_asks_enabled", False) and workspace_id is not None):
         return frozenset()
-    if not getattr(settings, "cpq_required_set_guards_assumed_open", False):
+    if not (getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True
+            or getattr(settings, "cpq_required_set_guards_assumed_open", False)):
         # A guarded blank-disallow rule (the TER-gated encryption rule) does not fire without it, so the set would be
         # incomplete and the rollout different from the one that was tested: say so once per process and ask nothing extra.
         global _DEPENDENCY_WARNED
         if not _DEPENDENCY_WARNED:
             _DEPENDENCY_WARNED = True
-            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the guard flag, skipped",
+            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the rule-guard flag, skipped",
                       context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
-                               "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
+                               "reason_code": "REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN_OFF"})
         return frozenset()
     try:
         from aryx.cpq.fill_signature import _fill_signature  # noqa: PLC0415 -- flag-gated
@@ -58,14 +60,16 @@ def _required_ask_vns(
         if dt_cache is not None and key in dt_cache:
             return dt_cache[key]
         hidden = {a.variable_name for a in attrs if getattr(a, "hidden", False)}
+        hidden |= _rule_hidden_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix,
+                                   product_anchor_hint, dt_cache, bml_eval)
         started = time.monotonic()
         derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
-            workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache)
+            workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache, rule_required_only=True)
         if would_log("DEBUG"):
             raven_log("DEBUG", "P4", "ask.required_set.derived derived required set computed for asking", context={
                 "selected_option": "computed", "available_options": ["computed", "reused"],
-                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived),
+                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived), "required_vns": sorted(derived)[:20],
                 "duration_ms": int((time.monotonic() - started) * 1000)})
         if dt_cache is not None:
             dt_cache[key] = derived
@@ -73,6 +77,28 @@ def _required_ask_vns(
     except Exception:  # noqa: BLE001 -- asking more is a nicety, never a reason to break the pass
         logger.debug("cpq: derived required set for asking failed", exc_info=True)
         return frozenset()
+
+
+def _rule_hidden_vns(
+    engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
+    workspace_id: int, catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
+    bml_eval: Any | None,
+) -> set[str]:
+    """Attributes a hiding rule hides for the current answers (e.g. Encryption Type on an N-series model). A hidden
+    attribute is not on the screen, so it is never asked. Failure-safe: nothing extra is hidden."""
+    try:
+        from aryx.cpq.catalog_profile import resolve_base_model_vn  # noqa: PLC0415
+        if not filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""):
+            return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
+        rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
+        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        with untraced():        # a query, not a decision: it must not add fired-rule rows to the trace
+            return set(engine.apply_hiding_rules(
+                attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
+                catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+    except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
+        logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+        return set()
 
 
 def _base_model_narrowing(
@@ -176,7 +202,7 @@ def build_fill_context_and_scope(
                                                  catalog_prefix, dt_cache)
 
     required_ask_vns = _required_ask_vns(engine, attrs, filled, filled_multi, sources, display_order,
-                                         workspace_id, catalog_prefix, product_anchor_hint, dt_cache)
+                                         workspace_id, catalog_prefix, product_anchor_hint, dt_cache, bml_eval)
 
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,

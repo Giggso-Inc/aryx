@@ -85,4 +85,64 @@ def test_without_the_guard_flag_nothing_is_asked_and_the_missing_dependency_is_r
         _ask(True, {ENC}, cache={}, guards=False)          # another turn, same process
     assert out == frozenset() and not derive.called
     assert [c.args[2] for c in log.call_args_list].count(
-        "ask.required_set.dependency_missing asks flag needs the guard flag, skipped") == 1
+        "ask.required_set.dependency_missing asks flag needs the rule-guard flag, skipped") == 1
+
+
+def test_the_asks_helper_asks_only_for_rule_required_attributes():
+    with patch.object(auto_fill_setup, "get_settings", return_value=SimpleNamespace(
+            cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})) as derive:
+        auto_fill_setup._required_ask_vns(
+            SimpleNamespace(), [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert derive.call_args.kwargs.get("rule_required_only") is True
+
+
+def test_the_new_rule_guard_setting_alone_satisfies_the_dependency():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=False,
+                               cpq_required_set_rule_guards_assumed_open=True)
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})):
+        out = auto_fill_setup._required_ask_vns(
+            SimpleNamespace(), [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert out == frozenset({ENC})
+
+
+def test_an_attribute_a_hiding_rule_hides_is_passed_as_hidden_so_it_is_not_asked():
+    """APX N30/N50: 'Hide Encryption Type if Essential Core Bundle Selected N series' hides it, so it is never asked."""
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: ([], [], {ENC}))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"),             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
+        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {"base_vn": "N30BASE"}, {}, {}, None, 1267, "p", "APX N30", {})
+    assert ENC in derive.call_args.args[5]          # the hidden set handed to the derivation
+
+
+def test_hiding_rules_that_cannot_be_read_hide_nothing_extra():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})) as derive:
+        out = auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert out == frozenset({ENC}) and ENC not in derive.call_args.args[5]
+
+
+def test_hide_rules_are_not_counted_while_the_base_model_is_blank():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: ([], [], {ENC}))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings),             patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"),             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
+        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert ENC not in derive.call_args.args[5]
+
+
+def test_the_hiding_query_records_no_rule_trace_rows():
+    from aryx.cpq.rule_trace import rule_trace_state as state
+    seen = []
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: (seen.append(state._ctx_var.get()) or ([], [], set())))
+    state._ctx_var.set((1267, "p"))
+    with patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"):
+        auto_fill_setup._rule_hidden_vns(engine, [], {"base_vn": "X"}, {}, 1267, "p", "APX 900", {}, None)
+    assert seen == [None]                              # record_fire is a no-op inside the query
+    assert state._ctx_var.get() == (1267, "p")         # and the binding is restored afterwards

@@ -422,6 +422,40 @@ Sources in this repo: `CPQ_REQUIRED_INPUT_DERIVATION_PLAN_2026_10_05.md` (screen
 the flag should be global (option B) and N30 / N50 asking it is correct; if it stays absent, something outside the rules above applies and
 needs a new RCA (a per-model list is a last resort).
 
+## Fix plan 2026-10-08 (RCA 1-3 of the "900 MHz" run) and final environment
+
+Run: "APX 900 in the US", answer 900 MHz: the quote completed with Keypad = Full and Base Model `H92WCH9PW7AN`; the summary held 5 guessed attributes
+and no Encryption Type.
+
+1. **Silent keypad.** The engine's country filter drops `H92UCF9PW6AN` and `H92WCF9PW6AN` (no US row among OTHER attributes' rows), so 900 MHz leaves one
+   base model and the keypad is forward-filled. The real UI keys band and keypad by region (NA rows exist for all 10 base models) and offers Limited and
+   Full. Fix: `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true` (code from #478, config only).
+2. **Missing attributes.** `WS1267_DEFAULTINATTR` holds 18 defaults for `H92WCH9PW7AN` (no `languageLanguageType_astro` row; an extra
+   `antennasFrequency_astro` = 900 MHZ); only 5 attributes showed, all blind picks. Fix: `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` plus PR #482 (a blind pick
+   yields to the table default once the base model is known). Battery has no default row; Language has none for WCH.
+3. **Encryption Type** (mandatory in the sheet, O in attrSequence, required by a TER-gated blank-disallow rule). Fix: the asks flag takes only
+   rule-required attributes (not attrSequence R), with its own guard setting `ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN` that only the required set
+   reads: the constraint-rule applier keeps today's behaviour on every model (the older `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` also changes it).
+
+Environment for dev (recreate the container): 
+`ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true`, `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true`, `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true`,
+`ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN=true`; keep the prerequisites listed above. Do NOT set `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN`.
+
+Replay (one step at a time): (A) answer 900 MHz: the keypad is asked with 2 options; Limited + 700/800 derives `H92UCF9PW6AN`.
+(B) the summary lists the 18 defaults (antenna Whip, hazardous N/A, carry 2.0 inch, package Bulk). (C) after band and keypad, Encryption Type is asked
+with 4 options and no FCC Trigger question appears. Expected side effect: APX N30 / N50 also ask Encryption Type (same rule); confirm with one real
+screenshot after the country is chosen.
+
+### Review follow-ups on the required-set ask (2026-10-08)
+
+- Hiding rules are applied to the ask set only once the base model is known (master-string hide rules say "hide" while it is blank), without
+  writing rule-trace rows (`rule_trace_state.untraced`). The `cpq_perf: apply_hiding_rules` info line is still logged, and the call runs once per
+  distinct fill state (cached for the turn). Script-backed hide rules need the BML evaluator: when none is passed they leave the attribute visible,
+  so it is still asked (safe direction).
+- Two guard settings can satisfy the asks flag: `ARYX_CPQ_REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN` (use this one) and the older
+  `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` (also changes the constraint-rule applier; do not set). The WARN reason code is now
+  `REQUIRED_SET_RULE_GUARDS_ASSUMED_OPEN_OFF`. Retiring the old flag is a separate change.
+
 ### Fix B2: a Defaultinattr default breaks a tie the Whitelist leaves (2026-10-08)
 
 The defaults flag alone does not apply defaults to attributes the Whitelist covers: with `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED` on, a Whitelist
