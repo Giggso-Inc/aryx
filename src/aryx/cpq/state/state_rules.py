@@ -177,6 +177,9 @@ class ConstraintRule:
     """The action's literal list contains the empty string: with mode "DISALLOW" the
     blank value itself is not allowed, i.e. the attribute is required (plan F6)."""
     ref_id: str = ""  # BmCatalog node this rule is scoped to ("" = unbound/unknown); cpq/rule_scope.py
+    remove_list: bool = False
+    """Declarative `set_type -1` list of a rule named Restrict.../Hide... (flag `cpq_restrict_hide_lists_are_remove_
+    enabled`): the listed values are the ones taken away, not the ones that stay. See constraint_rules_mode."""
 
 
 @dataclass

@@ -503,3 +503,24 @@ option is still taken. Not changed: multi-selects, required attributes, anything
 
 Risk: a rule cascade that relied on the blind value stays open; the summary carries fewer filled values; reaches every model; turn time not measured. Replay
 APX 3000: the accessory bundle is absent from the summary and the log shows `OPTIONAL_NO_BASIS`.
+
+### Restrict.../Hide... declarative lists are the values taken away (2026-10-09)
+
+APX 4000 / US on dev: the band question offered 700/800, VHF, UHF R1 and UHF R2 (log `ask.options.model_limits`, `offered_count 4`) and left out 900 MHz, the only band
+the real screen offers (and the sheet's APX 4000 block). Cause: the declarative action of "Restrict Frequency Band except 900MHz" (`set_type -1`, `~VHF~700/800
+MHZ~UHF R1~UHF R2~8/900 MHZ`) is loaded as an allow-list (`value_rules_bucket.py` -> `ConstraintRule(allowed_values)`, mode empty). The rule lists the values
+it takes away. The same loader reading also narrows an attribute to the listed values whenever any Restrict rule's condition holds (e.g. "Restrict Flash Model
+Numbers ... | M22VRS9PW1CN" would force that base model).
+
+Audit (ws 1267, dev Oracle): `set_type -1` carries `action_type` 1 (1,464 actions) and 2 (2,947); the type does not separate the readings (Restrict 1,862 on type 2,
+605 on type 1; Constrain 420 / 374). 183 Restrict actions (167 rules) and 13 Hide actions carry a value list; 178 Constrain actions (155 rules) do too. Of 40
+sampled Restrict/Hide rules about 33 are clear remove-lists, none an allow-list, about 7 are quantity or number limits. "Constrain..." rules go both ways (a
+live-confirmed one, "Constrain for APXNEXTSINGLE...", is an allow-list), so they are not touched.
+
+Change: new flag `ARYX_CPQ_RESTRICT_HIDE_LISTS_ARE_REMOVE_ENABLED` (off by default). A rule whose name starts with Restrict or Hide gets `ConstraintRule.remove_list`;
+`effective_allowed` then returns the target's options minus the listed values (case/space-insensitive). The old allow-list reading is kept when no listed value is a
+real option (quantity limits, numbers, free-text attributes) or when nothing would be left (a list must not empty the attribute and trigger the empty-intersection
+fallback). Not changed: Constrain/Constraint rules, script-backed rules, `cpq/validation` (the offline reference oracle).
+
+Risk: reads about 196 declarative actions the other way for every model, so option lists change widely; the reading rests on names and values, not on Oracle's
+definition. Replay: APX 4000 offers only 900 MHz; check other models whose Restrict rules fire. Turn time not measured.

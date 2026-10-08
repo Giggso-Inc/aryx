@@ -24,9 +24,24 @@ def guard_open(rule: Any, filled: dict[str, str], assume_open: bool = False) -> 
     return bool((filled.get(guard) or "").strip())
 
 
+def _remove_list_allowed(rule: Any, target: Any) -> list[str] | None:
+    """Options left after taking away a Restrict/Hide rule's listed values, or None to keep the allow-list reading:
+    no listed value is a real option (quantity limits, numbers) or nothing would be left (it must not empty the attribute)."""
+    blocked = {str(v).strip().upper() for v in rule.allowed_values}
+    options = list(getattr(target, "options", None) or [])
+    kept = [o.item_value for o in options if o.item_value.strip().upper() not in blocked]
+    if not kept or len(kept) == len(options):
+        return None
+    return kept
+
+
 def effective_allowed(rule: Any, target: Any) -> list[str]:
     """The values that remain legal on `target`: the rule's own list, or, for
     a DISALLOW rule, every option of the target except the listed values."""
+    if getattr(rule, "remove_list", False) is True:
+        remaining = _remove_list_allowed(rule, target)
+        if remaining is not None:
+            return remaining
     if str(getattr(rule, "mode", "") or "").upper() != "DISALLOW":
         return rule.allowed_values
     blocked = {v.strip().upper() for v in rule.allowed_values}
