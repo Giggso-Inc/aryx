@@ -28,6 +28,7 @@ def _required_ask_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
     sources: dict[str, str], display_order: dict[str, int] | None, workspace_id: int | None,
     catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
+    bml_eval: Any | None = None,
 ) -> frozenset[str]:
     """Variable names of the derived required set the fill pass must ask, not guess (flag-gated, failure-safe).
 
@@ -59,6 +60,8 @@ def _required_ask_vns(
         if dt_cache is not None and key in dt_cache:
             return dt_cache[key]
         hidden = {a.variable_name for a in attrs if getattr(a, "hidden", False)}
+        hidden |= _rule_hidden_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix,
+                                   product_anchor_hint, dt_cache, bml_eval)
         started = time.monotonic()
         derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
@@ -74,6 +77,23 @@ def _required_ask_vns(
     except Exception:  # noqa: BLE001 -- asking more is a nicety, never a reason to break the pass
         logger.debug("cpq: derived required set for asking failed", exc_info=True)
         return frozenset()
+
+
+def _rule_hidden_vns(
+    engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
+    workspace_id: int, catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
+    bml_eval: Any | None,
+) -> set[str]:
+    """Attributes a hiding rule hides for the current answers (e.g. Encryption Type on an N-series model). A hidden
+    attribute is not on the screen, so it is never asked. Failure-safe: nothing extra is hidden."""
+    try:
+        rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
+        return set(engine.apply_hiding_rules(
+            attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+    except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
+        logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+        return set()
 
 
 def _base_model_narrowing(
@@ -177,7 +197,7 @@ def build_fill_context_and_scope(
                                                  catalog_prefix, dt_cache)
 
     required_ask_vns = _required_ask_vns(engine, attrs, filled, filled_multi, sources, display_order,
-                                         workspace_id, catalog_prefix, product_anchor_hint, dt_cache)
+                                         workspace_id, catalog_prefix, product_anchor_hint, dt_cache, bml_eval)
 
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,

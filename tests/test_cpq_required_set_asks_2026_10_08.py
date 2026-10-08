@@ -105,3 +105,23 @@ def test_the_new_rule_guard_setting_alone_satisfies_the_dependency():
         out = auto_fill_setup._required_ask_vns(
             SimpleNamespace(), [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
     assert out == frozenset({ENC})
+
+
+def test_an_attribute_a_hiding_rule_hides_is_passed_as_hidden_so_it_is_not_asked():
+    """APX N30/N50: 'Hide Encryption Type if Essential Core Bundle Selected N series' hides it, so it is never asked."""
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: ([], [], {ENC}))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
+        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX N30", {})
+    assert ENC in derive.call_args.args[5]          # the hidden set handed to the derivation
+
+
+def test_hiding_rules_that_cannot_be_read_hide_nothing_extra():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
+            patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})) as derive:
+        out = auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert out == frozenset({ENC}) and ENC not in derive.call_args.args[5]
