@@ -78,11 +78,11 @@ def test_an_identical_state_reuses_the_set_and_a_changed_answer_recomputes_it():
     assert changed == frozenset({OTHER}) and derive_changed.call_count == 1          # a new answer, a new set
 
 
-def test_without_the_guard_flag_nothing_is_asked_and_the_missing_dependency_is_reported_once_per_turn():
+def test_without_the_guard_flag_nothing_is_asked_and_the_missing_dependency_is_reported_once_per_process():
     cache: dict = {}
-    with patch.object(auto_fill_setup, "raven_log") as log:
+    with patch.object(auto_fill_setup, "_DEPENDENCY_WARNED", False), patch.object(auto_fill_setup, "raven_log") as log:
         out, derive = _ask(True, {ENC}, cache=cache, guards=False)
-        _ask(True, {ENC}, cache=cache, guards=False)
+        _ask(True, {ENC}, cache={}, guards=False)          # another turn, same process
     assert out == frozenset() and not derive.called
     assert [c.args[2] for c in log.call_args_list].count(
         "ask.required_set.dependency_missing asks flag needs the guard flag, skipped") == 1

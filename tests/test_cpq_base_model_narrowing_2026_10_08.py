@@ -746,3 +746,15 @@ def test_the_seq_lookup_scans_the_loaded_table_once_for_the_same_request():
         other = bmn.attr_sequence_order("APX900", CODES, {FREQ}, 1267, "p")
     assert first == again == {FREQ: 33, KEYPAD: 39} and other == {FREQ: 33}
     assert Counting.scans == 2                                  # the repeat reused the first scan
+
+
+def test_a_reloaded_table_of_the_same_size_is_never_answered_from_the_old_entry():
+    bmn._SEQ_ORDER_MEMO.clear()
+    old = _sequence_rows(freq_seq="33", keypad_seq="39")
+    new = _sequence_rows(freq_seq="50", keypad_seq="39")          # same length, different Seq (a re-upload)
+    with patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], old, [], [], [])):
+        first = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+    with patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], new, [], [], [])):
+        second = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+    assert first[FREQ] == 33 and second[FREQ] == 50
+    assert all(entry[0] is old or entry[0] is new for entry in bmn._SEQ_ORDER_MEMO.values())

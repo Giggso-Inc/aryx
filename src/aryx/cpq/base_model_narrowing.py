@@ -70,7 +70,7 @@ def _model_with_base_models(
     return rows, base_models
 
 
-_SEQ_ORDER_MEMO: dict[tuple, dict[str, int]] = {}
+_SEQ_ORDER_MEMO: dict[tuple, tuple[list, dict[str, int]]] = {}
 _SEQ_ORDER_MEMO_MAX = 256
 
 
@@ -92,8 +92,9 @@ def attr_sequence_order(
         return {}
     # The row scan is the cost: reuse it while the loaded table is the same object (the loader caches it).
     memo_key = (id(sequence_rows), len(sequence_rows), model, frozenset(bms), frozenset(wanted))
-    if memo_key in _SEQ_ORDER_MEMO:
-        return dict(_SEQ_ORDER_MEMO[memo_key])
+    hit = _SEQ_ORDER_MEMO.get(memo_key)
+    if hit is not None and hit[0] is sequence_rows:      # the memo holds the list, so its id cannot be reused
+        return dict(hit[1])
     for row in sequence_rows:
         name = str(row.get("AttrName") or "")
         if (name not in wanted or str(row.get("CPQModel") or "").strip().upper() != model
@@ -106,7 +107,7 @@ def attr_sequence_order(
         out[name] = min(seq, out.get(name, seq))
     if len(_SEQ_ORDER_MEMO) >= _SEQ_ORDER_MEMO_MAX:
         _SEQ_ORDER_MEMO.clear()
-    _SEQ_ORDER_MEMO[memo_key] = dict(out)
+    _SEQ_ORDER_MEMO[memo_key] = (sequence_rows, dict(out))
     return out
 
 

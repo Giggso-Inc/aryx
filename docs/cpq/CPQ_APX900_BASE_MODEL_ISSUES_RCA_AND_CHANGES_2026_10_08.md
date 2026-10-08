@@ -349,9 +349,9 @@ five guessed attributes, `ask.base_model.not_derived` should not appear after bo
 
 | Finding | Change |
 |---|---|
-| Flag dependencies not enforced | `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` now asks nothing unless `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` is also on, and logs `ask.required_set.dependency_missing` once per turn. `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED` is only reached through the derivation, which already needs `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED`. Enable the flags together, in dependency order. |
+| Flag dependencies not enforced | `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` now asks nothing unless `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` is also on, and logs `ask.required_set.dependency_missing` once per process. `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED` is only reached through the derivation, which already needs `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED`. Enable the flags together, in dependency order. |
 | `_in_application_order` drops entries; `explain_known_attrs` omitted them | the explanation now lists an ignored attribute with `applied_order: null` and `skipped: CONDITION_ONLY_ATTRIBUTE`, so a diagnostic still sees one entry per mentioned known attribute |
-| N1 `attr_sequence_order` scans the table on every call | memoised per loaded table object, model, base models and attributes (bounded, 256 entries) |
+| N1 `attr_sequence_order` scans the table on every call | memoised per loaded table object, model, base models and attributes (bounded, 256 entries); the memo keeps the list itself and checks identity, so a reloaded table can never reuse an old entry |
 | N2 selectors only the grid flow asks would be skipped | logged: `ask.grid_quantity.selectors_skipped` (`SELECTOR_NOT_PENDING`, count and names). Not resolved: replay one catalog whose quantity grid is asked on purpose (APX NEXT, SVX) before enabling the flag there |
 | N3 required-set cost unmeasured | each computation logs `ask.required_set.derived` with `duration_ms` and `required_count`; the reuse for an identical fill state is unchanged |
 | Required set computed before the pass | known limit: values filled mid-pass cannot change the set within that pass. The next pass recomputes it (the cache key changes with the state). Verify with a real turn that a rule firing mid-pass does not leave a stale set |

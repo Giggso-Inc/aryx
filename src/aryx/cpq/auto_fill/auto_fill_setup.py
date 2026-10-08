@@ -21,6 +21,9 @@ from aryx.raven_log import raven_log, would_log
 logger = logging.getLogger(__name__)
 
 
+_DEPENDENCY_WARNED = False          # the missing-dependency warning is logged once per process
+
+
 def _required_ask_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
     sources: dict[str, str], display_order: dict[str, int] | None, workspace_id: int | None,
@@ -36,9 +39,10 @@ def _required_ask_vns(
         return frozenset()
     if not getattr(settings, "cpq_required_set_guards_assumed_open", False):
         # A guarded blank-disallow rule (the TER-gated encryption rule) does not fire without it, so the set would be
-        # incomplete and the rollout different from the one that was tested: say so once per turn and ask nothing extra.
-        if dt_cache is not None and "required_ask_dependency_warned" not in dt_cache:
-            dt_cache["required_ask_dependency_warned"] = True
+        # incomplete and the rollout different from the one that was tested: say so once per process and ask nothing extra.
+        global _DEPENDENCY_WARNED
+        if not _DEPENDENCY_WARNED:
+            _DEPENDENCY_WARNED = True
             raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the guard flag, skipped",
                       context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
                                "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
