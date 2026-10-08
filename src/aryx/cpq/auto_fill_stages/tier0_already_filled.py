@@ -13,6 +13,7 @@ from aryx.cpq import engine as _engine_module
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.cpq.constants import NONE_DISPLAY_PLACEHOLDER
+from aryx.cpq.derive_base_model_pick import _BLIND_SOURCE_PREFIXES
 
 # `_fill_signature` is looked up through the module (not imported by name
 # like everything else) because tests/test_cpq_rule_loop_perf_gating_
@@ -112,7 +113,7 @@ def stage_already_filled(
             ctx.filled.pop(state.vn, None)
             ctx.display_filled.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)
-        elif ctx.sources.get(state.vn) == "default_first_available":
+        elif str(ctx.sources.get(state.vn, "")).startswith(_BLIND_SOURCE_PREFIXES):
             # Live bug (2026-08-09): this value was picked with
             # NOTHING to justify it (§2f's blind first-by-order
             # fallback, when neither a satisfied recommendation nor
@@ -134,6 +135,21 @@ def stage_already_filled(
             # identically; best case, a real answer now overrides
             # the earlier guess before the customer ever sees the
             # wrong one.
+            #
+            # 2026-10-08: generalized from the literal
+            # "default_first_available" check to every source tag
+            # `_BLIND_SOURCE_PREFIXES` recognizes (same family
+            # `derive_base_model_pick.blind_attrs()` already treats as
+            # "guessed, not known") -- confirmed live, workspace 1267
+            # APX 900: beltClipType_astro got blind-picked "COVERT
+            # CARRY HOLSTER" (source "blind_pick_rule_governed") on an
+            # early pass before Base Model was known, so
+            # cpq_defaultinattr_shape_enabled's real Defaultinattr
+            # default ("2.0 INCH / 5.08 CM (STANDARD)" for the
+            # resolved base model) could never apply -- the literal
+            # "default_first_available" check doesn't match that tag,
+            # so this attribute was never reconsidered once Base Model
+            # resolved on a later pass.
             #
             # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md:
             # "every pass" was multiplying evaluate_rules_loop's cost
@@ -165,7 +181,13 @@ def stage_already_filled(
                     state.done = True
                     return
                 ctx.default_fill_signatures[state.vn] = _cur_sig
-            fill_log.log_pruned(state.vn, "DEFAULT_FIRST_AVAILABLE_REDERIVE", "stage_already_filled", state="reopened")
+            # Two reason codes so a log can tell the sources apart (and count the new work the widened gate adds:
+            # grep -c BLIND_PICK_REDERIVE per turn).
+            _rederive_reason = (
+                "DEFAULT_FIRST_AVAILABLE_REDERIVE" if ctx.sources.get(state.vn) == "default_first_available"
+                else "BLIND_PICK_REDERIVE"
+            )
+            fill_log.log_pruned(state.vn, _rederive_reason, "stage_already_filled", state="reopened")
             ctx.filled.pop(state.vn, None)
             ctx.display_filled.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)

@@ -23,6 +23,13 @@ def tree_fallback_enabled() -> bool:
     return bool(getattr(get_settings(), "cpq_model_resolution_tree_fallback_enabled", False))
 
 
+def base_model_defaults_enabled() -> bool:
+    """`cpq_base_model_defaults_enabled` (default off)."""
+    from aryx.config import get_settings  # noqa: PLC0415
+
+    return bool(getattr(get_settings(), "cpq_base_model_defaults_enabled", False))
+
+
 @functools.cache
 def scoped_anchor_vns() -> frozenset[str]:
     """The exact variable names the engine resolves itself (country, hardware version, product, base model, region).

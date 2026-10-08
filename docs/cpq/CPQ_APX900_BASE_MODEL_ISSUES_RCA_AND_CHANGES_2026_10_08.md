@@ -441,3 +441,16 @@ row: it stays a guess among the five N/A allows (2900 mAh is no longer legal). L
 Environment: `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` and `ARYX_CPQ_DEFAULTINATTR_RESOLVES_AMBIGUITY_ENABLED=true`. Replay: the summary shows the four
 defaults above; `grep DEFAULTINATTR_AMONG_LEGAL` lists the attributes resolved this way. Risks: reaches every model and attribute that has a table default
 and 2+ Whitelist values; fills silently; turn time not measured.
+
+
+### PR #482: blind picks are re-derived when the context changes
+
+A value guessed early in a turn with `blind_pick_*` sources (`blind_pick_rule_governed`, `blind_pick_governed`) is now re-derived on a
+later pass when the fill signature changed, as `default_first_available` values already were. **Customer-visible effect:** a guessed value
+shown in an earlier turn can change in a later turn when new context arrives (for example the base model resolving): that is the fix, and the
+same kind of change as the existing `default_first_available` case; a customer's own answer (source `user`) never changes.
+
+Added work and how to measure it: each carried-over `blind_pick_*` value is re-derived once on the first pass of a turn (the signature dict
+starts empty) and afterwards only when the signature changes. The log reason is `BLIND_PICK_REDERIVE` (the old reason
+`DEFAULT_FIRST_AVAILABLE_REDERIVE` is unchanged), so for one turn:
+`docker logs aryx-api-1 --since 10m 2>&1 | grep -c BLIND_PICK_REDERIVE`, next to `ask.rules_loop.timing`.
