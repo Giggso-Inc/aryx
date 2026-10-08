@@ -707,7 +707,10 @@ class CpqIntentSettingsMixin(BaseSettings):
             "hidden attribute's own default; values only a rule or a guess put there are dropped. Without it such an "
             "attribute stays visible ('silence is not a confident exclusion'), and any name containing 'region' or "
             "'product' is protected. Models with no AttrSequence rows for the base "
-            "model are untouched. Off by default. Override with ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED=true."
+            "model are untouched. Also controls how a display name is compared with the customer's wording: the "
+            "trademark, registered, copyright and service-mark signs are ignored, so 'APX(TM) N50' and 'APX N50' "
+            "resolve to the same models (data_table_product.resolve_cpq_model_from_display_name); turning this off "
+            "brings the old comparison back. Off by default. Override with ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED=true."
         ),
     )
     cpq_model_resolution_tree_fallback_enabled: bool = Field(

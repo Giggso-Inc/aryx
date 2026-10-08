@@ -40,6 +40,12 @@ names are grouped by their comparable text, so `APX(TM) N50` and `APX N50` are o
 different models), the longest nested name still wins, and two unrelated names in one wording stay unresolved. Flag off: unchanged.
 No model name in the code: the only literals are the mark characters.
 
+### Flag note (review of #483)
+
+The comparison is gated by `cpq_model_scoped_questions_enabled` on purpose (no new env var), so that flag now also decides how a
+display name resolves for every caller of `resolve_cpq_model_from_display_name`: turning scoped questions off brings back the
+mark-sensitive comparison. Its setting description says so.
+
 ## 5. Result (local, ws 281, the flags that reproduced it)
 
 | | N50 | N30 |
@@ -48,6 +54,10 @@ No model name in the code: the only literals are the mark characters.
 | after | complete, band 700/800 MHZ, base model `H25UCF9PW6AN`, 0 pending | complete, band 700/800 MHZ, `H15UCF9PW6AN` |
 
 ## 6. Limits
+
+* Follow-up, not in this PR: the guard stays brittle for any other difference between the wording and `displayModel` (another word,
+  a slash, a suffix). A guard-level safeguard (do not clear an attribute that separates the base models of a resolved model, or skip
+  clearing when the resolved set looks incomplete) would cover that family of causes.
 
 * A display name with a mark and a customer who spells the model differently (`APX-N50`, `APX N 50`) is not matched; not changed.
 * The guard still asks about "the resolved models"; it now sees both models of the name. A catalog whose only rows for a model are
