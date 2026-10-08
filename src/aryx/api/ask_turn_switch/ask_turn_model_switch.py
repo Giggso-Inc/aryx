@@ -27,12 +27,20 @@ from aryx.cpq.catalog_profile import PRODUCT_LITERAL
 from aryx.raven_log import raven_log
 
 CONFIRM_MODEL_SWITCH_ANCHOR = "confirm_model_switch"
-_YES_RE = re.compile(r"^\s*(y|yes|yeah|yep|switch|confirm)\b", re.IGNORECASE)
+_YES_RE = re.compile(
+    r"^\s*(y|yes|yeah|yep|ok|okay|sure|alright|switch|confirm|go\s+ahead|do\s+it)\b", re.IGNORECASE)
 _NO_RE = re.compile(r"^\s*(n|no|nope|nah|never|not\s+now|not\s+really)\b", re.IGNORECASE)
-# Words that add nothing after a yes/no ("yes please", "no thanks, keep it").
+# A negation or contrast anywhere in the reply ("NOT APX 900", "I don't want
+# APX 900", "keep APX 3000, not APX 900", "switch to X instead").
+_NEGATION_RE = re.compile(
+    r"\b(no|not|never|don'?t|doesn'?t|won'?t|rather|than|instead|keep|stay|forget|cancel)\b|n't\b",
+    re.IGNORECASE)
+# Words that add nothing on their own ("yes please", "no thanks, keep it").
 _FILLER = frozenset({
     "please", "thanks", "thank", "you", "ok", "okay", "sure", "go", "ahead", "do", "it",
-    "switch", "confirm", "keep", "stay", "current", "one", "the", "that", "this", "fine",
+    "switch", "confirm", "current", "one", "the", "that", "this", "fine", "alright",
+    "no", "not", "never", "don", "doesn", "won", "t", "rather", "than", "instead",
+    "keep", "stay", "forget", "cancel", "want", "i", "to",
 })
 _OFFER_OPTIONS = ["offer_model_switch", "flag_off", "not_model_attr", "no_new_model"]
 _REPLY_OPTIONS = ["switch", "stay", "hand_back"]
@@ -156,6 +164,29 @@ def _reply_rest(reply: str, head: "re.Match[str] | None") -> list[str]:
     return [w for w in re.findall(r"[a-z0-9]+", tail.lower()) if w not in _FILLER]
 
 
+def _classify_reply(reply: str, target_display: str) -> tuple[str, str]:
+    """Decide what a reply to the switch question means, without the LLM.
+
+    Returns:
+        (decision, reason_code). decision is "switch", "stay", "hand_back"
+        (the reply carries its own request for the normal turn), "llm" (ask
+        the classifier; not-accept hands back) or "llm_or_stay" (the reply
+        names the offered model but with a negation; not-accept stays).
+    """
+    yes_head, no_head = _YES_RE.match(reply), _NO_RE.match(reply)
+    negated = bool(no_head or _NEGATION_RE.search(reply))
+    rest = _reply_rest(reply, yes_head or no_head)
+    if _names_model(reply, target_display):
+        # "NOT APX 900", "keep APX 3000, not APX 900": never a plain yes.
+        return ("llm_or_stay", "NEGATED_OFFERED_MODEL") if negated else ("switch", "NAMES_OFFERED_MODEL")
+    if negated:
+        return ("stay", "CLEAR_NO") if not rest else ("hand_back", "REPLY_NAMES_SOMETHING_ELSE")
+    if yes_head:
+        # "yes and also add GPS": switch, the rest carries on through the turn.
+        return ("switch", "CLEAR_YES") if not rest else ("switch", "YES_WITH_MORE")
+    return "llm", "UNCLEAR_REPLY"
+
+
 def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any] | None:
     """Read the reply to the switch question and act on it.
 
@@ -172,21 +203,13 @@ def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any
     current_display = (
         session.display_filled.get(PRODUCT_LITERAL, "") or session.filled.get(PRODUCT_LITERAL, ""))
     reply = req.question or ""
-    yes_head, no_head = _YES_RE.match(reply), _NO_RE.match(reply)
-    rest = _reply_rest(reply, yes_head or no_head)
-    names_target = _names_model(reply, target_display)
-    llm_consulted = False
-    if names_target and not no_head:
-        decision, reason = "switch", "NAMES_OFFERED_MODEL"
-    elif (yes_head or no_head) and not rest:
-        decision, reason = ("switch", "CLEAR_YES") if yes_head else ("stay", "CLEAR_NO")
-    elif yes_head or no_head:
-        decision, reason = "hand_back", "REPLY_NAMES_SOMETHING_ELSE"
-    else:
-        llm_consulted = True
+    decision, reason = _classify_reply(reply, target_display)
+    llm_consulted = decision in ("llm", "llm_or_stay")
+    if llm_consulted:
         accepted = _llm_classify_switch_reply(
             reply, target_display, current_display, req.workspace_id) == "accept"
-        decision, reason = ("switch", "LLM_ACCEPT") if accepted else ("hand_back", "LLM_NOT_ACCEPT")
+        fallback = "stay" if decision == "llm_or_stay" else "hand_back"
+        decision, reason = ("switch", "LLM_ACCEPT") if accepted else (fallback, "LLM_NOT_ACCEPT")
     raven_log("DEBUG", "P4", "ask.model_switch.confirm_reply model switch reply classified", context={
         "selected_option": decision, "available_options": _REPLY_OPTIONS,
         "reason_code": reason, "llm_consulted": llm_consulted,

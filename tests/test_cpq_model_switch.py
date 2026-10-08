@@ -245,6 +245,63 @@ def test_handle_cascade_multi_returns_the_offer_before_applying(flag_on, monkeyp
     assert resp["tools_called"] == ["cpq_model_switch_candidate()"]
 
 
+_REPLY_CASES = [
+    # (reply, expected) with Model A current and Model B offered; the LLM is
+    # stubbed "unclear", so these decisions never depend on it.
+    ("NOT Model B", "stay"),
+    ("I don't want Model B", "stay"),
+    ("don't switch to Model B", "stay"),
+    ("keep Model A, not Model B", "stay"),
+    ("I'd rather stay on Model A than Model B", "stay"),
+    ("no", "stay"), ("no thanks", "stay"), ("no thanks, keep it", "stay"), ("not now", "stay"),
+    ("yes", "switch"), ("yes please", "switch"), ("ok", "switch"), ("okay", "switch"),
+    ("sure", "switch"), ("do it", "switch"), ("go ahead", "switch"),
+    ("switch to Model B", "switch"), ("Model B", "switch"),
+    ("yes and also add GPS", "switch"),
+    ("no, Model C", "hand_back"), ("switch to Model C instead", "hand_back"),
+    ("hmm", "hand_back"),
+]
+
+
+@pytest.mark.parametrize("reply,expected", _REPLY_CASES)
+def test_reply_decisions(flag_on, reply, expected):
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    resp = ms._handle_confirm_model_switch_anchor(_req(reply), s)
+    got = ("switch" if s.filled[PRODUCT_LITERAL] == "MODEL_B"
+           else "stay" if resp is not None else "hand_back")
+    assert got == expected, reply
+    assert s.pending_anchor == ""
+
+
+@pytest.mark.parametrize("reply", ["yes", "ok", "okay", "sure", "do it", "go ahead", "Model B"])
+def test_plain_affirmatives_never_call_the_llm(flag_on, monkeypatch, reply):
+    def _no_llm(*_a, **_k):
+        raise AssertionError("LLM called for a plain affirmative")
+
+    monkeypatch.setattr(ms, "_llm_classify_switch_reply", _no_llm)
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req(reply), s)
+    assert s.filled[PRODUCT_LITERAL] == "MODEL_B"
+
+
+def test_negated_name_still_switches_when_the_llm_says_accept(flag_on, monkeypatch):
+    monkeypatch.setattr(ms, "_llm_classify_switch_reply", lambda *a, **k: "accept")
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("never mind the old one, Model B"), s)
+    assert s.filled[PRODUCT_LITERAL] == "MODEL_B"
+
+
+def test_switch_clears_the_old_anchor_text(flag_on):
+    s = _session_on_model_a()
+    s.product_anchor_question = "I want a quote for Model A for US"
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    assert s.product_anchor_question == ""
+
+
 def test_snapshot_cap_evicts_the_oldest_model():
     s = _session_on_model_a()
     for i in range(msc._MODEL_SNAPSHOT_CAP + 1):

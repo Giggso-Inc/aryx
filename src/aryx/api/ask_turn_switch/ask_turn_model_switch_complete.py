@@ -99,6 +99,9 @@ def _complete_model_switch(
     session.pending_model_leaf_candidates = []
     # A pending option scope belongs to the old model's last question.
     clear_pending_scope(session)
+    # The pre-switch anchor text names the OLD model and is read every turn
+    # (seed fallback, model resolution); clear it as _complete_product_switch does.
+    session.product_anchor_question = ""
     session.status = "configuring"
     raven_log("INFO", "P4", "ask.model_switch.completed model switch committed", context={
         "selected_option": "restore_snapshot" if snap else "reset_config",
