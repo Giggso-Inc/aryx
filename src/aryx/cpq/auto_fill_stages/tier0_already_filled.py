@@ -181,7 +181,13 @@ def stage_already_filled(
                     state.done = True
                     return
                 ctx.default_fill_signatures[state.vn] = _cur_sig
-            fill_log.log_pruned(state.vn, "DEFAULT_FIRST_AVAILABLE_REDERIVE", "stage_already_filled", state="reopened")
+            # Two reason codes so a log can tell the sources apart (and count the new work the widened gate adds:
+            # grep -c BLIND_PICK_REDERIVE per turn).
+            _rederive_reason = (
+                "DEFAULT_FIRST_AVAILABLE_REDERIVE" if ctx.sources.get(state.vn) == "default_first_available"
+                else "BLIND_PICK_REDERIVE"
+            )
+            fill_log.log_pruned(state.vn, _rederive_reason, "stage_already_filled", state="reopened")
             ctx.filled.pop(state.vn, None)
             ctx.display_filled.pop(state.vn, None)
             ctx.sources.pop(state.vn, None)
