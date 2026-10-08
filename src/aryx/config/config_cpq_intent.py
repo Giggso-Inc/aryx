@@ -352,6 +352,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "options) instead of the hand-listed tiers. Off by default."
         ),
     )
+    cpq_required_set_asks_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_required_set_guards_assumed_open. Ask asks the attributes the derived required set marks "
+            "required (attrSequence R, a blank-disallow rule, a message-only rule) instead of leaving them empty or "
+            "guessing them: they become 'always ask, never guess' decision attributes, after the catalog's own "
+            "defaults and rules have had their say. Today only the payload and the summary read the derived set, so "
+            "ws 1267, APX 900: Encryption Type (required by a blank-disallow rule, optional in attrSequence) was never "
+            "asked and the quote completed without it. Off by default. Override with "
+            "ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true."
+        ),
+    )
     cpq_required_set_guards_assumed_open: bool = Field(
         default=False,
         description=(

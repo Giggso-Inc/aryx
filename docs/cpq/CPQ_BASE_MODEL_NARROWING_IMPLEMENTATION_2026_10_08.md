@@ -243,3 +243,23 @@ values above; the table also holds defaults for about 15 more attributes of this
 2.0 INCH (STANDARD), manual NO, operation mode DIGITAL TRUNKING (P25 PHASE I), multikey NO MULTIKEY, housing BLACK, service type
 ESSENTIAL, service duration 7 YEAR, ...). Not verified live yet: whether the flag was already on, and whether the defaults are applied
 in the same turn the base model is derived.
+
+### Ask the derived required set (flag `cpq_required_set_asks_enabled`)
+
+Live run + the user's sheet (APX 4500 Enhanced Configurations V6, APX 900 section): Encryption Type is mandatory, four options. In
+the data it is `O` (optional) in attrSequence for APX 900 (EDA, "mandatory in the sheet but not required in the data"), and the
+derived required set already lists it as required through a **blank-disallow validation rule that is TER-gated**
+(`docs/oci-oracle/ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`, APX 900: frequency bands, keypad type, country - attrSequence R,
+battery type - attrSequence R, encryption type - blank-disallow rule). Only the payload and the summary read that set, so Ask never
+asked it and the quote completed without it.
+
+With `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true` the fill pass computes the same set (`derive_required_vns`) and the governance stage
+makes each member an 'always ask, never guess' decision attribute. The catalog's own defaults and rules still run first, so a
+required attribute they fill is not asked; only the blind first-option pick is replaced by a question (battery type, for
+example, was guessed as 2900 mAh).
+
+Needs `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN=true`: the blank-disallow rule is wrapped in `if(TER <> "")`, a variable the host
+supplies; without the flag the rule does not fire and encryption is not in the set.
+
+Replay APX 900 in the US: after frequency and keypad, Encryption Type (4 options) is asked. Expect more questions than before for
+every model whose required set holds an attribute that used to be guessed or skipped; replay one quote per model before wider use.
