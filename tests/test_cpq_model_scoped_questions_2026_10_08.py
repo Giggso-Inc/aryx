@@ -411,3 +411,16 @@ def test_the_flag_helpers_default_to_off_for_a_settings_double_without_the_flags
     with patch("aryx.config.get_settings", return_value=SimpleNamespace(
             cpq_model_scoped_questions_enabled=True, cpq_model_resolution_tree_fallback_enabled=True)):
         assert msf.scoped_questions_enabled() is True and msf.tree_fallback_enabled() is True
+
+
+def test_the_recommendation_is_not_evaluated_for_an_attribute_no_rule_targets(flags):
+    """Review N4: the check can evaluate BML scripts, so it is skipped unless a rule targets the attribute."""
+    from aryx.cpq.auto_fill_stages import tier0_already_filled_multi as stage
+
+    attr = _attr("untargeted_astro", options=2, multi=True)
+    calls = []
+    scope = SimpleNamespace(rec_by_target={999999999: ["a rule on another attribute"]},
+                            satisfied_recommendation=lambda a, o: calls.append(1) or ("o0", "o0", "r"))
+    assert stage._recommendation_now_satisfied(attr, scope) is False and calls == []
+    scope.rec_by_target = {attr.entity_id: ["r"]}                  # now a rule targets it: evaluated
+    assert stage._recommendation_now_satisfied(attr, scope) is True and calls == [1]

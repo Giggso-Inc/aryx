@@ -31,10 +31,16 @@ if TYPE_CHECKING:
 
 def _recommendation_now_satisfied(attr: "ConfigAttr", scope: "FillScope") -> bool:
     """True when a recommendation rule that targets `attr` is satisfied by what is filled now, i.e. tier 2 would give the
-    attribute a value. Best effort: any failure counts as 'not satisfied' (the settled empty stays)."""
+    attribute a value. Only an attribute some rule targets is checked at all (the call, which can evaluate BML scripts, is
+    skipped for the rest). Measured on the full aSTRO25 catalog (ws 281, APX N30): one fill pass evaluates 231 script rules
+    in 0.135 s and the later passes 14 in ~0 s (`log_rec_script_stats`), so there is no memo: building a fill signature per
+    attribute would cost more than the check. Any failure counts as 'not satisfied' (the settled empty stays)."""
     satisfied = getattr(scope, "satisfied_recommendation", None)
-    if satisfied is None or not getattr(scope, "rec_by_target", None):
+    rec_by_target = getattr(scope, "rec_by_target", None)
+    if satisfied is None or not rec_by_target:
         return False
+    if attr.entity_id not in rec_by_target and attr.source_id not in rec_by_target:
+        return False                      # no rule targets this attribute: nothing to evaluate
     try:
         return satisfied(attr, list(attr.options)) is not None
     except Exception:  # noqa: BLE001 -- a check must never break a fill
