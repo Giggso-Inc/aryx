@@ -718,6 +718,19 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_BASE_MODEL_DEFAULTS_ENABLED=true."
         ),
     )
+    cpq_derive_base_model_default_owner_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_derive_base_model_enabled. When the Whitelist leaves 2+ base models of the resolved model "
+            "(every base model lists every frequency band, so a known band narrows nothing) derive the one that owns "
+            "the model's default configuration: every left base model has Defaultinattr rows and exactly one defines "
+            "defaults for a strict superset of the attributes of each of the others. Not used when a value the "
+            "customer gave (typed or from their wording) differs from that base model's default for the same "
+            "attribute. Today (APX N70) the base model stays unknown and the customer is asked flashcode digits and "
+            "the band. Never overrides the Whitelist, never guesses among 2+. Off by default. Override with "
+            "ARYX_CPQ_DERIVE_BASE_MODEL_DEFAULT_OWNER_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(

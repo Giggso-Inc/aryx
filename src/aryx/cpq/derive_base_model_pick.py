@@ -14,6 +14,7 @@ from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_derive_base_model import (
     derive_base_model_from_known_attrs, explain_known_attrs, model_base_models,
 )
+from aryx.cpq.derive_base_model_default_owner import CUSTOMER_SOURCES, default_owner_base_model
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.resolved_model_candidates import resolved_model_first_candidates
@@ -64,11 +65,17 @@ def derived_base_model_option(
         seen["candidates"] = candidates
         if not candidates:
             seen["reason"] = "NO_CANDIDATE_MODEL_PRODUCT_BLANK" if not product else "NO_CANDIDATE_MODEL"
+        customer = frozenset(vn for vn, src in (sources or {}).items() if src in CUSTOMER_SOURCES)
         for cpq_model in candidates:
             derived = derive_base_model_from_known_attrs(
                 cpq_model, filled, workspace_id, catalog_prefix, cache,
                 ignore_attrs=ignore,
             )
+            reason_code = "DERIVED_FROM_KNOWN_ATTRS"
+            if derived is None:
+                derived = default_owner_base_model(cpq_model, filled, workspace_id, catalog_prefix, cache,
+                                                   ignore, customer)
+                reason_code = "DERIVED_FROM_DEFAULT_OWNER"
             seen["results"][cpq_model] = derived
             if derived is None:
                 continue
@@ -79,7 +86,7 @@ def derived_base_model_option(
             logger.info("cpq: derived_base_model cpq_model=%r derived=%r", cpq_model, derived)
             raven_log("INFO", "P4", "ask.base_model.derived base model derived from known attributes",
                       context={"selected_option": derived, "available_options": [o.item_value for o in options][:20],
-                               "reason_code": "DERIVED_FROM_KNOWN_ATTRS", "policy_version": "derive_base_model_v1",
+                               "reason_code": reason_code, "policy_version": "derive_base_model_v1",
                                "cpq_model": cpq_model, "ignored_blind_attrs": len(ignore)})
             return match
     except Exception as exc:  # noqa: BLE001 -- derivation must never break the fill pass
