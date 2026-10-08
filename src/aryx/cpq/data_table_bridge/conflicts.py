@@ -154,6 +154,7 @@ def _resolve_via_data_tables(
     )))
     _ambiguous = 0
     _widest = 0
+    _ambiguous_legal: list[str] = []      # the legal values of the first candidate that left 2+ of them
     any_whitelist_coverage = False
     for cpq_model in _models:
         values = dt_resolve_whitelist_values(
@@ -168,12 +169,19 @@ def _resolve_via_data_tables(
             # abort" contract `_resolve_narrowed_legal_values` uses below).
             _ambiguous += 1
             _widest = max(_widest, len(values))
+            if len(values) > 1 and not _ambiguous_legal:
+                _ambiguous_legal = list(values)
             continue
         _hit = next((o for o in valid_opts if o.item_value == values[0]), None)
         _log_lookup("_resolve_via_data_tables", vn, "single_match", "SINGLE_LEGAL_VALUE", models=_models,
                     candidate_count=len(values), legal=list(values),
                     falls_to=None if _hit is not None else "value_not_in_valid_opts")
         return _hit
+    _tie = _defaultinattr_breaks_tie(vn, base_model, valid_opts, _ambiguous_legal, workspace_id, catalog_prefix, cache)
+    if _tie is not None:
+        _log_lookup("_resolve_via_data_tables", vn, "single_match", "DEFAULTINATTR_AMONG_LEGAL", models=_models,
+                    candidate_count=len(_ambiguous_legal), legal=list(_ambiguous_legal), falls_to=None)
+        return _tie
     if any_whitelist_coverage and get_settings().cpq_defaultinattr_shape_enabled:
         # The Whitelist spoke for this attr (empty or 2+ legal values): a
         # Defaultinattr default must not override it. Fall back only when
@@ -196,6 +204,28 @@ def _resolve_via_data_tables(
         _log_lookup("_resolve_via_data_tables", vn, "none",
                     "NO_TABLE_ROWS" if not any_whitelist_coverage else "WHITELIST_EMPTY", models=_models)
     return _opt
+
+
+def _defaultinattr_breaks_tie(
+    vn: str, base_model: str, valid_opts: list[MenuOption], legal: list[str],
+    workspace_id: int, catalog_prefix: str, cache: dict[tuple[int, str], tuple] | None,
+) -> MenuOption | None:
+    """The Defaultinattr default of `base_model`, when the Whitelist left 2+ legal values (`legal`) and the default
+    is one of them and a real option. It never overrides the Whitelist, it only picks among what the Whitelist allows.
+    None (no effect) unless both cpq_defaultinattr_shape_enabled and cpq_defaultinattr_resolves_ambiguity_enabled."""
+    settings = get_settings()
+    if not (settings.cpq_defaultinattr_shape_enabled
+            and getattr(settings, "cpq_defaultinattr_resolves_ambiguity_enabled", False) is True):
+        return None
+    if len(legal) < 2:
+        return None
+    default = resolve_defaultinattr_value(base_model, vn, workspace_id, catalog_prefix, cache)
+    if default is None:
+        return None
+    wanted = default.strip().upper()
+    if wanted not in {str(v).strip().upper() for v in legal}:
+        return None
+    return next((o for o in valid_opts if o.item_value.strip().upper() == wanted), None)
 
 
 def _defaultinattr_option(

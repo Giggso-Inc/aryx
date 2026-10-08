@@ -734,6 +734,19 @@ class CpqIntentSettingsMixin(BaseSettings):
             "with ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true."
         ),
     )
+    cpq_defaultinattr_resolves_ambiguity_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_defaultinattr_shape_enabled. When the Whitelist leaves 2+ legal values for an attribute and the "
+            "resolved base model's Defaultinattr default is ONE of them, take that default. It does not override the "
+            "Whitelist: it breaks the tie the Whitelist leaves. Today (ws 1267, APX 900) antenna type, carry type, package "
+            "type and hazardous location were AMBIGUOUS_DISCARDED on every pass and fell to a first-option guess although "
+            "Defaultinattr names the real default (Whip (Standard), 2.0 inch, Bulk, N/A); a guessed battery then forced "
+            "hazardous to TIA-4950 (UL) through the Whitelist. A default outside the legal values, a single legal value "
+            "and an attribute without Whitelist rows behave as before. Off by default. Override with "
+            "ARYX_CPQ_DEFAULTINATTR_RESOLVES_AMBIGUITY_ENABLED=true."
+        ),
+    )
     cpq_defaultinattr_shape_enabled: bool = Field(
         default=False,
         description=(
