@@ -372,3 +372,25 @@ encryption default in `WS1267_DEFAULTINATTR` for the N30 / N50 base models keeps
 'secureEncryptionType_astro'`). If they do not, the engine would ask them Encryption Type and the cause of the real CPQ's silence is
 elsewhere (for example the conditions of the blank-disallow rule); a per-model switch is a last resort. Replay N30 / N50 with all flags
 on before relying on it.
+
+### N30 / N50 vs APX 900: what the data says about Encryption Type (query results and export)
+
+`WS1267_DEFAULTINATTR` rows with `ATTR1 = 'secureEncryptionType_astro'`: only `T05KSS9PW1AN` and `T05QSS9PW1AN` (value
+`AES ENCRYPTION`). **No N30, N50 or APX 900 base model has an encryption default**, so the Defaultinattr flag does not keep N30 / N50
+silent. `WS1267_BASEMODELTOCONFIG`: `APXN30` = H15KDF9PW6AN, H15UCF9PW6AN, H15XDF9PW6AN; `APXN50` = H25KDF9PW6AN, H25UCF9PW6AN,
+H25XDF9PW6AN (plus FLASHPORT part numbers T99xx).
+
+From `ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json` (all three products, layout `portable`, coverage 1.0): the same validation rule,
+"Restrict blank value for Encryption Type for US or FED customers (Portable)" [condition true], makes Encryption Type required for
+APX 900, N30 and N50. N50 additionally has a script that may fill the security bundle ("Set Recommendation Selection for the Security
+Bundles"); N30 has none.
+
+From EDA section 10.4: for APX 900 and N50 the encryption rule is TER-gated only (dormant without the host's TER input); for N30 there is
+also "Restrict Blank Value for Encryption Type for APXN30 PR/VI", which fires without TER. EDA section 11 (red set without TER) does
+not list Encryption Type for APX 900; the sheet lists it as mandatory (with TER, as in production).
+
+Conclusion: the rules and tables treat the three products alike. "APX 900 asks Encryption Type, N30 / N50 ask only the country" cannot
+be derived from this data. Open question for the owner: is the N30 / N50 observation from a real CPQ run with TER populated, or from
+a run without it? If both products behave differently in production, the difference lives in something not found yet. Options:
+(A) leave `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` off (APX 900 does not ask encryption either); (B) turn it on and accept the question for
+N30 / N50 (consistent with the rules); (C) a per-model list in configuration (cpq models allowed to use it), no model name in code.
