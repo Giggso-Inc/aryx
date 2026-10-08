@@ -48,10 +48,39 @@ _CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
 })
 
 
+# An answer the customer gave (typed, or matched from their wording) is never dropped by the scoped-questions rule.
+_ANSWER_SOURCES: frozenset[str] = frozenset({"user", "hint", "auto"})
+
+
+def _scoped_questions_on() -> bool:
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    return bool(get_settings().cpq_model_scoped_questions_enabled)
+
+
+def _scoped_anchor_vns() -> frozenset[str]:
+    """The exact variable names the engine resolves itself (country, hardware version, product, base model, region).
+    They are kept even when the model's sequence rows do not list them."""
+    from aryx.cpq.catalog_profile import REGION_LITERAL  # noqa: PLC0415
+    from aryx.cpq.fill_signature import _DECISION_ANCHOR_VNS  # noqa: PLC0415
+
+    return frozenset((*_DECISION_ANCHOR_VNS, REGION_LITERAL))
+
+
+def _is_unlisted_model_attr(vn: str, filled: dict[str, str], sources: dict[str, str] | None) -> bool:
+    """True when an attribute the model's AttrSequence never lists may be treated as not applicable: not a system
+    attribute (leading underscore or CRM_, e.g. the model-context and customer variables) and not an answer the customer
+    gave."""
+    if vn.startswith(("_", "CRM_")):
+        return False
+    return not (vn in filled and (sources or {}).get(vn) in _ANSWER_SOURCES)
+
+
 def _suppress_ungoverned_attrs(
     attrs: list[ConfigAttr], filled: dict[str, str],
     workspace_id: int | None, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
+    sources: dict[str, str] | None = None,
 ) -> tuple[list[ConfigAttr], set[str]]:
     """Drop attrs the real ingested attrSequence Data Table confidently
     says do NOT belong to the active base model -- returns (visible,
@@ -96,12 +125,20 @@ def _suppress_ungoverned_attrs(
         if s:
             governed_names |= s
 
+    scoped_questions = _scoped_questions_on()
+    anchors = _scoped_anchor_vns() if scoped_questions else frozenset()
     visible: list[ConfigAttr] = []
     suppressed: set[str] = set()
     for attr in attrs:
         vn = attr.variable_name
         vn_flat = vn.lower().replace("_", "")
-        if any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
+        if (scoped_questions and vn not in governed_names and vn not in anchors
+                and _is_unlisted_model_attr(vn, filled, sources)):
+            # The model's own sequence rows (this base model has coverage, checked above) do not list it, so it is not
+            # a question of this model, whatever its name contains. The exact decision anchors the engine resolves
+            # itself stay; the name-fragment protection below is for the unscoped behaviour.
+            suppressed.add(vn)
+        elif any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
             visible.append(attr)
         elif vn in governed_names:
             visible.append(attr)

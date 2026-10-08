@@ -24,6 +24,25 @@ from aryx.cpq.bom_gate.bom_gate import find_missing_required_fields, recheck_con
 logger = logging.getLogger(__name__)
 
 
+def _applicable_attrs(engine: Any, attrs: list, session: Any, workspace_id: int | None, catalog_prefix: str) -> list:
+    """The attributes the completeness check looks at. With `cpq_model_scoped_questions_enabled`, the ones the model's
+    sequence rows do not list are left out: they are another family's attributes (a catalog marks FLASHcode and power
+    adapter fields required for the whole catalog), so they are not 'missing required data' for this model. Any failure
+    returns the list unchanged."""
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    if workspace_id is None or not get_settings().cpq_model_scoped_questions_enabled:
+        return attrs
+    try:
+        kept, _suppressed = engine._suppress_ungoverned_attrs(
+            attrs, session.filled, workspace_id, catalog_prefix, None, getattr(session, "filled_source", None),
+        )
+        return kept
+    except Exception:  # noqa: BLE001 -- the check must never break a turn
+        logger.debug("cpq: scoped completeness attributes failed; using the full list", exc_info=True)
+        return attrs
+
+
 def _reask_stale_constraint_violations(
     session: Any, attrs: list, con_rules: list, bml_eval: Any,
     workspace_id: int | None = None, catalog_prefix: str = "",
@@ -61,7 +80,9 @@ def _reask_stale_constraint_violations(
     what's missing rather than inventing a question.
     """
     from aryx.api import ask_api as _ask_api_module
-    missing_required = find_missing_required_fields(attrs, session)
+    missing_required = find_missing_required_fields(
+        _applicable_attrs(_ask_api_module._cpq_engine, attrs, session, workspace_id, catalog_prefix), session,
+    )
     if missing_required:
         labels = [
             f"**{a.display_label}**" for a in missing_required

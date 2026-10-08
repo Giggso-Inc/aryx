@@ -141,7 +141,7 @@ def run_early_pass(engine: Any, pass_num: int, state: LoopState, scope: LoopScop
     # one from view. `None`/no workspace_id is a no-op.
     _t0 = time.monotonic()
     state.attrs, suppressed_vns = engine._suppress_ungoverned_attrs(
-        state.attrs, state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache,
+        state.attrs, state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache, state.sources,
     )
     logger.info(
         "cpq_perf: _suppress_ungoverned_attrs took %.3fs pass=%d attrs=%d suppressed=%d",

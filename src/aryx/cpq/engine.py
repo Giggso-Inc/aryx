@@ -1601,9 +1601,10 @@ class CpqEngine:
         attrs: list[ConfigAttr], filled: dict[str, str],
         workspace_id: int | None, catalog_prefix: str = "",
         cache: dict[tuple[int, str], tuple] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> tuple[list[ConfigAttr], set[str]]:
         return data_table_bridge._suppress_ungoverned_attrs(
-            attrs, filled, workspace_id, catalog_prefix, cache,
+            attrs, filled, workspace_id, catalog_prefix, cache, sources,
         )
 
     @staticmethod

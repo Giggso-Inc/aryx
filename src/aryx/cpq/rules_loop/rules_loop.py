@@ -168,4 +168,24 @@ def evaluate_rules_loop(
     # trace is fully durable by the time this turn's response returns,
     # even though individual fires are no longer written one at a time.
     rule_trace.flush_pending()
-    return state.attrs, state.filled, state.display_filled, state.constrained_opts
+    return _scoped_attrs(engine, state, scope), state.filled, state.display_filled, state.constrained_opts
+
+
+def _scoped_attrs(engine: Any, state: LoopState, scope: LoopScope) -> list:
+    """The turn's attribute list for the completeness checks, scoped like the loop's own passes (flag
+    `cpq_model_scoped_questions_enabled`). The passes drop an attribute the model's sequence rows do not list, but the
+    visible list is rebuilt from the whole catalog each pass, so the returned list still held them and the
+    'missing required data' check counted another family's required attributes. Off: the list is returned unchanged."""
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    if not get_settings().cpq_model_scoped_questions_enabled:
+        return state.attrs
+    try:
+        kept, _suppressed = engine._suppress_ungoverned_attrs(
+            state.attrs, state.filled, scope.workspace_id, scope.catalog_prefix, state.dt_cache, state.sources,
+        )
+        return kept
+    except Exception:  # noqa: BLE001 -- scoping must never break a turn
+        logger.debug("cpq: scoped attribute list failed; returning the unscoped list", exc_info=True)
+        return state.attrs
+

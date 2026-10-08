@@ -48,6 +48,12 @@ _empty: dict[tuple[int, str], CatalogData] = {}
 _cache_lock = threading.Lock()
 
 
+def _tree_fallback_on() -> bool:
+    """cpq_model_resolution_tree_fallback_enabled (a nodes-only catalog is then usable)."""
+    from aryx.config import get_settings  # noqa: PLC0415
+    return bool(get_settings().cpq_model_resolution_tree_fallback_enabled)
+
+
 def cached(workspace_id: int, catalog_prefix: str) -> CatalogData | None:
     """The already-loaded data for this key, or None (never loads)."""
     return _cache.get((int(workspace_id), catalog_prefix or ""))
@@ -130,7 +136,7 @@ def load_catalog(workspace_id: int, catalog_prefix: str, rdb: Any | None = None)
         upgrade_node_ids=upgrade_node_ids,
         rule_nodes_by_name={k: frozenset(v) for k, v in rule_nodes.items()},
     )
-    if not nodes_by_id or not models:
+    if not nodes_by_id or (not models and not _tree_fallback_on()):
         # fetch_entities_by_exact_type swallows DB errors and returns [], so an
         # empty result is indistinguishable from a transient failure, so
         # keep it only briefly (_EMPTY_TTL_S): a long-lived empty entry would

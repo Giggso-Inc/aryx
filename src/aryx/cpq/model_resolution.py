@@ -158,6 +158,30 @@ def rank_candidates(
     return chosen, tuple(c for c in cands if c is not chosen), step
 
 
+def _tree_candidates(data: Any, hint_norm: str) -> list[ModelCandidate]:
+    """Models named by the catalog tree alone (flag ``cpq_model_resolution_tree_fallback_enabled``): the LEAF nodes whose
+    name appears in the wording. Used only when ``Basemodeltoconfig`` names no model for it. A leaf, because a model is
+    a leaf of the catalog tree; a family or folder node would scope every model below it out."""
+    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+
+    if not get_settings().cpq_model_resolution_tree_fallback_enabled or not hint_norm:
+        return []
+    parents = {parent for _name, parent in data.nodes_by_id.values() if parent}
+    out: list[ModelCandidate] = []
+    for node_id, (name, _parent) in data.nodes_by_id.items():
+        if node_id in parents:
+            continue
+        norm = _norm(name)
+        if len(norm) < _MIN_NAME_LEN or not _occurs(norm, hint_norm):
+            continue
+        out.append(ModelCandidate(
+            cpq_model=name, display_names=frozenset({name}), node_name=name, node_id=node_id,
+            base_models=frozenset(), match="exact", is_upgrade=False,
+            soft_deleted=bool(_SOFT_DELETED_RE.search(name)), match_len=len(norm),
+        ))
+    return out
+
+
 def resolve_model(
     hint_text: str, workspace_id: int, catalog_prefix: str, rdb: Any | None = None,
 ) -> ModelResolution:
@@ -185,6 +209,8 @@ def resolve_model(
         if matched is None:
             continue
         cands.append(build(cpq, m, matched[0], matched[1]))
+    if not cands:
+        cands = _tree_candidates(data, hint_norm)
     chosen, alternatives, step = rank_candidates(sorted(cands, key=lambda c: c.cpq_model))
     scope = frozenset(_ancestors(chosen.node_id, data.nodes_by_id)) if chosen else frozenset()
     return ModelResolution(
