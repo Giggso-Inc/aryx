@@ -114,7 +114,7 @@ def test_an_attribute_a_hiding_rule_hides_is_passed_as_hidden_so_it_is_not_asked
                              apply_hiding_rules=lambda *a, **k: ([], [], {ENC}))
     with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
-        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX N30", {})
+        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {"base_vn": "N30BASE"}, {}, {}, None, 1267, "p", "APX N30", {})
     assert ENC in derive.call_args.args[5]          # the hidden set handed to the derivation
 
 
@@ -125,3 +125,12 @@ def test_hiding_rules_that_cannot_be_read_hide_nothing_extra():
             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset({ENC})) as derive:
         out = auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
     assert out == frozenset({ENC}) and ENC not in derive.call_args.args[5]
+
+
+def test_hide_rules_are_not_counted_while_the_base_model_is_blank():
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=True, cpq_required_set_guards_assumed_open=True)
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: ["rule"],
+                             apply_hiding_rules=lambda *a, **k: ([], [], {ENC}))
+    with patch.object(auto_fill_setup, "get_settings", return_value=settings),             patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="base_vn"),             patch("aryx.cpq.payload_building.required_set.derive_required_vns", return_value=frozenset()) as derive:
+        auto_fill_setup._required_ask_vns(engine, [_attr(ENC)], {}, {}, {}, None, 1267, "p", "APX 900", {})
+    assert ENC not in derive.call_args.args[5]

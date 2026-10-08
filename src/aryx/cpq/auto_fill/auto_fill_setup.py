@@ -87,6 +87,9 @@ def _rule_hidden_vns(
     """Attributes a hiding rule hides for the current answers (e.g. Encryption Type on an N-series model). A hidden
     attribute is not on the screen, so it is never asked. Failure-safe: nothing extra is hidden."""
     try:
+        from aryx.cpq.catalog_profile import resolve_base_model_vn  # noqa: PLC0415
+        if not filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""):
+            return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
         rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
         return set(engine.apply_hiding_rules(
             attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
