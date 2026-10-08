@@ -29,9 +29,9 @@ def _applicable_attrs(engine: Any, attrs: list, session: Any, workspace_id: int 
     sequence rows do not list are left out: they are another family's attributes (a catalog marks FLASHcode and power
     adapter fields required for the whole catalog), so they are not 'missing required data' for this model. Any failure
     returns the list unchanged."""
-    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.model_scoping_flags import scoped_questions_enabled  # noqa: PLC0415 -- flag-gated
 
-    if workspace_id is None or not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
+    if workspace_id is None or not scoped_questions_enabled():
         return attrs
     try:
         kept, _suppressed = engine._suppress_ungoverned_attrs(

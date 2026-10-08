@@ -101,3 +101,14 @@ test above, fixed.
 
 Dev table checks: `ws1267_basemodeltoconfig` has `APXN30 / aPXN30 / APX N30` (+ flashport rows); `BmCatalog` node `aPXN30` id
 5261103698, parent 39185814: the same as the local data.
+
+## 10. Review of the follow-up (PR #480): N1-N3
+
+| # | Finding | Change |
+|---|---|---|
+| N1 | a settled empty optional multi-select was never re-resolved, so a recommendation rule that only becomes satisfiable later (after the base model is derived, or after a later answer) could not fill it | `stage_already_filled_multi` keeps the settled empty only when no recommendation rule that targets the attribute is satisfied by what is filled now (`_recommendation_now_satisfied`, via the existing `scope.satisfied_recommendation`); otherwise it falls into the normal reopen. A failing check keeps the settled empty. 3 new tests |
+| N2 | `_is_resolved_anchor` rebuilt the anchor frozenset for every attribute of every pass (~3,000 per turn) | the list is built once (`functools.cache`) in the new `cpq/model_scoping_flags.py` |
+| N3a | the miss was a flag-set mismatch: dev has the not-applicable guard on, the local runs did not | `docs/cpq/local_replay_flags.example.yml` is the compose override holding the dev flag set (verified from `docker inspect aryx-api-1`); local replays use it |
+| N3b | production code carried `getattr(get_settings(), flag, False)` at eight call sites because tests fake the settings object | the two flags are read in one place, `cpq/model_scoping_flags.py` (`scoped_questions_enabled`, `tree_fallback_enabled`); the default for a settings double lives there. A test covers both the default and the real value. A shared settings fixture for the existing tests that fake the settings object is a separate, wider change |
+
+`dev_oci` (with #478) merges into the branch without conflicts. Local re-run with the dev flag set including the guard: see the PR.

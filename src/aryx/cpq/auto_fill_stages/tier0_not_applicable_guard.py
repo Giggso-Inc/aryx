@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from aryx.config import get_settings
+from aryx.cpq.model_scoping_flags import scoped_anchor_vns, scoped_questions_enabled
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.raven_log import raven_log, would_log
 
@@ -61,11 +62,7 @@ def _is_resolved_anchor(vn: str) -> bool:
     attribute, so the guard cleared it (ws 1267, APX N30: `TIER0_NOT_APPLICABLE_GUARD` on `modelSelectionbaseModel_astro`
     in every pass), the derivation that follows never ran, and with no base model nothing else could be scoped. Off:
     the guard behaves as before."""
-    if not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
-        return False
-    from aryx.cpq.data_table_bridge.attr_governance import _scoped_anchor_vns  # noqa: PLC0415 -- the one anchor list
-
-    return vn in _scoped_anchor_vns()
+    return scoped_questions_enabled() and vn in scoped_anchor_vns()
 
 
 def stage_not_applicable_guard(

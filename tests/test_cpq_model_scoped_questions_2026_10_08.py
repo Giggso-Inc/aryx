@@ -340,7 +340,7 @@ def test_without_the_flag_the_guard_behaves_as_before(flags):
 
 
 # --- the settled empty selection is not reopened by the already-filled stage ------------------------------------------------
-def _revalidate(source, flag, flags):
+def _revalidate(source, flag, flags, recommendation=None):
     from aryx.cpq.auto_fill_stages import tier0_already_filled_multi as stage
 
     flags.cpq_model_scoped_questions_enabled = flag
@@ -349,6 +349,9 @@ def _revalidate(source, flag, flags):
     ctx = SimpleNamespace(filled_multi={vn: []}, sources={vn: source}, display_filled={}, dt_cache={}, dropped={},
                           default_fill_signatures=None, filled={})
     scope = SimpleNamespace(constrained_opts=None, grid_selector_vns=set(), grid_declined_vns=None, attrs=[attr])
+    if recommendation is not None:        # a recommendation rule targets the attribute: (item value, display, rule name) or None
+        scope.rec_by_target = {attr.entity_id: ["rule"]}
+        scope.satisfied_recommendation = lambda a, opts: recommendation
     state = AttrResolution(vn=vn, vn_flat=vn.lower())
     with patch.object(stage.fill_log, "log_decision"), patch.object(stage.fill_log, "log_pruned"):
         stage.stage_already_filled_multi(SimpleNamespace(), attr, ctx, scope, state)
@@ -369,3 +372,42 @@ def test_an_empty_multi_select_a_constraint_emptied_is_still_reopened(flags):
 def test_without_the_flag_an_empty_multi_select_is_reopened_as_before(flags):
     state, ctx, vn = _revalidate("optional_multi_empty", False, flags)
     assert not state.done and vn not in ctx.filled_multi
+
+
+def test_a_settled_empty_multi_select_is_reopened_once_a_recommendation_is_satisfied(flags):
+    """Review N1: a rule that becomes satisfiable after the empty was settled (after the base model is derived, or a later
+    answer) must still be able to fill the attribute."""
+    state, ctx, vn = _revalidate("optional_multi_empty", True, flags, recommendation=("o1", "o1", "some rule"))
+    assert not state.done and vn not in ctx.filled_multi and vn not in ctx.sources
+
+
+def test_a_settled_empty_multi_select_stays_when_no_recommendation_is_satisfied(flags):
+    state, ctx, vn = _revalidate("optional_multi_empty", True, flags, recommendation=None)
+    assert state.done and vn in ctx.filled_multi
+
+
+def test_a_failing_recommendation_check_keeps_the_settled_empty(flags):
+    from aryx.cpq.auto_fill_stages import tier0_already_filled_multi as stage
+
+    attr = _attr("x_astro", options=2, multi=True)
+    scope = SimpleNamespace(rec_by_target={1: ["r"]}, satisfied_recommendation=lambda a, o: 1 / 0)
+    assert stage._recommendation_now_satisfied(attr, scope) is False
+
+
+# --- review N2 / N3: the anchor list is built once, the flags are read in one place ----------------------------------------
+def test_the_anchor_list_is_built_once_and_holds_the_base_model():
+    from aryx.cpq import model_scoping_flags as msf
+
+    first = msf.scoped_anchor_vns()
+    assert first is msf.scoped_anchor_vns()                                  # cached, not rebuilt per attribute
+    assert BASE in first and PRODUCT in first and "ultimateDestinationCountry" in first
+
+
+def test_the_flag_helpers_default_to_off_for_a_settings_double_without_the_flags():
+    from aryx.cpq import model_scoping_flags as msf
+
+    with patch("aryx.config.get_settings", return_value=SimpleNamespace()):
+        assert msf.scoped_questions_enabled() is False and msf.tree_fallback_enabled() is False
+    with patch("aryx.config.get_settings", return_value=SimpleNamespace(
+            cpq_model_scoped_questions_enabled=True, cpq_model_resolution_tree_fallback_enabled=True)):
+        assert msf.scoped_questions_enabled() is True and msf.tree_fallback_enabled() is True

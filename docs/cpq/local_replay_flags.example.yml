@@ -1,0 +1,17 @@
+# Flag set of the dev environment (ws 1267), for local replays of Ask quotes (docker compose override).
+# Use it on top of docker-compose-oci-local.yml:
+#   docker compose -f docker-compose-oci-local.yml -f docs/cpq/local_replay_flags.example.yml up -d --no-deps api
+# Verified from `docker inspect aryx-api-1` on dev (2026-10-08). Dev may set more ARYX_CPQ_* variables: list them with
+#   docker inspect aryx-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep ARYX_CPQ
+# and add any that are missing here, so a local result is measured with the same flags as dev.
+# The tree fallback is NOT set on dev (its base-model table names the model); set it only for a workspace without that table.
+services:
+  api:
+    environment:
+      - ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED=true
+      - ARYX_CPQ_MODEL_RESOLUTION_ENABLED=true
+      - ARYX_CPQ_RULE_SCOPE_FILTER_ENABLED=true
+      - ARYX_CPQ_BASE_MODEL_PLACEHOLDER_GUARD_ENABLED=true
+      - ARYX_CPQ_NOT_APPLICABLE_GUARD_ENABLED=true
+      - ARYX_CPQ_MODEL_SCOPED_QUESTIONS_ENABLED=true
+      # - ARYX_CPQ_MODEL_RESOLUTION_TREE_FALLBACK_ENABLED=true

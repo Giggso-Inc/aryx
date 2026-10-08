@@ -177,9 +177,9 @@ def _scoped_attrs(engine: Any, state: LoopState, scope: LoopScope) -> list:
     visible list is rebuilt from the whole catalog each pass, so the returned list still held them and the
     'missing required data' check counted another family's required attributes. A value a rule or a guess left on a dropped
     attribute is removed with it. Off: nothing changes."""
-    from aryx.config import get_settings  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.model_scoping_flags import scoped_questions_enabled  # noqa: PLC0415 -- flag-gated
 
-    if not getattr(get_settings(), "cpq_model_scoped_questions_enabled", False):
+    if not scoped_questions_enabled():
         return state.attrs
     try:
         kept, suppressed = engine._suppress_ungoverned_attrs(
