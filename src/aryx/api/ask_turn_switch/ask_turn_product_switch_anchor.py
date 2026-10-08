@@ -15,6 +15,10 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.api.ask_turn_switch.ask_turn_confirm_switch_anchor import _handle_confirm_switch_anchor
+from aryx.api.ask_turn_switch.ask_turn_model_switch import (
+    CONFIRM_MODEL_SWITCH_ANCHOR,
+    _handle_confirm_model_switch_anchor,
+)
 from aryx.api.ask_turn_switch.ask_turn_suggest_switch_anchor import _handle_suggest_switch_anchor
 from aryx.api.ask_turn_switch.ask_turn_switch_country_anchor import _handle_switch_country_anchor
 from aryx.raven_log import raven_log
@@ -30,14 +34,15 @@ def _handle_product_switch_pending_anchor(
     the turn (STEP 1 onward) unchanged.
     """
     _anchor = session.pending_anchor
+    _switch_anchors = ("switch_country", "suggest_switch", "confirm_switch", CONFIRM_MODEL_SWITCH_ANCHOR)
     raven_log("DEBUG", "P4", "ask.switch.gate product-switch pending anchor checked", context={
-        "selected_option": _anchor if _anchor in ("switch_country", "suggest_switch", "confirm_switch")
-        else "none",
-        "available_options": ["switch_country", "suggest_switch", "confirm_switch", "none"],
-        "reason_code": "PENDING_SWITCH_ANCHOR" if _anchor in (
-            "switch_country", "suggest_switch", "confirm_switch") else "NO_SWITCH_ANCHOR",
+        "selected_option": _anchor if _anchor in _switch_anchors else "none",
+        "available_options": [*_switch_anchors, "none"],
+        "reason_code": "PENDING_SWITCH_ANCHOR" if _anchor in _switch_anchors else "NO_SWITCH_ANCHOR",
         "pending_anchor": _anchor or "", "turn": getattr(session, "turn", None),
         "pending_switch_product": getattr(session, "pending_switch_product", "") or ""})
+    if session.pending_anchor == CONFIRM_MODEL_SWITCH_ANCHOR:
+        return _handle_confirm_model_switch_anchor(req, session)
     if session.pending_anchor == "switch_country":
         return _handle_switch_country_anchor(req, session, reader)
     if session.pending_anchor == "suggest_switch":

@@ -23,6 +23,7 @@ from aryx.api.ask_attr_recompute.ask_cascade_invalidate_dependents import _inval
 from aryx.api.ask_attr_recompute.ask_cascade_note import _build_cascade_note
 from aryx.api.ask_attr_recompute.ask_cascade_recompute import _recompute_after_cascade
 from aryx.api.ask_attr_recompute.ask_cascade_response import _build_cascade_response
+from aryx.api.ask_turn_switch.ask_turn_model_switch import _offer_model_switch
 
 
 def _handle_cascade(
@@ -67,6 +68,12 @@ def _handle_cascade(
                       "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
+
+    # A change of the Product (model) answer asks first and saves the old
+    # model's answers (flag-gated; None means run the normal cascade below).
+    model_switch_offer = _offer_model_switch(req, session, attrs, changed_attr, new_value_hint)
+    if model_switch_offer is not None:
+        return model_switch_offer
 
     hints, negated_vns, catalog_prefix, dependent_labels, hc_allowed = (
         _invalidate_cascade_dependents(

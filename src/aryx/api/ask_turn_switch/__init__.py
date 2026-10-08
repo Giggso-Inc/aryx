@@ -5,7 +5,10 @@ import importlib
 _EXPORTS = {
     "_build_switch_redetect_prompt": "ask_turn_switch_redetect_prompt",
     "_check_mid_turn_switch_redetection": "ask_turn_switch_redetect",
+    "_complete_model_switch": "ask_turn_model_switch_complete",
     "_complete_product_switch": "ask_turn_product_switch_complete",
+    "_handle_confirm_model_switch_anchor": "ask_turn_model_switch",
+    "_offer_model_switch": "ask_turn_model_switch",
     "_handle_confirm_switch_anchor": "ask_turn_confirm_switch_anchor",
     "_handle_confirm_switch_decline": "ask_turn_confirm_switch_decline",
     "_handle_product_switch_pending_anchor": "ask_turn_product_switch_anchor",
