@@ -83,4 +83,6 @@ def test_the_explanation_replays_the_same_order():
     with patch.object(derive, "get_settings", return_value=settings), \
             patch.object(derive, "_model_rows", return_value=_rows()):
         report = derive.explain_known_attrs("APX900", ANSWERS, 1267)
-    assert {e["attr"]: e["applied_order"] for e in report} == {FREQ: 0, KEYPAD: 1}
+    assert {e["attr"]: e["applied_order"] for e in report} == {FREQ: 0, KEYPAD: 1, COUNTRY: None}
+    skipped = next(e for e in report if e["attr"] == COUNTRY)
+    assert skipped["skipped"] == "CONDITION_ONLY_ATTRIBUTE" and skipped["matching_among_remaining"] == 0

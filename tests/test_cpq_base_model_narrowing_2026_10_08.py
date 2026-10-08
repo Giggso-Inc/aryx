@@ -726,3 +726,23 @@ def test_nothing_is_resolved_from_wording_with_model_resolution_off_and_no_produ
 def test_a_named_model_without_two_base_models_uses_the_product_lookup(rows):
     with patch.object(bmn, "model_rows_and_base_models", return_value=([], {"ONE"})):
         assert bmn.discriminator_values("", 1267, "p", cpq_model="TINY") == {}
+
+
+def test_the_seq_lookup_scans_the_loaded_table_once_for_the_same_request():
+    bmn._SEQ_ORDER_MEMO.clear()
+    table = _sequence_rows()
+
+    class Counting(list):
+        scans = 0
+
+        def __iter__(self):
+            Counting.scans += 1
+            return super().__iter__()
+
+    counted = Counting(table)
+    with patch("aryx.cpq.data_table.data_table_loader._load_all_tables", return_value=([], counted, [], [], [])):
+        first = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+        again = bmn.attr_sequence_order("APX900", CODES, {FREQ, KEYPAD}, 1267, "p")
+        other = bmn.attr_sequence_order("APX900", CODES, {FREQ}, 1267, "p")
+    assert first == again == {FREQ: 33, KEYPAD: 39} and other == {FREQ: 33}
+    assert Counting.scans == 2                                  # the repeat reused the first scan

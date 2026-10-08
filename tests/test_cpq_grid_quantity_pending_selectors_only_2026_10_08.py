@@ -42,3 +42,11 @@ def test_a_selector_with_a_selection_still_asks_its_selected_quantities():
 
 def test_a_caller_naming_one_selector_is_unchanged():
     assert len(_append([], flag=True, selector_vns={SELECTOR})) == 3
+
+
+def test_the_selectors_the_flag_skips_are_logged_for_the_replay():
+    with patch("aryx.cpq.grid_quantity.append.would_log", return_value=True), \
+            patch("aryx.cpq.grid_quantity.append.raven_log") as log:
+        _append([], flag=True)
+    context = log.call_args.kwargs["context"]
+    assert context["reason_code"] == "SELECTOR_NOT_PENDING" and context["skipped_selectors"] == [SELECTOR]

@@ -165,6 +165,16 @@ def explain_known_attrs(
                     "base_models_matching": len(matching), "matching_among_remaining": len(matched),
                     "remaining_before": before, "remaining_after": len(remaining),
                     "row_value_count": len(row_values), "row_values_sample": sorted(row_values)[:6]})
+    applied = {attr for attr, _value in _in_application_order(rows, base_models, known_attrs)}
+    for attr_name, value in known_attrs.items():          # the flag drops condition-only attributes: say so
+        if attr_name in applied or not value or attr_name in ignore_attrs:
+            continue
+        mentioned = {str(row.get("BaseModel") or "").strip() for row in rows
+                     if any(row.get(f"attr{n}") == attr_name for n in (1, *CONDITION_COLUMN_SLOTS))} & base_models
+        if mentioned:
+            out.append({"attr": attr_name, "applied_order": None, "skipped": "CONDITION_ONLY_ATTRIBUTE",
+                        "base_models_with_rows": len(mentioned), "matching_among_remaining": 0,
+                        "remaining_before": len(remaining), "remaining_after": len(remaining)})
     out.sort(key=lambda e: e["matching_among_remaining"] != 0)          # stable: ignored attributes first
     return out[:20]
 

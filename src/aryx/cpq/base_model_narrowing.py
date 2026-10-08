@@ -70,6 +70,10 @@ def _model_with_base_models(
     return rows, base_models
 
 
+_SEQ_ORDER_MEMO: dict[tuple, dict[str, int]] = {}
+_SEQ_ORDER_MEMO_MAX = 256
+
+
 def attr_sequence_order(
     cpq_model: str, base_models: Collection[str], attr_names: Collection[str],
     workspace_id: int, catalog_prefix: str, cache: dict | None = None,
@@ -86,6 +90,10 @@ def attr_sequence_order(
         sequence_rows = _load_all_tables(workspace_id, catalog_prefix, cache)[1]
     except Exception:  # noqa: BLE001 -- the order is a nicety, never a reason to lose the narrowing
         return {}
+    # The row scan is the cost: reuse it while the loaded table is the same object (the loader caches it).
+    memo_key = (id(sequence_rows), len(sequence_rows), model, frozenset(bms), frozenset(wanted))
+    if memo_key in _SEQ_ORDER_MEMO:
+        return dict(_SEQ_ORDER_MEMO[memo_key])
     for row in sequence_rows:
         name = str(row.get("AttrName") or "")
         if (name not in wanted or str(row.get("CPQModel") or "").strip().upper() != model
@@ -96,6 +104,9 @@ def attr_sequence_order(
         except (TypeError, ValueError):
             continue
         out[name] = min(seq, out.get(name, seq))
+    if len(_SEQ_ORDER_MEMO) >= _SEQ_ORDER_MEMO_MAX:
+        _SEQ_ORDER_MEMO.clear()
+    _SEQ_ORDER_MEMO[memo_key] = dict(out)
     return out
 
 

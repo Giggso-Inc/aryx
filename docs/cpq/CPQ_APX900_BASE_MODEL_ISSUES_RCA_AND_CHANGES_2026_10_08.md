@@ -342,3 +342,26 @@ five guessed attributes, `ask.base_model.not_derived` should not appear after bo
   The set is reused for an identical fill state within a turn.
 - **Not verified**: why the successful run (3.4) derived the base model with country known; whether `WS1267_WHITELIST_ASTROSYS` holds
   anything the engine needs; that the 46 options of the 8000H case are the Msl attribute; the live effect of every flag above.
+
+---------------------------------------------------------------------------------------------------------------------------
+
+## 9. Review follow-ups (PR #478: gsivasankari-giggso "approve with notes", mehmood-munir PASS with 4 Minor)
+
+| Finding | Change |
+|---|---|
+| Flag dependencies not enforced | `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` now asks nothing unless `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` is also on, and logs `ask.required_set.dependency_missing` once per turn. `ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED` is only reached through the derivation, which already needs `ARYX_CPQ_DERIVE_BASE_MODEL_ENABLED`. Enable the flags together, in dependency order. |
+| `_in_application_order` drops entries; `explain_known_attrs` omitted them | the explanation now lists an ignored attribute with `applied_order: null` and `skipped: CONDITION_ONLY_ATTRIBUTE`, so a diagnostic still sees one entry per mentioned known attribute |
+| N1 `attr_sequence_order` scans the table on every call | memoised per loaded table object, model, base models and attributes (bounded, 256 entries) |
+| N2 selectors only the grid flow asks would be skipped | logged: `ask.grid_quantity.selectors_skipped` (`SELECTOR_NOT_PENDING`, count and names). Not resolved: replay one catalog whose quantity grid is asked on purpose (APX NEXT, SVX) before enabling the flag there |
+| N3 required-set cost unmeasured | each computation logs `ask.required_set.derived` with `duration_ms` and `required_count`; the reuse for an identical fill state is unchanged |
+| Required set computed before the pass | known limit: values filled mid-pass cannot change the set within that pass. The next pass recomputes it (the cache key changes with the state). Verify with a real turn that a rule firing mid-pass does not leave a stale set |
+| Double model resolution (hint step and later binding) | not changed: only extra work. A per-turn cache would remove it |
+| Bundling (four flags, a moved function, docs in one PR) | accepted for a single review of one flow; the flags can be enabled and rolled back one at a time |
+
+### Expected result for APX N30 / N50 (one place)
+
+#475 accepted "ask nothing after the country" for N30 / N50; that was measured **without** the required-set flags. The derived required set
+(`ASTRO25_REQUIRED_ATTRS_14_2026-10-05.json`) lists Encryption Type as required for both (a TER-gated blank-disallow rule). With
+`ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` and `ARYX_CPQ_REQUIRED_SET_GUARDS_ASSUMED_OPEN` on, N30 / N50 ask Encryption Type after the country.
+Recommended and to be confirmed by the owner: ask it, because the real required set marks it required. The flag is global; to keep N30 / N50
+silent, leave `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` off until a per-model switch exists.

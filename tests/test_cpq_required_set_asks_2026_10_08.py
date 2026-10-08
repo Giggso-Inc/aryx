@@ -22,8 +22,8 @@ def _attr(vn):
                       default_value="", select_type="single", hidden=False, options=[])
 
 
-def _ask(flag, derived=None, raises=False, workspace_id=1267, cache=None, filled=None):
-    settings = SimpleNamespace(cpq_required_set_asks_enabled=flag)
+def _ask(flag, derived=None, raises=False, workspace_id=1267, cache=None, filled=None, guards=True):
+    settings = SimpleNamespace(cpq_required_set_asks_enabled=flag, cpq_required_set_guards_assumed_open=guards)
     side = {"side_effect": RuntimeError("boom")} if raises else {"return_value": frozenset(derived or ())}
     with patch.object(auto_fill_setup, "get_settings", return_value=settings), \
             patch("aryx.cpq.payload_building.required_set.derive_required_vns", **side) as derive:
@@ -76,3 +76,13 @@ def test_an_identical_state_reuses_the_set_and_a_changed_answer_recomputes_it():
     assert first == again == frozenset({ENC}) and derive.call_count == 1 and derive_again.call_count == 0
     changed, derive_changed = _ask(True, {OTHER}, cache=cache, filled={"modelSelectionKeypadType_astro": "FULL KEYPAD"})
     assert changed == frozenset({OTHER}) and derive_changed.call_count == 1          # a new answer, a new set
+
+
+def test_without_the_guard_flag_nothing_is_asked_and_the_missing_dependency_is_reported_once_per_turn():
+    cache: dict = {}
+    with patch.object(auto_fill_setup, "raven_log") as log:
+        out, derive = _ask(True, {ENC}, cache=cache, guards=False)
+        _ask(True, {ENC}, cache=cache, guards=False)
+    assert out == frozenset() and not derive.called
+    assert [c.args[2] for c in log.call_args_list].count(
+        "ask.required_set.dependency_missing asks flag needs the guard flag, skipped") == 1

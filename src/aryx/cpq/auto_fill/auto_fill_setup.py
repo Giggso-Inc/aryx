@@ -8,6 +8,7 @@ Logic unchanged from the original inline block.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from aryx.config import get_settings
@@ -15,6 +16,7 @@ from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_o
 from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
 from aryx.cpq.engine import FillContext, FillScope
+from aryx.raven_log import raven_log, would_log
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,15 @@ def _required_ask_vns(
     settings = get_settings()
     if not (getattr(settings, "cpq_required_set_asks_enabled", False) and workspace_id is not None):
         return frozenset()
+    if not getattr(settings, "cpq_required_set_guards_assumed_open", False):
+        # A guarded blank-disallow rule (the TER-gated encryption rule) does not fire without it, so the set would be
+        # incomplete and the rollout different from the one that was tested: say so once per turn and ask nothing extra.
+        if dt_cache is not None and "required_ask_dependency_warned" not in dt_cache:
+            dt_cache["required_ask_dependency_warned"] = True
+            raven_log("WARN", "P3", "ask.required_set.dependency_missing asks flag needs the guard flag, skipped",
+                      context={"selected_option": "skipped", "available_options": ["asked", "skipped"],
+                               "reason_code": "REQUIRED_SET_GUARDS_ASSUMED_OPEN_OFF"})
+        return frozenset()
     try:
         from aryx.cpq.fill_signature import _fill_signature  # noqa: PLC0415 -- flag-gated
         from aryx.cpq.payload_building.required_set import derive_required_vns  # noqa: PLC0415
@@ -43,9 +54,15 @@ def _required_ask_vns(
         if dt_cache is not None and key in dt_cache:
             return dt_cache[key]
         hidden = {a.variable_name for a in attrs if getattr(a, "hidden", False)}
+        started = time.monotonic()
         derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
             workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache)
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.required_set.derived derived required set computed for asking", context={
+                "selected_option": "computed", "available_options": ["computed", "reused"],
+                "reason_code": "REQUIRED_SET_ASKS", "required_count": len(derived),
+                "duration_ms": int((time.monotonic() - started) * 1000)})
         if dt_cache is not None:
             dt_cache[key] = derived
         return derived

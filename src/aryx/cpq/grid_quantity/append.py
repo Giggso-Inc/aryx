@@ -14,6 +14,7 @@ from aryx.cpq.grid_quantity.finalize import _finalize_grid_selections_from_quant
 from aryx.cpq.grid_quantity.links import resolve_array_grid_links
 from aryx.cpq.grid_quantity.pending import resolve_pending_grid_quantities
 from aryx.cpq.state import ConfigAttr
+from aryx.raven_log import raven_log, would_log
 
 
 def _pending_selectors_only() -> bool:
@@ -105,6 +106,12 @@ def append_pending_grid_quantities(
         # A selector the pass did not leave pending was decided (not applicable, answered, declined): its options are
         # not seeded as quantity questions.
         selector_vns = {vn for vn in links if vn in pending_before or vn in filled_multi or vn in filled}
+        skipped = sorted(set(links) - selector_vns)
+        if skipped and would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.grid_quantity.selectors_skipped selectors the pass left unasked are not seeded",
+                      context={"selected_option": "skipped", "available_options": ["seeded", "skipped"],
+                               "reason_code": "SELECTOR_NOT_PENDING", "skipped_count": len(skipped),
+                               "skipped_selectors": skipped[:20]})
     for qty_attr in resolve_pending_grid_quantities(
         attrs, filled, filled_multi, constrained_opts, selector_vns=selector_vns,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix, dt_cache=dt_cache,
