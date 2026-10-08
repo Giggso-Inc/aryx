@@ -654,6 +654,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_MODEL_SCOPE_LOOKUPS_ENABLED=true."
         ),
     )
+    cpq_grid_quantity_pending_selectors_only_enabled: bool = Field(
+        default=False,
+        description=(
+            "The upfront grid-quantity flow asks a quantity for every option of a grid selector that has no selection "
+            "yet. With this flag it does that only for a selector the pass actually left pending (or one that already "
+            "holds a selection): a selector the engine decided is not applicable for the model (not-applicable guard, "
+            "model-scoped questions) is not resurrected as 7 quantity questions after auto-fill finished with 0 pending "
+            "(ws 1267, APX N30: 'hiddenConventionalOptionsMaxQuantityAry_astro', 'backplaneQuantityHolder_astro', ...). "
+            "Callers that name one selector (selector_vns) are unchanged. Off by default. Override with "
+            "ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(
