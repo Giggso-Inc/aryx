@@ -422,6 +422,26 @@ Sources in this repo: `CPQ_REQUIRED_INPUT_DERIVATION_PLAN_2026_10_05.md` (screen
 the flag should be global (option B) and N30 / N50 asking it is correct; if it stays absent, something outside the rules above applies and
 needs a new RCA (a per-model list is a last resort).
 
+### Fix B2: a Defaultinattr default breaks a tie the Whitelist leaves (2026-10-08)
+
+The defaults flag alone does not apply defaults to attributes the Whitelist covers: with `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED` on, a Whitelist
+that leaves 2+ legal values returns before the table is consulted ([conflicts.py], comment "a Defaultinattr default must not override it").
+Dev log (30 minutes, every pass): `ask.datatable.lookup` `AMBIGUOUS_DISCARDED` for `antennasType_astro`, `beltClipType_astro`,
+`packingPackageType_astro` and, on most passes, `modelSelectionHazardousLocation_astro`; hazardous showed `SINGLE_LEGAL_VALUE` on others, because a
+guessed battery (2900 mAh) forces TIA-4950 (UL) through the Whitelist.
+
+Change: new flag `ARYX_CPQ_DEFAULTINATTR_RESOLVES_AMBIGUITY_ENABLED` (off by default; needs the defaults flag). When the Whitelist leaves 2+ legal values
+and the resolved base model's Defaultinattr default is one of them (case-insensitive) and a real option, that default is taken (log reason
+`DEFAULTINATTR_AMONG_LEGAL`). It never overrides the Whitelist. A default outside the legal values, a single legal value, an empty legal set and an
+attribute without Whitelist rows behave as before. Needs the base model known and PR #482 (an early guess is re-opened when the context changes).
+
+Expected for APX 900 / `H92WCH9PW7AN`: antenna Whip (Standard), hazardous N/A, carry 2.0 inch / 5.08 cm (Standard), package Bulk. Battery has no default
+row: it stays a guess among the five N/A allows (2900 mAh is no longer legal). Language has no row for WCH.
+
+Environment: `ARYX_CPQ_DEFAULTINATTR_SHAPE_ENABLED=true` and `ARYX_CPQ_DEFAULTINATTR_RESOLVES_AMBIGUITY_ENABLED=true`. Replay: the summary shows the four
+defaults above; `grep DEFAULTINATTR_AMONG_LEGAL` lists the attributes resolved this way. Risks: reaches every model and attribute that has a table default
+and 2+ Whitelist values; fills silently; turn time not measured.
+
 
 ### PR #482: blind picks are re-derived when the context changes
 
