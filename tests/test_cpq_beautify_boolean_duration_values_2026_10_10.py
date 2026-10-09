@@ -57,6 +57,16 @@ def test_flag_on_leaves_the_summary_unchanged(flag):
     assert {"Data Cable", "Service Duration"}.isdisjoint({label for label, _ in pairs})
 
 
+def test_flag_on_keeps_a_boolean_attribute_only_with_a_yes_no_value(flag):
+    raw = ConfigAttr(entity_id=5, variable_name="rawFlag_astro", display_label="Raw Flag", required=False,
+                     default_value="", options=[], select_type="boolean")
+    worded = ConfigAttr(entity_id=6, variable_name="wordFlag_astro", display_label="Word Flag", required=False,
+                        default_value="", options=[], select_type="boolean")
+    rows = CpqEngine().beautify_rows("APX 3000", {"rawFlag_astro": "1", "wordFlag_astro": "Yes"}, [raw, worded])
+    assert "Raw Flag" not in _labels(rows)
+    assert {"label": "Word Flag", "value": "Yes"} in rows
+
+
 def test_flag_on_still_applies_the_other_exclusions(flag):
     hidden = ConfigAttr(entity_id=4, variable_name="hiddenFlag_astro", display_label="Hidden Flag", required=False,
                         default_value="", options=[], hidden=True)

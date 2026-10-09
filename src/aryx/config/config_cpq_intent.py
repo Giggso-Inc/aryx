@@ -926,6 +926,17 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_BEAUTIFY_SHOW_BOOLEAN_AND_DURATION_VALUES_ENABLED=true."
         ),
     )
+    cpq_beautify_hide_rule_hidden_enabled: bool = Field(
+        default=False,
+        description=(
+            "Beautify is built from the session's filled values over the whole catalog without re-running the hiding "
+            "rules, so an attribute a hiding rule removed still showed its (default) value although the real screen hides "
+            "it (ws 1267, APX N70 Operation Type and Provisioning Assistance). With this on the rules loop records the "
+            "attributes its hiding rules removed for the request, and Beautify drops their rows (the customer's own "
+            "answers stay; a DEBUG ask.beautify.rule_hidden line lists what was dropped). The payload and the chat summary "
+            "are unchanged. Off by default. Override with ARYX_CPQ_BEAUTIFY_HIDE_RULE_HIDDEN_ENABLED=true."
+        ),
+    )
     cpq_restrict_hide_lists_are_remove_enabled: bool = Field(
         default=False,
         description=(

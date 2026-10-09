@@ -8,6 +8,7 @@ Logic unchanged from the original inline block.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -92,8 +93,7 @@ def _rule_input_attrs(settings: Any, workspace_id: int | None, catalog_prefix: s
     from aryx.cpq.rules_loop.full_attrs_registry import full_attrs  # noqa: PLC0415 -- flag-gated
 
     attrs = (dt_cache or {}).get(("_all_attrs", workspace_id, catalog_prefix)) or full_attrs(workspace_id, catalog_prefix)
-    if attrs is None and (workspace_id, catalog_prefix) not in _ALL_ATTRS_MISSING_WARNED:
-        _ALL_ATTRS_MISSING_WARNED.add((workspace_id, catalog_prefix))
+    if attrs is None and _missing_warning_due(workspace_id, catalog_prefix):
         raven_log("WARN", "P3", "ask.required_set.all_attrs_missing rule inputs read from the visible list only",
                   context={"selected_option": "visible_only", "available_options": ["all_attrs", "visible_only"],
                            "reason_code": "FULL_ATTR_LIST_UNAVAILABLE", "workspace_id": workspace_id,
@@ -101,7 +101,19 @@ def _rule_input_attrs(settings: Any, workspace_id: int | None, catalog_prefix: s
     return attrs
 
 
-_ALL_ATTRS_MISSING_WARNED: set[tuple[int | None, str]] = set()
+_ALL_ATTRS_MISSING_INTERVAL_S = 600.0          # at most one warning per catalog per 10 minutes, so a recurrence shows
+_ALL_ATTRS_MISSING_WARNED: dict[tuple[int | None, str], float] = {}
+_ALL_ATTRS_MISSING_LOCK = threading.Lock()
+
+
+def _missing_warning_due(workspace_id: int | None, catalog_prefix: str) -> bool:
+    now = time.monotonic()
+    with _ALL_ATTRS_MISSING_LOCK:
+        last = _ALL_ATTRS_MISSING_WARNED.get((workspace_id, catalog_prefix))
+        if last is not None and now - last < _ALL_ATTRS_MISSING_INTERVAL_S:
+            return False
+        _ALL_ATTRS_MISSING_WARNED[(workspace_id, catalog_prefix)] = now
+        return True
 
 
 def _blank_host_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None,

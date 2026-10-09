@@ -97,8 +97,13 @@ def _is_summary_excluded(
 
     `keep_value_shapes` — optional (default `False`): Beautify's own call with flag
     `cpq_beautify_show_boolean_and_duration_values_enabled` on skips the boolean and duration checks for every
-    attribute, so a filled Yes/No or "3 Years" shows as on the real screen. The other exclusions still apply.
+    attribute, so a filled Yes/No or "3 Years" shows as on the real screen. A boolean attribute is kept only when its
+    value reads Yes/No/True/False (a raw "1" or "T" stays out). The other exclusions still apply.
     """
+    if not is_mandatory and keep_value_shapes:
+        if attr is not None and attr.select_type == "boolean" \
+                and value.strip().lower() not in engine._BOOLEAN_DISPLAY_VALUES:
+            return True
     if not is_mandatory and not keep_value_shapes:
         if value.strip().lower() in engine._BOOLEAN_DISPLAY_VALUES:
             return True

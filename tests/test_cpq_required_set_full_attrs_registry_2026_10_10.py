@@ -51,6 +51,28 @@ def test_other_catalog_is_not_mixed_in():
     assert auto_fill_setup._rule_input_attrs(ON, 1150, "astro", {}) is None
 
 
+def test_a_loop_for_another_catalog_in_the_same_request_keeps_this_one():
+    """The country-switch check runs a loop for another prefix in the same request; the original entry stays."""
+    full_attrs_registry.remember_full_attrs(1267, "astro", FULL)
+    full_attrs_registry.remember_full_attrs(1267, "newprefix", ["n"])
+    assert auto_fill_setup._rule_input_attrs(ON, 1267, "astro", {}) == FULL
+    assert auto_fill_setup._rule_input_attrs(ON, 1267, "newprefix", {}) == ["n"]
+
+
+def test_rule_hidden_is_kept_per_catalog_next_to_the_full_list():
+    full_attrs_registry.remember_full_attrs(1267, "astro", FULL)
+    full_attrs_registry.remember_rule_hidden(1267, "astro", {"operationModeType_astro"})
+    assert full_attrs_registry.rule_hidden(1267, "astro") == frozenset({"operationModeType_astro"})
+    assert full_attrs_registry.full_attrs(1267, "astro") == FULL
+    assert full_attrs_registry.rule_hidden(1267, "other") is None
+
+
+def test_a_child_context_write_does_not_change_the_parent():
+    full_attrs_registry.remember_full_attrs(1267, "astro", FULL)
+    contextvars.copy_context().run(full_attrs_registry.remember_full_attrs, 1267, "astro", ["child"])
+    assert full_attrs_registry.full_attrs(1267, "astro") == FULL
+
+
 def test_missing_list_warns_once(monkeypatch):
     calls = []
     monkeypatch.setattr(auto_fill_setup, "raven_log", lambda *a, **k: calls.append(a))
