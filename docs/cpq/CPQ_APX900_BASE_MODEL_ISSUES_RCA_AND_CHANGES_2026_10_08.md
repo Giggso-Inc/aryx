@@ -648,3 +648,7 @@ docker logs aryx-api-1 --since 20m 2>&1 | grep "ask.required_set.diagnostic" | t
 Reading it: for the Encryption Type rules (`target secureEncryptionType_astro`), `unmapped` on Customer Type / the master string / the model variable confirms the cause (the fix is to resolve rule conditions against the full attribute list while
 keeping the visible list for targets); `false` on country or the base model means the rule does not apply to this model (for example the N30/N50 Essential Core Bundle clause); `unknown` on an attribute that is in the list means its value
 is missing.
+
+### Candidate models resolved once per turn (speed)
+
+Replay 2026-10-09 08:09 (ws 1267, APX 900): pass 0 = 123 s over 2,874 attributes, `stage_not_applicable_guard` = 87 s. The guard called `resolve_product_cpq_models_from_hint` for every attribute; the answer depends only on the wording, so it is now memoized in the per-turn cache (`("_hint_cpq_models", ws, prefix, hint)`). No flag: result is identical, only repeated. Verify: `docker logs aryx-api-1 2>&1 | grep "cpq_perf: auto_fill stages pass=0" | cut -c1-600` (expect `stage_not_applicable_guard` far below 87 s).

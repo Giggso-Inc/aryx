@@ -360,6 +360,22 @@ def resolve_product_cpq_models_from_hint(
     hint_text: str, workspace_id: int, catalog_prefix: str = "",
     cache: dict[tuple[int, str], tuple] | None = None,
 ) -> tuple[str, ...]:
+    """`_resolve_product_cpq_models_from_hint_uncached`, memoized in `cache` (the per-turn dict every Data Table lookup
+    shares) under (workspace, prefix, wording). The answer depends only on the wording and the ingested tables, yet the
+    not-applicable guard asked it once per attribute: 2,874 times on the first pass of an APX 900 turn, about 30 ms each, 87 of the
+    pass's 123 s (ws 1267, dev, 2026-10-09). `cache` None computes it every time, exactly as before."""
+    if cache is None:
+        return _resolve_product_cpq_models_from_hint_uncached(hint_text, workspace_id, catalog_prefix, cache)
+    key = ("_hint_cpq_models", workspace_id, catalog_prefix, hint_text)
+    if key not in cache:
+        cache[key] = _resolve_product_cpq_models_from_hint_uncached(hint_text, workspace_id, catalog_prefix, cache)
+    return cache[key]
+
+
+def _resolve_product_cpq_models_from_hint_uncached(
+    hint_text: str, workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> tuple[str, ...]:
     """Like `resolve_product_cpq_models_from_rows`, but for free/raw text
     (e.g. a customer's own "I want APX 3000 for United States") instead of
     an already-exact product name -- breaks the chicken-and-egg gap where
