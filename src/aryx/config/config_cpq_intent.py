@@ -752,6 +752,27 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_DERIVE_BASE_MODEL_DEFAULT_OWNER_ENABLED=true."
         ),
     )
+    cpq_keep_listed_noise_named_attrs_enabled: bool = Field(
+        default=False,
+        description=(
+            "The loader drops any attribute whose name CONTAINS 'test', 'pager', 'error' or 'dummy' as noise. With this "
+            "on, such an attribute is kept when the catalog's own AttrSequence table lists it (a real noise attribute is "
+            "listed in no sequence). ws 281, APX N50: 'documentationTestResultsRatedAudioPrintoutLabel_astro' (Test "
+            "Results/Rated Audio Printout Label, required, default NO) was dropped, so it was never defaulted or listed. "
+            "Of 21 attributes dropped by name in ws 281 only that one is listed for N50. Off by default. Override with "
+            "ARYX_CPQ_KEEP_LISTED_NOISE_NAMED_ATTRS_ENABLED=true."
+        ),
+    )
+    cpq_noise_option_whole_value_enabled: bool = Field(
+        default=False,
+        description=(
+            "The loader drops a menu option when 'test', 'dummy' or 'pager' appears as a WORD of its value or display "
+            "name. With this on, only an option whose WHOLE value is such a word (digits and punctuation aside) is "
+            "dropped. ws 281, APX N50: 'FPS APX TEST TRIGGER - SW VALIDATION' (System Enhancements - Feature Type) and "
+            "'TEST RESULTS/RATED AUDIO PRINTOUT LABEL' were dropped, so the attribute offered none of them. Off by "
+            "default. Override with ARYX_CPQ_NOISE_OPTION_WHOLE_VALUE_ENABLED=true."
+        ),
+    )
     cpq_model_scoped_questions_enabled: bool = Field(
         default=False,
         description=(

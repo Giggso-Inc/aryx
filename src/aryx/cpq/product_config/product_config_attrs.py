@@ -22,7 +22,7 @@ from aryx.cpq.product_config.product_config_lookups import ArraySetLookups
 def build_config_attrs(
     engine: Any, attr_ents: list[dict], attr_pg: dict[int, dict],
     menu_by_attr: dict[int, list["MenuOption"]], array_sets: ArraySetLookups,
-    rule_target_ids: set[int],
+    rule_target_ids: set[int], listed_attr_names: frozenset[str] = frozenset(),
 ) -> list["ConfigAttr"]:
     config_attrs: list[ConfigAttr] = []
     for ent in attr_ents:
@@ -37,7 +37,7 @@ def build_config_attrs(
 
         # Patch C: skip noise attrs (TestPager, Error, dummy_* etc.)
         vn_lo = var_name.lower()
-        if any(f in vn_lo for f in _NOISE_VAR_FRAGMENTS):
+        if any(f in vn_lo for f in _NOISE_VAR_FRAGMENTS) and var_name not in listed_attr_names:
             logger.debug("cpq: skipping noise attr %r", var_name)
             continue
 

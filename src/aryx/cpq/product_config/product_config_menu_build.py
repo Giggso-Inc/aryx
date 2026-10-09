@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.engine import MenuOption, _NOISE_ITEM_FRAGMENTS
 
 # CPQ_Hardcode_Audit_dev_oci_2026-09-25.md T4: word-boundary match, not
@@ -18,6 +19,16 @@ from aryx.cpq.engine import MenuOption, _NOISE_ITEM_FRAGMENTS
 _NOISE_ITEM_FRAGMENT_RES = [
     re.compile(r"\b" + re.escape(f) + r"\b") for f in _NOISE_ITEM_FRAGMENTS
 ]
+
+
+def _is_noise_option(iv_lo: str, dt_lo: str) -> bool:
+    """True for a placeholder option. Default: any of the noise words appears as a word of the value or display name.
+    With ``cpq_noise_option_whole_value_enabled``: only when the WHOLE value is a noise word (digits and punctuation
+    aside: "Test", "Dummy 2"), so "FPS APX TEST TRIGGER - SW VALIDATION" and
+    "TEST RESULTS/RATED AUDIO PRINTOUT LABEL" stay."""
+    if getattr(get_settings(), "cpq_noise_option_whole_value_enabled", False) is True:
+        return any(re.sub(r"[^a-z]+", " ", text).strip() in _NOISE_ITEM_FRAGMENTS for text in (iv_lo, dt_lo))
+    return any(r.search(text) for text in (iv_lo, dt_lo) for r in _NOISE_ITEM_FRAGMENT_RES)
 
 
 def build_menu_by_attr(
@@ -64,9 +75,7 @@ def build_menu_by_attr(
             if iv:
                 iv_lo = iv.lower()
                 dt_lo = dt.lower()
-                if any(r.search(iv_lo) for r in _NOISE_ITEM_FRAGMENT_RES):
-                    continue
-                if any(r.search(dt_lo) for r in _NOISE_ITEM_FRAGMENT_RES):
+                if _is_noise_option(iv_lo, dt_lo):
                     continue
                 if iv_lo in seen_item_values:
                     continue
