@@ -662,6 +662,25 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_MODEL_RESOLUTION_ENABLED=true."
         ),
     )
+    cpq_model_resolution_word_order_independent_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_model_resolution_enabled. model_resolution._match_kind matches a candidate's display name by "
+            "concatenating it into one string (spaces/punctuation stripped) and checking literal substring "
+            "containment in the similarly concatenated hint -- so the match only succeeds when the hint says the "
+            "words in the catalog's own exact order. Live (ws 1267, 2026-10-09): Basemodeltoconfig's displayModel "
+            "for the Enhanced APX 6500 variant is 'Enhanced APX6500/LI' (adjective-first); a customer asking for "
+            "'APX 6500 Enhanced' (adjective-last, an equally natural phrasing) normalizes to '...apx6500enhanced...', "
+            "which 'enhancedapx6500li' is never a substring of -- the candidate is silently excluded before "
+            "rank_candidates ever runs, and the plain (non-Enhanced) APX6500/LI resolves instead. When on, "
+            "_match_kind tokenizes the candidate name and the hint into words and requires every word of the "
+            "candidate's name to appear SOMEWHERE in the hint, in any order -- a strict superset of what matches "
+            "today (word order is no longer required, but every word must still be present; nothing that matches "
+            "today stops matching). rank_candidates' own longest_name_match step is unchanged and still prefers the "
+            "more specific (more-worded) name once both candidates can match. Off by default. Override with "
+            "ARYX_CPQ_MODEL_RESOLUTION_WORD_ORDER_INDEPENDENT_ENABLED=true."
+        ),
+    )
     cpq_model_leaf_pick_top_enabled: bool = Field(
         default=False,
         description=(

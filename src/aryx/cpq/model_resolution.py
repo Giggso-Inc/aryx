@@ -53,6 +53,32 @@ def _norm(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
+def _tokenize(text: str | None) -> tuple[str, ...]:
+    """Lowercase letter-runs and digit-runs, in the order they appear; any
+    other character, and every letter/digit transition, is a word
+    boundary. So "APX6500" and "APX 6500" tokenize identically
+    (`("apx", "6500")`) even though one has no space — `_norm` would
+    concatenate each into a non-overlapping blob, and a plain `\\w+` split
+    would keep "apx6500" fused as one word that "APX 6500" could never
+    equal. This lets a candidate's words be found in the hint regardless
+    of spacing or the order either side spells them in: "APX 6500
+    Enhanced" and the catalog's own "Enhanced APX6500/LI" name the same
+    product."""
+    return tuple(re.findall(r"[a-z]+|[0-9]+", (text or "").lower()))
+
+
+def _core_tokens(words: tuple[str, ...]) -> tuple[str, ...]:
+    """The leading letters+digits code, as tokens — e.g. `("apx", "8000")`
+    from `("apx", "8000", "xe")`, dropping a trailing suffix word like
+    "XE"/"LI" the way `_CORE_RE` (`^[a-z]+\\d+`) drops it from the fused
+    string. () when the words never reach a digit at all."""
+    last_digit = -1
+    for i, w in enumerate(words):
+        if w.isdigit():
+            last_digit = i
+    return words[: last_digit + 1] if last_digit >= 0 else ()
+
+
 def _occurs(needle: str, hay: str) -> bool:
     """`needle` appears in `hay` and is not immediately followed by a digit —
     so "apx900" never matches inside "apx9000"."""
@@ -67,11 +93,25 @@ def _occurs(needle: str, hay: str) -> bool:
         start = i + 1
 
 
-def _match_kind(names: set[str], hint_norm: str) -> tuple[str, int] | None:
+def _match_kind(
+    names: set[str], hint_norm: str, hint_tokens: frozenset[str] | None = None,
+) -> tuple[str, int] | None:
     """('exact', n) when a full candidate name appears in the wording,
     ('partial', n) when only its leading letters+digits code does (e.g.
     "apx8000" for "apx8000xe"), else None. `n` is the length of the
-    longest matched text — how specifically the wording names this model."""
+    longest matched text — how specifically the wording names this model.
+
+    When `cpq_model_resolution_word_order_independent_enabled` is on and
+    `hint_tokens` is given, a candidate's name is tokenized into words and
+    matches as soon as every one of its words appears somewhere in the
+    hint's tokens, in any order — the catalog's own word order is no
+    longer required. This is a strict superset of the default substring
+    check: nothing that matches today stops matching."""
+    if hint_tokens is not None:
+        from aryx.config import get_settings
+
+        if get_settings().cpq_model_resolution_word_order_independent_enabled:
+            return _match_kind_by_tokens(names, hint_tokens)
     normed = {_norm(n) for n in names}
     exact = [len(n) for n in normed if len(n) >= _MIN_NAME_LEN and _occurs(n, hint_norm)]
     if exact:
@@ -81,6 +121,26 @@ def _match_kind(names: set[str], hint_norm: str) -> tuple[str, int] | None:
         m = _CORE_RE.match(n)
         if m and len(m.group(0)) >= _MIN_NAME_LEN and _occurs(m.group(0), hint_norm):
             partial.append(len(m.group(0)))
+    return ("partial", max(partial)) if partial else None
+
+
+def _match_kind_by_tokens(
+    names: set[str], hint_tokens: frozenset[str],
+) -> tuple[str, int] | None:
+    exact = []
+    for name in names:
+        words = _tokenize(name)
+        total = sum(len(w) for w in words)
+        if words and total >= _MIN_NAME_LEN and all(w in hint_tokens for w in words):
+            exact.append(total)
+    if exact:
+        return "exact", max(exact)
+    partial = []
+    for name in names:
+        core = _core_tokens(_tokenize(name))
+        total = sum(len(w) for w in core)
+        if core and total >= _MIN_NAME_LEN and all(w in hint_tokens for w in core):
+            partial.append(total)
     return ("partial", max(partial)) if partial else None
 
 
@@ -203,6 +263,7 @@ def resolve_model(
     data problems — an unresolvable wording returns source='unresolved'."""
     data = load_catalog(workspace_id, catalog_prefix, rdb)
     hint_norm = _norm(hint_text)
+    hint_tokens = frozenset(_tokenize(hint_text))
     def build(cpq: str, m: dict, kind: str = "partial", match_len: int = 0) -> ModelCandidate:
         node_id = m["node_id"]
         return ModelCandidate(
@@ -219,7 +280,7 @@ def resolve_model(
 
     cands: list[ModelCandidate] = []
     for cpq, m in data.models.items():
-        matched = _match_kind(m["display"] | {cpq}, hint_norm)
+        matched = _match_kind(m["display"] | {cpq}, hint_norm, hint_tokens)
         if matched is None:
             continue
         cands.append(build(cpq, m, matched[0], matched[1]))
