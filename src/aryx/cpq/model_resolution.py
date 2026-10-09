@@ -18,6 +18,7 @@ silent no-op. Ported from aryxent ``cpq/model_resolution.py`` (PR 1).
 from __future__ import annotations
 
 import contextvars
+import functools
 import logging
 import re
 import threading
@@ -53,6 +54,7 @@ def _norm(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
+@functools.lru_cache(maxsize=None)
 def _tokenize(text: str | None) -> tuple[str, ...]:
     """Lowercase letter-runs and digit-runs, in the order they appear; any
     other character, and every letter/digit transition, is a word
@@ -63,20 +65,41 @@ def _tokenize(text: str | None) -> tuple[str, ...]:
     equal. This lets a candidate's words be found in the hint regardless
     of spacing or the order either side spells them in: "APX 6500
     Enhanced" and the catalog's own "Enhanced APX6500/LI" name the same
-    product."""
+    product. Memoized — this runs per candidate name on every resolve,
+    and the catalog has hundreds of names repeated across turns."""
     return tuple(re.findall(r"[a-z]+|[0-9]+", (text or "").lower()))
 
 
-def _core_tokens(words: tuple[str, ...]) -> tuple[str, ...]:
-    """The leading letters+digits code, as tokens — e.g. `("apx", "8000")`
-    from `("apx", "8000", "xe")`, dropping a trailing suffix word like
-    "XE"/"LI" the way `_CORE_RE` (`^[a-z]+\\d+`) drops it from the fused
-    string. () when the words never reach a digit at all."""
+@functools.lru_cache(maxsize=None)
+def _core_span(words: tuple[str, ...]) -> tuple[int, int] | None:
+    """The span (start, end) of the model *code* itself: the digit-run
+    naming the model, plus the single letter-run immediately in front of
+    it if there is one — e.g. `(0, 2)` for `("apx", "8000", "xe")`
+    (the "apx8000" part, dropping the "xe" suffix). None when the name
+    has no digits at all.
+
+    Deliberately narrower than "everything up to the last digit": a
+    *prefix* word like "enhanced" in `("enhanced", "apx", "6500", "li")`
+    is NOT part of the span, only "apx6500" is — the span is the part a
+    bare stray number elsewhere in the wording must not be mistaken for,
+    so it has to appear contiguously in the hint, while "enhanced"/"li"
+    are free to float anywhere (see `_match_kind_by_tokens`)."""
     last_digit = -1
     for i, w in enumerate(words):
         if w.isdigit():
             last_digit = i
-    return words[: last_digit + 1] if last_digit >= 0 else ()
+    if last_digit < 0:
+        return None
+    start = last_digit - 1 if last_digit > 0 and words[last_digit - 1].isalpha() else last_digit
+    return start, last_digit + 1
+
+
+def _contiguous(sub: tuple[str, ...], seq: tuple[str, ...]) -> bool:
+    """Whether `sub` appears as a consecutive, in-order run inside `seq`."""
+    n = len(sub)
+    if n == 0:
+        return True
+    return any(seq[i : i + n] == sub for i in range(len(seq) - n + 1))
 
 
 def _occurs(needle: str, hay: str) -> bool:
@@ -94,7 +117,7 @@ def _occurs(needle: str, hay: str) -> bool:
 
 
 def _match_kind(
-    names: set[str], hint_norm: str, hint_tokens: frozenset[str] | None = None,
+    names: set[str], hint_norm: str, hint_token_seq: tuple[str, ...] | None = None,
 ) -> tuple[str, int] | None:
     """('exact', n) when a full candidate name appears in the wording,
     ('partial', n) when only its leading letters+digits code does (e.g.
@@ -102,16 +125,16 @@ def _match_kind(
     longest matched text — how specifically the wording names this model.
 
     When `cpq_model_resolution_word_order_independent_enabled` is on and
-    `hint_tokens` is given, a candidate's name is tokenized into words and
-    matches as soon as every one of its words appears somewhere in the
-    hint's tokens, in any order — the catalog's own word order is no
-    longer required. This is a strict superset of the default substring
-    check: nothing that matches today stops matching."""
-    if hint_tokens is not None:
-        from aryx.config import get_settings
-
-        if get_settings().cpq_model_resolution_word_order_independent_enabled:
-            return _match_kind_by_tokens(names, hint_tokens)
+    `hint_token_seq` is given, a candidate's name is additionally checked
+    word-by-word (see `_match_kind_by_tokens`): the catalog's own word
+    order is no longer required, but the model's own digit code must
+    still read contiguously in the hint — "APX 8000 radios, 3000 units"
+    names APX8000, not APX3000, even though both numbers appear
+    somewhere in the sentence. The substring check always runs first and
+    wins when it finds something, so this is a strict superset by
+    construction: nothing that matches today stops matching, and any
+    text the tokenizer treats differently (e.g. punctuation fused into a
+    single run) still resolves exactly as before."""
     normed = {_norm(n) for n in names}
     exact = [len(n) for n in normed if len(n) >= _MIN_NAME_LEN and _occurs(n, hint_norm)]
     if exact:
@@ -121,26 +144,52 @@ def _match_kind(
         m = _CORE_RE.match(n)
         if m and len(m.group(0)) >= _MIN_NAME_LEN and _occurs(m.group(0), hint_norm):
             partial.append(len(m.group(0)))
-    return ("partial", max(partial)) if partial else None
+    if partial:
+        return "partial", max(partial)
+    if hint_token_seq is not None:
+        from aryx.config import get_settings
+
+        if get_settings().cpq_model_resolution_word_order_independent_enabled:
+            return _match_kind_by_tokens(names, hint_token_seq)
+    return None
 
 
 def _match_kind_by_tokens(
-    names: set[str], hint_tokens: frozenset[str],
+    names: set[str], hint_token_seq: tuple[str, ...],
 ) -> tuple[str, int] | None:
-    exact = []
+    """Word-order-independent fallback for `_match_kind`. A name's digit
+    code (`_core_span`) must appear contiguously, in order, in the hint —
+    this is what stops an unrelated number elsewhere in the wording (a
+    quantity, a battery size, another model) from matching. Every other
+    word in the name (a prefix like "Enhanced", a suffix like "LI"/"XE")
+    only needs to appear somewhere in the hint, in any order; whether all
+    of them do decides exact vs. partial, and the matched length always
+    includes whichever floating words were actually found, so a name
+    matched with more of its words present outranks one matched with
+    fewer (`rank_candidates`' `longest_name_match` step)."""
+    hint_set = frozenset(hint_token_seq)
+    exact, partial = [], []
     for name in names:
         words = _tokenize(name)
-        total = sum(len(w) for w in words)
-        if words and total >= _MIN_NAME_LEN and all(w in hint_tokens for w in words):
-            exact.append(total)
+        span = _core_span(words)
+        if span is None:
+            if words and all(w in hint_set for w in words):
+                total = sum(len(w) for w in words)
+                if total >= _MIN_NAME_LEN:
+                    exact.append(total)
+            continue
+        start, end = span
+        core = words[start:end]
+        if not _contiguous(core, hint_token_seq):
+            continue
+        floaters = words[:start] + words[end:]
+        present_floaters = [w for w in floaters if w in hint_set]
+        total = sum(len(w) for w in core) + sum(len(w) for w in present_floaters)
+        if total < _MIN_NAME_LEN:
+            continue
+        (exact if len(present_floaters) == len(floaters) else partial).append(total)
     if exact:
         return "exact", max(exact)
-    partial = []
-    for name in names:
-        core = _core_tokens(_tokenize(name))
-        total = sum(len(w) for w in core)
-        if core and total >= _MIN_NAME_LEN and all(w in hint_tokens for w in core):
-            partial.append(total)
     return ("partial", max(partial)) if partial else None
 
 
@@ -263,7 +312,7 @@ def resolve_model(
     data problems — an unresolvable wording returns source='unresolved'."""
     data = load_catalog(workspace_id, catalog_prefix, rdb)
     hint_norm = _norm(hint_text)
-    hint_tokens = frozenset(_tokenize(hint_text))
+    hint_token_seq = _tokenize(hint_text)
     def build(cpq: str, m: dict, kind: str = "partial", match_len: int = 0) -> ModelCandidate:
         node_id = m["node_id"]
         return ModelCandidate(
@@ -280,7 +329,7 @@ def resolve_model(
 
     cands: list[ModelCandidate] = []
     for cpq, m in data.models.items():
-        matched = _match_kind(m["display"] | {cpq}, hint_norm, hint_tokens)
+        matched = _match_kind(m["display"] | {cpq}, hint_norm, hint_token_seq)
         if matched is None:
             continue
         cands.append(build(cpq, m, matched[0], matched[1]))

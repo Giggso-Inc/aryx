@@ -663,7 +663,7 @@ class CpqIntentSettingsMixin(BaseSettings):
         ),
     )
     cpq_model_resolution_word_order_independent_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Needs cpq_model_resolution_enabled. model_resolution._match_kind matches a candidate's display name by "
             "concatenating it into one string (spaces/punctuation stripped) and checking literal substring "
@@ -672,13 +672,20 @@ class CpqIntentSettingsMixin(BaseSettings):
             "for the Enhanced APX 6500 variant is 'Enhanced APX6500/LI' (adjective-first); a customer asking for "
             "'APX 6500 Enhanced' (adjective-last, an equally natural phrasing) normalizes to '...apx6500enhanced...', "
             "which 'enhancedapx6500li' is never a substring of -- the candidate is silently excluded before "
-            "rank_candidates ever runs, and the plain (non-Enhanced) APX6500/LI resolves instead. When on, "
-            "_match_kind tokenizes the candidate name and the hint into words and requires every word of the "
-            "candidate's name to appear SOMEWHERE in the hint, in any order -- a strict superset of what matches "
-            "today (word order is no longer required, but every word must still be present; nothing that matches "
-            "today stops matching). rank_candidates' own longest_name_match step is unchanged and still prefers the "
-            "more specific (more-worded) name once both candidates can match. Off by default. Override with "
-            "ARYX_CPQ_MODEL_RESOLUTION_WORD_ORDER_INDEPENDENT_ENABLED=true."
+            "rank_candidates ever runs, and the plain (non-Enhanced) APX6500/LI resolves instead. When on and the "
+            "substring check above finds nothing, _match_kind falls back to tokenizing the candidate name and the "
+            "hint into words: the name's own digit code (e.g. 'apx6500') must still read contiguously, in order, in "
+            "the hint -- so a quantity, battery size, or another model's number elsewhere in the same sentence can't "
+            "be mistaken for it -- but any other word in the name ('enhanced', 'li') only needs to appear SOMEWHERE "
+            "in the hint, in any order. The substring check always runs first and wins when it finds something, so "
+            "this is a strict superset by construction: nothing that matches today stops matching. rank_candidates' "
+            "own longest_name_match step is unchanged and still prefers the more specific (more-worded) name once "
+            "both candidates can match. On by default -- a deliberate exception to this file's usual off-by-default "
+            "convention, matching cpq_product_candidates_display_match_first_enabled's precedent: this path only "
+            "ever runs as a fallback after the substring check already found nothing, and the contiguous-digit-code "
+            "requirement means it only ever adds a candidate the old check was already failing to find, never drops "
+            "or reorders one the old check already matched. Override with "
+            "ARYX_CPQ_MODEL_RESOLUTION_WORD_ORDER_INDEPENDENT_ENABLED=false."
         ),
     )
     cpq_model_leaf_pick_top_enabled: bool = Field(

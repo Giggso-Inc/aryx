@@ -14,8 +14,11 @@ Enhanced" (adjective-last, an equally natural phrasing) normalizes to
 `APX6500/LI` resolved instead.
 
 Fix: `cpq_model_resolution_word_order_independent_enabled` tokenizes both the
-candidate's display name and the hint into words and requires every word of
-the candidate's name to appear somewhere in the hint, in any order --
+candidate's display name and the hint into words. The name's own digit code
+(e.g. "apx6500") must still read contiguously, in order, in the hint -- this
+is what stops an unrelated number elsewhere in an ordinary quote request (a
+quantity, a battery size, another model) from matching -- but any other word
+("Enhanced", "LI") only needs to appear somewhere in the hint, in any order.
 `rank_candidates`'s own `longest_name_match` step (untouched) still prefers
 the more specific (more-worded) name once both candidates can match.
 """
@@ -119,3 +122,65 @@ def test_flag_on_digit_bleed_guard_preserved_by_whole_word_tokens():
     with patch("aryx.config.get_settings", _cfg(True)):
         res = mr.resolve_model("quote an APX6500 please", 1, "X", rdb)
     assert not res.resolved
+
+
+def _two_model_rdb(cpq_a: str, cpq_b: str) -> FakeRdb:
+    return FakeRdb({
+        "XBmCatalog": [{"id": "1", "name": "astro", "parent_id": "-1"}],
+        "Basemodeltoconfig": [
+            {"cpqModel": cpq_a, "displayModel": cpq_a, "baseModel": "T1"},
+            {"cpqModel": cpq_a, "displayModel": cpq_a, "baseModel": "T2"},
+            {"cpqModel": cpq_b, "displayModel": cpq_b, "baseModel": "T3"},
+            {"cpqModel": cpq_b, "displayModel": cpq_b, "baseModel": "T4"},
+        ],
+        "Flagsforflashport": [],
+        "XBmConfigRule": [],
+    })
+
+
+@pytest.mark.parametrize(
+    "hint,mentioned,unrelated",
+    [
+        ("Quote for APX 8000 radios, 3000 units", "APX8000", "APX3000"),
+        ("I need an APX 6000 with a 3000 mAh battery", "APX6000", "APX3000"),
+        ("quote 1000 APX 4500 radios", "APX4500", "APX1000"),
+    ],
+)
+def test_flag_on_does_not_match_an_unrelated_number_elsewhere_in_the_hint(hint, mentioned, unrelated):
+    """Review of this fix (2026-10-09): a plain "every word present somewhere"
+    check let a quantity, battery size, or any other stray number in an
+    ordinary quote request satisfy an unrelated model's digit code, making
+    two unconnected models tie for the match. The model's own code (letters
+    immediately followed by its number) must read contiguously in the hint,
+    not just have its pieces scattered anywhere in it."""
+    rdb = _two_model_rdb(mentioned, unrelated)
+    with patch("aryx.config.get_settings", _cfg(True)):
+        res = mr.resolve_model(hint, 1, "X", rdb)
+    assert res.resolved and res.chosen.cpq_model == mentioned, (
+        f"expected only {mentioned} (named contiguously) to match, not {unrelated} "
+        f"(whose digits merely appear elsewhere in the same sentence)"
+    )
+
+
+def test_flag_on_is_a_strict_superset_of_the_substring_check_by_construction():
+    """The word-order-independent path only ever runs as a fallback once
+    `_match_kind`'s original substring check has already come up with
+    nothing *for that candidate* -- it never overrides or skips a match the
+    substring check already found. For wordings the substring check already
+    resolves unambiguously (both candidates' names already read in their own
+    order), flag on/off must resolve to the exact same model.
+
+    This is distinct from the main "APX 6500 Enhanced" scenario: there, the
+    substring check still finds *a* match (the unrelated, wrong plain
+    APX6500/LI), so flag-off is resolved too, just resolved wrong -- the fix
+    is about which candidate wins the pool, covered by
+    `test_flag_on_resolves_enhanced_variant_regardless_of_word_order`, not
+    about resolved-vs-unresolved."""
+    for hint in ("I'd like an Enhanced APX6500/LI please", "Quote for plain APX6500 please"):
+        with patch("aryx.config.get_settings", _cfg(True)):
+            on_res = _resolve(hint)
+        with patch("aryx.config.get_settings", _cfg(False)):
+            off_res = _resolve(hint)
+        assert on_res.resolved == off_res.resolved
+        if off_res.resolved:
+            assert on_res.chosen.cpq_model == off_res.chosen.cpq_model
