@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from typing import Any, Callable, Iterable
 
 from aryx.cpq import engine as _engine_module
@@ -158,7 +160,10 @@ def effective_variant(
         return variant
 
 
-_LOGGED_CHOICES: set[tuple] = set()           # one line per distinct choice per process, never per call
+_LOGGED_CHOICES: dict[tuple, float] = {}      # choice -> when it was last logged: one line per choice per minute, never per call
+_LOGGED_LOCK = threading.Lock()
+_LOG_EVERY_S = 60.0
+_LOGGED_MAX = 500
 
 
 def _log_variant_choice(workspace_id: int, catalog_prefix: str, node: str | None, chosen: str) -> None:
@@ -168,10 +173,16 @@ def _log_variant_choice(workspace_id: int, catalog_prefix: str, node: str | None
     try:
         from aryx.raven_log import raven_log, would_log  # noqa: PLC0415 -- diagnostic only
 
-        key = (workspace_id, catalog_prefix, (node or "").lower(), chosen)
-        if key in _LOGGED_CHOICES or len(_LOGGED_CHOICES) > 500 or not would_log("DEBUG"):
+        if not would_log("DEBUG"):
             return
-        _LOGGED_CHOICES.add(key)
+        key = (workspace_id, catalog_prefix, (node or "").lower(), chosen)
+        now = time.monotonic()
+        with _LOGGED_LOCK:
+            if now - _LOGGED_CHOICES.get(key, -_LOG_EVERY_S) < _LOG_EVERY_S:
+                return
+            if len(_LOGGED_CHOICES) >= _LOGGED_MAX:                 # evict the oldest instead of going silent
+                _LOGGED_CHOICES.pop(min(_LOGGED_CHOICES, key=_LOGGED_CHOICES.get))
+            _LOGGED_CHOICES[key] = now
         flows = flow_nodes_by_variable(workspace_id, catalog_prefix)
         in_flow = bool(node) and (node or "").strip().lower() in flows.get(chosen.lower(), ())
         reason = "FLOW_RULE" if in_flow else ("NO_MODEL_NODE" if not node else "NODE_NOT_IN_ANY_FLOW_RULE")

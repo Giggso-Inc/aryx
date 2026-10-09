@@ -42,6 +42,25 @@ def test_a_node_no_flow_rule_lists_is_reported():
     assert logged[0][1]["context"]["reason_code"] == "NODE_NOT_IN_ANY_FLOW_RULE"
 
 
+def test_the_same_choice_is_logged_again_after_a_minute_and_the_table_is_bounded():
+    got, logged = _run("aPX3000")
+    assert len(logged) == 1
+    key = next(iter(lv._LOGGED_CHOICES))
+    lv._LOGGED_CHOICES[key] -= lv._LOG_EVERY_S + 1                           # a minute later: logged again
+    logged2: list = []
+    with patch("aryx.raven_log.would_log", return_value=True), patch.object(lv, "flow_nodes_by_variable", return_value=FLOWS), \
+            patch.object(lv, "stored_variant_keys", return_value=["portable"]), \
+            patch("aryx.raven_log.raven_log", side_effect=lambda *a, **k: logged2.append(1)):
+        lv._log_variant_choice(1267, "p", "aPX3000", "portable")
+    assert len(logged2) == 1
+    lv._LOGGED_CHOICES.clear()
+    lv._LOGGED_CHOICES.update({(i, "p", "n", "c"): float(i) for i in range(lv._LOGGED_MAX)})
+    with patch("aryx.raven_log.would_log", return_value=True), patch.object(lv, "flow_nodes_by_variable", return_value=FLOWS), \
+            patch.object(lv, "stored_variant_keys", return_value=["portable"]), patch("aryx.raven_log.raven_log"):
+        lv._log_variant_choice(1267, "p", "aPX3000", "portable")
+    assert len(lv._LOGGED_CHOICES) == lv._LOGGED_MAX and (0, "p", "n", "c") not in lv._LOGGED_CHOICES
+
+
 def test_a_failing_log_never_changes_the_choice():
     lv._LOGGED_CHOICES.clear()
     with patch.object(ctx, "layout_variants_enabled", return_value=True), \
