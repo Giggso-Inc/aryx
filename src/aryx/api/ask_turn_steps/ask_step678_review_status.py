@@ -30,6 +30,7 @@ from aryx.api.ask_turn_steps.ask_step678_no_value_and_nudge import _step6_no_val
 from aryx.api.ask_turn_steps.ask_step678_options_collision import _resolve_pending_options_collision
 
 from aryx.api.ask_handle.ask_handle_llm_first_gateway_turn import _llm_first_gateway_turn
+from aryx.api.ask_turn_switch.ask_turn_model_switch_hint import _offer_model_switch_from_hint
 from aryx.api.ask_handle import ask_handle_cpq_qa as _ask_handle_cpq_qa_module
 from aryx.raven_log import raven_log
 
@@ -83,6 +84,14 @@ def _handle_review_status_routing(
         _log_review_stage(session, "change_collision")
         return result
 
+    # A message naming a different Product option (already resolved exactly
+    # by the catalog hints) is a model switch; ask before the LLM gateway can
+    # turn it into an attribute-collision question (flag-gated).
+    result = _offer_model_switch_from_hint(req, session, attrs, hints)
+    if result is not None:
+        _log_review_stage(session, "model_switch")
+        return result
+
     _llm_first_result = _llm_first_gateway_turn(
         req, session, attrs, reader, hints,
         hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
@@ -126,7 +135,7 @@ def _handle_review_status_routing(
 
 
 _REVIEW_STAGES = ["json_or_approval", "options_collision", "qa", "change_collision",
-                  "llm_first_gateway", "bulk_or_removal", "activation_or_clear",
+                  "model_switch", "llm_first_gateway", "bulk_or_removal", "activation_or_clear",
                   "change_collision_detect", "change_dispatch", "llm_fallback",
                   "no_value_or_nudge"]
 

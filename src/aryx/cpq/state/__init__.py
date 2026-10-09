@@ -170,6 +170,11 @@ class CpqSession:
     model_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_model_switch: str = ""
     pending_model_switch_display: str = ""
+    # [current Product item value, declined target item value] from the last
+    # "no" to a model-switch question. The review-stage hint offer skips that
+    # same pair, so a message whose model text belongs to another attribute
+    # ("set the DMS service to APX 900") can reach the gateway. [] when none.
+    declined_model_switch: list[str] = field(default_factory=list)
     # Set when a change request's target attr was ambiguous (two attrs share
     # a display_label — see detect_change_request_collision) and the
     # "which one did you mean?" prompt was shown. The candidate

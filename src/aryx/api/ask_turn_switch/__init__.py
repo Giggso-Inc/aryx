@@ -9,6 +9,7 @@ _EXPORTS = {
     "_complete_product_switch": "ask_turn_product_switch_complete",
     "_handle_confirm_model_switch_anchor": "ask_turn_model_switch",
     "_offer_model_switch": "ask_turn_model_switch",
+    "_offer_model_switch_from_hint": "ask_turn_model_switch_hint",
     "_handle_confirm_switch_anchor": "ask_turn_confirm_switch_anchor",
     "_handle_confirm_switch_decline": "ask_turn_confirm_switch_decline",
     "_handle_product_switch_pending_anchor": "ask_turn_product_switch_anchor",

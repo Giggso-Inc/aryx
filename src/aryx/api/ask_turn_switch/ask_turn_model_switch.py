@@ -103,17 +103,37 @@ def _offer_model_switch(
     if not current or not match or match[0] == current:
         _log_offer("NO_DIFFERENT_MODEL_MATCHED", "no_new_model", session)
         return None
-    session.pending_model_switch, session.pending_model_switch_display = match[0], match[1]
+    return _ask_to_switch(req, session, match[0], match[1], "MODEL_ANSWER_CHANGED", note)
+
+
+def _ask_to_switch(
+    req: Any, session: Any, value: str, display: str, reason: str, note: str = "",
+) -> dict[str, Any]:
+    """Set the pending model switch and return the yes/no question.
+
+    Args:
+        req: The ask request (question, workspace_id).
+        session: The live CpqSession with a filled Product answer.
+        value: The target Product item value.
+        display: The target Product display name.
+        reason: The reason code recorded on the offer.
+        note: Extra text appended to the question.
+
+    Returns:
+        The confirmation response.
+    """
+    current = session.filled.get(PRODUCT_LITERAL, "")
+    session.pending_model_switch, session.pending_model_switch_display = value, display
     session.pending_anchor = CONFIRM_MODEL_SWITCH_ANCHOR
     current_display = session.display_filled.get(PRODUCT_LITERAL, "") or current
     raven_log("INFO", "P4", "ask.model_switch.offered model change needs confirmation", context={
         "selected_option": "offer_model_switch", "available_options": _OFFER_OPTIONS,
-        "reason_code": "MODEL_ANSWER_CHANGED", "current_model": current,
-        "target_model": match[0], "batched": bool(note),
-        "has_snapshot": match[0] in session.model_snapshots,
+        "reason_code": reason, "current_model": current,
+        "target_model": value, "batched": bool(note),
+        "has_snapshot": value in session.model_snapshots,
         "turn": getattr(session, "turn", None)})
     answer = (
-        f"This quote is for **{current_display}**. Switch to **{match[1]}**? "
+        f"This quote is for **{current_display}**. Switch to **{display}**? "
         f"Your {current_display} answers will be saved, and you can switch back later. (yes/no)"
         f"{note}"
     )
@@ -216,8 +236,14 @@ def _handle_confirm_model_switch_anchor(req: Any, session: Any) -> dict[str, Any
         "reply_len": len(reply), "turn": getattr(session, "turn", None),
         "target_model": session.pending_model_switch})
     if decision == "switch":
+        session.declined_model_switch = []
         _complete_model_switch(session, session.pending_model_switch, target_display, req.workspace_id)
         return None
+    if decision == "stay":
+        # An explicit no: remember the pair so the review-stage hint does not
+        # offer the same switch again on every turn. An unclear reply or one
+        # naming something else (hand_back) is not a no and is not recorded.
+        session.declined_model_switch = [session.filled.get(PRODUCT_LITERAL, ""), session.pending_model_switch]
     session.pending_model_switch = ""
     session.pending_model_switch_display = ""
     session.pending_anchor = ""
