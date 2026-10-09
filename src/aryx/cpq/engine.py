@@ -971,8 +971,8 @@ class CpqEngine:
 
     @staticmethod
     def _rule_key(entity_id: int, source_id: int | None,
-                  inputs: dict, actions: dict) -> int:
-        return layout_and_join_data._rule_key(entity_id, source_id, inputs, actions)
+                  inputs: dict, actions: dict, marked: dict | None = None) -> int:
+        return layout_and_join_data._rule_key(entity_id, source_id, inputs, actions, marked)
 
     @staticmethod
     def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) -> bool:

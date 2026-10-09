@@ -97,7 +97,7 @@ def _load_type11_hiding_rules(
             eid, src_id, rule_name, fn_id = row[:4]
             if _scope:
                 _marks.append((len(rules), str(row[4] or "")))
-            key = engine._rule_key(eid, src_id, inputs, actions)
+            key = engine._rule_key(eid, src_id, inputs, actions, marked)
             targets = engine._resolve_targets(key, actions, marked, chain)
             if not targets:
                 unresolved += 1

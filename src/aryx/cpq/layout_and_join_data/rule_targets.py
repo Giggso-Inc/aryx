@@ -52,9 +52,26 @@ def _resolve_targets(
 
 
 def _rule_key(entity_id: int, source_id: int | None,
-              inputs: dict, actions: dict) -> int:
-    """Pick the id that BmConfigRuleInput/Action rows actually reference."""
-    if source_id is not None and (source_id in inputs or source_id in actions):
+              inputs: dict, actions: dict, marked: dict | None = None) -> int:
+    """Pick the id that BmConfigRuleInput/Action/MarkedAttr rows actually
+    reference.
+
+    Live-confirmed (ws 1267, rule id 5030760 "Hide do you required Radio
+    FED FCC"): a rule with no BmConfigRuleInput condition row and no
+    BmConfigRuleAction row -- its only target linkage is a BmConfigMarkedAttr
+    row keyed under `source_id`, not `entity_id`. With `marked` omitted (the
+    original check), neither id matched inputs/actions, so this fell back to
+    `entity_id`, and `_resolve_targets(entity_id, ...)` then missed the real
+    marked_attr row -- "no resolvable target" even though one exists. Its
+    sibling rule (5033638, same shape) happened to also carry a condition row
+    under `source_id`, which is what let the original check pick the right id
+    by coincidence. `marked` defaults to None so every caller that doesn't
+    resolve marked-attr targets (e.g. value_rules_load, which only reads
+    inputs/actions) keeps its exact prior behavior.
+    """
+    if source_id is not None and (
+        source_id in inputs or source_id in actions or (marked is not None and source_id in marked)
+    ):
         return source_id
     return entity_id
 
