@@ -855,6 +855,17 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_COMPLETENESS_SCOPE_BY_PRODUCT_ENABLED=true."
         ),
     )
+    cpq_master_string_no_writer_unknown_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_master_string_hide_enabled. When every writer rule of a hidden master string reads False, the master "
+            "is today taken as empty and a hide rule that searches it hides its attribute. The writers are False only "
+            "because their inputs (Customer Type, Feature Type, the model variable) are not known yet, so the empty master "
+            "is a stand-in, not a fact. With this on the decision is 'unknown' (reason NO_WRITER_FIRED) and the attribute "
+            "stays. Today (ws 1267, APX 900) 'Hide Secure Attributes If No Values Available (Mobile)' hid Encryption Type "
+            "that way, so it was never asked. Off by default. Override with ARYX_CPQ_MASTER_STRING_NO_WRITER_UNKNOWN_ENABLED=true."
+        ),
+    )
     cpq_restrict_hide_lists_are_remove_enabled: bool = Field(
         default=False,
         description=(

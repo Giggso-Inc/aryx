@@ -648,3 +648,7 @@ docker logs aryx-api-1 --since 20m 2>&1 | grep "ask.required_set.diagnostic" | t
 Reading it: for the Encryption Type rules (`target secureEncryptionType_astro`), `unmapped` on Customer Type / the master string / the model variable confirms the cause (the fix is to resolve rule conditions against the full attribute list while
 keeping the visible list for targets); `false` on country or the base model means the rule does not apply to this model (for example the N30/N50 Essential Core Bundle clause); `unknown` on an attribute that is in the list means its value
 is missing.
+
+### Fix A: no writer fired is "unknown", not "empty master -> hide"
+
+'Hide Secure Attributes If No Values Available (Mobile)' searches a hidden master string written by recommendation rules. With Customer Type / Feature Type / the model variable not known yet every writer reads False, `hide_with_master_string` took the master as "" and hid Encryption Type, so it was never asked. Flag `cpq_master_string_no_writer_unknown_enabled` (off by default; env `ARYX_CPQ_MASTER_STRING_NO_WRITER_UNKNOWN_ENABLED=true`, needs `ARYX_CPQ_MASTER_STRING_HIDE_ENABLED`): the decision becomes unknown (reason `NO_WRITER_FIRED` in `ask.rules_loop.master_unresolved`) and the attribute stays. Verify on APX 900: Encryption Type is asked; `docker logs aryx-api-1 2>&1 | grep NO_WRITER_FIRED | head -3`. Fixes B and C (required set over the full attribute list; `_bm_model_variable_name` from the resolved model) follow after this replay.
