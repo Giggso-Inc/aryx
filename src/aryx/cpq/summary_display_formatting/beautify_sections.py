@@ -28,17 +28,19 @@ def _drop_rule_hidden(
     workspace_id: int | None, catalog_prefix: str,
 ) -> list[tuple[str, str, str]]:
     """Flag `cpq_beautify_hide_rule_hidden_enabled`: drop the rows of attributes this request's rules loop hid by rule
-    (the real screen does not show them: ws 1267, APX N70 Operation Type and Provisioning Assistance). The customer's own
-    answers stay. Without a loop for this catalog in the request, nothing is dropped."""
+    (the real screen does not show them: ws 1267, APX N70 Operation Type and Provisioning Assistance). A value the
+    customer gave (an answer or their wording, `CUSTOMER_SOURCES`) stays. Without a loop for this catalog in the
+    request, nothing is dropped."""
     if getattr(get_settings(), "cpq_beautify_hide_rule_hidden_enabled", False) is not True:
         return triples
-    from aryx.cpq.rules_loop.full_attrs_registry import rule_hidden  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.derive_base_model_default_owner import CUSTOMER_SOURCES  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.rules_loop.full_attrs_registry import rule_hidden  # noqa: PLC0415
 
     hidden = rule_hidden(workspace_id, catalog_prefix)
     if not hidden:
         return triples
     sources = filled_source or {}
-    kept = [t for t in triples if t[0] not in hidden or sources.get(t[0]) == "user"]
+    kept = [t for t in triples if t[0] not in hidden or sources.get(t[0]) in CUSTOMER_SOURCES]
     if would_log("DEBUG"):
         raven_log("DEBUG", "P4", "ask.beautify.rule_hidden rows hidden by a hiding rule dropped", context={
             "selected_option": "dropped" if len(kept) < len(triples) else "none",

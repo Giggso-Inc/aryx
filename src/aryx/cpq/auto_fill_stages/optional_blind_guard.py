@@ -16,8 +16,9 @@ if TYPE_CHECKING:
 
 
 def optional_without_basis(attr: "ConfigAttr", state: "AttrResolution") -> bool:
-    """True when the blind first-option stages must skip this attribute: flag on, single-select, not catalog-required,
-    not a decision/forced-ask/derived-required attribute. Everything with a real basis (hint, recommendation, data
+    """True when the blind first-option stages must skip this attribute: flag on, single-select (or multi-select too with
+    `cpq_no_blind_fill_optional_multi_enabled`), not catalog-required, not a decision/forced-ask/derived-required
+    attribute. Everything with a real basis (hint, recommendation, data
     table, default) was resolved by an earlier stage and never reaches the blind stages."""
     settings = get_settings()
     if getattr(settings, "cpq_no_blind_fill_optional_enabled", False) is not True:

@@ -19,14 +19,31 @@ changes its parent's, and the list is stored as a tuple so no reader can change 
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
 _Key = tuple[int | None, str]
 _LOOP_FACTS: ContextVar[dict[_Key, dict[str, Any]] | None] = ContextVar("aryx_cpq_loop_facts", default=None)
+_SUPPRESSED: ContextVar[bool] = ContextVar("aryx_cpq_loop_facts_suppressed", default=False)
+
+
+@contextmanager
+def what_if_loop() -> Iterator[None]:
+    """Wrap a rules loop run on a hypothetical state (the country-availability check, the validation harness): it
+    records nothing, so it never replaces what the request's real loop recorded for the same catalog. All aSTRO25
+    products share one catalog prefix, so the key alone does not tell such a loop apart."""
+    token = _SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _SUPPRESSED.reset(token)
 
 
 def _record(workspace_id: int | None, catalog_prefix: str, name: str, value: Any) -> None:
+    if _SUPPRESSED.get():
+        return
     facts = dict(_LOOP_FACTS.get() or {})
     key = (workspace_id, catalog_prefix)
     facts[key] = {**facts.get(key, {}), name: value}

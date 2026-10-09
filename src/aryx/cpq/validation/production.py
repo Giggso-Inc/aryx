@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.rules_loop.full_attrs_registry import what_if_loop
 from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, RecommendationRule
 from aryx.cpq.validation.compare import ProductionState
 from aryx.cpq.validation.models import Scenario
@@ -22,10 +23,11 @@ def evaluate_production(
     filled_multi = {
         key: list(values) for key, values in scenario.filled_multi.items()
     }
-    visible, filled, _display, constrained = engine.evaluate_rules_loop(
-        list(attrs), {}, dict(scenario.filled), hiding_rules, rec_rules, con_rules,
-        bml_eval=bml_eval, filled_source=sources, filled_multi=filled_multi,
-    )
+    with what_if_loop():            # a comparison run: never replaces a real turn's recorded loop facts
+        visible, filled, _display, constrained = engine.evaluate_rules_loop(
+            list(attrs), {}, dict(scenario.filled), hiding_rules, rec_rules, con_rules,
+            bml_eval=bml_eval, filled_source=sources, filled_multi=filled_multi,
+        )
     governed = engine.governed_target_ids(visible, hiding_rules, rec_rules, con_rules)
     rule_governed = engine.rule_governed_ids(visible, hiding_rules, rec_rules, con_rules)
     _filled, _display, pending = engine.auto_fill(

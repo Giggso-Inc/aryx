@@ -56,9 +56,70 @@ def test_flag_on_drops_the_rule_hidden_row(flag):
     assert "Operation Type" not in labels and "Carry Type" in labels
 
 
-def test_the_customers_own_answer_stays(flag):
+@pytest.mark.parametrize("source", ["user", "hint"])
+def test_the_customers_own_value_stays(flag, source):
     full_attrs_registry.remember_rule_hidden(1267, "astro", {"operationModeType_astro"})
-    assert "Operation Type" in _labels(_rows({"operationModeType_astro": "user"}))
+    assert "Operation Type" in _labels(_rows({"operationModeType_astro": source}))
+
+
+def test_a_what_if_loop_does_not_replace_the_real_loops_facts(flag):
+    """The country-availability check and the validation harness run loops on a hypothetical state for the same
+    catalog (all aSTRO25 products share one prefix); before or after the real loop they record nothing."""
+    with full_attrs_registry.what_if_loop():
+        full_attrs_registry.remember_rule_hidden(1267, "astro", {"beltClipType_astro"})
+        full_attrs_registry.remember_full_attrs(1267, "astro", ["what-if"])
+    assert full_attrs_registry.rule_hidden(1267, "astro") is None
+    full_attrs_registry.remember_rule_hidden(1267, "astro", {"operationModeType_astro"})
+    full_attrs_registry.remember_full_attrs(1267, "astro", ["real"])
+    with full_attrs_registry.what_if_loop():
+        full_attrs_registry.remember_rule_hidden(1267, "astro", {"beltClipType_astro"})
+        full_attrs_registry.remember_full_attrs(1267, "astro", ["what-if"])
+    assert full_attrs_registry.rule_hidden(1267, "astro") == frozenset({"operationModeType_astro"})
+    assert full_attrs_registry.full_attrs(1267, "astro") == ["real"]
+    labels = _labels(_rows({"operationModeType_astro": "defaultinattr"}))
+    assert "Operation Type" not in labels and "Carry Type" in labels
+
+
+def test_country_availability_check_runs_its_loop_as_a_what_if(flag):
+    from aryx.api import ask_turn_country_available_for as mod
+
+    seen = []
+
+    class Engine:
+        def load_product_config(self, *a):
+            return [SimpleNamespace(catalog_prefix="astro", variable_name="ultimateDestinationCountry")], "APX N30"
+
+        def _is_country_anchor_var(self, vn):
+            return True
+
+        def load_hiding_rules(self, *a):
+            return []
+
+        def load_recommendation_and_constraint_rules(self, *a):
+            return [], []
+
+        def build_bml_evaluator(self, *a):
+            return None
+
+        def _load_layout_full_order(self, *a):
+            return None
+
+        def load_layout_display_order(self, *a):
+            return None
+
+        def evaluate_rules_loop(self, *a, **k):
+            full_attrs_registry.remember_rule_hidden(1267, "astro", {"beltClipType_astro"})
+            seen.append(True)
+            return [], {}, {}, {}
+
+        def check_country_availability(self, *a, **k):
+            return True
+
+    full_attrs_registry.remember_rule_hidden(1267, "astro", {"operationModeType_astro"})
+    from unittest.mock import patch
+    with patch("aryx.api.ask_api._cpq_engine", Engine()):
+        assert mod._country_available_for(None, 1267, "APX N30", "United States") is True
+    assert seen and full_attrs_registry.rule_hidden(1267, "astro") == frozenset({"operationModeType_astro"})
 
 
 def test_no_loop_for_the_catalog_drops_nothing(flag):

@@ -12,10 +12,13 @@ Documentation section, so the names any stored layout places count as listed too
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq.data_table.data_table_loader import _load_all_tables
+from aryx.raven_log import raven_log
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,42 @@ def _layout_names(engine: Any, workspace_id: int, catalog_prefix: str) -> set[st
     return names
 
 
+_LAYOUT_NAMES_MEMO: dict[tuple[int, str], frozenset[str]] = {}
+_LAYOUT_NAMES_LOCK = threading.Lock()
+
+
+def _memo_layout_names(engine: Any, workspace_id: int, catalog_prefix: str, sequence: set[str]) -> frozenset[str]:
+    """`_layout_names`, computed once per (workspace, catalog prefix) for the process (the layout components behind it
+    are cached for the process too). The first computation logs its cost and the noise-named attributes the layouts
+    keep beyond the AttrSequence, so the widening is visible per catalog."""
+    key = (workspace_id, catalog_prefix)
+    with _LAYOUT_NAMES_LOCK:
+        if key in _LAYOUT_NAMES_MEMO:
+            return _LAYOUT_NAMES_MEMO[key]
+    started = time.monotonic()
+    names = frozenset(_layout_names(engine, workspace_id, catalog_prefix))
+    if not names:
+        return names                             # nothing loaded (no layout yet, or a failure): try again next load
+    with _LAYOUT_NAMES_LOCK:
+        _LAYOUT_NAMES_MEMO[key] = names
+    from aryx.cpq.region_and_noise_constants import _NOISE_VAR_FRAGMENTS  # noqa: PLC0415
+
+    layout_only_noise = sorted(n for n in names - sequence if any(f in n.lower() for f in _NOISE_VAR_FRAGMENTS))
+    raven_log("INFO", "P4", "ask.load.noise_listed_layout_names layout names for the noise filter computed", context={
+        "selected_option": "computed", "available_options": ["computed", "memoized"],
+        "reason_code": "LAYOUT_LISTED_NAMES", "workspace_id": workspace_id, "catalog_prefix": catalog_prefix,
+        "duration_ms": int((time.monotonic() - started) * 1000), "layout_name_count": len(names),
+        "noise_named_kept_by_layout_only": layout_only_noise[:50],
+        "noise_named_kept_by_layout_only_count": len(layout_only_noise)})
+    return names
+
+
+def _clear_memo() -> None:
+    """Tests only."""
+    with _LAYOUT_NAMES_LOCK:
+        _LAYOUT_NAMES_MEMO.clear()
+
+
 def listed_attr_names(workspace_id: int | None, catalog_prefix: str, engine: Any = None) -> frozenset[str]:
     """The AttrNames of the workspace's AttrSequence rows, plus (with `engine`) the names its stored layouts place, or
     empty (flag off / no table / any failure)."""
@@ -62,5 +101,5 @@ def listed_attr_names(workspace_id: int | None, catalog_prefix: str, engine: Any
         return frozenset()
     names = _sequence_names(workspace_id, catalog_prefix)
     if engine is not None:
-        names |= _layout_names(engine, workspace_id, catalog_prefix)
+        names |= _memo_layout_names(engine, workspace_id, catalog_prefix, names)
     return frozenset(names)
