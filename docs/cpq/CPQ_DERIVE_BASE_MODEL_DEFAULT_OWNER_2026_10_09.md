@@ -59,3 +59,19 @@ The Defaultinattr table does separate them: the 700/800 MHz base model of each m
 * Models whose base models have no Defaultinattr rows, or no strict superset, behave as before.
 * Replay one quote per model flag off / on.
 * Tests: `tests/test_cpq_derive_base_model_default_owner_2026_10_09.py` (8).
+
+## 7. Follow-up (2026-10-09): a separating attribute with one owning default (N50 on dev)
+
+Dev, "I want to quote for APX N50" then "United States": the customer was asked "Frequency Bands (model Selection)" (700/800 MHz,
+VHF, UHF) and the quote ended on a wrong base model (`TT2592A`, a flashport code). The reference flow (real CPQ) takes the band
+700/800 MHz and the base model `H25UCF9PW6AN` after the country alone.
+
+Cause: the band separates N50's three base models (each holds one value), so the default owner of section 3 stayed out (review of
+#488: ask a separating attribute, never pick over it). With the band left unanswered (the first-option pick can be off, e.g.
+`ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_ENABLED`, or #473's narrowing asks it first) nothing narrowed the base model.
+
+Change (`derive_base_model_default_owner.py`, no names): when separating attributes remain, the default owner is derived only if
+EVERY unanswered separating attribute has a Defaultinattr default that exactly one left base model holds as its own value, and it is
+the same base model for all of them. N30 / N50 / N70: the band default exists for one base model of three. APX 900 / 3000 / 4000 / 8000:
+no base model defines a band default, so the band is still asked. A customer value that differs from the owner's default still blocks it.
+Tests: 5 added (21 in the file). Needs the same flag, `ARYX_CPQ_DERIVE_BASE_MODEL_DEFAULT_OWNER_ENABLED`.

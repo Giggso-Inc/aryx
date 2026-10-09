@@ -188,3 +188,41 @@ def test_the_recheck_stage_runs_before_already_filled_keeps_the_value():
 
     names = [f.__name__ for f in coordinator._STAGES]
     assert names.index("stage_default_owner_recheck") < names.index("stage_already_filled")
+
+
+# --- a separating attribute with a Defaultinattr default (N50 / N30) -----------------------------------------------
+def _n50_rows():
+    """The N30 / N50 shape: each base model holds ONE frequency band (VHF / 700/800 / UHF)."""
+    return [_wl(K, BAND, "VHF"), _wl(U, BAND, "700/800 MHZ"), _wl(X, BAND, "UHF")] + \
+           [_wl(bm, COUNTRY, "US") for bm in (K, U, X)]
+
+
+N50_DEFAULTS = [_di(U, **{BAND: "700/800 MHZ", KEYPAD: "LIMITED KEYPAD"}), _di(K, **{KEYPAD: "LIMITED KEYPAD"}),
+                _di(X, **{KEYPAD: "LIMITED KEYPAD"})]
+
+
+def test_a_separating_band_with_one_owning_default_is_taken_from_it():
+    """N50: the band default 700/800 MHz is defined for one base model only, so country alone derives it."""
+    assert _owner(rows=_n50_rows(), defaults=N50_DEFAULTS) == U
+
+
+def test_a_separating_band_with_no_default_is_still_asked():
+    """APX 900 shape: no base model defines a band default, so the band stays a question."""
+    no_band_default = [_di(U, **{KEYPAD: "LIMITED KEYPAD"}), _di(K, **{KEYPAD: "LIMITED KEYPAD"}),
+                       _di(X, **{KEYPAD: "LIMITED KEYPAD"})]
+    assert _owner(rows=_n50_rows(), defaults=no_band_default) is None
+
+
+def test_a_default_that_differs_from_what_the_base_model_holds_is_not_an_owner():
+    wrong = [_di(U, **{BAND: "VHF"}), _di(K, **{KEYPAD: "LIMITED KEYPAD"}), _di(X, **{KEYPAD: "LIMITED KEYPAD"})]
+    assert _owner(rows=_n50_rows(), defaults=wrong) is None
+
+
+def test_two_separating_attributes_owned_by_different_base_models_derive_nothing():
+    rows = _n50_rows() + [_wl(K, KEYPAD, "FULL KEYPAD"), _wl(U, KEYPAD, "LIMITED KEYPAD"), _wl(X, KEYPAD, "NO KEYPAD")]
+    split = [_di(U, **{BAND: "700/800 MHZ"}), _di(K, **{KEYPAD: "FULL KEYPAD"}), _di(X, **{ANT: "WHIP"})]
+    assert _owner(rows=rows, defaults=split) is None
+
+
+def test_a_customer_band_that_differs_blocks_the_separating_owner_too():
+    assert _owner({BAND: "VHF"}, customer={BAND}, rows=_n50_rows(), defaults=N50_DEFAULTS) is None
