@@ -331,6 +331,30 @@ def resolve_product_cpq_models_from_rows(
     O(constraint_rows) scan, never repeated per product name. Stale/deleted
     CPQModel codes (see `_is_stale_cpq_model`) are excluded. Returns ()
     when no constraint row anywhere names this exact product string.
+
+    With `cpq_product_candidates_display_match_first_enabled` on and 2+
+    candidates, whichever ones Basemodeltoconfig's own displayModel
+    confirms as a match for `product_name` (`resolve_cpq_model_from_
+    display_name`) are moved to the front, in their existing relative
+    order -- see that flag's own docstring for the live case (ws 1267,
+    "APX6500" -> alphabetical order put the unrelated "APX5500" ahead of
+    "APX6500/LI", whose displayModel IS "APX6500"). Flag off, a single
+    candidate, or no display-name match: unchanged (plain alphabetical).
+
+    Review of #506 (2026-10-09): the match is case-insensitive substring
+    containment of displayModel inside `product_name` with internal
+    spacing preserved (same rule `resolve_cpq_model_from_display_name`
+    already uses for free-text hints) -- it only reorders a product whose
+    displayModel is spelled identically to the exact product string
+    (e.g. both "APX6500", no space). A displayModel spelled with a space
+    ("APX 6500") or a trademark/registered mark against a plain-spelled
+    product string will not match and that candidate set stays
+    alphabetical, exactly as before this flag existed. The reordered
+    result is memoized in `cache` under (workspace_id, catalog_prefix,
+    normalized product_name), independent of `_cpq_model_candidates`'
+    own per-turn memo (which additionally keys on `base_model`, something
+    this reorder never depends on) -- same cost class as the per-attribute
+    rescan PR #495 measured and PR #501 fixed for the un-reordered list.
     """
     key = ("_product_to_cpq_models", workspace_id, catalog_prefix)
     if cache is not None and key in cache:
@@ -353,7 +377,31 @@ def resolve_product_cpq_models_from_rows(
         if cache is not None:
             cache[key] = product_to_models
     norm = (product_name or "").strip().upper()
-    return tuple(sorted(product_to_models.get(norm, ())))
+    candidates = tuple(sorted(product_to_models.get(norm, ())))
+    if len(candidates) < 2:
+        return candidates
+    from aryx.config import get_settings  # noqa: PLC0415 -- lazy, matches this module's existing convention
+    if not get_settings().cpq_product_candidates_display_match_first_enabled:
+        return candidates
+    # Review of #506 (2026-10-09): memoized independently of `_cpq_model_candidates`'s own per-turn memo (which
+    # keys on `base_model` too, something this reorder never depends on, and is a no-op entirely for a caller with
+    # no bound turn and no cache of its own -- same gap PR #501 closed for the un-reordered candidate list).
+    # resolve_cpq_model_from_display_name does an O(Basemodeltoconfig rows) scan every call; exactly the products
+    # this flag affects (2+ real candidates) are the ones with the most auto_fill-pass call volume to pay that
+    # scan repeatedly (the identical cost shape #495 measured at 87/123s of an APX 900 first pass).
+    reorder_key = ("_product_cpq_models_display_matched", workspace_id, catalog_prefix, norm)
+    if cache is not None and reorder_key in cache:
+        return cache[reorder_key]
+    display_matched = resolve_cpq_model_from_display_name(product_name, workspace_id, catalog_prefix, cache)
+    if not display_matched:
+        result = candidates
+    else:
+        matched = tuple(c for c in candidates if c in display_matched)
+        rest = tuple(c for c in candidates if c not in matched)
+        result = matched + rest if matched else candidates
+    if cache is not None:
+        cache[reorder_key] = result
+    return result
 
 
 def resolve_product_cpq_models_from_hint(
