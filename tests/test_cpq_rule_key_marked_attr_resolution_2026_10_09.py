@@ -73,3 +73,29 @@ def test_rule_key_falls_back_to_entity_id_when_marked_only_references_entity_id(
     marked = {entity_id: [99]}
 
     assert _rule_key(entity_id, source_id, inputs, actions, marked) == entity_id
+
+
+def test_rule_key_never_flips_away_from_a_real_condition_kept_under_entity_id():
+    """Review-confirmed risk (2026-10-09): a rule whose real condition is
+    keyed under entity_id must not flip to source_id just because source_id
+    also happens to appear in marked (an unrelated marked-attr row). Flipping
+    would silently drop the real condition -- marked is a fallback for when
+    NEITHER id has a condition/action, never an equal-priority signal."""
+    entity_id, source_id = 1, 2
+    inputs = {entity_id: [(10, "US", "1")]}
+    actions: dict = {}
+    marked = {source_id: [99]}
+
+    assert _rule_key(entity_id, source_id, inputs, actions, marked) == entity_id
+
+
+def test_rule_key_marked_fallback_does_not_apply_when_entity_id_is_also_marked():
+    """When both ids appear in marked (or only entity_id does), entity_id --
+    the more common shape -- wins; the source_id fallback is for the narrow
+    case where entity_id has no linkage at all."""
+    entity_id, source_id = 1, 2
+    inputs: dict = {}
+    actions: dict = {}
+    marked = {entity_id: [99], source_id: [100]}
+
+    assert _rule_key(entity_id, source_id, inputs, actions, marked) == entity_id

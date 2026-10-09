@@ -62,15 +62,40 @@ def _rule_key(entity_id: int, source_id: int | None,
     row keyed under `source_id`, not `entity_id`. With `marked` omitted (the
     original check), neither id matched inputs/actions, so this fell back to
     `entity_id`, and `_resolve_targets(entity_id, ...)` then missed the real
-    marked_attr row -- "no resolvable target" even though one exists. Its
-    sibling rule (5033638, same shape) happened to also carry a condition row
-    under `source_id`, which is what let the original check pick the right id
-    by coincidence. `marked` defaults to None so every caller that doesn't
-    resolve marked-attr targets (e.g. value_rules_load, which only reads
-    inputs/actions) keeps its exact prior behavior.
+    marked_attr row -- "no resolvable target" even though one exists.
+
+    Review-confirmed (2026-10-09) this rule is itself UNCONDITIONAL (0
+    inputs) and scoped (`ref_id`) to the aPXNext BmCatalog node -- it is not
+    "hide for non-Federal customers", and resolving its target here is only
+    half the story: whether it actually loads at all still depends on
+    `cpq_empty_condition_rule_true_enabled` (off in ws 1267's dev default,
+    confirmed live -- this fix alone changes nothing there yet), and
+    whether/where it then applies depends on `cpq_rule_scope_filter_enabled`
+    and the target product's resolved `scope_node_ids` (empty for a
+    table-resolved model like APX 1500 Enhanced, which makes that filter a
+    no-op). 103 other ws 1267 type-11 rules share this same no-input/no-
+    action/marked-attr-only shape and are equally affected by this fix --
+    this change was not evaluated against each of them individually.
+
+    `marked` is consulted ONLY when NEITHER id has a condition/action row --
+    review-confirmed (2026-10-09) that checking it as an equal-priority OR
+    term is unsafe: a rule whose real conditions/actions are keyed under
+    `entity_id` but which also happens to carry an unrelated marked-attr row
+    under `source_id` would flip to `source_id`, silently losing its real
+    conditions and (with `cpq_empty_condition_rule_true_enabled` on) turning
+    a conditional rule into an always-true one. No rule in ws 1267's type-11
+    set currently has that exact shape, but the fallback is ordered
+    defensively rather than relying on that holding forever. `marked`
+    defaults to None so every caller that doesn't resolve marked-attr
+    targets (e.g. value_rules_load, which only reads inputs/actions) keeps
+    its exact prior behavior.
     """
-    if source_id is not None and (
-        source_id in inputs or source_id in actions or (marked is not None and source_id in marked)
+    if source_id is not None and (source_id in inputs or source_id in actions):
+        return source_id
+    if (
+        marked is not None and source_id is not None
+        and entity_id not in inputs and entity_id not in actions
+        and entity_id not in marked and source_id in marked
     ):
         return source_id
     return entity_id
