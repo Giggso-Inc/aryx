@@ -132,15 +132,41 @@ def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_mul
     return out
 
 
+def _model_node_stand_in(input_attrs: list[Any], filled: dict[str, str]) -> dict[int, str]:
+    """Fix C: the model-context attribute BM injects (`_bm_model_variable_name`) is never a quote answer, so a rule that reads
+    it saw it blank. Its ids mapped to the turn's resolved model node, when the quote does not carry it."""
+    from aryx.cpq.layout_and_join_data.layout_variant_context import MODEL_NODE_VAR, current_model_node  # noqa: PLC0415
+
+    node = "" if filled.get(MODEL_NODE_VAR) else (current_model_node() or "")
+    out: dict[int, str] = {}
+    if node:
+        for a in input_attrs:
+            if a.variable_name == MODEL_NODE_VAR:
+                out[a.entity_id] = node
+                if a.source_id is not None:
+                    out[a.source_id] = node
+    return out
+
+
 def rule_required_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str],
     filled_multi: dict[str, list[str]] | None, workspace_id: int, catalog_prefix: str,
     rules: tuple[list[Any], list[Any]] | None = None, stats: dict | None = None,
+    input_attrs: list[Any] | None = None,
 ) -> set[str]:
     """Targets of a firing blank-disallow constraint action or a firing
-    message-only validation rule. `stats`, when given, receives diagnostic counts (never affects the result)."""
+    message-only validation rule. `stats`, when given, receives diagnostic counts (never affects the result).
+    `input_attrs` (flag `cpq_required_set_rules_read_all_attrs_enabled`): the full attribute list the rule INPUTS are read
+    from; targets are still looked up in `attrs`."""
     by_id = _attr_index(attrs)
-    by_rule_id = {**_assumed_master_strings(attrs, filled, filled_multi), **_filled_by_rule_id(attrs, filled, filled_multi)}
+    if input_attrs:
+        read_attrs = input_attrs
+        by_id = {**_attr_index(input_attrs), **by_id}             # names for the diagnostic; targets keep the visible attr
+        by_rule_id = {**_model_node_stand_in(read_attrs, filled), **_assumed_master_strings(read_attrs, filled, filled_multi),
+                      **_filled_by_rule_id(read_attrs, filled, filled_multi)}
+    else:
+        read_attrs = attrs
+        by_rule_id = {**_assumed_master_strings(attrs, filled, filled_multi), **_filled_by_rule_id(attrs, filled, filled_multi)}
     settings = get_settings()
     assume_open = bool(getattr(settings, "cpq_required_set_guards_assumed_open", False)
                        or getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True)
@@ -181,7 +207,8 @@ def rule_required_vns(
     if stats is not None:
         stats.update(counts)
         stats["unfired_blank_disallow"] = unfired
-        stats["assumed_master_strings"] = len(_assumed_master_string_attrs(attrs, filled, filled_multi))
+        stats["assumed_master_strings"] = len(_assumed_master_string_attrs(read_attrs, filled, filled_multi))
+        stats["rule_inputs_from_all_attrs"] = bool(input_attrs)
     return out
 
 
@@ -248,7 +275,7 @@ def derive_required_vns(
     filled_multi: dict[str, list[str]] | None, filled_source: dict[str, str] | None,
     hidden_vns: set[str] | None, display_order: dict[str, int] | None,
     workspace_id: int | None, catalog_prefix: str = "", product_hint: str = "",
-    cache: dict | None = None, rule_required_only: bool = False,
+    cache: dict | None = None, rule_required_only: bool = False, rule_input_attrs: list[Any] | None = None,
 ) -> frozenset[str]:
     """The derived required variable names (see the module docstring).
 
@@ -271,7 +298,8 @@ def derive_required_vns(
             candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
     rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     rule_stats: dict = {}
-    rule_found = rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules, rule_stats)
+    rule_found = rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules, rule_stats,
+                                   rule_input_attrs)
     candidates |= rule_found
     quantity_filled = script_filled_quantity_vns(engine, attrs, rules[0])
     candidates -= quantity_filled
