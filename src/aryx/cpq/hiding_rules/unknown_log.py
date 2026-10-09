@@ -81,6 +81,33 @@ def log_master_unresolved(rule, reason: str, detail: dict | None = None) -> None
         return
 
 
+def log_master_context(rule, target_variable: str, decided: dict | None, result: bool | None) -> None:
+    """Debug record of WHAT a master-string hide rule decided on: the model and base-model scope of the writer query, how many
+    attribute names the computed master string holds, whether the rule's target is one of them. Once per (run, rule, target,
+    outcome). Answers "is this hide right": a master built for the wrong model, or without the target, hides it."""
+    try:
+        if not would_log("DEBUG") or not decided:
+            return
+        names = decided.get("_names") or set()
+        outcome = "hide" if result else "show"
+        run_id = get_run_id() or ""
+        key = (str(rule.rule_name), str(target_variable), f"context:{outcome}")
+        with _SEEN_LOCK:
+            seen = _SEEN.setdefault(run_id, set())
+            if key in seen:
+                return
+            seen.add(key)
+        raven_log("DEBUG", "P4", "ask.rules_loop.master_context what the computed master string held", context={
+            "selected_option": outcome, "available_options": ["hide", "show"], "reason_code": "DECIDED_MASTER_STRING_CONTEXT",
+            "rule_name": rule.rule_name, "attr": target_variable, "master_var": decided.get("master_var"),
+            "cpq_model": decided.get("cpq_model"), "base_models": decided.get("base_models"),
+            "master_names": decided.get("master_names"), "master_len": decided.get("master_len"),
+            "live_writers": decided.get("live_writers"), "target_in_master": target_variable in names,
+            "names_sample": sorted(names)[:15], "rule_ref_id": getattr(rule, "ref_id", "") or ""})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change rule evaluation
+        return
+
+
 def log_decided_master_hide(rule, target_variable: str, hide: bool, via_master: bool) -> None:
     """Debug record of a master-string hide rule that DID decide (hide or show), once per (run, rule, target, outcome).
 

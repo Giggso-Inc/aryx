@@ -113,7 +113,7 @@ def _resolve(var: str, q: WriterQuery, variables: dict[str, str]) -> str | None:
 
 def compute_master(
     q: WriterQuery, variables: dict[str, str], sep: str, workspace_id: int | None,
-    catalog_prefix: str, cache: dict | None, why: list[str] | None = None,
+    catalog_prefix: str, cache: dict | None, why: list[str] | None = None, info: dict | None = None,
 ) -> str | None:
     """Master string built from the ingested attrSequence rows, or None when
     it cannot be built soundly (other columns, unresolved scope, no rows).
@@ -135,6 +135,9 @@ def compute_master(
             bases.add(val)
     if not cpq:
         return _no("MODEL_VARIABLE_UNRESOLVED")
+    if info is not None:                                         # diagnostic only: the scope the master was built for
+        info["cpq_model"] = cpq
+        info["base_models"] = sorted(bases)[:6]
     if q.base_items and not bases:
         return ""  # blank BaseModel scope: the query matches no rows
     from aryx.cpq.data_table.data_table_loader import _load_all_tables  # noqa: PLC0415
@@ -162,6 +165,10 @@ def hide_with_master_string(
     if result is None and why:
         from aryx.cpq.hiding_rules.unknown_log import log_master_unresolved  # noqa: PLC0415 -- diagnostic only
         log_master_unresolved(rule, why[0], detail)
+    elif result is not None:
+        from aryx.cpq.hiding_rules.unknown_log import log_master_context  # noqa: PLC0415 -- diagnostic only
+        target = by_rule_id.get(getattr(rule, "target_attr_id", None))
+        log_master_context(rule, target.variable_name if target is not None else "", detail.get("decided"), result)
     return result
 
 
@@ -198,7 +205,10 @@ def _hide_with_master_string(
         q = parse_writer_query(live[0].script)
         if q is None:
             why.append("WRITER_QUERY_NOT_PARSED")
-        master = compute_master(q, variables, sep, workspace_id, catalog_prefix, cache, why) if q else None
+        scope_info: dict[str, Any] = {}
+        master = compute_master(q, variables, sep, workspace_id, catalog_prefix, cache, why, scope_info) if q else None
+        if detail is not None:
+            detail["scope"] = scope_info
     elif all(f is False for _, f in fires):
         master = ""
     else:
@@ -210,6 +220,12 @@ def _hide_with_master_string(
     if master is None:
         return None
     variables[master_var] = master
+    if detail is not None:                                       # diagnostic only, read by log_master_context
+        names = {n for n in master.split(sep) if n}
+        scope = detail.get("scope") or {}
+        detail["decided"] = {"master_var": master_var, "cpq_model": scope.get("cpq_model"),
+                             "base_models": scope.get("base_models"), "master_names": len(names),
+                             "master_len": len(master), "live_writers": len(live), "_names": names}
     alias = hide_index_alias_enabled()
     res, blocked = evaluate_hide_master_list(rule.script, variables, alias_unassigned_index=alias)
     if res is None and not blocked:
