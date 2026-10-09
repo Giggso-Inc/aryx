@@ -30,22 +30,29 @@ def _sequence_names(workspace_id: int, catalog_prefix: str) -> set[str]:
 
 
 def _layout_names(engine: Any, workspace_id: int, catalog_prefix: str) -> set[str]:
-    """Variable names placed by any stored layout of the catalog (the default one and every variant)."""
+    """Variable names placed by any stored layout of the catalog (the default one and every variant). A layout that
+    fails to load is skipped; the others still count."""
+    from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT  # noqa: PLC0415
+
     try:
         from aryx.cpq.layout_and_join_data.layout_variant import stored_variant_keys  # noqa: PLC0415
-        from aryx.cpq.layout_source import DEFAULT_LAYOUT_VARIANT  # noqa: PLC0415
 
-        names: set[str] = set()
-        for variant in (DEFAULT_LAYOUT_VARIANT, *stored_variant_keys(workspace_id, catalog_prefix)):
+        variants = [DEFAULT_LAYOUT_VARIANT, *stored_variant_keys(workspace_id, catalog_prefix)]
+    except Exception:  # noqa: BLE001 -- same: a nicety, never a reason to break the load
+        logger.debug("cpq: layout variants for the noise filter failed", exc_info=True)
+        variants = [DEFAULT_LAYOUT_VARIANT]
+    names: set[str] = set()
+    for variant in variants:
+        try:
             components = (engine._load_layout_components(workspace_id, catalog_prefix, None)
                           if variant == DEFAULT_LAYOUT_VARIANT
                           else engine._load_layout_components(workspace_id, catalog_prefix, None, variant))
-            names.update(str(c.get("resourceAttributeVarName") or "") for c in components or [])
-        names.discard("")
-        return names
-    except Exception:  # noqa: BLE001 -- same: a nicety, never a reason to break the load
-        logger.debug("cpq: layout names for the noise filter failed", exc_info=True)
-        return set()
+        except Exception:  # noqa: BLE001
+            logger.debug("cpq: layout %r for the noise filter failed", variant, exc_info=True)
+            continue
+        names.update(str(c.get("resourceAttributeVarName") or "") for c in components or [])
+    names.discard("")
+    return names
 
 
 def listed_attr_names(workspace_id: int | None, catalog_prefix: str, engine: Any = None) -> frozenset[str]:

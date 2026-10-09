@@ -81,11 +81,12 @@ def _required_ask_vns(
         return frozenset()
 
 
-def _rule_input_attrs(settings: Any, workspace_id: int, catalog_prefix: str, dt_cache: dict | None) -> list[Any] | None:
+def _rule_input_attrs(settings: Any, workspace_id: int | None, catalog_prefix: str,
+                      dt_cache: dict | None) -> list[Any] | None:
     """Flag `cpq_required_set_rules_read_all_attrs_enabled`: the full attribute list the rule inputs are read from. The
-    turn cache holds it when this call runs inside `evaluate_rules_loop`; the payload, summary and Beautify calls bring
-    their own cache, so they take the loop's latest list for the catalog. None (with a warning once per catalog) when
-    neither has it, which leaves the visible list as before."""
+    turn cache holds it when this call runs inside `evaluate_rules_loop`; the post-loop and recompute calls do not share
+    that cache, so they take the list this request's loop recorded (`full_attrs_registry`). None (with a warning once
+    per catalog) when neither has it, which leaves the visible list as before."""
     if getattr(settings, "cpq_required_set_rules_read_all_attrs_enabled", False) is not True:
         return None
     from aryx.cpq.rules_loop.full_attrs_registry import full_attrs  # noqa: PLC0415 -- flag-gated
@@ -100,7 +101,7 @@ def _rule_input_attrs(settings: Any, workspace_id: int, catalog_prefix: str, dt_
     return attrs
 
 
-_ALL_ATTRS_MISSING_WARNED: set[tuple[int, str]] = set()
+_ALL_ATTRS_MISSING_WARNED: set[tuple[int | None, str]] = set()
 
 
 def _blank_host_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None,

@@ -40,6 +40,21 @@ def test_layout_listed_noise_name_is_kept():
     assert TEST_LABEL in names and "antennasType_astro" in names and "" not in names
 
 
+def test_one_failing_layout_keeps_the_others():
+    class OneBroken(_Engine):
+        def _load_layout_components(self, ws, prefix, source, variant="__default__"):
+            if variant == "broken":
+                raise RuntimeError("boom")
+            return super()._load_layout_components(ws, prefix, source, variant)
+
+    engine = OneBroken({"portable": [{"resourceAttributeVarName": TEST_LABEL}]})
+    with patch.object(listed, "get_settings", return_value=_settings(cpq_keep_listed_noise_named_attrs_enabled=True)), \
+         patch.object(listed, "_sequence_names", return_value=set()), \
+         patch("aryx.cpq.layout_and_join_data.layout_variant.stored_variant_keys", return_value=["broken", "portable"]), \
+         patch("aryx.cpq.layout_source.DEFAULT_LAYOUT_VARIANT", "__default__"):
+        assert TEST_LABEL in listed.listed_attr_names(1267, "astro", engine)
+
+
 def test_without_engine_only_the_sequence_counts():
     with patch.object(listed, "get_settings", return_value=_settings(cpq_keep_listed_noise_named_attrs_enabled=True)), \
          patch.object(listed, "_sequence_names", return_value={"seqAttr"}):
