@@ -79,6 +79,26 @@ def _required_ask_vns(
         return frozenset()
 
 
+def _blank_host_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None,
+                      declarative_rules: list[Any]) -> dict[str, str]:
+    """The attributes the hide check counts as blank (flag `cpq_ask_hide_assumes_blank_host_context_enabled`): free-text
+    attributes (selection shape "single" with no menu: numeric, date, currency, boolean and multi-select attributes are
+    never included) that the quote does not carry AND that at least one declarative hide rule tests. Customer Type and
+    Customer UIN are the host-supplied ones; no other attribute is invented."""
+    referenced: set[Any] = set()
+    for rule in declarative_rules:
+        conditions = getattr(rule, "conditions", None)
+        if conditions:
+            referenced.update(c[0] for c in conditions)
+        else:
+            referenced.add(getattr(rule, "condition_attr_id", None))
+    return {
+        a.variable_name: "" for a in attrs
+        if (a.entity_id in referenced or getattr(a, "source_id", None) in referenced)
+        and a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)
+        and not getattr(a, "options", None) and getattr(a, "select_type", "") == "single"}
+
+
 def _rule_hidden_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
     workspace_id: int, catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
@@ -107,10 +127,8 @@ def _rule_hidden_vns(
             if blank_host:
                 # Declarative rules only (a script or master-string rule is never evaluated with invented blanks), with
                 # the host-supplied context the quote never carries counted as blank, as the real screen has it.
-                blanks = {a.variable_name: "" for a in attrs
-                          if a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)
-                          and not getattr(a, "options", None) and a.select_type != "multi"}
                 declarative = [r for r in rules if not getattr(r, "script", None)]
+                blanks = _blank_host_attrs(attrs, filled, filled_multi, declarative)
                 hidden |= set(engine.apply_hiding_rules(
                     attrs, {**blanks, **filled}, declarative, None, filled_multi, workspace_id=workspace_id,
                     catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
@@ -121,11 +139,14 @@ def _rule_hidden_vns(
                 "rules_total": len(rules), "hidden_count": len(hidden), "hidden_vns": sorted(hidden)[:25]})
         return hidden
     except Exception as exc:  # noqa: BLE001 -- a rule that cannot be read hides nothing
-        raven_log("WARN", "P3", "ask.required_set.hide_check_failed hide rules could not be evaluated, nothing extra hidden",
-                  error_code="ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED",
-                  context={"selected_option": "skipped", "available_options": ["evaluated", "skipped"],
-                           "reason_code": "HIDE_CHECK_EXCEPTION", "error_class": type(exc).__name__, "error": str(exc)[:200]})
-        logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+        try:
+            raven_log("WARN", "P3", "ask.required_set.hide_check_failed hide rules could not be evaluated, nothing extra hidden",
+                      error_code="ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED",
+                      context={"selected_option": "skipped", "available_options": ["evaluated", "skipped"],
+                               "reason_code": "HIDE_CHECK_EXCEPTION", "error_class": type(exc).__name__, "error": str(exc)[:200]})
+            logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+        except Exception:  # noqa: BLE001 -- logging must never break the safety net
+            pass
         return set()
 
 

@@ -580,6 +580,9 @@ Values Available (Portable)" decided from the computed master string (`hide_deci
 | Did the hide check fail? | `ask.required_set.hide_check_failed` (WARN) | `error_class`, `error` |
 | Which rule wrote a base-model value, and does it look like a base model? | `ask.base_model.rule_value` (WARN `ARYX_ASK_BASE_MODEL_RULE_SHAPE` when the shape differs from the value it replaces) | `rule_name`, `rule_ref_id`, `recommended_state`, `current_state`, `shape_recommended`, `shape_current`, `condition_attr_ids`, `condition_values` |
 
+Error codes (WARN, always on; the repo has no separate error-code catalog, so they are listed here and in the code): `ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED` (P3, the required-set hide check raised; nothing extra was
+hidden, read `error_class` / `error`) and `ARYX_ASK_BASE_MODEL_RULE_SHAPE` (P3, a recommendation rule wrote a base-model value whose letter/digit pattern differs from the value it replaced, read `rule_name`).
+
 ```bash
 docker logs aryx-api-1 2>&1 | grep -E "ask.rules_loop.master_context|ask.required_set.diagnostic|ask.required_set.hidden|ask.base_model.rule_value" | cut -c1-900
 ```

@@ -96,19 +96,23 @@ def script_filled_quantity_vns(engine: Any, attrs: list[Any], rec_rules: list[An
     return quantity & filled_by_rule
 
 
-def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> dict[int, str]:
-    """Flag `cpq_required_set_master_string_present_enabled`: entity/source ids of the hidden, option-less 'MasterString'
-    attributes the quote does not fill, mapped to a non-blank stand-in value (see the setting's description)."""
+def _assumed_master_string_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> list[Any]:
+    """Flag `cpq_required_set_master_string_present_enabled`: the hidden, option-less 'MasterString' attributes the quote
+    does not fill (see the setting's description). Empty with the flag off."""
     if getattr(get_settings(), "cpq_required_set_master_string_present_enabled", False) is not True:
-        return {}
+        return []
+    return [a for a in attrs
+            if getattr(a, "hidden", False) and "masterstring" in a.variable_name.lower() and not getattr(a, "options", None)
+            and a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)]
+
+
+def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> dict[int, str]:
+    """Entity/source ids of the assumed attributes, mapped to a non-blank stand-in value."""
     out: dict[int, str] = {}
-    for a in attrs:
-        vn = a.variable_name
-        if (getattr(a, "hidden", False) and "masterstring" in vn.lower() and not getattr(a, "options", None)
-                and vn not in filled and not (filled_multi or {}).get(vn)):
-            out[a.entity_id] = "ASSUMED_PRESENT"
-            if a.source_id is not None:
-                out[a.source_id] = "ASSUMED_PRESENT"
+    for a in _assumed_master_string_attrs(attrs, filled, filled_multi):
+        out[a.entity_id] = "ASSUMED_PRESENT"
+        if a.source_id is not None:
+            out[a.source_id] = "ASSUMED_PRESENT"
     return out
 
 
@@ -153,7 +157,7 @@ def rule_required_vns(
                 out.add(target.variable_name)
     if stats is not None:
         stats.update(counts)
-        stats["assumed_master_strings"] = len(_assumed_master_strings(attrs, filled, filled_multi)) // 2
+        stats["assumed_master_strings"] = len(_assumed_master_string_attrs(attrs, filled, filled_multi))
     return out
 
 

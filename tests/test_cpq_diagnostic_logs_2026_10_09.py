@@ -95,3 +95,13 @@ def test_the_master_context_says_whether_the_target_is_in_the_computed_master_st
     assert log.call_count == 1
     ctx = log.call_args.kwargs["context"]
     assert ctx["target_in_master"] is False and ctx["cpq_model"] == "APXN30" and ctx["selected_option"] == "hide"
+
+
+def test_the_assumed_master_string_count_counts_attributes_not_ids():
+    both_ids = ConfigAttr(entity_id=1, variable_name="hiddenConstraintMasterString_astro", display_label="m", required=False,
+                          default_value="", select_type="single", hidden=True, options=[], source_id=1001)
+    one_id = ConfigAttr(entity_id=2, variable_name="hiddenOtherMasterString_astro", display_label="m", required=False,
+                        default_value="", select_type="single", hidden=True, options=[])      # no source id
+    with patch.object(rs, "get_settings", return_value=SimpleNamespace(cpq_required_set_master_string_present_enabled=True)):
+        assert len(rs._assumed_master_string_attrs([both_ids, one_id], {}, {})) == 2
+        assert len(rs._assumed_master_strings([both_ids, one_id], {}, {})) == 3        # ids: 1 + 1001 + 2
