@@ -662,6 +662,35 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_MODEL_RESOLUTION_ENABLED=true."
         ),
     )
+    cpq_model_resolution_word_order_independent_enabled: bool = Field(
+        default=True,
+        description=(
+            "Needs cpq_model_resolution_enabled. model_resolution._match_kind matches a candidate's display name by "
+            "concatenating it into one string (spaces/punctuation stripped) and checking literal substring "
+            "containment in the similarly concatenated hint -- so the match only succeeds when the hint says the "
+            "words in the catalog's own exact order. Live (ws 1267, 2026-10-09): Basemodeltoconfig's displayModel "
+            "for the Enhanced APX 6500 variant is 'Enhanced APX6500/LI' (adjective-first); a customer asking for "
+            "'APX 6500 Enhanced' (adjective-last, an equally natural phrasing) normalizes to '...apx6500enhanced...', "
+            "which 'enhancedapx6500li' is never a substring of -- the candidate is silently excluded before "
+            "rank_candidates ever runs, and the plain (non-Enhanced) APX6500/LI resolves instead. When on and the "
+            "substring check above finds nothing, _match_kind falls back to tokenizing the candidate name and the "
+            "hint into words: the name's own digit code (e.g. 'apx6500'), or the whole name when it has no digits, "
+            "must still read contiguously, in order, in the hint -- so a quantity, battery size, another model's "
+            "number, or an unrelated sentence containing the same words in a different relationship can't be "
+            "mistaken for it. A word BEFORE the code ('enhanced') must also be present -- it is what makes the name "
+            "more specific, so it cannot be optional -- while a trailing suffix ('li') stays optional, same as the "
+            "substring check's own _CORE_RE fallback already treats it. Per candidate this is a strict superset by "
+            "construction (the substring check always runs first and wins when it finds something, so a candidate "
+            "that matches today keeps matching the same way), but the final resolved model CAN change: a wording "
+            "that used to match only one candidate can now also match a second, more specific one, and "
+            "rank_candidates' longest_name_match step then prefers the newcomer -- the fix's whole point, not a "
+            "side effect of it. On by default -- a deliberate exception to this file's usual off-by-default "
+            "convention, matching cpq_product_candidates_display_match_first_enabled's precedent, backed by a full "
+            "scan of the real production catalog export (146 names with a prefix word; 0 plain-wording changes, "
+            "117 reordered-wording resolutions improved, all to that name's own real cpqModel -- see PR #508). "
+            "Override with ARYX_CPQ_MODEL_RESOLUTION_WORD_ORDER_INDEPENDENT_ENABLED=false."
+        ),
+    )
     cpq_model_leaf_pick_top_enabled: bool = Field(
         default=False,
         description=(
