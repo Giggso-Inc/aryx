@@ -29,8 +29,10 @@ def _applicable_attrs(engine: Any, attrs: list, session: Any, workspace_id: int 
     sequence rows do not list are left out: they are another family's attributes (a catalog marks FLASHcode and power
     adapter fields required for the whole catalog), so they are not 'missing required data' for this model. Any failure
     returns the list unchanged."""
+    from aryx.api.ask_stale_constraint.ask_completeness_scope import product_scoped_attrs  # noqa: PLC0415 -- flag-gated
     from aryx.cpq.model_scoping_flags import scoped_questions_enabled  # noqa: PLC0415 -- flag-gated
 
+    attrs = product_scoped_attrs(engine, attrs, session, workspace_id, catalog_prefix)   # while the base model is empty
     if workspace_id is None or not scoped_questions_enabled():
         return attrs
     try:
