@@ -92,6 +92,10 @@ def _rule_hidden_vns(
         base_known = bool(filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""))
         blank_host = getattr(get_settings(), "cpq_ask_hide_assumes_blank_host_context_enabled", False) is True
         if not base_known and not blank_host:
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ask.required_set.hidden hide check skipped, base model unknown and the flag is off", context={
+                    "selected_option": "skipped", "available_options": ["evaluated", "skipped"],
+                    "reason_code": "REQUIRED_SET_HIDE_CHECK_SKIPPED", "base_known": False, "blank_host": False})
             return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
         rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
         hidden: set[str] = set()
@@ -110,8 +114,17 @@ def _rule_hidden_vns(
                 hidden |= set(engine.apply_hiding_rules(
                     attrs, {**blanks, **filled}, declarative, None, filled_multi, workspace_id=workspace_id,
                     catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.required_set.hidden attributes the hide check removed from the asked set", context={
+                "selected_option": "evaluated", "available_options": ["evaluated", "skipped"],
+                "reason_code": "REQUIRED_SET_HIDE_CHECK", "base_known": base_known, "blank_host": blank_host,
+                "rules_total": len(rules), "hidden_count": len(hidden), "hidden_vns": sorted(hidden)[:25]})
         return hidden
-    except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
+    except Exception as exc:  # noqa: BLE001 -- a rule that cannot be read hides nothing
+        raven_log("WARN", "P3", "ask.required_set.hide_check_failed hide rules could not be evaluated, nothing extra hidden",
+                  error_code="ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED",
+                  context={"selected_option": "skipped", "available_options": ["evaluated", "skipped"],
+                           "reason_code": "HIDE_CHECK_EXCEPTION", "error_class": type(exc).__name__, "error": str(exc)[:200]})
         logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
         return set()
 

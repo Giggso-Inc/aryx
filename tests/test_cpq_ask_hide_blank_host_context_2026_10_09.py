@@ -63,3 +63,15 @@ def test_flag_on_after_the_base_model_keeps_the_full_pass_with_the_real_answers(
     assert out == {FCC, "scripted_hidden"}
     assert calls[0]["rules"] == [DECLARATIVE, SCRIPTED] and "customerType" not in calls[0]["filled"]
     assert calls[1]["rules"] == [DECLARATIVE] and calls[1]["filled"]["customerType"] == ""
+
+
+def test_a_failing_hide_check_is_logged_as_a_warning_and_hides_nothing():
+    engine = SimpleNamespace(load_hiding_rules=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+                             apply_hiding_rules=lambda *a, **k: ([], [], set()))
+    with patch.object(setup, "get_settings", return_value=SimpleNamespace(
+            cpq_ask_hide_assumes_blank_host_context_enabled=True)), \
+            patch("aryx.cpq.catalog_profile.resolve_base_model_vn", return_value="baseModel"), \
+            patch.object(setup, "raven_log") as log:
+        out = setup._rule_hidden_vns(engine, ATTRS, {"ultimateDestinationCountry": "US"}, {}, 1267, "p", "APX 8500", {}, None)
+    assert out == set()
+    assert any(c.args[0] == "WARN" and "hide_check_failed" in c.args[2] for c in log.call_args_list)
