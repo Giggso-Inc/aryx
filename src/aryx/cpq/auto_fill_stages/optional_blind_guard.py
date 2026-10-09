@@ -16,9 +16,15 @@ if TYPE_CHECKING:
 
 
 def optional_without_basis(attr: "ConfigAttr", state: "AttrResolution") -> bool:
-    """True when the blind first-option stages must skip this attribute: flag on, single-select, not catalog-required,
-    not a decision/forced-ask/derived-required attribute. Everything with a real basis (hint, recommendation, data
+    """True when the blind first-option stages must skip this attribute: flag on, single-select (or multi-select too with
+    `cpq_no_blind_fill_optional_multi_enabled`), not catalog-required, not a decision/forced-ask/derived-required
+    attribute. Everything with a real basis (hint, recommendation, data
     table, default) was resolved by an earlier stage and never reaches the blind stages."""
-    if getattr(get_settings(), "cpq_no_blind_fill_optional_enabled", False) is not True:
+    settings = get_settings()
+    if getattr(settings, "cpq_no_blind_fill_optional_enabled", False) is not True:
         return False
-    return attr.select_type != "multi" and not attr.required and not state.is_decision_attr
+    # ws 1267, APX N30: the multi-select Feature Type (additionalSystemEnhancementFeatureType_astro) reached the
+    # attrSequence-governed blind pick and got "Disable Cloud Services", a value the real screen does not show
+    # (flag `cpq_no_blind_fill_optional_multi_enabled` covers multi-selects too).
+    multi_ok = getattr(settings, "cpq_no_blind_fill_optional_multi_enabled", False) is True
+    return (attr.select_type != "multi" or multi_ok) and not attr.required and not state.is_decision_attr

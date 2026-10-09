@@ -16,8 +16,37 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from aryx.config import get_settings
+from aryx.raven_log import raven_log, would_log
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from aryx.cpq.state import ConfigAttr
+
+
+def _drop_rule_hidden(
+    triples: list[tuple[str, str, str]], filled_source: dict[str, str] | None,
+    workspace_id: int | None, catalog_prefix: str,
+) -> list[tuple[str, str, str]]:
+    """Flag `cpq_beautify_hide_rule_hidden_enabled`: drop the rows of attributes this request's rules loop hid by rule
+    (the real screen does not show them: ws 1267, APX N70 Operation Type and Provisioning Assistance). A value the
+    customer gave (an answer or their wording, `CUSTOMER_SOURCES`) stays. Without a loop for this catalog in the
+    request, nothing is dropped."""
+    if getattr(get_settings(), "cpq_beautify_hide_rule_hidden_enabled", False) is not True:
+        return triples
+    from aryx.cpq.derive_base_model_default_owner import CUSTOMER_SOURCES  # noqa: PLC0415 -- flag-gated
+    from aryx.cpq.rules_loop.full_attrs_registry import rule_hidden  # noqa: PLC0415
+
+    hidden = rule_hidden(workspace_id, catalog_prefix)
+    if not hidden:
+        return triples
+    sources = filled_source or {}
+    kept = [t for t in triples if t[0] not in hidden or sources.get(t[0]) in CUSTOMER_SOURCES]
+    if would_log("DEBUG"):
+        raven_log("DEBUG", "P4", "ask.beautify.rule_hidden rows hidden by a hiding rule dropped", context={
+            "selected_option": "dropped" if len(kept) < len(triples) else "none",
+            "available_options": ["dropped", "none"], "reason_code": "RULE_HIDDEN_ROW",
+            "dropped_vns": sorted(t[0] for t in triples if t not in kept)[:30], "rule_hidden_count": len(hidden)})
+    return kept
 
 
 def _beautify_sectioned_rows(
@@ -63,11 +92,17 @@ def _beautify_sectioned_rows(
     shared triples call and this function's own Mandatory/System
     section split below.
     """
+    # Flag cpq_beautify_show_boolean_and_duration_values_enabled: keep Yes/No and duration rows (the real screen
+    # shows them); passed only when on so the call is unchanged with the flag off.
+    shape_kwargs = ({"keep_value_shapes": True}
+                    if getattr(get_settings(), "cpq_beautify_show_boolean_and_duration_values_enabled", False) is True
+                    else {})
     triples = engine._filled_summary_triples(
         display_filled, attrs, sources=filled_source, required_vns=required_vns,
         product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
-        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache, **shape_kwargs,
     )
+    triples = _drop_rule_hidden(triples, filled_source, workspace_id, catalog_prefix)
     attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
     rows: list[tuple[str, str, str]] = [
         (engine._BEAUTIFY_MANDATORY_SECTION, "Product", product_name),

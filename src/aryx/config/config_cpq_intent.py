@@ -858,6 +858,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "by default. Override with ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_ENABLED=true."
         ),
     )
+    cpq_no_blind_fill_optional_multi_enabled: bool = Field(
+        default=False,
+        description=(
+            "Extends cpq_no_blind_fill_optional_enabled (needs it) to multi-select attributes. Today (ws 1267, APX N30) "
+            "the optional multi-select Feature Type (additionalSystemEnhancementFeatureType_astro) reached the "
+            "attrSequence blind pick and was filled 'Disable Cloud Services', which the real screen does not show. With "
+            "this on it is left empty like every other optional multi-select. Off by default. Override with "
+            "ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_MULTI_ENABLED=true."
+        ),
+    )
     cpq_ask_hide_assumes_blank_host_context_enabled: bool = Field(
         default=False,
         description=(
@@ -905,6 +915,26 @@ class CpqIntentSettingsMixin(BaseSettings):
             "visible list), and an unfilled `_bm_model_variable_name` reads as the turn's resolved model node. Needs "
             "cpq_required_set_asks_enabled. Off by default. Override with "
             "ARYX_CPQ_REQUIRED_SET_RULES_READ_ALL_ATTRS_ENABLED=true."
+        ),
+    )
+    cpq_beautify_show_boolean_and_duration_values_enabled: bool = Field(
+        default=False,
+        description=(
+            "Beautify drops a non-mandatory attribute whose value is Yes/No (or a boolean attribute) or a duration "
+            "('3 Years'), so a filled Data Cable = No never appeared (ws 1267, APX 3000) although the real screen shows it. "
+            "With this on, Beautify keeps those rows; the chat summary is unchanged. Off by default. Override with "
+            "ARYX_CPQ_BEAUTIFY_SHOW_BOOLEAN_AND_DURATION_VALUES_ENABLED=true."
+        ),
+    )
+    cpq_beautify_hide_rule_hidden_enabled: bool = Field(
+        default=False,
+        description=(
+            "Beautify is built from the session's filled values over the whole catalog without re-running the hiding "
+            "rules, so an attribute a hiding rule removed still showed its (default) value although the real screen hides "
+            "it (ws 1267, APX N70 Operation Type and Provisioning Assistance). With this on the rules loop records the "
+            "attributes its hiding rules removed for the request, and Beautify drops their rows (the customer's own "
+            "answers stay; a DEBUG ask.beautify.rule_hidden line lists what was dropped). The payload and the chat summary "
+            "are unchanged. Off by default. Override with ARYX_CPQ_BEAUTIFY_HIDE_RULE_HIDDEN_ENABLED=true."
         ),
     )
     cpq_restrict_hide_lists_are_remove_enabled: bool = Field(

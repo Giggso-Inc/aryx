@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aryx.cpq.rules_loop.full_attrs_registry import what_if_loop
 
 
 def _country_available_for(
@@ -57,14 +58,17 @@ def _country_available_for(
     new_bml_eval = _cpq_engine.build_bml_evaluator(workspace_id, new_prefix)
     # evaluate_rules_loop returns the resulting filled dict (auto_fill
     # copies rather than mutating the one passed in) — capture it.
-    _vis, sim_filled, _disp, _copts = _cpq_engine.evaluate_rules_loop(
-        new_attrs, {"country": country_value}, {},
-        new_hiding, new_rec_rules, new_con_rules,
-        bml_eval=new_bml_eval, country=country_value,
-        rule_conflict_order=_cpq_engine._load_layout_full_order(workspace_id, new_prefix),
-        display_order=_cpq_engine.load_layout_display_order(workspace_id, new_prefix),
-        workspace_id=workspace_id, catalog_prefix=new_prefix,
-    )
+    # A what-if loop: it must not replace what the turn's real loop recorded
+    # for the same catalog (all aSTRO25 products share one prefix).
+    with what_if_loop():
+        _vis, sim_filled, _disp, _copts = _cpq_engine.evaluate_rules_loop(
+            new_attrs, {"country": country_value}, {},
+            new_hiding, new_rec_rules, new_con_rules,
+            bml_eval=new_bml_eval, country=country_value,
+            rule_conflict_order=_cpq_engine._load_layout_full_order(workspace_id, new_prefix),
+            display_order=_cpq_engine.load_layout_display_order(workspace_id, new_prefix),
+            workspace_id=workspace_id, catalog_prefix=new_prefix,
+        )
     return _cpq_engine.check_country_availability(
         new_attrs, new_con_rules, sim_filled, new_bml_eval,
         workspace_id=workspace_id, catalog_prefix=new_prefix,

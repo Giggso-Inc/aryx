@@ -11,8 +11,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.cpq.rules_loop.full_attrs_registry import remember_full_attrs, remember_rule_hidden
 from aryx.cpq.rule_trace import rule_trace
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
@@ -109,6 +111,8 @@ def evaluate_rules_loop(
         multi=multi, dropped=dropped, dt_cache=_dt_cache or {},
     )
     state.dt_cache[("_all_attrs", workspace_id, catalog_prefix)] = attrs     # the full list, for the required set's rule inputs
+    if getattr(get_settings(), "cpq_required_set_rules_read_all_attrs_enabled", False) is True:
+        remember_full_attrs(workspace_id, catalog_prefix, attrs)              # for callers with their own turn cache
     scope = LoopScope(
         hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,
         con_rules=con_rules, bml_eval=bml_eval, country=country,
@@ -169,7 +173,19 @@ def evaluate_rules_loop(
     # trace is fully durable by the time this turn's response returns,
     # even though individual fires are no longer written one at a time.
     rule_trace.flush_pending()
+    _remember_rule_hidden(attrs, state.attrs, workspace_id, catalog_prefix)
     return _scoped_attrs(engine, state, scope), state.filled, state.display_filled, state.constrained_opts
+
+
+def _remember_rule_hidden(attrs: list, visible: list, workspace_id: int | None, catalog_prefix: str) -> None:
+    """Flag `cpq_beautify_hide_rule_hidden_enabled`: record the attributes the hiding rules removed (in the loop's input,
+    not hidden by the catalog itself, not in the final visible list) for Beautify. Taken before the model scoping in
+    `_scoped_attrs`, which drops attributes for another reason."""
+    if getattr(get_settings(), "cpq_beautify_hide_rule_hidden_enabled", False) is not True:
+        return
+    shown = {a.variable_name for a in visible}
+    remember_rule_hidden(workspace_id, catalog_prefix,
+                         {a.variable_name for a in attrs if not getattr(a, "hidden", False) and a.variable_name not in shown})
 
 
 def _scoped_attrs(engine: Any, state: LoopState, scope: LoopScope) -> list:
