@@ -821,6 +821,18 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_ASK_HIDE_ASSUMES_BLANK_HOST_CONTEXT_ENABLED=true."
         ),
     )
+    cpq_completeness_scope_by_product_enabled: bool = Field(
+        default=False,
+        description=(
+            "Completeness check only ('This configuration is missing required data: ...'). While the base model is still "
+            "empty, an attribute that no attrSequence row of any of the product's models lists is not counted as missing "
+            "(Is FLASHcode Available?, Quantity and Power Adapter belong to the flash-upgrade and ASTRO systems flows; "
+            "APX 8000 and 6000 stopped on them at the first message). cpq_model_scoped_questions_enabled does this only "
+            "once the base model is known. Anchors and attributes holding a customer or engine-context value are kept; a "
+            "product with no sequence rows is untouched. Off by default. Override with "
+            "ARYX_CPQ_COMPLETENESS_SCOPE_BY_PRODUCT_ENABLED=true."
+        ),
+    )
     cpq_restrict_hide_lists_are_remove_enabled: bool = Field(
         default=False,
         description=(

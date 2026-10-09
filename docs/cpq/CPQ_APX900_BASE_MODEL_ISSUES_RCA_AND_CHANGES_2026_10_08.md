@@ -587,3 +587,22 @@ docker logs aryx-api-1 2>&1 | grep -E "ask.rules_loop.master_context|ask.require
 How to read the Encryption Type case: `master_context` with `target_in_master: false` and a `cpq_model` / `base_models` that is not the quote's model means the master string was built for the wrong scope (for example a Mobile rule
 evaluated for a portable model); `target_in_master: true` with `hide` would be a different problem. `ask.required_set.diagnostic` shows whether the blank-disallow rule fired (`blank_disallow_condition_fired`) and then why the
 attribute was dropped (`hidden_by_rule` is the master-string hide).
+
+
+### The completeness check skips attributes no model of the product lists, before the base model is known (2026-10-09)
+
+ASTRO model testing (ws 1267): APX 8000 and 6000 answer "This configuration is missing required data: Is FLASHcode Available?, Quantity, Power Adapter" on the first message; APX 4500 / 1500 / 6500
+Enhanced after the first answers. The message comes from `ask_stale_constraint_reask.py` (`find_missing_required_fields`), over the attribute list `_applicable_attrs` returns. The three attributes
+are catalog-required but belong to other flows (flash upgrade, ASTRO systems): no attrSequence row of these models lists them. `cpq_model_scoped_questions_enabled` (#475) drops such attributes
+only once the base model is known; with the base model empty it changes nothing, and on the first message of APX 8000 / 6000 nothing has been asked, so it never is.
+
+Change: new flag `ARYX_CPQ_COMPLETENESS_SCOPE_BY_PRODUCT_ENABLED` (off by default; completeness check only). While the base model is empty, an attribute that no attrSequence row of any of the
+product's candidate models lists (at any base model) is left out of the check. Kept: the decision anchors, attributes holding a customer or engine-context value, everything when the product has
+no sequence rows. Once the base model is known the existing base-model scoping decides, as before. No attribute or model name is involved.
+
+Not changed: the questions themselves, the BOM gate at confirm (`bom_gate.find_missing_required_fields` still sees the full list), the `*FLASHPORT` product value in the payload, N50's base model,
+APX 4000's Product question. APX 8000 / 6000 have no pending questions on turn 1, so with the three attributes out they can go straight to "Configuration complete" instead of stopping; that needs a
+separate look.
+
+Risk: a required attribute no sequence row lists but the real screen does show (a catalog gap) would no longer block completion at the proactive check; the confirm gate is unchanged. Replay APX 8000 / 6000 /
+4500 / 6500: the "missing required data" message no longer lists the flash-code attributes. Turn time not measured.
