@@ -1068,6 +1068,25 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_BASEMODEL_DISPLAY_NAME_RESOLUTION_ENABLED=true."
         ),
     )
+    cpq_product_candidates_display_match_first_enabled: bool = Field(
+        default=True,
+        description=(
+            "resolve_product_cpq_models_from_rows sorts an exact product name's real CPQModel candidates "
+            "alphabetically, with no awareness of which one the customer actually means. Live (ws 1267, 2026-10-09): "
+            "product 'APX6500' genuinely resolves to two constraint-proven CPQModels, 'APX5500' and 'APX6500/LI' -- "
+            "alphabetical order puts 'APX5500' first, so every base-model derivation and narrowing step "
+            "(derive_base_model_pick.py, base_model_narrowing.py) ran against APX5500's own Whitelist data for an "
+            "APX 6500 quote. Confirmed via Basemodeltoconfig: APX6500/LI's own displayModel is 'APX6500' (an exact "
+            "match for the product name); APX5500's is 'APX5500' (no relation at all). When on, candidates whose "
+            "Basemodeltoconfig displayModel matches the product name (resolve_cpq_model_from_display_name, the same "
+            "mechanism already used for free-text hints) are moved to the front, in their existing relative order; "
+            "a product with no display-name match, or only one candidate, is untouched -- so the no-op case covers "
+            "every catalog that never had this ambiguity to begin with. On by default (deliberate exception to this "
+            "file's usual off-by-default convention: the change is a narrow, non-destructive reorder, never drops a "
+            "candidate, and is already a no-op without a real display-name match). Override with "
+            "ARYX_CPQ_PRODUCT_CANDIDATES_DISPLAY_MATCH_FIRST_ENABLED=false."
+        ),
+    )
     cpq_rdb_call_timeout_enabled: bool = Field(
         default=False,
         description=(

@@ -331,6 +331,15 @@ def resolve_product_cpq_models_from_rows(
     O(constraint_rows) scan, never repeated per product name. Stale/deleted
     CPQModel codes (see `_is_stale_cpq_model`) are excluded. Returns ()
     when no constraint row anywhere names this exact product string.
+
+    With `cpq_product_candidates_display_match_first_enabled` on and 2+
+    candidates, whichever ones Basemodeltoconfig's own displayModel
+    confirms as a match for `product_name` (`resolve_cpq_model_from_
+    display_name`) are moved to the front, in their existing relative
+    order -- see that flag's own docstring for the live case (ws 1267,
+    "APX6500" -> alphabetical order put the unrelated "APX5500" ahead of
+    "APX6500/LI", whose displayModel IS "APX6500"). Flag off, a single
+    candidate, or no display-name match: unchanged (plain alphabetical).
     """
     key = ("_product_to_cpq_models", workspace_id, catalog_prefix)
     if cache is not None and key in cache:
@@ -353,7 +362,20 @@ def resolve_product_cpq_models_from_rows(
         if cache is not None:
             cache[key] = product_to_models
     norm = (product_name or "").strip().upper()
-    return tuple(sorted(product_to_models.get(norm, ())))
+    candidates = tuple(sorted(product_to_models.get(norm, ())))
+    if len(candidates) < 2:
+        return candidates
+    from aryx.config import get_settings  # noqa: PLC0415 -- lazy, matches this module's existing convention
+    if not get_settings().cpq_product_candidates_display_match_first_enabled:
+        return candidates
+    display_matched = resolve_cpq_model_from_display_name(product_name, workspace_id, catalog_prefix, cache)
+    if not display_matched:
+        return candidates
+    matched = tuple(c for c in candidates if c in display_matched)
+    if not matched:
+        return candidates
+    rest = tuple(c for c in candidates if c not in matched)
+    return matched + rest
 
 
 def resolve_product_cpq_models_from_hint(
