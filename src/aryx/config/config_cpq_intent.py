@@ -855,6 +855,29 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_COMPLETENESS_SCOPE_BY_PRODUCT_ENABLED=true."
         ),
     )
+    cpq_master_string_no_writer_unknown_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs cpq_master_string_hide_enabled. When every writer rule of a hidden master string reads False, the master "
+            "is today taken as empty and a hide rule that searches it hides its attribute. The writers are False only "
+            "because their inputs (Customer Type, Feature Type, the model variable) are not known yet, so the empty master "
+            "is a stand-in, not a fact. With this on the decision is 'unknown' (reason NO_WRITER_FIRED) and the attribute "
+            "stays. Today (ws 1267, APX 900) 'Hide Secure Attributes If No Values Available (Mobile)' hid Encryption Type "
+            "that way, so it was never asked. Off by default. Override with ARYX_CPQ_MASTER_STRING_NO_WRITER_UNKNOWN_ENABLED=true."
+        ),
+    )
+    cpq_required_set_rules_read_all_attrs_enabled: bool = Field(
+        default=False,
+        description=(
+            "Fixes B and C of the Encryption Type RCA. The required set for asking is derived over the visible, model-listed "
+            "attributes only (25 on APX 900), so a blank-disallow rule whose input is an attribute outside that list "
+            "(Customer Type, the hidden constraint master string, Feature Type, the model variable) could never be read and "
+            "never fired. With this on the rule INPUTS are read from the full attribute list of the turn (targets stay on the "
+            "visible list), and an unfilled `_bm_model_variable_name` reads as the turn's resolved model node. Needs "
+            "cpq_required_set_asks_enabled. Off by default. Override with "
+            "ARYX_CPQ_REQUIRED_SET_RULES_READ_ALL_ATTRS_ENABLED=true."
+        ),
+    )
     cpq_restrict_hide_lists_are_remove_enabled: bool = Field(
         default=False,
         description=(

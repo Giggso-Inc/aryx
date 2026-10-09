@@ -649,6 +649,17 @@ Reading it: for the Encryption Type rules (`target secureEncryptionType_astro`),
 keeping the visible list for targets); `false` on country or the base model means the rule does not apply to this model (for example the N30/N50 Essential Core Bundle clause); `unknown` on an attribute that is in the list means its value
 is missing.
 
+### Fix A: no writer fired is "unknown", not "empty master -> hide"
+
+'Hide Secure Attributes If No Values Available (Mobile)' searches a hidden master string written by recommendation rules. With Customer Type / Feature Type / the model variable not known yet every writer reads False, `hide_with_master_string` took the master as "" and hid Encryption Type, so it was never asked. Flag `cpq_master_string_no_writer_unknown_enabled` (off by default; env `ARYX_CPQ_MASTER_STRING_NO_WRITER_UNKNOWN_ENABLED=true`, needs `ARYX_CPQ_MASTER_STRING_HIDE_ENABLED`): the decision becomes unknown (reason `NO_WRITER_FIRED` in `ask.rules_loop.master_unresolved`) and the attribute stays. Verify on APX 900: Encryption Type is asked; `docker logs aryx-api-1 2>&1 | grep NO_WRITER_FIRED | head -3`. Fixes B and C (required set over the full attribute list; `_bm_model_variable_name` from the resolved model) follow after this replay.
+
+### Fixes B and C: required-set rule inputs read from the full attribute list; model variable seeded
+
+The Encryption Type blank-disallow rule reads Customer Type, the hidden constraint master string (id 39505143), Feature Type (id 39505142) and `_bm_model_variable_name` (id 39505129). The required set for asking is derived over the visible, model-listed attributes only (25 on APX 900), so those inputs were `unmapped` and the rule could never fire (`ask.required_set.diagnostic` -> `unfired_blank_disallow`). Flag `cpq_required_set_rules_read_all_attrs_enabled` (off by default; env `ARYX_CPQ_REQUIRED_SET_RULES_READ_ALL_ATTRS_ENABLED=true`; needs `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED`):
+- B: `evaluate_rules_loop` stores the full pre-loop attribute list in the turn cache (`("_all_attrs", ws, prefix)`); `rule_required_vns(input_attrs=...)` reads rule inputs (values, assumed master strings) from it. Targets are still looked up in the visible list, so a target that is not visible is not asked.
+- C: an unfilled `_bm_model_variable_name` in that list reads as `current_model_node()` (the turn's bound/resolved model node). A quote value wins; no node means unknown, nothing required.
+Customer Type is still unfilled (host-supplied), so a rule that needs it non-blank still waits for the blank-host handling; check the `conds` states after the replay: `docker logs aryx-api-1 --since 20m 2>&1 | grep "ask.required_set.diagnostic" | tail -1 | grep -o '"unfired_blank_disallow": \[.*' | cut -c1-4000`.
+
 ### Candidate models resolved once per turn (speed)
 
 Replay 2026-10-09 08:09 (ws 1267, APX 900): pass 0 = 123 s over 2,874 attributes, `stage_not_applicable_guard` = 87 s. The guard called `resolve_product_cpq_models_from_hint` for every attribute; the answer depends only on the wording, so it is now memoized in the per-turn cache (`("_hint_cpq_models", ws, prefix, hint)`). No flag: result is identical, only repeated. Verify: `docker logs aryx-api-1 2>&1 | grep "cpq_perf: auto_fill stages pass=0" | cut -c1-600` (expect `stage_not_applicable_guard` far below 87 s).

@@ -108,6 +108,7 @@ def evaluate_rules_loop(
         attrs=attrs, filled=filled, display_filled={}, sources=sources,
         multi=multi, dropped=dropped, dt_cache=_dt_cache or {},
     )
+    state.dt_cache[("_all_attrs", workspace_id, catalog_prefix)] = attrs     # the full list, for the required set's rule inputs
     scope = LoopScope(
         hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,
         con_rules=con_rules, bml_eval=bml_eval, country=country,

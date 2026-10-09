@@ -151,6 +151,12 @@ def compute_master(
     return "".join(f"{n}{sep}" for n in sorted(names))
 
 
+def _no_writer_fired_is_unknown() -> bool:
+    """Flag `cpq_master_string_no_writer_unknown_enabled`."""
+    from aryx.config import get_settings  # noqa: PLC0415
+    return getattr(get_settings(), "cpq_master_string_no_writer_unknown_enabled", False) is True
+
+
 def hide_with_master_string(
     rule: Any, attrs: list[Any], by_rule_id: dict[int, Any], filled: dict[str, str],
     filled_by_rule_id: dict[int, str], workspace_id: int | None,
@@ -210,6 +216,9 @@ def _hide_with_master_string(
         if detail is not None:
             detail["scope"] = scope_info
     elif all(f is False for _, f in fires):
+        if _no_writer_fired_is_unknown():
+            why.append("NO_WRITER_FIRED")                        # the master is not built, so it is not known to be empty
+            return None
         master = ""
     else:
         why.append("WRITER_CONDITION_UNKNOWN")
