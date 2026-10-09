@@ -71,6 +71,7 @@ def _load_type11_hiding_rules(
     script_missing = 0
     unresolved = 0
     operator_collisions = 0
+    scope_unsafe_unconditional = 0
     try:
         rdb, inputs, actions, marked, chain = engine._load_rule_join_data(
             workspace_id, catalog_prefix)
@@ -89,14 +90,21 @@ def _load_type11_hiding_rules(
         # ones); hiding rules never had — this closes that gap.
         from aryx.cpq import rule_scope  # noqa: PLC0415
         _scope = rule_scope.rule_scope_enabled()
-        _rkw = {"with_ref_id": True} if _scope else {}
+        # review of #503 (2026-10-09): the always=True guard below needs
+        # ref_id whenever F10 is on, independent of `_scope` -- it is a
+        # structural check, not conditioned on cpq_rule_scope_filter_
+        # enabled's current value (see that guard's own comment for why).
+        _f10 = bool(get_settings().cpq_empty_condition_rule_true_enabled)
+        _need_ref_id = _scope or _f10
+        _rkw = {"with_ref_id": True} if _need_ref_id else {}
         _marks: list[tuple[int, str]] = []
         for row in rdb.fetch_rules(
             workspace_id, "11", catalog_prefix, active_only=True, **_rkw,
         ):
             eid, src_id, rule_name, fn_id = row[:4]
+            ref_id = str(row[4] or "") if _need_ref_id else ""
             if _scope:
-                _marks.append((len(rules), str(row[4] or "")))
+                _marks.append((len(rules), ref_id))
             key = engine._rule_key(eid, src_id, inputs, actions, marked)
             targets = engine._resolve_targets(key, actions, marked, chain)
             if not targets:
@@ -142,9 +150,32 @@ def _load_type11_hiding_rules(
                 continue
             inp_list = inputs.get(key)
             if not inp_list:
-                if get_settings().cpq_empty_condition_rule_true_enabled:
+                if _f10:
                     # plan F10: a declarative rule with no condition rows is
-                    # always true (e.g. an "always hide" rule), not unknown
+                    # always true (e.g. an "always hide" rule), not unknown.
+                    # Review of #503 (2026-10-09): deliberately NOT
+                    # conditioned on cpq_rule_scope_filter_enabled's current
+                    # value -- a real (non-unbound) ref_id means this rule
+                    # was authored for a SPECIFIC BmCatalog node, and this
+                    # loader runs once per workspace/catalog (cached, shared
+                    # across every turn and every product), with no per-turn
+                    # model context to check that node against. Whether the
+                    # scope filter happens to be on, and whether a later
+                    # turn's resolved model even has a non-empty scope to
+                    # check it against, are both unknowable here -- so a
+                    # node-scoped rule with zero conditions is refused
+                    # structurally, every time, the same "excluded, not
+                    # silently guessed" treatment as an unresolved target.
+                    # Only a genuinely UNBOUND rule (no ref_id at all) has
+                    # nothing to misapply and may become always=True.
+                    if ref_id and ref_id != "-1":
+                        scope_unsafe_unconditional += 1
+                        logger.info(
+                            "cpq: hiding rule %r (id=%s) is unconditional "
+                            "and scoped to ref_id=%r -- refusing to load it "
+                            "as always=True (no per-turn scope check "
+                            "available at load time)", rule_name, key, ref_id)
+                        continue
                     for target_attr_id, action_type in targets:
                         rules.append(HidingRule(
                             rule_name=rule_name or str(eid),
@@ -189,7 +220,9 @@ def _load_type11_hiding_rules(
         "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
         "%d missing script, %d unresolved, %d skipped: same-attribute "
         "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
-        "PLAN_2026_08_05.md) elapsed_s=%.3f",
+        "PLAN_2026_08_05.md, %d unconditional+scoped refused: no per-turn "
+        "scope check available at load time) elapsed_s=%.3f",
         len(rules), len(rules) - script_backed, script_backed,
-        script_missing, unresolved, operator_collisions, time.monotonic() - _t0)
+        script_missing, unresolved, operator_collisions,
+        scope_unsafe_unconditional, time.monotonic() - _t0)
     return rules
