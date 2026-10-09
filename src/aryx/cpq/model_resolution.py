@@ -54,7 +54,6 @@ def _norm(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
-@functools.lru_cache(maxsize=None)
 def _tokenize(text: str | None) -> tuple[str, ...]:
     """Lowercase letter-runs and digit-runs, in the order they appear; any
     other character, and every letter/digit transition, is a word
@@ -65,12 +64,24 @@ def _tokenize(text: str | None) -> tuple[str, ...]:
     equal. This lets a candidate's words be found in the hint regardless
     of spacing or the order either side spells them in: "APX 6500
     Enhanced" and the catalog's own "Enhanced APX6500/LI" name the same
-    product. Memoized — this runs per candidate name on every resolve,
-    and the catalog has hundreds of names repeated across turns."""
+    product. Deliberately NOT memoized: called once per hint here, and the
+    hint is arbitrary, unbounded customer text — caching it would grow a
+    process-lifetime dict by one entry per distinct message ever seen. Use
+    `_tokenize_name` for a candidate's own display name instead, which IS
+    worth caching (the catalog's few hundred names repeat every turn)."""
     return tuple(re.findall(r"[a-z]+|[0-9]+", (text or "").lower()))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=4096)
+def _tokenize_name(name: str) -> tuple[str, ...]:
+    """`_tokenize`, memoized for catalog candidate names specifically (never
+    for hint text — see `_tokenize`'s docstring). The catalog has at most a
+    few thousand names; `maxsize` caps it defensively rather than relying
+    on that count staying small forever."""
+    return _tokenize(name)
+
+
+@functools.lru_cache(maxsize=4096)
 def _core_span(words: tuple[str, ...]) -> tuple[int, int] | None:
     """The span (start, end) of the model *code* itself: the digit-run
     naming the model, plus the single letter-run immediately in front of
@@ -127,14 +138,20 @@ def _match_kind(
     When `cpq_model_resolution_word_order_independent_enabled` is on and
     `hint_token_seq` is given, a candidate's name is additionally checked
     word-by-word (see `_match_kind_by_tokens`): the catalog's own word
-    order is no longer required, but the model's own digit code must
-    still read contiguously in the hint — "APX 8000 radios, 3000 units"
-    names APX8000, not APX3000, even though both numbers appear
-    somewhere in the sentence. The substring check always runs first and
-    wins when it finds something, so this is a strict superset by
-    construction: nothing that matches today stops matching, and any
-    text the tokenizer treats differently (e.g. punctuation fused into a
-    single run) still resolves exactly as before."""
+    order is no longer required, but the model's own digit code (or, for a
+    name with no digits, the whole name) must still read contiguously in
+    the hint — "APX 8000 radios, 3000 units" names APX8000, not APX3000,
+    even though both numbers appear somewhere in the sentence.
+
+    Per-candidate, this is a strict superset by construction: the
+    substring check always runs first and wins when it finds something,
+    so a candidate that matches today keeps matching exactly the same way.
+    What it does NOT guarantee is that `resolve_model`'s final pick is
+    unchanged: a wording that used to match only one candidate can now
+    also match a second, more specific one (e.g. "Enhanced APX6500/LI"
+    alongside the plain "APX6500/LI"), and `rank_candidates`'
+    `longest_name_match` step will then prefer the newcomer — which is the
+    fix's whole point, not an accident of it."""
     normed = {_norm(n) for n in names}
     exact = [len(n) for n in normed if len(n) >= _MIN_NAME_LEN and _occurs(n, hint_norm)]
     if exact:
@@ -173,14 +190,22 @@ def _match_kind_by_tokens(
     present or not, only whether they're present decides exact vs.
     partial, and the matched length always includes whichever ones were
     found, so a name matched with more of its words present outranks one
-    matched with fewer (`rank_candidates`' `longest_name_match` step)."""
+    matched with fewer (`rank_candidates`' `longest_name_match` step).
+
+    A name with no digits at all (e.g. "Mobile Radio Kit") has no code to
+    anchor on, so its words must appear as a contiguous, in-order run in
+    the hint — the same requirement the digit code gets, not a bag-of-words
+    check. Without this, "kit for mobile radio use" would match "Mobile
+    Radio Kit" on word presence alone, with its words in no particular
+    relationship to each other; roughly a third of this catalog's names
+    have no digit, so this isn't a corner case."""
     hint_set = frozenset(hint_token_seq)
     exact, partial = [], []
     for name in names:
-        words = _tokenize(name)
+        words = _tokenize_name(name)
         span = _core_span(words)
         if span is None:
-            if words and all(w in hint_set for w in words):
+            if words and _contiguous(words, hint_token_seq):
                 total = sum(len(w) for w in words)
                 if total >= _MIN_NAME_LEN:
                     exact.append(total)

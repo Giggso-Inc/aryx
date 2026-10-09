@@ -15,10 +15,13 @@ Enhanced" (adjective-last, an equally natural phrasing) normalizes to
 
 Fix: `cpq_model_resolution_word_order_independent_enabled` tokenizes both the
 candidate's display name and the hint into words. The name's own digit code
-(e.g. "apx6500") must still read contiguously, in order, in the hint -- this
-is what stops an unrelated number elsewhere in an ordinary quote request (a
-quantity, a battery size, another model) from matching -- but any other word
-("Enhanced", "LI") only needs to appear somewhere in the hint, in any order.
+(e.g. "apx6500"), or the whole name when it has no digits, must still read
+contiguously, in order, in the hint -- this is what stops an unrelated
+number elsewhere in an ordinary quote request (a quantity, a battery size,
+another model) from matching. A word in front of the code ("Enhanced") must
+also be present -- it is what makes the name more specific, so it is not
+optional -- while a trailing suffix ("LI") stays optional, same as the
+original substring check's own `_CORE_RE` fallback already treats it.
 `rank_candidates`'s own `longest_name_match` step (untouched) still prefers
 the more specific (more-worded) name once both candidates can match.
 """
@@ -203,3 +206,43 @@ def test_flag_on_is_a_strict_superset_of_the_substring_check_by_construction():
         assert on_res.resolved == off_res.resolved
         if off_res.resolved:
             assert on_res.chosen.cpq_model == off_res.chosen.cpq_model
+
+
+def test_flag_on_requires_contiguity_for_names_with_no_digit_code():
+    """Review of this fix (2026-10-09): a name with no digits at all (roughly
+    a third of this catalog's real names -- e.g. "Mobile Radio Kit") has no
+    code to anchor on, so without a contiguity requirement its words would
+    match as a plain bag of words anywhere in the hint. "kit for mobile
+    radio use" must NOT match "Mobile Radio Kit" -- the words are present,
+    but not in any contiguous, in-order run, so this is an unrelated
+    sentence, not the same product named differently."""
+    rdb = FakeRdb({
+        "XBmCatalog": [{"id": "1", "name": "astro", "parent_id": "-1"}],
+        "Basemodeltoconfig": [
+            {"cpqModel": "MOBILERADIOKIT", "displayModel": "Mobile Radio Kit", "baseModel": "T1"},
+            {"cpqModel": "MOBILERADIOKIT", "displayModel": "Mobile Radio Kit", "baseModel": "T2"},
+        ],
+        "Flagsforflashport": [],
+        "XBmConfigRule": [],
+    })
+    with patch("aryx.config.get_settings", _cfg(True)):
+        bag_of_words = mr.resolve_model("kit for mobile radio use", 1, "X", rdb)
+        contiguous = mr.resolve_model("I need a Mobile Radio Kit please", 1, "X", rdb)
+    assert not bag_of_words.resolved, "the words are scattered, not a contiguous run -- must not match"
+    assert contiguous.resolved and contiguous.chosen.cpq_model == "MOBILERADIOKIT"
+
+
+def test_tokenize_does_not_cache_hint_text():
+    """Review of this fix (2026-10-09): `_tokenize` must stay uncached --
+    it runs once per customer message, so caching it would grow a
+    process-lifetime dict by one entry per distinct message ever seen in a
+    long-running server. Only `_tokenize_name` (catalog names, a small,
+    repeating set) should be memoized."""
+    assert not hasattr(mr._tokenize, "cache_info"), "_tokenize must not be an lru_cache-wrapped function"
+    info_before = mr._tokenize_name.cache_info()
+    for i in range(50):
+        mr._tokenize(f"a distinct customer message number {i}")
+    # _tokenize itself has no cache at all; confirm _tokenize_name's cache --
+    # the one memoized function here -- didn't grow just from tokenizing hint
+    # text, since hint text never goes through it.
+    assert mr._tokenize_name.cache_info().currsize == info_before.currsize
