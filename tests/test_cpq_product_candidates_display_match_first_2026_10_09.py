@@ -86,3 +86,41 @@ def test_flag_on_unchanged_for_a_single_candidate():
     with patch("aryx.config.get_settings", _cfg(True)):
         result = resolve_product_cpq_models_from_rows("APX6500", workspace_id=1267, cache=cache)
     assert result == ("APX6500/LI",)
+
+
+def test_flag_on_two_matched_candidates_keep_their_relative_order():
+    """Review of #506 (2026-10-09): none of the original 4 tests covered 2+
+    matched candidates. "APX1500" resolves to three candidates; two
+    (alphabetically "APX1500ENH" then "APX1500X") both have a displayModel
+    matching the product name and must stay in that same relative order in
+    front, with the non-matching one pushed behind -- never re-sorted
+    independently of each other."""
+    cache = {
+        _PRODUCT_TO_MODELS_KEY: {"APX1500": {"APX1500ENH", "APX1500X", "APX9999"}},
+        (1267, "", "basemodel_to_config"): [
+            {"cpqModel": "APX1500ENH", "displayModel": "APX1500"},
+            {"cpqModel": "APX1500X", "displayModel": "APX1500"},
+            {"cpqModel": "APX9999", "displayModel": "APX9999"},
+        ],
+    }
+    with patch("aryx.config.get_settings", _cfg(True)):
+        result = resolve_product_cpq_models_from_rows("APX1500", workspace_id=1267, cache=cache)
+    assert result == ("APX1500ENH", "APX1500X", "APX9999")
+
+
+def test_reordered_result_is_memoized_independent_of_base_model():
+    """Review of #506 (2026-10-09): the reorder must be memoized under
+    (workspace_id, catalog_prefix, product_name) so a caller invoking this
+    with the per-turn cache pays the Basemodeltoconfig scan at most once,
+    regardless of how many times (or with what unrelated arguments) it's
+    called again for the same product in the same turn."""
+    cache = _seeded_cache()
+    with patch("aryx.config.get_settings", _cfg(True)):
+        first = resolve_product_cpq_models_from_rows("APX6500", workspace_id=1267, cache=cache)
+        reorder_key = ("_product_cpq_models_display_matched", 1267, "", "APX6500")
+        assert reorder_key in cache, "the reordered result must be cached under this exact key"
+        # Poison the Basemodeltoconfig cache entry: if the memo is skipped on the next
+        # call, it would scan this (wrong) data and silently produce a different answer.
+        cache[_BASEMODEL_TO_CONFIG_KEY] = []
+        second = resolve_product_cpq_models_from_rows("APX6500", workspace_id=1267, cache=cache)
+    assert first == second == ("APX6500/LI", "APX5500")
