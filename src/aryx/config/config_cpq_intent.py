@@ -808,6 +808,20 @@ class CpqIntentSettingsMixin(BaseSettings):
             "by default. Override with ARYX_CPQ_NO_BLIND_FILL_OPTIONAL_ENABLED=true."
         ),
     )
+    cpq_ask_hide_assumes_blank_host_context_enabled: bool = Field(
+        default=False,
+        description=(
+            "Needs the required-set asks. For the check that drops hidden attributes from the questions only: a free-text "
+            "attribute (selection shape single, no menu options; numeric, date, currency, boolean and multi-select "
+            "attributes are never included) that the quote does not carry AND that a declarative hide rule tests (Customer "
+            "Type is the one that matters: the host supplies it in production) counts as blank for the DECLARATIVE hide "
+            "rules, and those rules are evaluated before the base model is known. Today 'Hide ... on Non FED Customer' cannot fire without Customer Type, so 'Do You "
+            "Require Radio FCC Trigger?' (required by a country-conditioned blank-disallow rule) was asked first on every "
+            "product while no real screen shows it. Script-backed hide rules are never evaluated with blanks. A Federal "
+            "customer's quote would skip a question the real screen asks. Off by default. Override with "
+            "ARYX_CPQ_ASK_HIDE_ASSUMES_BLANK_HOST_CONTEXT_ENABLED=true."
+        ),
+    )
     cpq_completeness_scope_by_product_enabled: bool = Field(
         default=False,
         description=(

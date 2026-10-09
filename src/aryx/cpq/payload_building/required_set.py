@@ -96,29 +96,33 @@ def script_filled_quantity_vns(engine: Any, attrs: list[Any], rec_rules: list[An
     return quantity & filled_by_rule
 
 
-def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> dict[int, str]:
-    """Flag `cpq_required_set_master_string_present_enabled`: entity/source ids of the hidden, option-less 'MasterString'
-    attributes the quote does not fill, mapped to a non-blank stand-in value (see the setting's description)."""
+def _assumed_master_string_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> list[Any]:
+    """Flag `cpq_required_set_master_string_present_enabled`: the hidden, option-less 'MasterString' attributes the quote
+    does not fill (see the setting's description). Empty with the flag off."""
     if getattr(get_settings(), "cpq_required_set_master_string_present_enabled", False) is not True:
-        return {}
+        return []
+    return [a for a in attrs
+            if getattr(a, "hidden", False) and "masterstring" in a.variable_name.lower() and not getattr(a, "options", None)
+            and a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)]
+
+
+def _assumed_master_strings(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None) -> dict[int, str]:
+    """Entity/source ids of the assumed attributes, mapped to a non-blank stand-in value."""
     out: dict[int, str] = {}
-    for a in attrs:
-        vn = a.variable_name
-        if (getattr(a, "hidden", False) and "masterstring" in vn.lower() and not getattr(a, "options", None)
-                and vn not in filled and not (filled_multi or {}).get(vn)):
-            out[a.entity_id] = "ASSUMED_PRESENT"
-            if a.source_id is not None:
-                out[a.source_id] = "ASSUMED_PRESENT"
+    for a in _assumed_master_string_attrs(attrs, filled, filled_multi):
+        out[a.entity_id] = "ASSUMED_PRESENT"
+        if a.source_id is not None:
+            out[a.source_id] = "ASSUMED_PRESENT"
     return out
 
 
 def rule_required_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str],
     filled_multi: dict[str, list[str]] | None, workspace_id: int, catalog_prefix: str,
-    rules: tuple[list[Any], list[Any]] | None = None,
+    rules: tuple[list[Any], list[Any]] | None = None, stats: dict | None = None,
 ) -> set[str]:
     """Targets of a firing blank-disallow constraint action or a firing
-    message-only validation rule."""
+    message-only validation rule. `stats`, when given, receives diagnostic counts (never affects the result)."""
     by_id = _attr_index(attrs)
     by_rule_id = {**_assumed_master_strings(attrs, filled, filled_multi), **_filled_by_rule_id(attrs, filled, filled_multi)}
     settings = get_settings()
@@ -126,22 +130,34 @@ def rule_required_vns(
                        or getattr(settings, "cpq_required_set_rule_guards_assumed_open", False) is True)
     out: set[str] = set()
     _rec, con_rules = rules or engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
+    counts = {"blank_disallow_loaded": 0, "blank_disallow_condition_fired": 0, "blank_disallow_guard_closed": 0,
+              "blank_disallow_target_missing": 0, "validation_loaded": 0, "validation_fired": 0}
     for rule in con_rules:
         if str(getattr(rule, "mode", "")).upper() != "DISALLOW" or not getattr(rule, "blank", False):
             continue
+        counts["blank_disallow_loaded"] += 1
         if rule.condition_script is not None or not _fires(rule.conditions, by_rule_id):
             continue
+        counts["blank_disallow_condition_fired"] += 1
         guard = getattr(rule, "guard_attr", "")
         if guard and not guard_open(rule, filled, assume_open):
+            counts["blank_disallow_guard_closed"] += 1
             continue
         target = by_id.get(rule.target_attr_id)
         if target is not None:
             out.add(target.variable_name)
+        else:
+            counts["blank_disallow_target_missing"] += 1
     for rule in engine.load_validation_rules(workspace_id, catalog_prefix):
+        counts["validation_loaded"] += 1
         if rule.condition_script is None and _fires(rule.conditions, by_rule_id):
+            counts["validation_fired"] += 1
             target = by_id.get(rule.target_attr_id)
             if target is not None:
                 out.add(target.variable_name)
+    if stats is not None:
+        stats.update(counts)
+        stats["assumed_master_strings"] = len(_assumed_master_string_attrs(attrs, filled, filled_multi))
     return out
 
 
@@ -174,6 +190,35 @@ def _visible(attr: Any, hidden_vns: set[str], display_order: dict[str, int] | No
     return display_order is None or attr.variable_name in display_order
 
 
+def _invisible_reason(attr: Any, hidden_vns: set[str], display_order: dict[str, int] | None) -> str:
+    """Diagnostic label for why `_visible` is False (same order of checks)."""
+    if attr.hidden:
+        return "catalog_hidden"
+    if attr.hide_in_trans:
+        return "hide_in_trans"
+    if attr.variable_name in hidden_vns:
+        return "hidden_by_rule"
+    return "not_in_layout"
+
+
+def _log_required_set_diagnostic(*, rule_only: bool, stats: dict, found: set[str], dropped: dict[str, str],
+                                 kept: set[str], models: list[str], base_model: str, attr_count: int) -> None:
+    """ask.required_set.diagnostic (DEBUG): what the rules found and why each candidate was kept or dropped. Answers "why is
+    this attribute (not) in the asked set" from the log alone."""
+    try:
+        from aryx.raven_log import raven_log, would_log  # noqa: PLC0415 -- diagnostic only
+
+        if not would_log("DEBUG"):
+            return
+        raven_log("DEBUG", "P4", "ask.required_set.diagnostic why each candidate was kept or dropped", context={
+            "selected_option": "computed", "available_options": ["computed"], "reason_code": "REQUIRED_SET_DIAGNOSTIC",
+            "rule_required_only": rule_only, "attr_count": attr_count, "models": models[:4], "base_known": bool(base_model),
+            "rule_found": sorted(found)[:25], "kept": sorted(kept)[:25],
+            "dropped": dict(sorted(dropped.items())[:30]), **stats})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change the required set
+        return
+
+
 def derive_required_vns(
     engine: Any, attrs: list[Any] | None, filled: dict[str, str],
     filled_multi: dict[str, list[str]] | None, filled_source: dict[str, str] | None,
@@ -201,22 +246,34 @@ def derive_required_vns(
         if not rule_required_only:
             candidates |= r_flagged_names(models, base_model, workspace_id, catalog_prefix, cache)
     rules = engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
-    candidates |= rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules)
-    candidates -= script_filled_quantity_vns(engine, attrs, rules[0])
+    rule_stats: dict = {}
+    rule_found = rule_required_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix, rules, rule_stats)
+    candidates |= rule_found
+    quantity_filled = script_filled_quantity_vns(engine, attrs, rules[0])
+    candidates -= quantity_filled
     by_vn = {a.variable_name: a for a in attrs}
     sources = filled_source or {}
     hidden = hidden_vns or set()
     out: set[str] = set()
+    dropped: dict[str, str] = {vn: "script_filled_quantity" for vn in quantity_filled & rule_found}
     for vn in candidates:
         attr = by_vn.get(vn)
-        if attr is None or not _visible(attr, hidden, display_order):
+        if attr is None:
+            dropped[vn] = "not_in_attribute_list"
+            continue
+        if not _visible(attr, hidden, display_order):
+            dropped[vn] = _invisible_reason(attr, hidden, display_order)
             continue
         has_value = bool(filled.get(vn) or (filled_multi or {}).get(vn))
         if has_value and sources.get(vn) in CATALOG_FILL_SOURCES:
+            dropped[vn] = "catalog_filled"
             continue
         if no_legal_value(engine, vn, filled, models, base_model, workspace_id, catalog_prefix, cache):
-            continue    # the data tables confirm no value is legal right now
+            dropped[vn] = "no_legal_value"    # the data tables confirm no value is legal right now
+            continue
         out.add(vn)
+    _log_required_set_diagnostic(rule_only=rule_required_only, stats=rule_stats, found=rule_found, dropped=dropped,
+                                 kept=out, models=models, base_model=base_model, attr_count=len(attrs))
     return frozenset(out)
 
 

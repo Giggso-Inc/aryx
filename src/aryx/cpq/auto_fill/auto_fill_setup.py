@@ -79,6 +79,26 @@ def _required_ask_vns(
         return frozenset()
 
 
+def _blank_host_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None,
+                      declarative_rules: list[Any]) -> dict[str, str]:
+    """The attributes the hide check counts as blank (flag `cpq_ask_hide_assumes_blank_host_context_enabled`): free-text
+    attributes (selection shape "single" with no menu: numeric, date, currency, boolean and multi-select attributes are
+    never included) that the quote does not carry AND that at least one declarative hide rule tests. Customer Type and
+    Customer UIN are the host-supplied ones; no other attribute is invented."""
+    referenced: set[Any] = set()
+    for rule in declarative_rules:
+        conditions = getattr(rule, "conditions", None)
+        if conditions:
+            referenced.update(c[0] for c in conditions)
+        else:
+            referenced.add(getattr(rule, "condition_attr_id", None))
+    return {
+        a.variable_name: "" for a in attrs
+        if (a.entity_id in referenced or getattr(a, "source_id", None) in referenced)
+        and a.variable_name not in filled and not (filled_multi or {}).get(a.variable_name)
+        and not getattr(a, "options", None) and getattr(a, "select_type", "") == "single"}
+
+
 def _rule_hidden_vns(
     engine: Any, attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]],
     workspace_id: int, catalog_prefix: str, product_anchor_hint: str | None, dt_cache: dict | None,
@@ -88,16 +108,45 @@ def _rule_hidden_vns(
     attribute is not on the screen, so it is never asked. Failure-safe: nothing extra is hidden."""
     try:
         from aryx.cpq.catalog_profile import resolve_base_model_vn  # noqa: PLC0415
-        if not filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""):
+        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        base_known = bool(filled.get(resolve_base_model_vn(filled, workspace_id, catalog_prefix, dt_cache), ""))
+        blank_host = getattr(get_settings(), "cpq_ask_hide_assumes_blank_host_context_enabled", False) is True
+        if not base_known and not blank_host:
+            if would_log("DEBUG"):
+                raven_log("DEBUG", "P4", "ask.required_set.hidden hide check skipped, base model unknown and the flag is off", context={
+                    "selected_option": "skipped", "available_options": ["evaluated", "skipped"],
+                    "reason_code": "REQUIRED_SET_HIDE_CHECK_SKIPPED", "base_known": False, "blank_host": False})
             return set()    # master-string hide rules say "hide" while the base model is blank; that is not a decision yet
         rules = engine.load_hiding_rules(workspace_id, catalog_prefix, product_anchor_hint or "")
-        from aryx.cpq.rule_trace.rule_trace_state import untraced  # noqa: PLC0415
+        hidden: set[str] = set()
         with untraced():        # a query, not a decision: it must not add fired-rule rows to the trace
-            return set(engine.apply_hiding_rules(
-                attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
-                catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
-    except Exception:  # noqa: BLE001 -- a rule that cannot be read hides nothing
-        logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+            if base_known:
+                hidden |= set(engine.apply_hiding_rules(
+                    attrs, filled, rules, bml_eval, filled_multi, workspace_id=workspace_id,
+                    catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+            if blank_host:
+                # Declarative rules only (a script or master-string rule is never evaluated with invented blanks), with
+                # the host-supplied context the quote never carries counted as blank, as the real screen has it.
+                declarative = [r for r in rules if not getattr(r, "script", None)]
+                blanks = _blank_host_attrs(attrs, filled, filled_multi, declarative)
+                hidden |= set(engine.apply_hiding_rules(
+                    attrs, {**blanks, **filled}, declarative, None, filled_multi, workspace_id=workspace_id,
+                    catalog_prefix=catalog_prefix, dt_cache=dt_cache)[2])
+        if would_log("DEBUG"):
+            raven_log("DEBUG", "P4", "ask.required_set.hidden attributes the hide check removed from the asked set", context={
+                "selected_option": "evaluated", "available_options": ["evaluated", "skipped"],
+                "reason_code": "REQUIRED_SET_HIDE_CHECK", "base_known": base_known, "blank_host": blank_host,
+                "rules_total": len(rules), "hidden_count": len(hidden), "hidden_vns": sorted(hidden)[:25]})
+        return hidden
+    except Exception as exc:  # noqa: BLE001 -- a rule that cannot be read hides nothing
+        try:
+            raven_log("WARN", "P3", "ask.required_set.hide_check_failed hide rules could not be evaluated, nothing extra hidden",
+                      error_code="ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED",
+                      context={"selected_option": "skipped", "available_options": ["evaluated", "skipped"],
+                               "reason_code": "HIDE_CHECK_EXCEPTION", "error_class": type(exc).__name__, "error": str(exc)[:200]})
+            logger.debug("cpq: hiding rules for the required set failed", exc_info=True)
+        except Exception:  # noqa: BLE001 -- logging must never break the safety net
+            pass
         return set()
 
 

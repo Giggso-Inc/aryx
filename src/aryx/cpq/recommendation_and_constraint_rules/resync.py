@@ -112,6 +112,10 @@ def resync_stale_recommendations(
              if o.item_value.lower() == recommended_value.lower()),
             recommended_value,
         )
+        from aryx.cpq.recommendation_and_constraint_rules.base_model_rule_log import (  # noqa: PLC0415 -- diagnostic only
+            log_base_model_rule_value,
+        )
+        log_base_model_rule_value(rule, vn, recommended_value, current, "resync_stale_recommendations")
         corrections[vn] = (recommended_value, matched_display)
     if corrections:
         logger.info(

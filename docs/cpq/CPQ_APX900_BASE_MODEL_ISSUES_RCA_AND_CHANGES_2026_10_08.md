@@ -547,6 +547,50 @@ Risk: Encryption Type (and any other rule gated on a master string) can be asked
 its master strings differently is unaffected. F3 changes how every multi-input rule is evaluated. Replay APX 900 / 3000 / 4000 / 8500: `ask.required_set.derived` lists `secureEncryptionType_astro`; N30 with
 Essential Core Bundle does not.
 
+### The ask-set hide check counts host-supplied context as blank (2026-10-09)
+
+With `ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED` and the guard flag on, `ask.required_set.derived` listed one attribute on SRX 2200, APX 8500 and APX 900
+(`required_count 1`, `requireForRadioFEDFCCTriggerSS_astro`) and "Do You Require Radio FCC Trigger?" was asked first. No real screen (APX 3000, 4000, 8500) shows
+it. Rules on ws 1267: about 14 script-backed `Constrain "None" for ...` / `Constraint Radio FED FCC Trigger for US customer` (`set_type -1`, blank-disallow once
+`cpq_constraint_mode_enabled` loads them) require it from the country alone; "Hide ... on Non FED Customer", "Associate Recommendation Rule: Hide ... when <> FEDERAL"
+and per-product hides remove it, but need Customer Type, which a quote does not carry (the host supplies it). `evaluate_declarative_conditions` treats an unfilled
+attribute as unknown, so the hide never fires; the real screen counts it blank.
+
+Change: new flag `ARYX_CPQ_ASK_HIDE_ASSUMES_BLANK_HOST_CONTEXT_ENABLED` (off by default; only affects the hide check inside the required-set ask). A second pass runs the
+DECLARATIVE hide rules (never script-backed or master-string ones) with every free-text attribute that has no menu options and is absent from the quote counted as blank,
+and it runs before the base model is known too. The existing pass (all rules, real answers, base model known) is unchanged. Attributes with options or answers are never
+blanked.
+
+Risk: a Federal customer's quote skips a question the real screen asks (keep the flag off, or supply Customer Type, for Federal quotes); another declarative hide that
+matches on a blank free-text attribute can now hide an attribute earlier. Replay: the FCC question is not asked on SRX 2200 / APX 8500 / APX 900; `required_vns` no
+longer lists it.
+
+
+### Diagnostic logs for the dev findings of 2026-10-09
+
+Two findings from the dev log (541 MB, 22:34 to 03:33): Encryption Type is hidden by "Hide Secure Attributes If No Values Available (Mobile)" / "Hide Encryption Type Attribute If No
+Values Available (Portable)" decided from the computed master string (`hide_decided`, 88 records), and N50's base model becomes `TT2592A` / `T8343A`, written by a rule (`ask.base_model.write`, source
+`rule`, site `resync_stale_recommendations`). Logging only; no result changes. Read them with:
+
+| Question | Log line (DEBUG unless noted) | Fields |
+|---|---|---|
+| Was the hide of Encryption Type decided on a master string built for the right model? | `ask.rules_loop.master_context` (reason `DECIDED_MASTER_STRING_CONTEXT`) | `rule_name`, `attr`, `master_var`, `cpq_model`, `base_models`, `master_names`, `target_in_master`, `names_sample`, `live_writers` |
+| Why is an attribute (not) in the asked set? | `ask.required_set.diagnostic` | `rule_found`, `kept`, `dropped` (attribute -> `not_in_attribute_list` / `catalog_hidden` / `hide_in_trans` / `hidden_by_rule` / `not_in_layout` / `catalog_filled` / `no_legal_value` / `script_filled_quantity`), `blank_disallow_loaded`, `blank_disallow_condition_fired`, `blank_disallow_guard_closed`, `validation_loaded`, `validation_fired`, `assumed_master_strings` |
+| What did the hide check remove from the asked set? | `ask.required_set.hidden` | `hidden_count`, `hidden_vns`, `base_known`, `blank_host`, `rules_total` |
+| Did the hide check fail? | `ask.required_set.hide_check_failed` (WARN) | `error_class`, `error` |
+| Which rule wrote a base-model value, and does it look like a base model? | `ask.base_model.rule_value` (WARN `ARYX_ASK_BASE_MODEL_RULE_SHAPE` when the shape differs from the value it replaces) | `rule_name`, `rule_ref_id`, `recommended_state`, `current_state`, `shape_recommended`, `shape_current`, `condition_attr_ids`, `condition_values` |
+
+Error codes (WARN, always on; the repo has no separate error-code catalog, so they are listed here and in the code): `ARYX_ASK_REQUIRED_SET_HIDE_CHECK_FAILED` (P3, the required-set hide check raised; nothing extra was
+hidden, read `error_class` / `error`) and `ARYX_ASK_BASE_MODEL_RULE_SHAPE` (P3, a recommendation rule wrote a base-model value whose letter/digit pattern differs from the value it replaced, read `rule_name`).
+
+```bash
+docker logs aryx-api-1 2>&1 | grep -E "ask.rules_loop.master_context|ask.required_set.diagnostic|ask.required_set.hidden|ask.base_model.rule_value" | cut -c1-900
+```
+
+How to read the Encryption Type case: `master_context` with `target_in_master: false` and a `cpq_model` / `base_models` that is not the quote's model means the master string was built for the wrong scope (for example a Mobile rule
+evaluated for a portable model); `target_in_master: true` with `hide` would be a different problem. `ask.required_set.diagnostic` shows whether the blank-disallow rule fired (`blank_disallow_condition_fired`) and then why the
+attribute was dropped (`hidden_by_rule` is the master-string hide).
+
 
 ### The completeness check skips attributes no model of the product lists, before the base model is known (2026-10-09)
 
