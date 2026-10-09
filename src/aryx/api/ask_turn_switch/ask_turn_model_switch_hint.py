@@ -83,15 +83,27 @@ def _other_changes(question: str, session: Any, attrs: list, hints: dict) -> boo
     """Return True when THIS message also changes answers besides Product.
 
     A hint counts only when its option is named in the message itself, so a
-    hint merged from older text never triggers the "send again" note.
+    hint merged from older text never triggers the "send again" note. A hint
+    that restates what is already stored is not a change either: the value is
+    compared (normalized) with the stored value, its display text, and the
+    session's country, which the destination-country attribute is kept in
+    ("…for United States" on a US quote is not a change).
     """
     by_vn = {a.variable_name: a for a in attrs}
+    country = _norm(getattr(session, "country", "") or "")
     for vn, iv in (hints or {}).items():
         attr = by_vn.get(vn)
-        if vn == PRODUCT_LITERAL or attr is None or session.filled.get(vn) == iv:
+        if vn == PRODUCT_LITERAL or attr is None:
             continue
         option = next((o for o in getattr(attr, "options", None) or () if o.item_value == iv), None)
         names = (option.display_name or iv, iv) if option is not None else (iv,)
+        stored = {_norm(str(v)) for v in (session.filled.get(vn), session.display_filled.get(vn)) if v}
+        if country and not stored:
+            # Only an attribute with no stored value of its own is compared with
+            # the session country (the destination country is kept there).
+            stored.add(country)
+        if any(_norm(n) in stored for n in names):
+            continue
         if _name_start(question, names) is not None:
             return True
     return False

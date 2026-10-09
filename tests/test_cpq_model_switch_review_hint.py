@@ -110,6 +110,27 @@ def test_unchanged_other_hints_get_no_note(flag_on):
     assert "not been applied yet" not in resp["answer"]
 
 
+def test_same_country_restated_is_not_another_change(flag_on):
+    """Live run e025a279: "...for United States" on a US quote added the
+    country hint, which counted as another change and showed the note."""
+    country = SimpleNamespace(
+        variable_name="ultimateDestinationCountry", select_type="single",
+        options=[SimpleNamespace(item_value="US", display_name="United States")])
+    resp = hint_mod._offer_model_switch_from_hint(
+        _req("I want to quote for Model B for United States"), _session(), [_PRODUCT_ATTR, country],
+        {PRODUCT_LITERAL: "MODEL_B", "ultimateDestinationCountry": "US"})
+    assert resp is not None and "not been applied yet" not in resp["answer"]
+
+
+def test_country_text_on_an_answered_attribute_is_still_a_change(flag_on):
+    band = SimpleNamespace(variable_name="band", select_type="single",
+                           options=[SimpleNamespace(item_value="US_BAND", display_name="United States")])
+    resp = hint_mod._offer_model_switch_from_hint(
+        _req("Model B with United States band"), _session(), [_PRODUCT_ATTR, band],
+        {PRODUCT_LITERAL: "MODEL_B", "band": "US_BAND"})
+    assert "not been applied yet" in resp["answer"]
+
+
 def test_other_hint_not_named_in_this_message_gets_no_note(flag_on):
     band = SimpleNamespace(variable_name="band", select_type="single", options=[])
     resp = hint_mod._offer_model_switch_from_hint(

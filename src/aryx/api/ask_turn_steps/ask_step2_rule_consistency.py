@@ -17,6 +17,7 @@ patch several ask_api names by dotted path.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from aryx.raven_log import raven_log, would_log
@@ -26,22 +27,43 @@ def _step2_log_rule_consistency_and_array_grid(
     req: "Any", session: Any, attrs: list, hiding_rules: list, rec_rules: list,
     con_rules: list, bml_eval: Any, catalog_prefix: str,
 ) -> None:
+    """Run the log-only rule-consistency check and flag array-grid controls."""
     from aryx.api import ask_api as _ask_api_module
     _cpq_engine = _ask_api_module._cpq_engine
     logger = _ask_api_module.logger
+    # Timing per call: live turns spent 25-38 minutes in this log-only check
+    # (runs 876a0220, e025a279) with nothing logged between the start and the
+    # result, so the slow call could not be named. The timing record below
+    # (and ask.rule_consistency.timing inside find_rule_inconsistencies) shows
+    # which call it is. See DOC/aryx-oci/aryx-oci_bug_log.md "step-2
+    # rule-consistency check is slow".
+    _t0 = time.monotonic()
 
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
         attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+    _t_hiding = time.monotonic()
     _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
         req.workspace_id, catalog_prefix, attrs)
+    _t_flow = time.monotonic()
     if session.model_leaf_resolved:
         _hidden_for_payload = _hidden_for_payload | _cpq_engine.product_label_noise_vns(
             attrs, hiding_rules, rec_rules, con_rules)
+    _t_noise = time.monotonic()
 
     _rule_issues = _cpq_engine.find_rule_inconsistencies(
         session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval,
         filled_source=session.filled_source, filled_multi=session.filled_multi,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
+    _t_end = time.monotonic()
+    raven_log("INFO", "P4", "ask.preamble.rule_consistency_timing per-call durations of the step-2 check", context={
+        "stage": "step2_rule_consistency", "result": "done", "reason_code": "TIMING",
+        "duration_ms": int((_t_end - _t0) * 1000),
+        "apply_hiding_ms": int((_t_hiding - _t0) * 1000),
+        "payload_flow_exclusions_ms": int((_t_flow - _t_hiding) * 1000),
+        "product_label_noise_ms": int((_t_noise - _t_flow) * 1000),
+        "find_rule_inconsistencies_ms": int((_t_end - _t_noise) * 1000),
+        "model_leaf_resolved": bool(getattr(session, "model_leaf_resolved", False)),
+        "attr_count": len(attrs or []), "turn": getattr(session, "turn", None)})
     if _rule_issues:
         logger.info(
             "cpq: rule-consistency check found %d issue(s): %s",

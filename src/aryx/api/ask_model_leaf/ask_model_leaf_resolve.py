@@ -133,13 +133,42 @@ def _resolve_model_leaf_core(
             leaf for leaf in _leaf_candidates
             if len(_norm_leaf(leaf)) >= 5 and _norm_leaf(leaf) in _combined_norm
         ]
+        # Right after a confirmed model switch the anchor holds just the new
+        # model's name (_complete_model_switch). When it names one leaf
+        # exactly, that is the model the customer confirmed: take it before the
+        # prefix-tie ask and over shorter prefix matches ("APX 900 FLASHport"
+        # also contains "APX 900"). Normal turns are unchanged.
+        # Scoped to THIS turn: the switch entry stays last in cascade_log until a
+        # later turn changes a filled value, so without the turn check a later
+        # "actually APX 900 FLASHport" would still be pinned to the old leaf.
+        _cascade_log = getattr(session, "cascade_log", None) or []
+        _last = (_cascade_log[-1] or {}) if _cascade_log else {}
+        _just_switched = (
+            _last.get("event") == "model_switch"
+            and _last.get("turn") == getattr(session, "turn", None)
+        )
+        _anchor_norm = _norm_leaf(getattr(session, "product_anchor_question", "") or "") if _just_switched else ""
+        _exact_anchor = [leaf for leaf in _text_matches if _anchor_norm and _norm_leaf(leaf) == _anchor_norm]
+        if _just_switched and len(_exact_anchor) != 1:
+            # The anchor is a synthesized model name, not the customer's
+            # wording: it may only pick a leaf by EXACT match. A partial match
+            # is wrong here ("APX 900 FLASHport" contains the plain "APX 900"
+            # leaf while the real FLASHport leaf is aPXFLASHportSeries), so
+            # match on this turn's own text only and ask if that is not enough.
+            _turn_norm = _norm_leaf(req.question + " " + (switch_trigger_question or ""))
+            _text_matches = [
+                leaf for leaf in _leaf_candidates
+                if len(_norm_leaf(leaf)) >= 5 and _norm_leaf(leaf) in _turn_norm
+            ]
         # F16 (cpq_model_prefix_tie_ask_enabled, default off): the wording
         # names a model that is a strict prefix of another sellable model on a
         # different node -> ask which one instead of silently taking it.
-        _tie_leaves = prefix_tie_leaves(_leaf_candidates)
+        _tie_leaves = [] if len(_exact_anchor) == 1 else prefix_tie_leaves(_leaf_candidates)
         if _tie_leaves:
             return _build_model_leaf_ask_prompt(req, session, _tie_leaves)
-        if len(_text_matches) == 1:
+        if len(_exact_anchor) == 1:
+            _resolved_leaf = _exact_anchor[0]
+        elif len(_text_matches) == 1:
             _resolved_leaf = _text_matches[0]
         else:
             # cpq_model_leaf_pick_top_enabled (default off): 2+ matches ->

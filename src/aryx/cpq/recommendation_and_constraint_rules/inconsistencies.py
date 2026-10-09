@@ -12,6 +12,7 @@ tests, and ``apply_constraint_rules`` is deliberately still a real
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from aryx.cpq.bml.bml import BmlEvaluator, evaluate_declarative_conditions
@@ -20,6 +21,7 @@ from aryx.cpq.hiding_rules.attr_index import _attr_index, _filled_by_rule_id
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, HidingRule, RecommendationRule,
 )
+from aryx.raven_log import raven_log
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from aryx.cpq.engine import CpqEngine
@@ -67,10 +69,17 @@ def find_rule_inconsistencies(
     """
     issues: list[dict[str, Any]] = []
     by_vn = {a.variable_name: a for a in attrs}
+    # Timing per check: live turns spent 25-38 minutes in the step-2
+    # rule-consistency check (runs 876a0220, e025a279), with ~1,400 data-table
+    # cache hits and nothing else logged. These durations show which pass
+    # (hiding, constraint or recommendation) is the slow one. See
+    # DOC/aryx-oci/aryx-oci_bug_log.md "step-2 rule-consistency check is slow".
+    _t0 = time.monotonic()
 
     _visible, _msgs, hidden_vns = engine.apply_hiding_rules(
         attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix)
+    _t_hiding = time.monotonic()
     for vn in hidden_vns:
         if filled.get(vn):
             issues.append({
@@ -81,6 +90,7 @@ def find_rule_inconsistencies(
     constrained_opts = engine.apply_constraint_rules(
         attrs, con_rules, filled, bml_eval, filled_multi=filled_multi,
         workspace_id=workspace_id, catalog_prefix=catalog_prefix)
+    _t_constraint = time.monotonic()
     for vn, value in filled.items():
         attr = by_vn.get(vn)
         allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -135,4 +145,15 @@ def find_rule_inconsistencies(
                 "issue": f"condition met but value != recommended '{recommended}'",
             })
 
+    _t_end = time.monotonic()
+    raven_log("INFO", "P4", "ask.rule_consistency.timing per-check durations of the consistency check", context={
+        "stage": "find_rule_inconsistencies", "result": "done",
+        "reason_code": "TIMING", "duration_ms": int((_t_end - _t0) * 1000),
+        "hiding_ms": int((_t_hiding - _t0) * 1000),
+        "constraint_ms": int((_t_constraint - _t_hiding) * 1000),
+        "recommendation_ms": int((_t_end - _t_constraint) * 1000),
+        "hiding_rule_count": len(hiding_rules or ()), "constraint_rule_count": len(con_rules or ()),
+        "recommendation_rule_count": len(rec_rules or ()), "attr_count": len(attrs or ()),
+        "filled_count": len(filled or {}), "issue_count": len(issues),
+        "has_bml_eval": bml_eval is not None, "workspace_id": workspace_id, "catalog_prefix": catalog_prefix})
     return issues

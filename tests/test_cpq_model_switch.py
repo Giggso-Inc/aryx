@@ -294,12 +294,102 @@ def test_negated_name_still_switches_when_the_llm_says_accept(flag_on, monkeypat
     assert s.filled[PRODUCT_LITERAL] == "MODEL_B"
 
 
-def test_switch_clears_the_old_anchor_text(flag_on):
+def test_switch_replaces_the_old_anchor_text_with_the_new_model(flag_on):
     s = _session_on_model_a()
     s.product_anchor_question = "I want a quote for Model A for US"
     _offer(s, "model b")
     ms._handle_confirm_model_switch_anchor(_req("yes"), s)
-    assert s.product_anchor_question == ""
+    assert s.product_anchor_question == "Model B"
+
+
+def test_after_yes_the_leaf_matcher_picks_the_new_models_leaf(flag_on, monkeypatch):
+    """Live run e025a279: after "yes" on a clean start, the turn text names no
+    model and the leaf answer is gone; with the anchor cleared it asked the
+    customer to choose among every leaf. The new model's name in the anchor
+    lets the existing text matcher pick its leaf."""
+    from aryx.api.ask_model_leaf import ask_model_leaf_resolve as leaf_mod
+
+    monkeypatch.setattr(api._cpq_engine, "single_model_variable_name", lambda *a, **k: "")
+    monkeypatch.setattr(api._cpq_engine, "model_variable_candidates",
+                        # Real leaves are the model code camel-cased ("aPXN30" for "APX N30").
+                        lambda *a, **k: ["modelA", "modelB", "other1"])
+    monkeypatch.setattr(leaf_mod, "bind_turn_model_context", lambda *a, **k: None)
+    monkeypatch.setattr(leaf_mod, "seed_model_vn_from_resolution", lambda: "")
+    monkeypatch.setattr(leaf_mod, "prefix_tie_leaves", lambda *_a, **_k: [])
+    s = _session_on_model_a()
+    _offer(s, "model b")
+    ms._handle_confirm_model_switch_anchor(_req("yes"), s)
+    hints: dict = {}
+    assert leaf_mod._resolve_model_leaf_core(_req("yes"), s, None, hints, "", None) is None
+    assert hints["_bm_model_variable_name"] == "modelB" and s.model_leaf_resolved
+
+
+def _leaf_setup(monkeypatch, leaves):
+    """Stub the engine so _resolve_model_leaf_core only runs its text matcher."""
+    from aryx.api.ask_model_leaf import ask_model_leaf_resolve as leaf_mod
+
+    monkeypatch.setattr(api._cpq_engine, "single_model_variable_name", lambda *a, **k: "")
+    monkeypatch.setattr(api._cpq_engine, "model_variable_candidates", lambda *a, **k: list(leaves))
+    monkeypatch.setattr(leaf_mod, "bind_turn_model_context", lambda *a, **k: None)
+    monkeypatch.setattr(leaf_mod, "seed_model_vn_from_resolution", lambda: "")
+    monkeypatch.setattr(leaf_mod, "prefix_tie_leaves", lambda *_a, **_k: ["modelB", "modelBFlash"])
+    return leaf_mod
+
+
+def test_after_switching_to_the_longer_model_its_leaf_wins_over_the_prefix(flag_on, monkeypatch):
+    leaf_mod = _leaf_setup(monkeypatch, ["modelB", "modelBFlash", "other1"])
+    s = _session_on_model_a()
+    msc._complete_model_switch(s, "MODEL_BF", "Model B Flash")
+    hints: dict = {}
+    assert leaf_mod._resolve_model_leaf_core(_req("yes"), s, None, hints, "", None) is None
+    assert hints["_bm_model_variable_name"] == "modelBFlash"
+
+
+def test_switch_to_flashport_never_partially_matches_the_plain_leaf(flag_on, monkeypatch):
+    """No-context review of #500 (HIGH): real leaf names. "APX 900 FLASHport"
+    contains the plain aPX900 leaf, while the FLASHport leaf is
+    aPXFLASHportSeries. The switch turn must ask, never pick aPX900."""
+    from aryx.api.ask_model_leaf import ask_model_leaf_resolve as leaf_mod
+
+    leaf_mod = _leaf_setup(monkeypatch, ["aPX900", "aPXFLASHportSeries", "aPXN30"])
+    monkeypatch.setattr(leaf_mod, "prefix_tie_leaves", lambda *_a, **_k: [])
+    s = _session_on_model_a()
+    msc._complete_model_switch(s, "APX900FLASHPORT", "APX 900 FLASHport")
+    hints: dict = {}
+    resp = leaf_mod._resolve_model_leaf_core(_req("yes"), s, None, hints, "", None)
+    assert resp is not None and "_bm_model_variable_name" not in hints
+
+
+def test_switch_to_a_model_whose_name_is_its_leaf_still_resolves(flag_on, monkeypatch):
+    leaf_mod = _leaf_setup(monkeypatch, ["aPX900", "aPXFLASHportSeries", "aPXN30"])
+    monkeypatch.setattr(leaf_mod, "prefix_tie_leaves", lambda *_a, **_k: [])
+    s = _session_on_model_a()
+    msc._complete_model_switch(s, "APX N30", "APX N30")
+    hints: dict = {}
+    assert leaf_mod._resolve_model_leaf_core(_req("yes"), s, None, hints, "", None) is None
+    assert hints["_bm_model_variable_name"] == "aPXN30"
+
+
+def test_a_later_turn_after_the_switch_is_not_pinned_to_the_anchor(flag_on, monkeypatch):
+    """Peer review on #500: the switch entry stays last in cascade_log, so a
+    later turn naming the longer sibling must not be pinned to the old leaf."""
+    leaf_mod = _leaf_setup(monkeypatch, ["modelB", "modelBFlash", "other1"])
+    s = _session_on_model_a()
+    msc._complete_model_switch(s, "MODEL_B", "Model B")
+    s.turn += 1  # the next turn, nothing else changed
+    hints: dict = {}
+    resp = leaf_mod._resolve_model_leaf_core(
+        _req("actually I mean Model B Flash"), s, None, hints, "", None)
+    assert resp is not None and "_bm_model_variable_name" not in hints
+
+
+def test_normal_turn_naming_a_prefix_model_still_asks(flag_on, monkeypatch):
+    leaf_mod = _leaf_setup(monkeypatch, ["modelB", "modelBFlash", "other1"])
+    s = _session_on_model_a()
+    s.product_anchor_question = "Model B Flash"  # no model switch in cascade_log
+    hints: dict = {}
+    resp = leaf_mod._resolve_model_leaf_core(_req("x"), s, None, hints, "", None)
+    assert resp is not None and "_bm_model_variable_name" not in hints
 
 
 def test_snapshot_cap_evicts_the_oldest_model():
