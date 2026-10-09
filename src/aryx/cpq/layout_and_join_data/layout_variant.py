@@ -148,9 +148,36 @@ def effective_variant(
     if not stored_variant_keys(workspace_id, catalog_prefix, source):
         return variant
     try:
-        return layout_variant_for(
-            workspace_id, catalog_prefix, ctx.current_model_node(),
-            lambda: ctx.current_governed_names(workspace_id, catalog_prefix), source)
+        node = ctx.current_model_node()
+        chosen = layout_variant_for(
+            workspace_id, catalog_prefix, node, lambda: ctx.current_governed_names(workspace_id, catalog_prefix), source)
+        _log_variant_choice(workspace_id, catalog_prefix, node, chosen)
+        return chosen
     except Exception:  # noqa: BLE001 -- variant choice must never break a turn
         logger.warning("cpq layout variant: choice failed, using %r", variant, exc_info=True)
         return variant
+
+
+_LOGGED_CHOICES: set[tuple] = set()           # one line per distinct choice per process, never per call
+
+
+def _log_variant_choice(workspace_id: int, catalog_prefix: str, node: str | None, chosen: str) -> None:
+    """ask.layout.variant (DEBUG): which stored layout a turn uses and why. Reason FLOW_RULE = the model node is listed by the
+    chosen layout's Configuration Flow rule; NO_MODEL_NODE = no node was bound, so the layout is a guess (governed names, else
+    the oldest upload). Diagnostic only, never changes the choice."""
+    try:
+        from aryx.raven_log import raven_log, would_log  # noqa: PLC0415 -- diagnostic only
+
+        key = (workspace_id, catalog_prefix, (node or "").lower(), chosen)
+        if key in _LOGGED_CHOICES or len(_LOGGED_CHOICES) > 500 or not would_log("DEBUG"):
+            return
+        _LOGGED_CHOICES.add(key)
+        flows = flow_nodes_by_variable(workspace_id, catalog_prefix)
+        in_flow = bool(node) and (node or "").strip().lower() in flows.get(chosen.lower(), ())
+        reason = "FLOW_RULE" if in_flow else ("NO_MODEL_NODE" if not node else "NODE_NOT_IN_ANY_FLOW_RULE")
+        raven_log("DEBUG", "P4", "ask.layout.variant layout variant chosen for the turn", context={
+            "selected_option": chosen, "available_options": stored_variant_keys(workspace_id, catalog_prefix)[:8],
+            "reason_code": reason, "model_node": node or "",
+            "flow_rule_nodes": {k: sorted(v)[:6] for k, v in list(flows.items())[:6]}})
+    except Exception:  # noqa: BLE001 -- a diagnostic must never change the choice
+        return

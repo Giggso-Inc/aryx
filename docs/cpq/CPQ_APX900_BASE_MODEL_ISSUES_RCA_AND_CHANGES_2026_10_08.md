@@ -663,3 +663,7 @@ Customer Type is still unfilled (host-supplied), so a rule that needs it non-bla
 ### Candidate models resolved once per turn (speed)
 
 Replay 2026-10-09 08:09 (ws 1267, APX 900): pass 0 = 123 s over 2,874 attributes, `stage_not_applicable_guard` = 87 s. The guard called `resolve_product_cpq_models_from_hint` for every attribute; the answer depends only on the wording, so it is now memoized in the per-turn cache (`("_hint_cpq_models", ws, prefix, hint)`). No flag: result is identical, only repeated. Verify: `docker logs aryx-api-1 2>&1 | grep "cpq_perf: auto_fill stages pass=0" | cut -c1-600` (expect `stage_not_applicable_guard` far below 87 s).
+
+### Which layout a turn uses (log `ask.layout.variant`)
+
+The two layout exports of ws 1267 are "Configuration Flow For Astro Devices (Portable)" (436 attributes, has Operation Mode, Firmware Selection, Secure, Battery, Cable, Carry, Documentation, Services, Surveillance, the whole APX 3000 screen) and "(Mobile)" (402; Control Head, Microphone, GPS Antenna, no Battery/Cable). They share 271 attributes. `layout_variant_for` picks one by the Configuration Flow rule that lists the model node (`_bm_model_variable_name`); with no node bound it guesses from governed names, else the oldest upload, and it logged nothing on success. Now one DEBUG line per distinct choice: reason `FLOW_RULE` (good), `NO_MODEL_NODE` (a guess) or `NODE_NOT_IN_ANY_FLOW_RULE`. Check: `docker logs aryx-api-1 2>&1 | grep "ask.layout.variant" | cut -c1-600 | tail -5`.
