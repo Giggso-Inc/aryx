@@ -11,13 +11,21 @@ ancestors).
 Safe behaviour, same as aryxent: a rule with an empty/unknown ``ref_id`` is
 UNBOUND and is always kept (never excluded for lack of data). The filter is
 a no-op (input list returned unchanged) when the flag is off, when no turn
-is bound, when the turn's model is unresolved, when its scope is empty (the
-model has no BmCatalog node, so there is nothing to scope by), or when the
-bound turn's workspace/catalog prefix differs from the caller's (when the
-caller passes them); any internal error also falls back to the unfiltered
-list. A ``ref_id`` that is not a real catalog node (family-level ids, the
-"-1" root sentinel) is also unbound and kept, matching
-``TurnModelContext.rule_scope``.
+is bound, when the turn's model is unresolved, or when the bound turn's
+workspace/catalog prefix differs from the caller's (when the caller passes
+them); any internal error also falls back to the unfiltered list. A
+``ref_id`` that is not a real catalog node (family-level ids, the "-1" root
+sentinel) is also unbound and kept, matching ``TurnModelContext.rule_scope``.
+
+One exception (review of #503, 2026-10-09): when the turn's model has an
+EMPTY scope (no BmCatalog tree node -- true for every Data-Table-resolved
+model, e.g. APX 1500/4500/6500 Enhanced, APX 6000/8000), an UNCONDITIONAL
+rule (``HidingRule.always`` -- see ``cpq_empty_condition_rule_true_enabled``)
+that IS scoped to a real node is excluded rather than kept. An unconditional
+rule has no condition of its own to limit where it fires, so for it
+specifically "nothing to scope by" cannot mean "keep it" the way it safely
+does for every rule with a real condition. A conditional rule, or any rule
+with an unbound ``ref_id``, is unaffected by this and keeps the plain no-op.
 
 Known gap: the turn is bound only by the /ask flow. Callers outside /ask
 (``cpq/payload_building/standalone.py``, ``graph/feature_search.py``) never
@@ -80,10 +88,26 @@ def scope_rules_by_ancestry(
         if catalog_prefix is not None and (catalog_prefix or "") != (ctx.catalog_prefix or ""):
             return rules
         scope = ctx.resolution.scope_node_ids
-        if not scope:
-            return rules
         catalog = _cached_catalog(ctx.workspace_id, ctx.catalog_prefix)
         known = catalog.nodes_by_id if catalog is not None else None
+        if not scope:
+            # An unconditional rule has no condition of its own to limit
+            # where it fires, so it can't inherit the plain "nothing to
+            # scope by" no-op the way an ordinary conditional rule safely
+            # does. See docs/cpq/CPQ_RULE_KEY_MARKED_ATTR_RESOLUTION_2026_10_09.md
+            # for the live case this closes (PR #503 review). Returns the
+            # original `rules` object (not a copy) when nothing is actually
+            # excluded, preserving the `is rules` no-op contract every other
+            # caller/test relies on.
+            filtered = [
+                r for r in rules
+                if not (
+                    bool(getattr(r, "always", False))
+                    and (getattr(r, "ref_id", "") or "") not in ("", "-1")
+                    and (known is None or (getattr(r, "ref_id", "") or "") in known)
+                )
+            ]
+            return rules if len(filtered) == len(rules) else filtered
 
         def _keep(rule: Any) -> bool:
             ref = getattr(rule, "ref_id", "") or ""

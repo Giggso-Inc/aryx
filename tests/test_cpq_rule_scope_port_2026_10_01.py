@@ -127,6 +127,30 @@ def test_no_resolved_model_is_noop():
         assert rule_scope.scope_rules_by_ancestry(rules, "t") is rules
 
 
+# ---- F10 trap guard (review of #503, 2026-10-09) ----
+def test_empty_scope_excludes_unconditional_rule_with_real_ref_id():
+    """A resolved model with an EMPTY scope (the Data-Table-resolved path,
+    e.g. APX 1500 Enhanced -- no BmCatalog tree node) must not let an
+    unconditional (always=True), real-node-scoped rule through unfiltered:
+    it has no condition of its own to limit where it fires."""
+    _bind(set(), resolved=True)  # resolved model, but no tree node -> empty scope
+    rules = [
+        HidingRule("unconditional_scoped", 0, "", 1, ref_id="903471941", always=True),
+        HidingRule("conditional_scoped", 0, "", 1, ref_id="903471941"),
+        HidingRule("unconditional_unbound", 0, "", 1, always=True),
+    ]
+    with patch("aryx.cpq.rule_scope.get_settings", _cfg(True)):
+        kept = rule_scope.scope_rules_by_ancestry(rules, "t")
+    assert [r.rule_name for r in kept] == ["conditional_scoped", "unconditional_unbound"]
+
+
+def test_empty_scope_still_noop_for_flag_off():
+    _bind(set(), resolved=True)
+    rules = [HidingRule("unconditional_scoped", 0, "", 1, ref_id="903471941", always=True)]
+    with patch("aryx.cpq.rule_scope.get_settings", _cfg(False)):
+        assert rule_scope.scope_rules_by_ancestry(rules, "t") is rules
+
+
 def test_value_rules_tuple_scopes_all_four_lists():
     _bind({"10"})
     tup = ([RecommendationRule("r", 0, "", 1, ref_id="99")],
