@@ -52,9 +52,26 @@ def _resolve_targets(
 
 
 def _rule_key(entity_id: int, source_id: int | None,
-              inputs: dict, actions: dict) -> int:
-    """Pick the id that BmConfigRuleInput/Action rows actually reference."""
+              inputs: dict, actions: dict, marked: dict | None = None) -> int:
+    """Pick the id that BmConfigRuleInput/Action/MarkedAttr rows actually
+    reference. `marked` is consulted ONLY as a fallback when NEITHER id has
+    a condition/action row -- never as an equal-priority signal, since a
+    rule's real conditions/actions (when present) always win over an
+    unrelated marked-attr row under the other id. `marked` defaults to None
+    so a caller that never resolves marked-attr targets (e.g.
+    value_rules_load) keeps its exact prior behavior.
+
+    See docs/cpq/CPQ_RULE_KEY_MARKED_ATTR_RESOLUTION_2026_10_09.md for the
+    live investigation (ws 1267 rule ids, the F10/scope interaction, the
+    103-rule blast radius) behind why this exists and what it does not fix.
+    """
     if source_id is not None and (source_id in inputs or source_id in actions):
+        return source_id
+    if (
+        marked is not None and source_id is not None
+        and entity_id not in inputs and entity_id not in actions
+        and entity_id not in marked and source_id in marked
+    ):
         return source_id
     return entity_id
 
