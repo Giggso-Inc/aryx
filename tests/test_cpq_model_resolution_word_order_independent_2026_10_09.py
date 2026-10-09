@@ -105,6 +105,25 @@ def test_flag_on_still_matches_the_catalogs_own_word_order():
     assert res.resolved and res.chosen.cpq_model == "ENHANCEDAPX6500/LI"
 
 
+def test_flag_on_does_not_add_the_enhanced_variant_to_a_plain_request():
+    """Review of this fix (2026-10-09): a prior version let a name's digit code
+    match on its own, with the words in front of it ("Enhanced") treated as
+    optional -- so a plain "APX 6500" request, which never says "Enhanced" at
+    all, would still add ENHANCEDAPX6500/LI to the candidate pool (tied with
+    the plain model on match length, then resolved by most_base_models/
+    alphabetical -- a model the customer never asked for, picked by accident
+    of catalog data rather than by anything they said). Words in front of a
+    name's code must now all be present in the hint for that name to match at
+    all -- only a trailing suffix ("LI", "XE") stays optional."""
+    with patch("aryx.config.get_settings", _cfg(True)):
+        res = _resolve("Quote for APX 6500 in US")
+    assert res.resolved and res.chosen.cpq_model == "APX6500/LI"
+    assert [a.cpq_model for a in res.alternatives] == [], (
+        "ENHANCEDAPX6500/LI must not even enter the candidate pool when the "
+        "hint never says 'Enhanced'"
+    )
+
+
 def test_flag_on_digit_bleed_guard_preserved_by_whole_word_tokens():
     """Control: tokenizing into whole words naturally preserves the intent of the
     old `_occurs` digit-boundary guard -- "apx6500" as its own token in the hint

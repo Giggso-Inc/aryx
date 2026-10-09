@@ -160,13 +160,20 @@ def _match_kind_by_tokens(
     """Word-order-independent fallback for `_match_kind`. A name's digit
     code (`_core_span`) must appear contiguously, in order, in the hint —
     this is what stops an unrelated number elsewhere in the wording (a
-    quantity, a battery size, another model) from matching. Every other
-    word in the name (a prefix like "Enhanced", a suffix like "LI"/"XE")
-    only needs to appear somewhere in the hint, in any order; whether all
-    of them do decides exact vs. partial, and the matched length always
-    includes whichever floating words were actually found, so a name
-    matched with more of its words present outranks one matched with
-    fewer (`rank_candidates`' `longest_name_match` step)."""
+    quantity, a battery size, another model) from matching.
+
+    Words BEFORE the code ("Enhanced APX6500") are what make the name more
+    specific than the bare code alone, so every one of them must actually
+    be present in the hint too — without that, "Quote for APX 6500 in US"
+    would match "Enhanced APX6500/LI" on the strength of its code alone,
+    silently adding a model the customer never asked for. Words AFTER the
+    code ("APX6500/LI" → "LI", "APX8000XE" → "XE") are a trailing variant
+    suffix customers routinely omit, so they stay optional the way the
+    original substring check's `_CORE_RE` fallback already treated them:
+    present or not, only whether they're present decides exact vs.
+    partial, and the matched length always includes whichever ones were
+    found, so a name matched with more of its words present outranks one
+    matched with fewer (`rank_candidates`' `longest_name_match` step)."""
     hint_set = frozenset(hint_token_seq)
     exact, partial = [], []
     for name in names:
@@ -182,12 +189,17 @@ def _match_kind_by_tokens(
         core = words[start:end]
         if not _contiguous(core, hint_token_seq):
             continue
-        floaters = words[:start] + words[end:]
-        present_floaters = [w for w in floaters if w in hint_set]
-        total = sum(len(w) for w in core) + sum(len(w) for w in present_floaters)
+        prefix, suffix = words[:start], words[end:]
+        if not all(w in hint_set for w in prefix):
+            continue
+        present_suffix = [w for w in suffix if w in hint_set]
+        total = (
+            sum(len(w) for w in core) + sum(len(w) for w in prefix)
+            + sum(len(w) for w in present_suffix)
+        )
         if total < _MIN_NAME_LEN:
             continue
-        (exact if len(present_floaters) == len(floaters) else partial).append(total)
+        (exact if len(present_suffix) == len(suffix) else partial).append(total)
     if exact:
         return "exact", max(exact)
     return ("partial", max(partial)) if partial else None
