@@ -38,22 +38,54 @@ in ws 1267's dev default. With F10 off, this fix changes nothing
 observable for this symptom; it only makes the rule's target
 *resolvable*, which is a precondition for F10 ever mattering here.
 
-If F10 were turned on, whether/where the rule then applies depends on
+If F10 were turned on, a naive implementation would need
 `cpq_rule_scope_filter_enabled` and the target product's resolved
-`scope_node_ids`. Confirmed live: `APX1500ENH` resolves through the
-Data Table path (no BmCatalog tree node), so its `scope_node_ids` is
-empty. Before the `rule_scope.py` guard added in this same PR, that
-emptiness made `scope_rules_by_ancestry` a no-op — an unconditional,
-`aPXNext`-scoped rule would have applied to APX 1500 Enhanced (and APX
-4500/6500 Enhanced, APX 6000/8000 — every Data-Table-resolved model)
-completely unfiltered, hiding the FCC question even for Federal
-customers who should see it. `rule_scope.scope_rules_by_ancestry` now
-excludes an unconditional (`always=True`) rule with a real `ref_id` in
-exactly this "empty scope" case, closing that trap.
+`scope_node_ids` to confine a node-scoped rule like `5030760` correctly.
+Two live-confirmed problems with relying on that alone:
+
+1. `APX1500ENH` resolves through the Data Table path (no BmCatalog tree
+   node), so its `scope_node_ids` is empty — `scope_rules_by_ancestry`'s
+   "nothing to scope by" no-op would otherwise let an unconditional,
+   `aPXNext`-scoped rule apply to it (and APX 4500/6500 Enhanced, APX
+   6000/8000 — every Data-Table-resolved model) completely unfiltered,
+   hiding the FCC question even for Federal customers who should see it.
+2. That empty-scope case is only HALF the trap: if F10 were on while
+   `cpq_rule_scope_filter_enabled` is OFF entirely, `scope_rules_by_
+   ancestry` is never even consulted (it short-circuits on the flag before
+   looking at any rule) — the same unfiltered-everywhere outcome, for a
+   different reason.
+
+The final fix (`_load_type11_hiding_rules`) sidesteps both: it refuses,
+structurally, to ever produce an `always=True` rule with a real
+(non-unbound) `ref_id`, independent of either flag's value. This loader
+runs once per workspace/catalog, cached and shared across every turn and
+product, with no per-turn resolved-model context to check a rule's `ref_id`
+against — so neither flag's state is a safe signal at load time. Only a
+genuinely unbound rule (no `ref_id`, or the `"-1"` root sentinel) still
+becomes `always=True`.
+
+`rule_scope.scope_rules_by_ancestry`'s own empty-scope guard (added
+earlier in this PR's review) is now unreachable for type-11 rules as a
+result — kept as a second safety net for any other future caller that
+sets `always=True` outside this loader (none exist today).
 
 ## What this PR does and does not do
 
-Fixes target *resolution* (`_rule_key`/`_resolve_targets`) and the F10
-scope trap above. Does **not**: turn `cpq_empty_condition_rule_true_enabled`
-on, author a new per-model "Hide FCC Trigger" rule for APX 1500/APX 1500
-Enhanced, or audit the other 103 similarly-shaped rules individually.
+Fixes target *resolution* (`_rule_key`/`_resolve_targets`) and refuses to
+ever load a node-scoped, zero-condition rule as unconditional. Does
+**not**: turn `cpq_empty_condition_rule_true_enabled` on, author a new
+per-model "Hide FCC Trigger" rule for APX 1500/APX 1500 Enhanced, or audit
+the other 103 similarly-shaped rules individually.
+
+## Known limitation (deliberately accepted)
+
+The refusal is a blanket one: it also excludes a node-scoped rule for a
+model that *does* have a real catalog-tree scope, where
+`scope_rules_by_ancestry` could have applied it correctly. That's an
+acceptable trade-off while F10 is unused in production (confirmed off in
+ws 1267's dev default) — it trades a small amount of missed correctness
+for never risking the unconditional-everywhere failure mode. If F10 is
+ever planned for real production use, replace this blanket refusal with a
+genuine per-turn check (the rule's `ref_id` against the resolved model's
+`scope_node_ids`, available at ASK time but not at this loader's load
+time) instead of loosening it.

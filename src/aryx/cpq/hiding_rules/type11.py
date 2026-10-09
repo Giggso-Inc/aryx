@@ -168,6 +168,17 @@ def _load_type11_hiding_rules(
                     # silently guessed" treatment as an unresolved target.
                     # Only a genuinely UNBOUND rule (no ref_id at all) has
                     # nothing to misapply and may become always=True.
+                    #
+                    # Deliberately conservative (review of #503, 2026-10-09):
+                    # this also refuses a node-scoped rule for a model that
+                    # DOES have a real catalog-tree scope, where
+                    # scope_rules_by_ancestry could have applied it
+                    # correctly -- an acceptable trade-off while F10 is
+                    # unused in production. If F10 is ever planned for real
+                    # use, replace this blanket refusal with a genuine
+                    # per-turn check (ref_id against the resolved model's
+                    # scope_node_ids, available at ASK time but not here at
+                    # load time) instead of loosening it.
                     if ref_id and ref_id != "-1":
                         scope_unsafe_unconditional += 1
                         logger.info(

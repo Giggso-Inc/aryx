@@ -99,6 +99,15 @@ def scope_rules_by_ancestry(
             # original `rules` object (not a copy) when nothing is actually
             # excluded, preserving the `is rules` no-op contract every other
             # caller/test relies on.
+            #
+            # Review of #503 (2026-10-09): type11.py's loader now refuses to
+            # ever produce an always=True rule with a real ref_id in the
+            # first place (a stricter, flag-independent version of this same
+            # protection -- see its own comment), so this branch is
+            # currently UNREACHABLE for type-11 hiding rules specifically.
+            # Kept as a second safety net for any other caller that sets
+            # always=True outside that loader (none exist today -- confirmed
+            # by grep), rather than relying on a single enforcement point.
             filtered = [
                 r for r in rules
                 if not (
