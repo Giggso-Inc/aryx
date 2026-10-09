@@ -14,6 +14,7 @@ from aryx.cpq.engine import ConfigAttr
 from aryx.cpq.product_config.product_config_attrs import build_config_attrs
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.product_config.product_config_entities import load_attr_entities
+from aryx.cpq.product_config.product_config_listed_names import listed_attr_names
 from aryx.cpq.product_config.product_config_lookups import build_array_set_lookups, compute_rule_target_ids
 from aryx.cpq.product_config.product_config_menu_base import collect_base_menu_neighbors
 from aryx.cpq.product_config.product_config_menu_build import build_menu_by_attr
@@ -48,7 +49,8 @@ def load_product_config(
     rule_target_ids = compute_rule_target_ids(engine, workspace_id, resolved_catalog_prefix)
 
     config_attrs = build_config_attrs(
-        engine, attr_ents, attr_pg, menu_by_attr, array_sets, rule_target_ids)
+        engine, attr_ents, attr_pg, menu_by_attr, array_sets, rule_target_ids,
+        lambda: listed_attr_names(workspace_id, resolved_catalog_prefix))
 
     # Dedup by variable_name (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 8):
     # a catalog accidentally re-ingested wholesale (confirmed live,
