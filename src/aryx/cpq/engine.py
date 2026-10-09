@@ -2371,11 +2371,11 @@ class CpqEngine:
     def _is_summary_excluded(
         self, variable_name: str, display_label: str, value: str,
         attr: "ConfigAttr | None", source: str | None = None,
-        is_mandatory: bool = False,
+        is_mandatory: bool = False, keep_value_shapes: bool = False,
     ) -> bool:
         return summary_display_formatting._is_summary_excluded(
             self, variable_name, display_label, value, attr, source=source,
-            is_mandatory=is_mandatory)
+            is_mandatory=is_mandatory, keep_value_shapes=keep_value_shapes)
 
     def _filled_summary_triples(
         self,
@@ -2389,12 +2389,13 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
         dt_cache: dict[tuple[int, str], tuple] | None = None,
+        keep_value_shapes: bool = False,
     ) -> list[tuple[str, str, str]]:
         return summary_display_formatting._filled_summary_triples(
             self, display_filled, attrs, rule_governed_ids, sources, display_order,
             required_vns=required_vns,
             product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
-            catalog_prefix=catalog_prefix, dt_cache=dt_cache)
+            catalog_prefix=catalog_prefix, dt_cache=dt_cache, keep_value_shapes=keep_value_shapes)
 
     def filled_summary_pairs(
         self,

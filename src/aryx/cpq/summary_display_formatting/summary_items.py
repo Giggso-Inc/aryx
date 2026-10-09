@@ -35,6 +35,7 @@ def _filled_summary_triples(
     workspace_id: int | None = None,
     catalog_prefix: str = "",
     dt_cache: dict[tuple[int, str], tuple] | None = None,
+    keep_value_shapes: bool = False,
 ) -> list[tuple[str, str, str]]:
     """Filtered (variable_name, display_label, value) triples worth
     summarising — same filtering as filled_summary_pairs, but keeps
@@ -69,9 +70,13 @@ def _filled_summary_triples(
     `_is_mandatory_input_attr` calls below so the summary's Mandatory
     classification agrees with `build_payload`'s on Hardware Version
     applicability, instead of the two silently drifting apart.
+
+    keep_value_shapes — optional (default `False`); forwarded to `_is_summary_excluded` (Beautify keeps Yes/No and
+    duration values, flag `cpq_beautify_show_boolean_and_duration_values_enabled`). Passed only when True.
     """
     if not display_filled:
         return []
+    shape_kwargs = {"keep_value_shapes": True} if keep_value_shapes else {}
     by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
     label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
     # Disambiguate a display_label 2+ distinct attrs share (real
@@ -97,6 +102,7 @@ def _filled_summary_triples(
                 hint_text=product_anchor_hint, workspace_id=workspace_id,
                 catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
             ),
+            **shape_kwargs,
         )
         # "(none)" is the engine's own literal placeholder for an
         # unfilled multi/array-typed field (e.g. Promotion, Solution

@@ -11,8 +11,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.cpq.auto_fill_stages import fill_log
 from aryx.cpq.engine import logger
+from aryx.cpq.rules_loop.full_attrs_registry import remember_full_attrs
 from aryx.cpq.rule_trace import rule_trace
 from aryx.raven_log import raven_log, would_log
 from aryx.cpq.rules_loop.rules_loop_pass_early import run_early_pass
@@ -109,6 +111,8 @@ def evaluate_rules_loop(
         multi=multi, dropped=dropped, dt_cache=_dt_cache or {},
     )
     state.dt_cache[("_all_attrs", workspace_id, catalog_prefix)] = attrs     # the full list, for the required set's rule inputs
+    if getattr(get_settings(), "cpq_required_set_rules_read_all_attrs_enabled", False) is True:
+        remember_full_attrs(workspace_id, catalog_prefix, attrs)              # for callers with their own turn cache
     scope = LoopScope(
         hints=hints, hiding_rules=hiding_rules, rec_rules=rec_rules,
         con_rules=con_rules, bml_eval=bml_eval, country=country,

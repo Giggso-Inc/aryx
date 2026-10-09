@@ -64,7 +64,7 @@ def _attr_is_transient_set_type(attr: "ConfigAttr") -> bool:
 def _is_summary_excluded(
     engine: Any, variable_name: str, display_label: str, value: str,
     attr: "ConfigAttr | None", source: str | None = None,
-    is_mandatory: bool = False,
+    is_mandatory: bool = False, keep_value_shapes: bool = False,
 ) -> bool:
     """True when a filled attr should not get a summary line.
 
@@ -94,8 +94,12 @@ def _is_summary_excluded(
     skip the boolean check — a genuine Yes/No decision is exactly the
     kind of "substantive selection" this exclusion exists to keep,
     not drop. Non-mandatory boolean-valued attrs are unaffected.
+
+    `keep_value_shapes` — optional (default `False`): Beautify's own call with flag
+    `cpq_beautify_show_boolean_and_duration_values_enabled` on skips the boolean and duration checks for every
+    attribute, so a filled Yes/No or "3 Years" shows as on the real screen. The other exclusions still apply.
     """
-    if not is_mandatory:
+    if not is_mandatory and not keep_value_shapes:
         if value.strip().lower() in engine._BOOLEAN_DISPLAY_VALUES:
             return True
         if attr is not None and attr.select_type == "boolean":

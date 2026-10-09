@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from aryx.config import get_settings
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from aryx.cpq.state import ConfigAttr
 
@@ -63,10 +65,15 @@ def _beautify_sectioned_rows(
     shared triples call and this function's own Mandatory/System
     section split below.
     """
+    # Flag cpq_beautify_show_boolean_and_duration_values_enabled: keep Yes/No and duration rows (the real screen
+    # shows them); passed only when on so the call is unchanged with the flag off.
+    shape_kwargs = ({"keep_value_shapes": True}
+                    if getattr(get_settings(), "cpq_beautify_show_boolean_and_duration_values_enabled", False) is True
+                    else {})
     triples = engine._filled_summary_triples(
         display_filled, attrs, sources=filled_source, required_vns=required_vns,
         product_anchor_hint=product_anchor_hint, workspace_id=workspace_id,
-        catalog_prefix=catalog_prefix, dt_cache=dt_cache,
+        catalog_prefix=catalog_prefix, dt_cache=dt_cache, **shape_kwargs,
     )
     attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
     rows: list[tuple[str, str, str]] = [

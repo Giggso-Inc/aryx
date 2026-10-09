@@ -63,8 +63,7 @@ def _required_ask_vns(
         hidden |= _rule_hidden_vns(engine, attrs, filled, filled_multi, workspace_id, catalog_prefix,
                                    product_anchor_hint, dt_cache, bml_eval)
         started = time.monotonic()
-        all_attrs = (dt_cache or {}).get(("_all_attrs", workspace_id, catalog_prefix)) \
-            if getattr(settings, "cpq_required_set_rules_read_all_attrs_enabled", False) is True else None
+        all_attrs = _rule_input_attrs(settings, workspace_id, catalog_prefix, dt_cache)
         derived = derive_required_vns(
             engine, attrs, filled, filled_multi, sources, hidden, display_order,
             workspace_id, catalog_prefix, product_anchor_hint or "", dt_cache, rule_required_only=True,
@@ -80,6 +79,28 @@ def _required_ask_vns(
     except Exception:  # noqa: BLE001 -- asking more is a nicety, never a reason to break the pass
         logger.debug("cpq: derived required set for asking failed", exc_info=True)
         return frozenset()
+
+
+def _rule_input_attrs(settings: Any, workspace_id: int, catalog_prefix: str, dt_cache: dict | None) -> list[Any] | None:
+    """Flag `cpq_required_set_rules_read_all_attrs_enabled`: the full attribute list the rule inputs are read from. The
+    turn cache holds it when this call runs inside `evaluate_rules_loop`; the payload, summary and Beautify calls bring
+    their own cache, so they take the loop's latest list for the catalog. None (with a warning once per catalog) when
+    neither has it, which leaves the visible list as before."""
+    if getattr(settings, "cpq_required_set_rules_read_all_attrs_enabled", False) is not True:
+        return None
+    from aryx.cpq.rules_loop.full_attrs_registry import full_attrs  # noqa: PLC0415 -- flag-gated
+
+    attrs = (dt_cache or {}).get(("_all_attrs", workspace_id, catalog_prefix)) or full_attrs(workspace_id, catalog_prefix)
+    if attrs is None and (workspace_id, catalog_prefix) not in _ALL_ATTRS_MISSING_WARNED:
+        _ALL_ATTRS_MISSING_WARNED.add((workspace_id, catalog_prefix))
+        raven_log("WARN", "P3", "ask.required_set.all_attrs_missing rule inputs read from the visible list only",
+                  context={"selected_option": "visible_only", "available_options": ["all_attrs", "visible_only"],
+                           "reason_code": "FULL_ATTR_LIST_UNAVAILABLE", "workspace_id": workspace_id,
+                           "catalog_prefix": catalog_prefix})
+    return attrs
+
+
+_ALL_ATTRS_MISSING_WARNED: set[tuple[int, str]] = set()
 
 
 def _blank_host_attrs(attrs: list[Any], filled: dict[str, str], filled_multi: dict[str, list[str]] | None,
