@@ -6,7 +6,7 @@ from the original inline block.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from aryx.cpq.engine import (
     ConfigAttr,
@@ -22,9 +22,11 @@ from aryx.cpq.product_config.product_config_lookups import ArraySetLookups
 def build_config_attrs(
     engine: Any, attr_ents: list[dict], attr_pg: dict[int, dict],
     menu_by_attr: dict[int, list["MenuOption"]], array_sets: ArraySetLookups,
-    rule_target_ids: set[int], listed_attr_names: frozenset[str] = frozenset(),
+    rule_target_ids: set[int], listed_attr_names: Callable[[], frozenset[str]] = frozenset,
 ) -> list["ConfigAttr"]:
+    """`listed_attr_names` is called at most once, and only when an attribute with a noise word in its name is seen."""
     config_attrs: list[ConfigAttr] = []
+    listed: frozenset[str] | None = None
     for ent in attr_ents:
         eid = ent["id"]
         pg = attr_pg.get(eid, {})
@@ -37,9 +39,12 @@ def build_config_attrs(
 
         # Patch C: skip noise attrs (TestPager, Error, dummy_* etc.)
         vn_lo = var_name.lower()
-        if any(f in vn_lo for f in _NOISE_VAR_FRAGMENTS) and var_name not in listed_attr_names:
-            logger.debug("cpq: skipping noise attr %r", var_name)
-            continue
+        if any(f in vn_lo for f in _NOISE_VAR_FRAGMENTS):
+            if listed is None:
+                listed = listed_attr_names()
+            if var_name not in listed:
+                logger.debug("cpq: skipping noise attr %r", var_name)
+                continue
 
         # docs/CPQ_CONFIG_ATTR_STATUS_FILTERING_ROOT_CAUSE_AND_FIX_
         # PLAN_2026-08-14.md — BmConfigAttr rows carry the same

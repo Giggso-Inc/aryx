@@ -25,7 +25,15 @@ def _build(names, listed):
     ents, pgs = _ents(*names)
     engine = SimpleNamespace(_is_layout_noise=lambda _t: False)
     arrays = ArraySetLookups()
-    return [a.variable_name for a in build_config_attrs(engine, ents, pgs, {}, arrays, set(), listed)]
+    calls = []
+
+    def lookup():
+        calls.append(1)
+        return listed
+
+    names = [a.variable_name for a in build_config_attrs(engine, ents, pgs, {}, arrays, set(), lookup)]
+    _build.calls = len(calls)
+    return names
 
 
 def test_today_the_name_filter_drops_the_real_attribute_too():
@@ -63,9 +71,7 @@ def test_flag_off_no_workspace_or_a_failing_table_gives_nothing():
 def _noise(iv, flag):
     from aryx.cpq.product_config import product_config_menu_build as mb
 
-    settings = SimpleNamespace(cpq_noise_option_whole_value_enabled=flag)
-    with patch.object(mb, "get_settings", return_value=settings):
-        return mb._is_noise_option(iv.lower(), iv.lower())
+    return mb._is_noise_option(iv.lower(), iv.lower(), flag)
 
 
 def test_today_a_real_option_with_the_word_test_is_dropped():
@@ -79,3 +85,27 @@ def test_with_the_flag_only_a_whole_placeholder_value_is_noise():
     assert not _noise("LATEST RELEASE", flag=True)
     for placeholder in ("Test", "dummy", "Pager", "Test 1", "dummy_2"):
         assert _noise(placeholder, flag=True), placeholder
+
+
+def test_the_sequence_names_are_looked_up_once_and_only_when_a_noise_named_attribute_is_seen():
+    _build([PLAIN, "housing_astro"], frozenset({REAL}))
+    assert _build.calls == 0                                   # nothing noise-named: no lookup at all
+    _build([REAL, NOISE, "testType_astro", PLAIN], frozenset({REAL}))
+    assert _build.calls == 1                                   # three noise-named attributes, one lookup
+
+
+def test_the_options_flag_is_read_once_per_build_not_per_option():
+    from aryx.cpq.product_config import product_config_menu_build as mb
+
+    reads = []
+    settings = SimpleNamespace(cpq_noise_option_whole_value_enabled=True)
+
+    def fake_settings():
+        reads.append(1)
+        return settings
+
+    items = {i: {"item_value": f"V{i}", "item_text": f"Option {i}", "order_number": i} for i in range(1, 6)}
+    engine = SimpleNamespace(_batch_fetch=lambda ids, ws: items)
+    with patch.object(mb, "get_settings", fake_settings):
+        out = mb.build_menu_by_attr(engine, 1, {7: list(items)}, list(items))
+    assert len(out[7]) == 5 and len(reads) == 1

@@ -21,12 +21,12 @@ _NOISE_ITEM_FRAGMENT_RES = [
 ]
 
 
-def _is_noise_option(iv_lo: str, dt_lo: str) -> bool:
+def _is_noise_option(iv_lo: str, dt_lo: str, whole_value: bool) -> bool:
     """True for a placeholder option. Default: any of the noise words appears as a word of the value or display name.
     With ``cpq_noise_option_whole_value_enabled``: only when the WHOLE value is a noise word (digits and punctuation
     aside: "Test", "Dummy 2"), so "FPS APX TEST TRIGGER - SW VALIDATION" and
     "TEST RESULTS/RATED AUDIO PRINTOUT LABEL" stay."""
-    if getattr(get_settings(), "cpq_noise_option_whole_value_enabled", False) is True:
+    if whole_value:
         return any(re.sub(r"[^a-z]+", " ", text).strip() in _NOISE_ITEM_FRAGMENTS for text in (iv_lo, dt_lo))
     return any(r.search(text) for text in (iv_lo, dt_lo) for r in _NOISE_ITEM_FRAGMENT_RES)
 
@@ -38,6 +38,7 @@ def build_menu_by_attr(
     # Single batch fetch for all menu items across all attrs
     all_menu_pg = engine._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
 
+    whole_value = getattr(get_settings(), "cpq_noise_option_whole_value_enabled", False) is True
     menu_by_attr: dict[int, list[MenuOption]] = {}
     for eid, menu_ids in neighbor_map.items():
         opts: list[MenuOption] = []
@@ -75,7 +76,7 @@ def build_menu_by_attr(
             if iv:
                 iv_lo = iv.lower()
                 dt_lo = dt.lower()
-                if _is_noise_option(iv_lo, dt_lo):
+                if _is_noise_option(iv_lo, dt_lo, whole_value):
                     continue
                 if iv_lo in seen_item_values:
                     continue

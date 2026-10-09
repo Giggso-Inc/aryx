@@ -50,7 +50,7 @@ def load_product_config(
 
     config_attrs = build_config_attrs(
         engine, attr_ents, attr_pg, menu_by_attr, array_sets, rule_target_ids,
-        listed_attr_names(workspace_id, resolved_catalog_prefix))
+        lambda: listed_attr_names(workspace_id, resolved_catalog_prefix))
 
     # Dedup by variable_name (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 8):
     # a catalog accidentally re-ingested wholesale (confirmed live,
