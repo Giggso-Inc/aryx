@@ -16,6 +16,9 @@ _NAMED_PARAM_RE = re.compile(r"%\((\w+)\)s")
 _POS_PARAM_RE = re.compile(r"%s")
 _CAST_RE = re.compile(r"::(jsonb|uuid|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
+_RETURNING_WORD_RE = re.compile(r"\bRETURNING\b", re.IGNORECASE)
+# ponytail: no q'[...]' alternative-quote literals; none in src/, add if one appears.
+_LITERAL_OR_COMMENT_RE = re.compile(r"'(?:[^']|'')*'|\"[^\"]*\"|--[^\n]*|/\*.*?\*/", re.DOTALL)
 # Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
 # Uses a tempered greedy token to stop before RETURNING (or ;) so that
 # a trailing RETURNING clause is preserved for _RETURNING_RE to process.
@@ -33,6 +36,21 @@ _BIND_NAME_RE = re.compile(r":(\w+)")
 # (Oracle does not support RETURNING INTO on MERGE, so override files use the
 # INSERT/exception-handler pattern and carry the hint instead).
 _ORACLE_RETURNING_HINT_RE = re.compile(r"--\s*ORACLE:RETURNING\s+(.+)\n", re.IGNORECASE)
+
+
+def _top_level_returning(sql: str) -> "re.Match[str] | None":
+    """First RETURNING match at parenthesis depth 0, or None.
+
+    String literals, quoted identifiers and comments are blanked (same
+    length) first, so a
+    "(" or "RETURNING" inside them neither shifts the depth nor matches.
+    """
+    masked = _LITERAL_OR_COMMENT_RE.sub(lambda m: " " * len(m.group(0)), sql)
+    for m in _RETURNING_WORD_RE.finditer(masked):
+        head = masked[:m.start()]
+        if head.count("(") == head.count(")"):
+            return _RETURNING_RE.search(sql, m.start())
+    return None
 
 
 def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
@@ -107,7 +125,11 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     #    Allocate cursor.var() for each output column.
     #    Guard: check for "INTO" *after* the RETURNING keyword only —
     #    "INSERT INTO" would otherwise falsely match " INTO " in the full string.
-    m = _RETURNING_RE.search(sql)
+    #    Only a top-level RETURNING (outside any parentheses) is DML RETURNING.
+    #    One inside parentheses is a function clause such as
+    #    JSON_VALUE(... RETURNING VARCHAR2(4000)); rewriting it added INTO
+    #    binds and failed with ORA-01036 on every call.
+    m = _top_level_returning(sql)
     if m and "INTO" not in sql[m.start():].upper():
         cols_str = m.group(1).strip()
         cols = [c.strip() for c in cols_str.split(",")]

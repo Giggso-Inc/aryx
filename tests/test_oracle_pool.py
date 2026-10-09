@@ -207,6 +207,54 @@ class TestTranslateSql(unittest.TestCase):
         result = _translate_sql("INSERT INTO t VALUES (%s, %s, %s)", cur)
         self.assertEqual(result, "INSERT INTO t VALUES (:1, :2, :3)")
 
+    def test_select_json_value_returning_not_rewritten(self) -> None:
+        # fetch_rule_condition_expressions: was rewritten with INTO binds -> ORA-01036
+        cur = _make_cursor()
+        sql = "SELECT JSON_VALUE(a, '$.x' RETURNING VARCHAR2(4000)) FROM t WHERE w = :1"
+        self.assertEqual(_translate_sql(sql, cur), sql)
+        self.assertFalse(getattr(cur, "_out_vars", None))
+
+    def test_function_returning_not_rewritten_in_other_select_shapes(self) -> None:
+        jv = "JSON_VALUE(a, '$.x' RETURNING VARCHAR2(4000))"
+        for sql in (
+            f"  \n select {jv} FROM t",
+            f"WITH c AS (SELECT a FROM t) SELECT {jv} FROM c",
+            f"(SELECT {jv} FROM t)",
+            f"-- note\nSELECT {jv} FROM t",
+        ):
+            cur = _make_cursor()
+            self.assertEqual(_translate_sql(sql, cur), sql, sql)
+            self.assertFalse(getattr(cur, "_out_vars", None), sql)
+
+    def test_dml_returning_still_rewritten_after_function_returning(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql(
+            "UPDATE t SET v = JSON_VALUE(a, '$.x' RETURNING VARCHAR2(10)) "
+            "WHERE id = %s RETURNING id", cur)
+        self.assertTrue(result.endswith("RETURNING id INTO :2"), result)
+        self.assertIn("RETURNING VARCHAR2(10))", result)
+
+    def test_paren_or_returning_inside_literal_does_not_hide_dml_returning(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql(
+            "INSERT INTO t (a, b) VALUES ('x(', 'RETURNING y') RETURNING id", cur)
+        self.assertTrue(result.endswith("') RETURNING id INTO :r0"), result)
+        self.assertIn("'RETURNING y'", result)
+
+    def test_returning_or_paren_in_comment_or_quoted_identifier_ignored(self) -> None:
+        # merge_one_attribute.sql shape: "RETURNING" in a -- comment used to be
+        # rewritten into "... WHERE ... INTO :2, :3, :4" (broken SQL).
+        for sql in (
+            "-- does not trigger RETURNING rewrite.\nUPDATE t SET a = :1 WHERE id = :2",
+            "/* RETURNING ( */ UPDATE t SET a = :1 WHERE id = :2",
+        ):
+            cur = _make_cursor()
+            self.assertEqual(_translate_sql(sql, cur), sql)
+            self.assertFalse(getattr(cur, "_out_vars", None))
+        cur = _make_cursor()
+        result = _translate_sql('/* ( */ INSERT INTO "t(" (a) VALUES (:1) RETURNING id', cur)
+        self.assertTrue(result.endswith("RETURNING id INTO :r0"), result)
+
     def test_type_cast_stripped(self) -> None:
         cur = _make_cursor()
         result = _translate_sql("SELECT data::jsonb FROM t", cur)
