@@ -73,6 +73,22 @@ def r_flagged_names(
     return out
 
 
+def _condition_states(conditions: Any, by_rule_id: dict[int, str], by_id: dict[int, Any], limit: int = 6) -> list[list[str]]:
+    """Diagnostic: for each condition of a rule, [attribute, operator, value, state] where state is `unmapped` (the attribute is
+    not in the list the check was given, so its value can never be read), `true`, `false` or `unknown`. Never affects a result."""
+    out: list[list[str]] = []
+    for attr_id, value, operator in list(conditions or [])[:limit]:
+        attr = by_id.get(attr_id)
+        name = attr.variable_name if attr is not None else f"id:{attr_id}"
+        if attr_id not in by_rule_id:
+            state = "unmapped"
+        else:
+            matched, _blocked = evaluate_declarative_conditions([(attr_id, value, operator)], by_rule_id)
+            state = "true" if matched is True else "false" if matched is False else "unknown"
+        out.append([name[:48], str(operator), str(value)[:24], state])
+    return out
+
+
 def _fires(conditions: Any, filled_by_rule_id: dict[int, str]) -> bool:
     """True only when a declarative condition is decided True (never unknown)."""
     if not conditions:
@@ -132,11 +148,18 @@ def rule_required_vns(
     _rec, con_rules = rules or engine.load_recommendation_and_constraint_rules(workspace_id, catalog_prefix)
     counts = {"blank_disallow_loaded": 0, "blank_disallow_condition_fired": 0, "blank_disallow_guard_closed": 0,
               "blank_disallow_target_missing": 0, "validation_loaded": 0, "validation_fired": 0}
+    unfired: list[dict] = []
     for rule in con_rules:
         if str(getattr(rule, "mode", "")).upper() != "DISALLOW" or not getattr(rule, "blank", False):
             continue
         counts["blank_disallow_loaded"] += 1
         if rule.condition_script is not None or not _fires(rule.conditions, by_rule_id):
+            if stats is not None and len(unfired) < 20:       # diagnostic: why this blank-disallow rule did not fire
+                target = by_id.get(rule.target_attr_id)
+                unfired.append({
+                    "rule": str(getattr(rule, "rule_name", ""))[:55], "target": target.variable_name if target else f"id:{rule.target_attr_id}",
+                    "script_condition": rule.condition_script is not None,
+                    "conds": _condition_states(rule.conditions, by_rule_id, by_id)})
             continue
         counts["blank_disallow_condition_fired"] += 1
         guard = getattr(rule, "guard_attr", "")
@@ -157,6 +180,7 @@ def rule_required_vns(
                 out.add(target.variable_name)
     if stats is not None:
         stats.update(counts)
+        stats["unfired_blank_disallow"] = unfired
         stats["assumed_master_strings"] = len(_assumed_master_string_attrs(attrs, filled, filled_multi))
     return out
 

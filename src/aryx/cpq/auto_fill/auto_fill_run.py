@@ -16,7 +16,23 @@ from aryx.cpq.auto_fill.auto_fill_recommendation_check import log_rec_script_sta
 from aryx.cpq.base_model_narrowing import order_ask_first
 
 
-def run_auto_fill(
+def run_auto_fill(*args: Any, **kwargs: Any) -> Any:
+    """`_run_auto_fill` plus one `cpq_perf: auto_fill stages` line (seconds per stage / attribute). Logging only."""
+    from aryx.cpq.auto_fill_stages import fill_log, stage_timing  # noqa: PLC0415
+
+    timer, token = stage_timing.begin()
+    try:
+        return _run_auto_fill(*args, **kwargs)
+    finally:
+        stage_timing.end(token)
+        try:
+            from aryx.cpq.engine import logger  # noqa: PLC0415 -- same logger as the other cpq_perf lines
+            logger.info(stage_timing.summary_line(timer, fill_log.current_pass()))
+        except Exception:  # noqa: BLE001 -- a timing line must never change the fill
+            pass
+
+
+def _run_auto_fill(
     engine: Any,
     attrs: list[Any],
     hints: dict[str, str],

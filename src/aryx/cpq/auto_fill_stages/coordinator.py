@@ -24,6 +24,7 @@ before this loop starts).
 """
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from aryx.cpq.auto_fill_stages import (
@@ -43,7 +44,7 @@ from aryx.cpq.auto_fill_stages import (
     tier3_default_value,
     tier4_options,
 )
-from aryx.cpq.auto_fill_stages import fill_log
+from aryx.cpq.auto_fill_stages import fill_log, stage_timing
 from aryx.cpq.auto_fill_stages.state import AttrResolution
 from aryx.raven_log import would_log
 
@@ -93,9 +94,17 @@ def resolve_one_attr(
     prev_src = ctx.sources.get(vn)
     had = vn in ctx.filled or vn in ctx.filled_multi
     before_value = ctx.filled_multi.get(vn) if vn in ctx.filled_multi else ctx.filled.get(vn)
+    timer = stage_timing.current()                      # diagnostic only: seconds per stage / attribute for this pass
+    attr_started = time.perf_counter() if timer is not None else 0.0
+    stages_s = 0.0
     for stage in _STAGES:
         snap = fill_log.stage_snapshot(ctx, state) if trace else None
+        stage_started = time.perf_counter() if timer is not None else 0.0
         stage(engine, attr, ctx, scope, state)
+        if timer is not None:
+            spent = time.perf_counter() - stage_started
+            stages_s += spent
+            timer.add_stage(stage.__name__, spent)
         if trace:
             trail.append([stage.__module__.rsplit(".", 1)[-1],
                           fill_log.stage_outcome(snap, fill_log.stage_snapshot(ctx, state))])
@@ -103,3 +112,5 @@ def resolve_one_attr(
             break
     if trace:
         fill_log.log_stage_trail(ctx, state, trail, prev_src, had, before_value, attr)
+    if timer is not None:
+        timer.add_attr(vn, time.perf_counter() - attr_started, stages_s)

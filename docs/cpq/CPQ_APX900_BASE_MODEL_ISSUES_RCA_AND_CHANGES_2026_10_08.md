@@ -609,3 +609,42 @@ separate look.
 
 Risk: a required attribute no sequence row lists but the real screen does show (a catalog gap) would no longer block completion at the proactive check; the confirm gate is unchanged. Replay APX 8000 / 6000 /
 4500 / 6500: the "missing required data" message no longer lists the flash-code attributes. Turn time not measured.
+
+
+### Where an auto_fill pass spends its time (2026-10-09)
+
+Dev log (541 MB, 22:34 to 03:33, one container run, 18 quote sessions): a turn takes 6 to 7.5 minutes for APX 900 (449, 364, 385, 368 s) and can pass 15 minutes. The time is in `auto_fill`: 112 passes, 45 of them over
+two minutes, the slowest 245 s; the post-loop `auto_fill` about 120 s; `mandatory_tier_c_vns` 11 to 148 s (nine calls, the last two the slowest). Not the cause: `apply_hiding_rules` (about 1.3 s per pass) and the Oracle statements
+(27,638 in total; `SELECT aryx_entity` 294 s over 1,564 calls). A turn runs 1,000 to 3,000 attribute decisions in 2 to 4 passes. `cpq_perf: auto_fill took` times the whole pass, so the log could not say which stage or attribute is slow.
+
+Logging only: one `cpq_perf: auto_fill stages` INFO line per `auto_fill` call (the loop pass and the post-loop one), written by `run_auto_fill` and filled by `resolve_one_attr`:
+
+`cpq_perf: auto_fill stages pass=<n> total=<s> attrs=<n> in_attrs=<s> outside_attrs=<s> trace_overhead=<s> stages=[stage_fn=<seconds>/<calls> ...] slowest_attrs=[variable=<s> ...]`
+
+- `in_attrs`: seconds inside the per-attribute loop; `outside_attrs`: setup (context and scope build) plus the post-passes after the loop; `trace_overhead`: attribute time minus the time of its stages, which is the DEBUG stage-trail logging.
+- `stages`: the eight slowest stage functions with total seconds and number of calls; `slowest_attrs`: the six slowest attributes.
+
+```bash
+docker logs aryx-api-1 2>&1 | grep "cpq_perf: auto_fill stages" | cut -c1-900
+```
+
+How to read it: a large `outside_attrs` points at the setup or the post-passes (for example the data-table loads, 13 to 23 s per fresh scan); a large `trace_overhead` means the DEBUG logging itself is slow, so lowering the log level would speed the turn up;
+one dominant stage (for example `stage_options` or `stage_default_value`) or a few dominant attributes name the code to fix.
+
+### Why Encryption Type's blank-disallow rule does not fire (2026-10-09)
+
+First replay with #494 on dev (APX 900, 05:35 UTC): `ask.required_set.hidden` shows `base_known true`, `blank_host true`, `hidden_count 0`; `ask.required_set.diagnostic` shows `attr_count 25`, `blank_disallow_loaded 19`,
+`blank_disallow_condition_fired 1` (the FCC trigger), `assumed_master_strings 0`, `dropped {}`. So the required set is derived over only 25 attributes (the visible, model-listed ones). A rule input on an attribute that is not
+among them (Customer Type, the hidden constraint master string, the model variable) can never be read, and the two flags written for it have nothing to act on: the blank-host pass finds no attribute to blank, and `assumed_master_strings` is 0.
+This is the explanation the data fits; it is not proven until the new field below shows `unmapped` on those inputs.
+
+Logging only: `ask.required_set.diagnostic` now carries `unfired_blank_disallow`, up to 20 entries `{rule, target, script_condition, conds: [[attribute, operator, value, state]]}` for every blank-disallow rule that did not fire,
+where `state` is `unmapped` (the attribute is not in the list the check was given), `true`, `false` or `unknown`.
+
+```bash
+docker logs aryx-api-1 --since 20m 2>&1 | grep "ask.required_set.diagnostic" | tail -1 | cut -c1-6000
+```
+
+Reading it: for the Encryption Type rules (`target secureEncryptionType_astro`), `unmapped` on Customer Type / the master string / the model variable confirms the cause (the fix is to resolve rule conditions against the full attribute list while
+keeping the visible list for targets); `false` on country or the base model means the rule does not apply to this model (for example the N30/N50 Essential Core Bundle clause); `unknown` on an attribute that is in the list means its value
+is missing.
