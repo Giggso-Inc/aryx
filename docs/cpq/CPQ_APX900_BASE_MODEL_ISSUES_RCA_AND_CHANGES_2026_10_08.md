@@ -659,3 +659,7 @@ The Encryption Type blank-disallow rule reads Customer Type, the hidden constrai
 - B: `evaluate_rules_loop` stores the full pre-loop attribute list in the turn cache (`("_all_attrs", ws, prefix)`); `rule_required_vns(input_attrs=...)` reads rule inputs (values, assumed master strings) from it. Targets are still looked up in the visible list, so a target that is not visible is not asked.
 - C: an unfilled `_bm_model_variable_name` in that list reads as `current_model_node()` (the turn's bound/resolved model node). A quote value wins; no node means unknown, nothing required.
 Customer Type is still unfilled (host-supplied), so a rule that needs it non-blank still waits for the blank-host handling; check the `conds` states after the replay: `docker logs aryx-api-1 --since 20m 2>&1 | grep "ask.required_set.diagnostic" | tail -1 | grep -o '"unfired_blank_disallow": \[.*' | cut -c1-4000`.
+
+### Candidate models resolved once per turn (speed)
+
+Replay 2026-10-09 08:09 (ws 1267, APX 900): pass 0 = 123 s over 2,874 attributes, `stage_not_applicable_guard` = 87 s. The guard called `resolve_product_cpq_models_from_hint` for every attribute; the answer depends only on the wording, so it is now memoized in the per-turn cache (`("_hint_cpq_models", ws, prefix, hint)`). No flag: result is identical, only repeated. Verify: `docker logs aryx-api-1 2>&1 | grep "cpq_perf: auto_fill stages pass=0" | cut -c1-600` (expect `stage_not_applicable_guard` far below 87 s).
