@@ -109,3 +109,25 @@ def test_the_quantity_lands_in_pending_instead_of_being_left_blank():
     engine = SimpleNamespace(_is_noise_var=lambda vn: False, should_ask_free_text_attr=lambda *a: False)
     assert ask_or_pending.resolve_ask_or_pending(engine, attr, ctx, scope, state) is True
     assert ctx.pending == [attr]
+
+
+def test_the_setup_hands_the_rules_to_the_scope_it_builds():
+    """The real FillScope carries the set, so the governance stage sees it (a dropped keyword would empty it)."""
+    from aryx.cpq.auto_fill import auto_fill_setup
+    kwargs = dict(
+        engine=SimpleNamespace(_attr_index=lambda attrs: {}), attrs=[_attr(QTY, 1), _attr(FLAG, 99)], hints={},
+        already_filled={}, constrained_opts=None, filled_source={}, governed_ids=set(), already_filled_multi={},
+        dropped_multi={}, rule_governed_ids=set(), country="US", rec_rules=[_rule(1)], negated_vns=set(),
+        skip_always_ask=set(), bml_eval=None, validation_rules=[], display_order=None, workspace_id=None,
+        catalog_prefix="p", _dt_cache={}, hiding_rules=[], _default_fill_signatures=None,
+        _signature_exclude_vns=None, grid_declined_vns=None)
+    dt = SimpleNamespace(grid_selector_vns=set(), bm_region_allow_value=None, dt_governed_vns=set(),
+                         missing_data_target_ids=set(), dt_never_governed_anywhere=lambda vn: False)
+    with patch.object(auto_fill_setup, "compute_data_table_setup", return_value=dt), \
+            patch.object(auto_fill_setup, "compute_conflicted_optional_ids", return_value=set()), \
+            patch.object(auto_fill_setup, "_base_model_narrowing", return_value=None):
+        for flag, expected in ((False, frozenset()), (True, frozenset({QTY}))):
+            with patch.object(qa, "get_settings",
+                              return_value=SimpleNamespace(cpq_rule_compared_quantity_ask_enabled=flag)):
+                _ctx, scope = auto_fill_setup.build_fill_context_and_scope(**kwargs)
+            assert scope.quantity_ask_vns == expected
