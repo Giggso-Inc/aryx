@@ -739,6 +739,7 @@ class FillScope:
     satisfied_recommendation: "Any"
     dt_never_governed_anywhere: "Any"
     required_ask_vns: frozenset = frozenset()   # derived required set, flag-gated; always asked, never guessed
+    quantity_ask_vns: frozenset = frozenset()   # free-entry fields a rule compares to a number, flag-gated; asked
     base_model_narrowing: "Any" = None      # base_model_narrowing.BaseModelNarrowing, flag-gated; None = off
 
 

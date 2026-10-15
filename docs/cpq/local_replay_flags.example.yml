@@ -22,3 +22,5 @@ services:
       # - ARYX_CPQ_DERIVE_DISCRIMINATORS_FIRST_ENABLED=true
       # - ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true
       # - ARYX_CPQ_GRID_QUANTITY_PENDING_SELECTORS_ONLY_ENABLED=true
+      # APX N70 SVX RSM quantity (2026-10-15): asks a visible free-entry field a rule compares to a number
+      # - ARYX_CPQ_RULE_COMPARED_QUANTITY_ASK_ENABLED=true

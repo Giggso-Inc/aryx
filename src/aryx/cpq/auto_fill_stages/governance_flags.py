@@ -143,6 +143,10 @@ def stage_governance_flags(
     required_ask = getattr(scope, "required_ask_vns", None)
     if required_ask and not state.is_decision_attr and state.vn in required_ask:
         state.is_decision_attr = True
+    # A free-entry quantity a rule compares to a number (flag): asked, never left blank.
+    quantity_ask = getattr(scope, "quantity_ask_vns", None)
+    if quantity_ask and not state.is_decision_attr and state.vn in quantity_ask:
+        state.is_decision_attr = True
     state.is_governed = attr.entity_id in scope.governed
     state.governed_source = "rule" if attr.entity_id in scope.rule_governed else "optional"
     state.filled_multi_now = False

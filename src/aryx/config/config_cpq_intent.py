@@ -364,6 +364,16 @@ class CpqIntentSettingsMixin(BaseSettings):
             "ARYX_CPQ_REQUIRED_SET_ASKS_ENABLED=true."
         ),
     )
+    cpq_rule_compared_quantity_ask_enabled: bool = Field(
+        default=False,
+        description=(
+            "A visible free-entry field that a declarative recommendation rule compares to a number (<, <=, >, >=, "
+            "e.g. 'Set TRUE if ... > 0') is asked, never left blank. ws 1267, APX N70: 'Qty of SVX Remote Speaker "
+            "Mic' shows once the Video RSM add-on is chosen, has no options and no validation rule, so it was never "
+            "asked and MSI rejected the configuration as incomplete. Reads only the catalog's rules; names no model "
+            "or attribute. Off by default. Override with ARYX_CPQ_RULE_COMPARED_QUANTITY_ASK_ENABLED=true."
+        ),
+    )
     cpq_required_set_rule_guards_assumed_open: bool = Field(
         default=False,
         description=(

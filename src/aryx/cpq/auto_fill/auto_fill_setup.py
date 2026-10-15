@@ -15,6 +15,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.cpq.auto_fill.auto_fill_conflict_detection import compute_conflicted_optional_ids
 from aryx.cpq.auto_fill.auto_fill_data_table_setup import compute_data_table_setup
+from aryx.cpq.auto_fill.auto_fill_quantity_ask import rule_compared_quantity_vns
 from aryx.cpq.auto_fill.auto_fill_recommendation_check import build_rec_by_target, make_satisfied_recommendation
 from aryx.cpq.engine import FillContext, FillScope
 from aryx.raven_log import raven_log, would_log
@@ -289,6 +290,7 @@ def build_fill_context_and_scope(
 
     required_ask_vns = _required_ask_vns(engine, attrs, filled, filled_multi, sources, display_order,
                                          workspace_id, catalog_prefix, product_anchor_hint, dt_cache, bml_eval)
+    quantity_ask_vns = rule_compared_quantity_vns(attrs, rec_rules, display_order)
 
     ctx = FillContext(
         filled=filled, filled_multi=filled_multi, sources=sources,
@@ -316,5 +318,6 @@ def build_fill_context_and_scope(
         satisfied_recommendation=satisfied_recommendation,
         dt_never_governed_anywhere=dt_setup.dt_never_governed_anywhere,
         base_model_narrowing=base_model_narrowing, required_ask_vns=required_ask_vns,
+        quantity_ask_vns=quantity_ask_vns,
     )
     return ctx, scope
