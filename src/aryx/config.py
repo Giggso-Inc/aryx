@@ -63,8 +63,34 @@ class Settings(BaseSettings):
     )
     graph_query_limit: int = Field(
         default=2000,
+        ge=1,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT). "
         "Override with ARYX_GRAPH_QUERY_LIMIT.",
+    )
+    catalog_allowed_workspace_ids: str = Field(
+        default="",
+        description="Optional comma-separated workspace IDs permitted to use catalog "
+        "snapshots. An empty value permits every workspace for an authenticated caller. "
+        "Override with "
+        "ARYX_CATALOG_ALLOWED_WORKSPACE_IDS.",
+    )
+    catalog_max_entities: int = Field(
+        default=25_000,
+        ge=1,
+        description="Maximum entities in one catalog snapshot. Override with "
+        "ARYX_CATALOG_MAX_ENTITIES.",
+    )
+    service_api_key: str = Field(
+        default="",
+        description="Optional static service credential accepted alongside managed "
+        "MCP tokens. Override with ARYX_SERVICE_API_KEY.",
+    )
+    entity_management_allowed_workspace_ids: str = Field(
+        default="",
+        description="Optional comma-separated workspace IDs permitted to create or "
+        "update entities through the management API. An empty value permits all "
+        "workspaces for an authenticated caller. "
+        "Override with ARYX_ENTITY_MANAGEMENT_ALLOWED_WORKSPACE_IDS.",
     )
     identifier_lookup_enabled: bool = Field(
         default=True,

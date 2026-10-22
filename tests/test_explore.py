@@ -60,6 +60,23 @@ def test_entities_view_unknown_type_is_empty_not_error() -> None:
     assert v["items"] == []
 
 
+def test_entities_view_filters_by_multiple_types_and_exact_attribute() -> None:
+    entities = [
+        (1, "NoQuoteAviation", {"NIIN": "015100167"}),
+        (2, "NoQuoteLand", {"NIIN": "014327514"}),
+        (3, "Customer", {"NIIN": "014327514"}),
+    ]
+    v = entities_view(
+        entities,
+        [],
+        ontology_types={"NoQuoteAviation", "NoQuoteLand"},
+        attribute_name="NIIN",
+        attribute_value="014327514",
+    )
+    assert v["total"] == 1
+    assert v["items"][0]["id"] == 2
+
+
 def test_graph_view_aggregates_edges_by_type_and_name() -> None:
     rels = [(1, 3, "HAS_DEVICE"), (2, 3, "HAS_DEVICE")]  # 2 Customers -> Device
     g = graph_view(ENTITIES, rels)

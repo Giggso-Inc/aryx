@@ -62,15 +62,27 @@ def summarize(entities: list[tuple[int, str, dict]],
 def entities_view(entities: list[tuple[int, str, dict]],
                   provenance: list[tuple[int, str, str, str]],
                   ontology_type: str | None = None,
+                  ontology_types: set[str] | None = None,
+                  attribute_name: str | None = None,
+                  attribute_value: str | None = None,
                   limit: int = 50, offset: int = 0) -> dict[str, Any]:
-    """Entities (optionally filtered by type) with attributes + provenance.
+    """Entities filtered by type(s) and one optional exact attribute.
 
     Returns the page plus the unfiltered count for that type so the UI can
     paginate without a second call.
     """
     by_entity = _prov_by_entity(provenance)
-    rows = [e for e in entities
-            if not ontology_type or e[1] == ontology_type]
+    requested_types = set(ontology_types or ())
+    if ontology_type:
+        requested_types.add(ontology_type)
+    rows = [
+        entity for entity in entities
+        if (not requested_types or entity[1] in requested_types)
+        and (
+            not attribute_name
+            or str((entity[2] or {}).get(attribute_name, "")) == (attribute_value or "")
+        )
+    ]
     total = len(rows)
     capped = max(1, min(int(limit), 200))
     start = max(0, int(offset))

@@ -6,16 +6,26 @@ lives in aryx.explore; this module is the thin HTTP wire.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from aryx import explore
+from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)
+
+
+def _allowed_catalog_workspace_ids() -> set[int] | None:
+    """Return an optional configured workspace restriction for catalog snapshots."""
+    raw_ids = get_settings().catalog_allowed_workspace_ids
+    values = [value.strip() for value in raw_ids.split(",") if value.strip()]
+    return {int(value) for value in values} if values else None
 
 
 class FkLink(BaseModel):
@@ -52,17 +62,79 @@ def data_router() -> APIRouter:
             return {"error": f"data unavailable: {exc}"}
 
     @router.get("/entities")
-    def entities(workspace_id: int = 1, type: str | None = None,
-                 limit: int = 50, offset: int = 0) -> dict:
-        """Entities (optionally by type) with attributes + provenance."""
+    def entities(
+        workspace_id: int = 1,
+        type: list[str] | None = Query(default=None),
+        attribute: str | None = Query(default=None, max_length=128),
+        value: str | None = Query(default=None, max_length=200),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Entities filtered by one or more types and an exact attribute."""
+        if bool(attribute) != bool(value):
+            raise HTTPException(422, "attribute and value must be supplied together")
         store = _store(workspace_id)
         try:
             return explore.entities_view(
                 store.list_entities(), store.list_members_provenance(),
-                ontology_type=type, limit=limit, offset=offset)
+                ontology_types=set(type or ()), attribute_name=attribute,
+                attribute_value=value, limit=limit, offset=offset)
         except Exception as exc:  # noqa: BLE001
             logger.warning("data entities failed: %s", exc)
             return {"error": f"data unavailable: {exc}", "items": []}
+
+    @router.get("/catalog-entities")
+    def catalog_entities(
+        workspace_id: int,
+        types: list[str] = Query(min_length=1, max_length=32),
+        include_sources: bool = True,
+        _: str = Depends(require_api_key),
+    ) -> dict:
+        """Return a bounded, type-scoped catalog snapshot for one workspace."""
+        allowed_workspace_ids = _allowed_catalog_workspace_ids()
+        if allowed_workspace_ids is not None and workspace_id not in allowed_workspace_ids:
+            raise HTTPException(403, "catalog access is not enabled for this workspace")
+        normalized_types = sorted({item.strip() for item in types if item.strip()})
+        if not normalized_types:
+            raise HTTPException(422, "at least one non-empty type is required")
+
+        store = _store(workspace_id)
+        try:
+            entity_count = store.count_catalog_entities(normalized_types)
+            max_entities = get_settings().catalog_max_entities
+            if entity_count > max_entities:
+                raise HTTPException(
+                    413, f"catalog snapshot exceeds the {max_entities} entity limit")
+            entities, provenance = store.list_catalog_entities(
+                normalized_types, include_sources=include_sources)
+        finally:
+            store.close()
+
+        by_entity: dict[int, list[dict]] = {}
+        if include_sources:
+            for entity_id, system, dataset, record_id in provenance:
+                by_entity.setdefault(int(entity_id), []).append({
+                    "system": system,
+                    "dataset": dataset,
+                    "record_id": str(record_id),
+                })
+        items = [
+            {
+                "id": entity_id,
+                "type": ontology_type,
+                "attributes": attributes or {},
+                "sources": by_entity.get(int(entity_id), []),
+            }
+            for entity_id, ontology_type, attributes in entities
+        ]
+        revision_payload = json.dumps(
+            items, sort_keys=True, default=str, separators=(",", ":"))
+        return {
+            "workspaceId": workspace_id,
+            "types": normalized_types,
+            "revision": hashlib.sha256(revision_payload.encode("utf-8")).hexdigest()[:16],
+            "items": items,
+        }
 
     @router.get("/entity/{entity_id}")
     def entity(entity_id: int, workspace_id: int = 1) -> dict:

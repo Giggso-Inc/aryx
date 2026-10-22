@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from falkordb import FalkorDB
 
@@ -25,12 +25,15 @@ class GraphReader:
         """Connect from a redis:// URL and select a named graph.
 
         Args:
-            url: FalkorDB connection URL, e.g. redis://falkordb:6379.
+            url: FalkorDB connection URL, optionally with a URL-encoded
+                password, e.g. redis://:secret@falkordb:6379.
             graph: Graph key to read from.
         """
         parsed = urlparse(url)
+        password = unquote(parsed.password) if parsed.password else None
         self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+                            port=parsed.port or 6379,
+                            password=password)
         self._graph = self._db.select_graph(graph)
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
@@ -45,6 +48,19 @@ class GraphReader:
         """
         timeout_ms = get_settings().graph_query_timeout or None
         return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
+
+    def run_readonly(
+        self,
+        query: str,
+        params: dict[str, Any] | None = None,
+        timeout_ms: int | None = None,
+    ) -> tuple[list[str], list[list[Any]]]:
+        """Execute a guarded Cypher query and return its columns and rows."""
+        timeout = timeout_ms if timeout_ms is not None else (
+            get_settings().graph_query_timeout or None)
+        result = self._graph.query(query, params or {}, timeout=timeout)
+        columns = [header[1] for header in (result.header or [])]
+        return columns, result.result_set
 
     def find_entity_by_attribute_value(self, value: str, limit: int = 10) -> list[dict[str, Any]]:
         """Find entities where ANY property holds this exact value.
