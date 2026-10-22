@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from falkordb import FalkorDB
 
@@ -67,12 +67,15 @@ class FalkorStore:
         """Connect from a redis:// URL and select a named graph.
 
         Args:
-            url: FalkorDB connection URL, e.g. redis://falkordb:6379.
+            url: FalkorDB connection URL, optionally with a URL-encoded
+                password, e.g. redis://:secret@falkordb:6379.
             graph: Graph key to write into.
         """
         parsed = urlparse(url)
+        password = unquote(parsed.password) if parsed.password else None
         self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+                            port=parsed.port or 6379,
+                            password=password)
         self._graph = self._db.select_graph(graph)
 
     def clear(self) -> None:

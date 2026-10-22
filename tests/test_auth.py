@@ -1,6 +1,7 @@
 """Tests for G4: fail-closed bearer auth + API-key middleware."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -141,3 +142,29 @@ def test_verify_key_fails_closed_on_store_exception():
     with patch("aryx.config.get_settings", side_effect=RuntimeError("no db")):
         result = _verify_key("anykey")
     assert result is False
+
+
+def test_verify_key_accepts_configured_static_service_key():
+    from aryx.api.security import _verify_key
+
+    settings = SimpleNamespace(
+        service_api_key="configured-service-key",
+        rdb_dsn="postgresql://unused",
+    )
+    with patch("aryx.config.get_settings", return_value=settings):
+        assert _verify_key("configured-service-key") is True
+
+
+def test_verify_key_falls_back_to_managed_token_when_static_key_differs():
+    from aryx.api.security import _verify_key
+
+    settings = SimpleNamespace(
+        service_api_key="configured-service-key",
+        rdb_dsn="postgresql://unused",
+    )
+    store = MagicMock()
+    store.verify.return_value = True
+    with patch("aryx.config.get_settings", return_value=settings), \
+            patch("aryx.store.mcp_token_store.McpTokenStore", return_value=store):
+        assert _verify_key("managed-token") is True
+    store.verify.assert_called_once_with("managed-token")

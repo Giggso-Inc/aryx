@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+from hmac import compare_digest
 
+from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -50,11 +52,20 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
 
 def _verify_key(key: str) -> bool:
-    """Verify an API key against McpTokenStore. Fails closed on any error."""
+    """Verify a configured service key or active managed token.
+
+    The optional static key supports service-to-service integrations while the
+    database-backed token store continues to support issue, revoke, and usage
+    tracking for managed credentials.
+    """
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().rdb_dsn)
+        settings = get_settings()
+        service_key = getattr(settings, "service_api_key", "")
+        if isinstance(service_key, str) and service_key and compare_digest(key, service_key):
+            return True
+        store = McpTokenStore(settings.rdb_dsn)
         try:
             return store.verify(key)
         finally:
@@ -62,3 +73,20 @@ def _verify_key(key: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.error("api key check failed — failing closed: %s", exc)
         return False
+
+
+def require_api_key(request: Request) -> str:
+    """Require a valid API key or bearer token for a sensitive operation."""
+    authorization = request.headers.get("authorization", "").strip()
+    key = (
+        authorization[7:].strip()
+        if authorization.lower().startswith("bearer ")
+        else request.headers.get("x-aryx-api-key", "").strip()
+    )
+    if not key or not _verify_key(key):
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid api key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return key

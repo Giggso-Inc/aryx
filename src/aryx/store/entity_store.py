@@ -153,6 +153,77 @@ class EntityStore:
                 cur.execute(load("select_members_provenance"), (self._ws,))
                 return [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
 
+    def list_catalog_entities(
+        self,
+        ontology_types: list[str],
+        *,
+        include_sources: bool = True,
+    ) -> tuple[list[tuple[int, str, dict]], list[tuple[int, str, str, str]]]:
+        """Read one typed catalog and optionally its provenance records."""
+        if not ontology_types:
+            return [], []
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_catalog_entities"), (self._ws, ontology_types))
+                entities = [(row[0], row[1], row[2]) for row in cur.fetchall()]
+                if not include_sources or not entities:
+                    return entities, []
+                cur.execute(
+                    load("select_catalog_members_provenance"),
+                    (self._ws, ontology_types),
+                )
+                provenance = [(row[0], row[1], row[2], row[3]) for row in cur.fetchall()]
+        return entities, provenance
+
+    def count_catalog_entities(self, ontology_types: list[str]) -> int:
+        """Return the number of entities that match the requested types."""
+        if not ontology_types:
+            return 0
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("count_catalog_entities"), (self._ws, ontology_types))
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def get_entity(self, entity_id: int) -> tuple | None:
+        """Return one entity in this workspace, or None when it does not exist."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_managed_entity"), (entity_id, self._ws))
+                row = cur.fetchone()
+        return tuple(row) if row else None
+
+    def create_entity(
+        self,
+        ontology_type: str,
+        attributes: dict,
+        confidence: float,
+    ) -> tuple:
+        """Create one generic managed entity and return its persisted record."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    load("insert_managed_entity"),
+                    (self._ws, ontology_type, Json(attributes, dumps=_dumps), confidence),
+                )
+                return tuple(cur.fetchone())
+
+    def update_entity(
+        self,
+        entity_id: int,
+        attributes: dict,
+        confidence: float | None,
+    ) -> tuple | None:
+        """Replace entity attributes and optionally confidence in this workspace."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    load("update_managed_entity"),
+                    (Json(attributes, dumps=_dumps), confidence, entity_id, self._ws),
+                )
+                row = cur.fetchone()
+        return tuple(row) if row else None
+
     def list_relationships(self) -> list[tuple[int, int, str]]:
         """Return (source_entity_id, target_entity_id, name) edges."""
         with self._pool.connection() as conn:
